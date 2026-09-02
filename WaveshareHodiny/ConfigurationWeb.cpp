@@ -714,6 +714,27 @@ String colorScaleJson(const ClockMetricColorScale &scale) {
   return result;
 }
 
+String valueSlotJson(const ClockValueSlotConfig &slot) {
+  String result = F("{\"enabled\":");
+  result += slot.enabled ? F("true") : F("false");
+  result += F(",\"custom\":");
+  result += slot.custom ? F("true") : F("false");
+  result += F(",\"preset\":\"");
+  result += jsonEscape(slot.preset);
+  result += F("\",\"name\":\"");
+  result += jsonEscape(slot.name);
+  result += F("\",\"entityId\":\"");
+  result += jsonEscape(slot.entityId);
+  result += F("\",\"suffix\":\"");
+  result += jsonEscape(slot.suffix);
+  result += F("\",\"decimals\":");
+  result += slot.decimals;
+  result += F(",\"colorScale\":");
+  result += colorScaleJson(slot.colorScale);
+  result += '}';
+  return result;
+}
+
 void addSecurityHeaders() {
   server.sendHeader(F("Connection"), F("close"));
   server.sendHeader(F("Cache-Control"), F("no-store"));
@@ -972,8 +993,8 @@ bool parseFiniteFloat(const String &text, float &value) {
   return end != text.c_str() && *end == '\0' && std::isfinite(value);
 }
 
-bool readColorScaleFromForm(const char *prefix, ClockMetricColorScale &scale) {
-  const String fieldPrefix(prefix);
+bool readColorScaleFromForm(const String &fieldPrefix,
+                            ClockMetricColorScale &scale) {
   const int count = server.arg(fieldPrefix + "Count").toInt();
   if (count < 1 || count > static_cast<int>(CLOCK_METRIC_COLOR_POINT_COUNT)) {
     return false;
@@ -1050,6 +1071,37 @@ void readMetricFromForm(const char *prefix, ClockMetricConfig &metric) {
   }
   metric.decimals =
       constrain(server.arg(fieldPrefix + "Decimals").toInt(), 0, 2);
+}
+
+// Jeden slot obrazovky CLOCK_STYLE_VALUES. Starší uložená stránka pole
+// valueSlot* vůbec neposílá; takový formulář musí uložený slot nechat být,
+// ne ho vynulovat ani shodit celé uložení na chybějící barevné škále.
+bool readValueSlotFromForm(size_t index, ClockValueSlotConfig &slot) {
+  const String fieldPrefix = String("valueSlot") + index;
+  if (!server.hasArg(fieldPrefix + "Enabled")) return true;
+  slot.enabled = server.arg(fieldPrefix + "Enabled") == "1";
+  slot.custom = server.arg(fieldPrefix + "Mode") == "custom";
+  clockConfigCopy(slot.entityId, sizeof(slot.entityId),
+                  server.arg(fieldPrefix + "Entity"));
+  if (slot.custom) {
+    clockConfigCopy(slot.preset, sizeof(slot.preset), "custom");
+    clockConfigCopy(slot.name, sizeof(slot.name),
+                    server.arg(fieldPrefix + "Name"));
+    clockConfigCopy(slot.suffix, sizeof(slot.suffix),
+                    server.arg(fieldPrefix + "Suffix"));
+  } else {
+    ClockMetricConfig presetConfig;
+    applyPreset(presetConfig, server.arg(fieldPrefix + "Preset"));
+    clockConfigCopy(slot.preset, sizeof(slot.preset), presetConfig.preset);
+    clockConfigCopy(slot.name, sizeof(slot.name), presetConfig.name);
+    clockConfigCopy(slot.suffix, sizeof(slot.suffix), presetConfig.suffix);
+  }
+  slot.decimals =
+      constrain(server.arg(fieldPrefix + "Decimals").toInt(), 0, 2);
+  if (!readColorScaleFromForm(fieldPrefix + "Color", slot.colorScale))
+    return false;
+  slot.color = slot.colorScale.points[0].color;
+  return true;
 }
 
 void readSideFromForm(const char *prefix, ClockSideConfig &side,
@@ -1402,6 +1454,12 @@ void handleGetConfig() {
   result += colorScaleJson(config.leftValueColorScale);
   result += F(",\"rightValueColorScale\":");
   result += colorScaleJson(config.rightValueColorScale);
+  result += F(",\"valueSlots\":[");
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    if (index > 0) result += ',';
+    result += valueSlotJson(config.slots[index]);
+  }
+  result += ']';
   result += F(",\"dayBrightness\":");
   result += config.dayBrightness;
   result += F(",\"nightBrightness\":");
@@ -1724,6 +1782,14 @@ void handleSaveConfig() {
   }
   config.leftSide.color = config.leftValueColorScale.points[0].color;
   config.rightSide.color = config.rightValueColorScale.points[0].color;
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    if (!readValueSlotFromForm(index, config.slots[index])) {
+      sendError(400,
+                F("Barevná škála hodnoty musí obsahovat 1 až 10 platných bodů "
+                  "bez duplicitních hodnot."));
+      return;
+    }
+  }
   config.dayBrightness =
       constrain(server.arg("dayBrightness").toInt(), 1, 100);
   config.nightBrightness =

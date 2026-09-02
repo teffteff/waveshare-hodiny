@@ -67,6 +67,37 @@ def metric(name: str, entity: str, suffix: str, decimals: int) -> dict:
     }
 
 
+def value_slots() -> list[dict]:
+    """Osm slotů obrazovky HODNOTY; první čtyři jsou zapnuté jako po migraci."""
+    seeded = [
+        ("VENKU", "sensor.venkovni_teplota", "°C", 1, "#4CCBEC"),
+        ("OBÝVÁK", "sensor.obyvak_teplota", "°C", 1, "#FFB843"),
+        ("VOC", "sensor.obyvak_voc", "ppb", 0, "#65C744"),
+        ("CO₂", "sensor.obyvak_co2", "ppm", 0, "#FFB843"),
+    ]
+    slots = []
+    for index in range(8):
+        if index < len(seeded):
+            name, entity, suffix, decimals, color = seeded[index]
+            enabled = True
+        else:
+            name, entity, suffix, decimals, color = "", "", "°C", 1, "#FFFFFF"
+            enabled = False
+        slots.append(
+            {
+                "enabled": enabled,
+                "custom": bool(name),
+                "preset": "custom" if name else "temperature",
+                "name": name,
+                "entityId": entity,
+                "suffix": suffix,
+                "decimals": decimals,
+                "colorScale": [{"value": 0.0, "color": color}],
+            }
+        )
+    return slots
+
+
 def stub_config() -> dict:
     """Odpovídá tvaru configJson() v ConfigurationWeb.cpp."""
     return {
@@ -101,6 +132,7 @@ def stub_config() -> dict:
         "rightValueColorScale": [{"value": 0.0, "color": "#FFB843"}],
         "metricAColorScale": [{"value": 0.0, "color": "#65C744"}],
         "metricBColorScale": [{"value": 0.0, "color": "#FFB843"}],
+        "valueSlots": value_slots(),
         "animatedWeatherIcons": True,
         "weatherIconStyle": "monochrome",
         "monochromeWeatherIconColor": "#FFFFFF",
