@@ -1,5 +1,7 @@
 #include "ConfigurationWeb.h"
 
+#include "ConfigurationForm.h"
+
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -803,8 +805,6 @@ bool validRadarRadius(int radiusKm) {
          radiusKm == 100 || radiusKm == 200;
 }
 
-bool parseHtmlColor(const String &value, uint32_t &color);
-
 bool parseDateFormat(const String &value, uint8_t &format) {
   if (value == "weekday-day-month")
     format = CLOCK_DATE_FORMAT_WEEKDAY_DAY_MONTH;
@@ -977,84 +977,20 @@ bool validHomeAssistantUrl(const String &url) {
          url.startsWith("https://");
 }
 
-bool parseHtmlColor(const String &value, uint32_t &color) {
-  if (value.length() != 7 || value[0] != '#') return false;
-  char *end = nullptr;
-  const unsigned long parsed = strtoul(value.c_str() + 1, &end, 16);
-  if (end == value.c_str() + 1 || *end != '\0' || parsed > 0xFFFFFF) {
-    return false;
-  }
-  color = static_cast<uint32_t>(parsed);
-  return true;
-}
 
-bool parseFiniteFloat(const String &text, float &value) {
-  char *end = nullptr;
-  value = strtof(text.c_str(), &end);
-  return end != text.c_str() && *end == '\0' && std::isfinite(value);
+bool serverFormHas(void *, const String &name) { return server.hasArg(name); }
+String serverFormGet(void *, const String &name) { return server.arg(name); }
+
+ConfigurationFormSource serverFormSource() {
+  return ConfigurationFormSource{serverFormHas, serverFormGet, nullptr};
 }
 
 bool readColorScaleFromForm(const String &fieldPrefix,
                             ClockMetricColorScale &scale) {
-  const int count = server.arg(fieldPrefix + "Count").toInt();
-  if (count < 1 || count > static_cast<int>(CLOCK_METRIC_COLOR_POINT_COUNT)) {
-    return false;
-  }
-  scale = ClockMetricColorScale{};
-  scale.count = static_cast<uint8_t>(count);
-  for (uint8_t index = 0; index < scale.count; ++index) {
-    const String suffix = String(index);
-    if (!parseFiniteFloat(server.arg(fieldPrefix + "Value" + suffix),
-                          scale.points[index].value) ||
-        !parseHtmlColor(server.arg(fieldPrefix + "Color" + suffix),
-                        scale.points[index].color)) {
-      return false;
-    }
-  }
-  for (uint8_t index = 1; index < scale.count; ++index) {
-    const ClockMetricColorPoint point = scale.points[index];
-    uint8_t position = index;
-    while (position > 0 && scale.points[position - 1].value > point.value) {
-      scale.points[position] = scale.points[position - 1];
-      --position;
-    }
-    scale.points[position] = point;
-  }
-  for (uint8_t index = 1; index < scale.count; ++index) {
-    if (scale.points[index - 1].value == scale.points[index].value) {
-      return false;
-    }
-  }
-  return true;
+  const ConfigurationFormSource source = serverFormSource();
+  return readColorScaleFromSource(source, fieldPrefix, scale);
 }
 
-void applyPreset(ClockMetricConfig &metric, const String &preset) {
-  struct Preset {
-    const char *id;
-    const char *name;
-    const char *suffix;
-    uint8_t decimals;
-  };
-  static const Preset presets[] = {
-      {"temperature", "TEPLOTA", "°C", 1},
-      {"co2", "CO₂", "ppm", 0},       {"voc", "VOC", "ppb", 0},
-      {"pm25", "PM2.5", "µg/m³", 0}, {"pm10", "PM10", "µg/m³", 0},
-      {"humidity", "VLHKOST", "%", 0}, {"pressure", "TLAK", "hPa", 0},
-      {"aqi", "AQI", "", 0},          {"illuminance", "SVĚTLO", "lx", 0},
-      {"noise", "HLUK", "dB", 0},     {"battery", "BATERIE", "%", 0},
-  };
-  const Preset *selected = &presets[0];
-  for (const Preset &candidate : presets) {
-    if (preset == candidate.id) {
-      selected = &candidate;
-      break;
-    }
-  }
-  clockConfigCopy(metric.preset, sizeof(metric.preset), selected->id);
-  clockConfigCopy(metric.name, sizeof(metric.name), selected->name);
-  clockConfigCopy(metric.suffix, sizeof(metric.suffix), selected->suffix);
-  metric.decimals = selected->decimals;
-}
 
 void readMetricFromForm(const char *prefix, ClockMetricConfig &metric) {
   const String fieldPrefix(prefix);
@@ -1068,41 +1004,16 @@ void readMetricFromForm(const char *prefix, ClockMetricConfig &metric) {
     clockConfigCopy(metric.suffix, sizeof(metric.suffix),
                     server.arg(fieldPrefix + "Suffix"));
   } else {
-    applyPreset(metric, server.arg(fieldPrefix + "Preset"));
+    applyMetricPreset(metric, server.arg(fieldPrefix + "Preset"));
   }
   metric.decimals =
       constrain(server.arg(fieldPrefix + "Decimals").toInt(), 0, 2);
 }
 
-// Jeden slot obrazovky CLOCK_STYLE_VALUES. Starší uložená stránka pole
-// valueSlot* vůbec neposílá; takový formulář musí uložený slot nechat být,
-// ne ho vynulovat ani shodit celé uložení na chybějící barevné škále.
 bool readValueSlotFromForm(size_t index, ClockValueSlotConfig &slot) {
-  const String fieldPrefix = String("valueSlot") + index;
-  if (!server.hasArg(fieldPrefix + "Enabled")) return true;
-  slot.enabled = server.arg(fieldPrefix + "Enabled") == "1";
-  slot.custom = server.arg(fieldPrefix + "Mode") == "custom";
-  clockConfigCopy(slot.entityId, sizeof(slot.entityId),
-                  server.arg(fieldPrefix + "Entity"));
-  if (slot.custom) {
-    clockConfigCopy(slot.preset, sizeof(slot.preset), "custom");
-    clockConfigCopy(slot.name, sizeof(slot.name),
-                    server.arg(fieldPrefix + "Name"));
-    clockConfigCopy(slot.suffix, sizeof(slot.suffix),
-                    server.arg(fieldPrefix + "Suffix"));
-  } else {
-    ClockMetricConfig presetConfig;
-    applyPreset(presetConfig, server.arg(fieldPrefix + "Preset"));
-    clockConfigCopy(slot.preset, sizeof(slot.preset), presetConfig.preset);
-    clockConfigCopy(slot.name, sizeof(slot.name), presetConfig.name);
-    clockConfigCopy(slot.suffix, sizeof(slot.suffix), presetConfig.suffix);
-  }
-  slot.decimals =
-      constrain(server.arg(fieldPrefix + "Decimals").toInt(), 0, 2);
-  if (!readColorScaleFromForm(fieldPrefix + "Color", slot.colorScale))
-    return false;
-  slot.color = slot.colorScale.points[0].color;
-  return true;
+  const ConfigurationFormSource source = serverFormSource();
+  return readValueSlotFromSource(source, index, slot) !=
+         ValueSlotFormResult::InvalidColorScale;
 }
 
 void readSideFromForm(const char *prefix, ClockSideConfig &side,
@@ -1120,7 +1031,7 @@ void readSideFromForm(const char *prefix, ClockSideConfig &side,
                     server.arg(fieldPrefix + "Suffix"));
   } else {
     ClockMetricConfig presetConfig;
-    applyPreset(presetConfig, server.arg(fieldPrefix + "Preset"));
+    applyMetricPreset(presetConfig, server.arg(fieldPrefix + "Preset"));
     clockConfigCopy(valueConfig.preset, sizeof(valueConfig.preset),
                     presetConfig.preset);
     clockConfigCopy(side.name, sizeof(side.name), presetConfig.name);
