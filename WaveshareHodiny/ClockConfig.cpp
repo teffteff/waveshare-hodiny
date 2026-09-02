@@ -201,6 +201,23 @@ uint32_t configChecksum(const ClockConfig &config) {
                        sizeof(config));
 }
 
+void normalizeColorScale(ClockMetricColorScale &scale) {
+  scale.count = constrain(scale.count, static_cast<uint8_t>(1),
+                          static_cast<uint8_t>(CLOCK_METRIC_COLOR_POINT_COUNT));
+  for (uint8_t index = 0; index < scale.count; ++index) {
+    scale.points[index].color &= 0xFFFFFF;
+  }
+  for (uint8_t index = 1; index < scale.count; ++index) {
+    const ClockMetricColorPoint point = scale.points[index];
+    uint8_t position = index;
+    while (position > 0 && scale.points[position - 1].value > point.value) {
+      scale.points[position] = scale.points[position - 1];
+      --position;
+    }
+    scale.points[position] = point;
+  }
+}
+
 void normalizeConfig(ClockConfig &config) {
   config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   config.dayBrightness = constrain(config.dayBrightness, 1, 100);
@@ -290,22 +307,15 @@ void normalizeConfig(ClockConfig &config) {
   ClockMetricColorScale *scales[] = {
       &config.leftValueColorScale, &config.rightValueColorScale,
       &config.metricAColorScale, &config.metricBColorScale};
-  for (ClockMetricColorScale *scale : scales) {
-    scale->count = constrain(scale->count, static_cast<uint8_t>(1),
-                             static_cast<uint8_t>(CLOCK_METRIC_COLOR_POINT_COUNT));
-    for (uint8_t index = 0; index < scale->count; ++index) {
-      scale->points[index].color &= 0xFFFFFF;
-    }
-    for (uint8_t index = 1; index < scale->count; ++index) {
-      const ClockMetricColorPoint point = scale->points[index];
-      uint8_t position = index;
-      while (position > 0 &&
-             scale->points[position - 1].value > point.value) {
-        scale->points[position] = scale->points[position - 1];
-        --position;
-      }
-      scale->points[position] = point;
-    }
+  for (ClockMetricColorScale *scale : scales) normalizeColorScale(*scale);
+  // Osm slotů obrazovky CLOCK_STYLE_VALUES prochází stejnou kontrolou jako
+  // starší pozice. Prázdné entityId slot nevypíná: sloty 0-3 se v režimu
+  // Open-Meteo plní z původních pozic, ne z Home Assistantu.
+  for (ClockValueSlotConfig &slot : config.slots) {
+    slot.decimals = constrain(slot.decimals, static_cast<uint8_t>(0),
+                              static_cast<uint8_t>(2));
+    slot.color &= 0xFFFFFF;
+    normalizeColorScale(slot.colorScale);
   }
 }
 }  // namespace

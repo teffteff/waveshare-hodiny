@@ -314,6 +314,36 @@ void testValueSlotsRoundTrip() {
   assert(!loaded.slots[7].enabled);
 }
 
+// Sloty musí procházet stejnou normalizací jako starší pozice: desetinná
+// místa 0-2, barva bez alfa kanálu a barevná škála seřazená a bez prázdného
+// počtu bodů.
+void testNormalizationClampsValueSlots() {
+  hostPreferencesReset();
+  ClockConfig saved;
+  clockConfigApplyDefaults(saved);
+  saved.slots[5].enabled = true;
+  saved.slots[5].decimals = 9;
+  saved.slots[5].color = 0xAB65C744;
+  saved.slots[5].colorScale.count = 0;
+  saved.slots[4].enabled = true;
+  saved.slots[4].colorScale.count = 3;
+  saved.slots[4].colorScale.points[0] = {30.0f, 0xFF0000};
+  saved.slots[4].colorScale.points[1] = {10.0f, 0x00FF00};
+  saved.slots[4].colorScale.points[2] = {20.0f, 0xCC0000FF};
+  assert(clockConfigSave(saved));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.slots[5].decimals == 2);
+  assert(loaded.slots[5].color == 0x65C744);
+  assert(loaded.slots[5].colorScale.count == 1);
+  assert(loaded.slots[4].colorScale.count == 3);
+  assert(loaded.slots[4].colorScale.points[0].value == 10.0f);
+  assert(loaded.slots[4].colorScale.points[1].value == 20.0f);
+  assert(loaded.slots[4].colorScale.points[2].value == 30.0f);
+  assert(loaded.slots[4].colorScale.points[1].color == 0x0000FF);
+}
+
 // Nová obrazovka musí projít i skrz ukládání vzhledu, které styl ořezává.
 void testValuesStyleSurvivesAppearanceSave() {
   hostPreferencesReset();
@@ -336,6 +366,7 @@ int main() {
   testNormalizationClampsStoredValues();
   testSchema28MigrationSeedsValueSlots();
   testValueSlotsRoundTrip();
+  testNormalizationClampsValueSlots();
   testValuesStyleSurvivesAppearanceSave();
   return 0;
 }
