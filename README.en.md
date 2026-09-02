@@ -30,8 +30,12 @@ interface without editing source code.
 </p>
 
 <p align="center">
+  <img src="screenshots/dashboard-values.png" alt="VALUES clock face with a grid of eight values" width="30%">
   <img src="screenshots/dashboard-night.png" alt="Waveshare Hodiny red night dashboard" width="30%">
   <img src="screenshots/dashboard-analog-night.png" alt="Waveshare Hodiny analog clock in red night mode" width="30%">
+</p>
+
+<p align="center">
   <img src="screenshots/dashboard-radar.png" alt="CHMI precipitation radar on Waveshare Hodiny" width="30%">
 </p>
 
@@ -41,8 +45,9 @@ changes the system text and verbal date shown on the display.
 
 ## Features
 
-- digital clock with Barlow, Liberation Sans, LCD DSEG and Doto fonts, or an
-  analog dial with a configurable tone and optional cardinal accents,
+- digital clock with Barlow, Liberation Sans, LCD DSEG and Doto fonts, an
+  analog dial with a configurable tone and optional cardinal accents, or the
+  VALUES face with a grid of up to eight values,
 - multiple date formats and an optional seconds ring,
 - NTP time synchronization and the Czech time zone with daylight saving time,
 - Open-Meteo support without an account or token,
@@ -55,6 +60,8 @@ changes the system text and verbal date shown on the display.
 - optional automatic rotation between the clock and radar,
 - two additional values such as CO₂, VOC, particulate matter, humidity,
   pressure or battery level,
+- eight independent values on the VALUES face, each with its own name, Home
+  Assistant entity, unit, precision and color scale,
 - personal TMEP.cz sensors as an optional extension to Open-Meteo values,
 - custom units, decimal precision and smooth color scales,
 - independent day and night brightness with manual or automatic switching,
@@ -191,6 +198,9 @@ The web interface configures:
 - `Monochrome`, `Flat` and `Line` animated weather icon styles,
 - CHMI radar range, map opacity, frame count, pause and automatic rotation,
 - custom values, units, precision and color scales,
+- the eight values of the VALUES face, each separately enabled, with its own
+  entity, name, unit, precision and color scale; the section only appears with
+  the Home Assistant data source, because the slots read entities,
 - clock and date colors, fonts, date format and seconds effects,
 - day/night brightness and automatic switching,
 - automatic OTA updates and web-server availability,

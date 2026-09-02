@@ -29,8 +29,12 @@ z webového rozhraní bez úpravy zdrojového kódu.
 </p>
 
 <p align="center">
+  <img src="screenshots/dashboard-values.png" alt="Ciferník HODNOTY s mřížkou osmi hodnot" width="30%">
   <img src="screenshots/dashboard-night.png" alt="Hlavní obrazovka Waveshare Hodiny v červeném nočním režimu" width="30%">
   <img src="screenshots/dashboard-analog-night.png" alt="Analogový ciferník Waveshare Hodiny v červeném nočním režimu" width="30%">
+</p>
+
+<p align="center">
   <img src="screenshots/dashboard-radar.png" alt="Meteoradar ČHMÚ na displeji Waveshare Hodiny" width="30%">
 </p>
 
@@ -38,12 +42,14 @@ V denním režimu mají jednotlivé hodnoty vlastní barvy. Volitelný červený
 noční vzhled sjednotí dashboard i meteoradar do odstínů červené a sníží jas,
 aby displej v noci nerušil. Vedle klasického digitálního rozložení lze zvolit
 také analogový ciferník s vlastním barevným tónem a volitelnými akcenty na
-pozicích 12, 3, 6 a 9 hodin.
+pozicích 12, 3, 6 a 9 hodin, nebo ciferník HODNOTY: malý čas a datum nahoře
+a pod nimi mřížka až osmi nezávislých hodnot.
 
 ## Co firmware umí
 
-- digitální hodiny s fonty Barlow, Liberation Sans, LCD DSEG nebo Doto, nebo
+- digitální hodiny s fonty Barlow, Liberation Sans, LCD DSEG nebo Doto,
   analogový ciferník s nastavitelným tónem a volitelnými hlavními akcenty,
+  nebo ciferník HODNOTY s mřížkou až osmi hodnot,
 - české nebo anglické datum v několika formátech a volitelný vteřinový prstenec,
 - synchronizaci času přes NTP a české časové pásmo včetně letního času,
 - dvě univerzální horní hodnoty s vlastním názvem, jednotkou, přesností,
@@ -54,6 +60,8 @@ pozicích 12, 3, 6 a 9 hodin.
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
 - volitelné automatické střídání hodin a radaru se samostatnou dobou zobrazení,
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
+- osm nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
+  entitou Home Assistantu, jednotkou, přesností a barevnou škálou,
 - vlastní čidla TMEP.cz jako volitelný doplněk hodnot Open-Meteo,
 - vlastní jednotky, počet desetinných míst a plynulé barevné škály,
 - denní a noční jas s ručním přepínáním nebo automatikou podle Open-Meteo či entity slunce,
@@ -205,6 +213,9 @@ Web umožňuje nastavit:
 - styl animovaných ikon `Monochrome`, `Flat` nebo `Line`,
 - meteoradar ČHMÚ s obrysem ČR, městy, pohledy 25, 50, 100, 200 km nebo celá ČR a volbou 1 až 15 snímků,
 - měřené hodnoty A a B, jednotky, přesnost a barevné škály,
+- osm hodnot ciferníku HODNOTY, každou zvlášť zapínatelnou, s vlastní entitou,
+  názvem, jednotkou, přesností a barevnou škálou; sekce se zobrazí jen se
+  zdrojem dat Home Assistant, protože sloty čtou entity,
 - barvu hodin, data a obou částí vteřinového efektu,
 - denní/noční jas, ruční nebo automatický režim a automatické střídání hodin s radarem,
 - automatické OTA aktualizace a režim webového serveru,
