@@ -168,6 +168,7 @@ ClockAppearanceStateCallback currentAppearanceStateCallback = nullptr;
 ClockAppearanceChangeCallback currentAppearancePreviewCallback = nullptr;
 ClockAppearanceChangeCallback currentAppearanceSaveCallback = nullptr;
 ClockConfig configBuffer;
+TaskHandle_t homeAssistantTaskForDiagnostics = nullptr;
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
 bool webActive = false;
 unsigned long webAvailableUntil = 0;
@@ -2361,7 +2362,14 @@ void handleDiagnostics() {
   result += millis();
   result += F(",\"currentMemory\":");
   appendMemoryJson(result, networkDiagnosticsCurrentMemory());
-  result += F(",\"minimumMemory\":{\"internalFree\":");
+  result += F(",\"taskStacks\":{\"loop\":");
+  result += static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+  result += F(",\"homeAssistant\":");
+  result += homeAssistantTaskForDiagnostics == nullptr
+                ? 0
+                : static_cast<uint32_t>(uxTaskGetStackHighWaterMark(
+                      homeAssistantTaskForDiagnostics));
+  result += F("},\"minimumMemory\":{\"internalFree\":");
   result += static_cast<unsigned long>(heap_caps_get_minimum_free_size(
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   result += F(",\"psramFree\":");
@@ -2734,6 +2742,10 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   } else {
     notifyWebStatus();
   }
+}
+
+void configurationWebSetHomeAssistantTask(TaskHandle_t task) {
+  homeAssistantTaskForDiagnostics = task;
 }
 
 void configurationWebLoop() {

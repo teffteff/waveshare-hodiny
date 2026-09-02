@@ -42,6 +42,10 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
                            ClockAppearanceStateCallback appearanceStateCallback,
                            ClockAppearanceChangeCallback appearancePreviewCallback,
                            ClockAppearanceChangeCallback appearanceSaveCallback);
+// Diagnostika hlásí, kolik zásobníku úlohám nejméně zbývalo. Úloha loop se
+// změří sama, protože v ní web server běží; na datovou úlohu je potřeba
+// handle, který zná jen skeč.
+void configurationWebSetHomeAssistantTask(TaskHandle_t task);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();

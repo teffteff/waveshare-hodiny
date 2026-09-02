@@ -295,7 +295,8 @@ exportované zálohy.
 
 V záložce **Systém** je odkaz na samostatnou stránku `/diagnostics`, která se
 otevře v novém panelu. Bez dalších měření na pozadí zobrazuje aktuální a
-minimální volnou interní RAM a PSRAM, procesor, velikost flash, důvod restartu,
+minimální volnou interní RAM a PSRAM, nejmenší volné místo v zásobníku úlohy
+loop a datové úlohy, procesor, velikost flash, důvod restartu,
 Wi-Fi, IP adresu a skutečnou frekvenci pixel clocku displeje. Dále ukazuje stav
 Home Assistantu, Open-Meteo a TMEP.cz a u radaru vybrané město, GPS, rozsah, počet
 připravených snímků, jejich časové rozpětí, poslední úspěšnou aktualizaci,

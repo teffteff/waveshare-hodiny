@@ -260,7 +260,8 @@ not included in backups.
 ### Diagnostics and backups
 
 The read-only `/diagnostics` page reports firmware, CPU, flash, current display
-pixel clock, current and minimum internal RAM and PSRAM, Wi-Fi, Home Assistant,
+pixel clock, current and minimum internal RAM and PSRAM, the smallest free
+stack space seen in the loop and data tasks, Wi-Fi, Home Assistant,
 Open-Meteo and TMEP.cz runtime state. Radar details include the selected city, GPS,
 range, prepared-frame count and time span, last successful refresh, next check,
 HTTP status and the file currently being processed. Exported JSON backups
