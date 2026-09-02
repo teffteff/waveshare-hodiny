@@ -520,6 +520,14 @@ String htmlColor(uint32_t value) {
   return String(color);
 }
 
+// Styl hodin putuje do webu jako text, aby starší stránky nemusely znát
+// číselné hodnoty. Neznámý styl padá zpět na digitální.
+const char *clockStyleSlug(uint8_t style) {
+  if (style == CLOCK_STYLE_ANALOG) return "analog";
+  if (style == CLOCK_STYLE_VALUES) return "values";
+  return "digital";
+}
+
 String sideJson(const ClockSideConfig &side,
                 const ClockSideValueConfig &valueConfig) {
   String result = F("{\"name\":\"");
@@ -817,6 +825,8 @@ bool readAppearanceFromRequest(ClockAppearanceConfig &appearance) {
     appearance.style = CLOCK_STYLE_DIGITAL;
   else if (style == "analog")
     appearance.style = CLOCK_STYLE_ANALOG;
+  else if (style == "values")
+    appearance.style = CLOCK_STYLE_VALUES;
   else
     return false;
   if (!parseHtmlColor(server.arg("analogToneColor"),
@@ -1284,11 +1294,9 @@ void handleGetConfig() {
   result += F(",\"radarDisplaySeconds\":");
   result += config.radarDisplaySeconds;
   result += F(",\"clockStyle\":\"");
-  result += savedAppearance.style == CLOCK_STYLE_ANALOG ? F("analog")
-                                                        : F("digital");
+  result += clockStyleSlug(savedAppearance.style);
   result += F("\",\"activeClockStyle\":\"");
-  result += activeAppearance.style == CLOCK_STYLE_ANALOG ? F("analog")
-                                                         : F("digital");
+  result += clockStyleSlug(activeAppearance.style);
   result += F("\",\"analogToneColor\":\"");
   result += htmlColor(savedAppearance.analogToneColor);
   result += F("\",\"activeAnalogToneColor\":\"");
@@ -2046,9 +2054,9 @@ void handleClockAppearancePreview() {
   ClockAppearanceConfig active;
   appearanceState(saved, active);
   String result = F("{\"ok\":true,\"clockStyle\":\"");
-  result += saved.style == CLOCK_STYLE_ANALOG ? F("analog") : F("digital");
+  result += clockStyleSlug(saved.style);
   result += F("\",\"activeClockStyle\":\"");
-  result += active.style == CLOCK_STYLE_ANALOG ? F("analog") : F("digital");
+  result += clockStyleSlug(active.style);
   result += F("\",\"analogToneColor\":\"");
   result += htmlColor(saved.analogToneColor);
   result += F("\",\"activeAnalogToneColor\":\"");

@@ -190,7 +190,7 @@ bool previewClockAppearanceFromWeb(const ClockAppearanceConfig &appearance) {
   activeAppearance = appearance;
   activeAppearance.style = constrain(
       activeAppearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_ANALOG));
+      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
   activeAppearance.analogToneColor &= 0xFFFFFF;
   activeAppearance.analogHandToneColor &= 0xFFFFFF;
   activeAppearance.analogCardinalAccentColor &= 0xFFFFFF;
@@ -209,7 +209,7 @@ bool saveClockAppearanceFromWeb(const ClockAppearanceConfig &appearance) {
   ClockAppearanceConfig normalized = appearance;
   normalized.style = constrain(
       normalized.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_ANALOG));
+      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
   normalized.analogToneColor &= 0xFFFFFF;
   normalized.analogHandToneColor &= 0xFFFFFF;
   normalized.analogCardinalAccentColor &= 0xFFFFFF;
@@ -577,7 +577,7 @@ void handleSettingsSave(uint8_t clockStyle, uint8_t dayBrightness,
     ClockAppearanceConfig appearance = persistedAppearance;
     appearance.style = constrain(
         clockStyle, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-        static_cast<uint8_t>(CLOCK_STYLE_ANALOG));
+        static_cast<uint8_t>(CLOCK_STYLE_VALUES));
     if (appearance.style != persistedAppearance.style)
       saveClockAppearanceFromWeb(appearance);
     configurationWebSetMode(static_cast<ConfigurationWebMode>(webMode));
@@ -1119,6 +1119,18 @@ bool fetchTmepValues(const ClockConfig &config, ClockValues &values) {
 bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
                              const String &state, ClockValues &values) {
   float number;
+  // Sloty se plní nezávisle na řetězci níže: jedna entita může krmit zároveň
+  // starou pozici (metricA) i slot obrazovky CLOCK_STYLE_VALUES.
+  bool filledSlot = false;
+  if (stateAsFloat(state, number)) {
+    for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+      const ClockValueSlotConfig &slot = config.slots[index];
+      if (!slot.enabled || slot.entityId[0] == '\0') continue;
+      if (entityId != slot.entityId) continue;
+      values.slotValues[index] = number;
+      filledSlot = true;
+    }
+  }
   if (entityId == config.weatherEntityId) {
     values.weatherCode = weatherCodeForState(state);
   } else if (entityId == config.leftSide.temperatureEntityId &&
@@ -1140,7 +1152,7 @@ bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
     values.dayNightLightOn = state == "on";
     values.dayNightLightStateAvailable = true;
   } else {
-    return false;
+    return filledSlot;
   }
   return true;
 }
@@ -1288,7 +1300,9 @@ bool applySunState(const ClockConfig &config, const String &payload,
 bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
                               ClockValues &values) {
   networkDiagnosticsBegin(NetworkDiagnosticKind::HomeAssistantRuntime);
-  const char *entityIds[] = {
+  // Sedm původních entit plus entity zapnutých slotů. Duplicity se vynechají,
+  // aby se stejný senzor nestahoval dvakrát.
+  const char *entityIds[7 + CLOCK_VALUE_SLOT_COUNT] = {
       config.weatherEntityId,
       config.leftSide.temperatureEntityId,
       config.rightSide.temperatureEntityId,
@@ -1297,12 +1311,25 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
       config.sunEntityId,
       config.dayNightLightEntityId,
   };
+  size_t entityCount = 7;
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    const ClockValueSlotConfig &slot = config.slots[index];
+    if (!slot.enabled || slot.entityId[0] == '\0') continue;
+    bool alreadyListed = false;
+    for (size_t listed = 0; listed < entityCount; ++listed) {
+      if (strcmp(entityIds[listed], slot.entityId) == 0) {
+        alreadyListed = true;
+        break;
+      }
+    }
+    if (!alreadyListed) entityIds[entityCount++] = slot.entityId;
+  }
   values.sunStateAvailable = false;
   values.dayNightLightStateAvailable = false;
   uint8_t configuredCount = 0;
   uint8_t successfulCount = 0;
   int lastStatus = 0;
-  for (size_t index = 0; index < 7; ++index) {
+  for (size_t index = 0; index < entityCount; ++index) {
     if (entityIds[index][0] == '\0') continue;
     ++configuredCount;
     String payload;

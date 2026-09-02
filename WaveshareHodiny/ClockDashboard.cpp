@@ -58,6 +58,8 @@ bool dashboardRuntimeConfigAvailable = false;
 
 bool analogLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_ANALOG; }
 
+bool valuesLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_VALUES; }
+
 lv_obj_t *timeLabel = nullptr;
 lv_obj_t *dateLabel = nullptr;
 lv_obj_t *outsideTitleLabel = nullptr;
@@ -84,6 +86,11 @@ lv_obj_t *wifiStatusLabel = nullptr;
 lv_obj_t *statusLabel = nullptr;
 lv_obj_t *webStatusLabel = nullptr;
 lv_obj_t *dashboardContent = nullptr;
+lv_obj_t *valuesPage = nullptr;
+lv_obj_t *valuesTimeLabel = nullptr;
+lv_obj_t *valuesDateLabel = nullptr;
+lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_SLOT_COUNT] = {};
+lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_SLOT_COUNT] = {};
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
 lv_obj_t *radarTitleLabel = nullptr;
@@ -108,8 +115,10 @@ lv_obj_t *settingsPageNumberLabel = nullptr;
 lv_obj_t *clockStyleTitleLabel = nullptr;
 lv_obj_t *digitalClockStyleCard = nullptr;
 lv_obj_t *analogClockStyleCard = nullptr;
+lv_obj_t *valuesClockStyleCard = nullptr;
 lv_obj_t *digitalClockStyleLabel = nullptr;
 lv_obj_t *analogClockStyleLabel = nullptr;
+lv_obj_t *valuesClockStyleLabel = nullptr;
 lv_obj_t *deviceInfoLabel = nullptr;
 lv_obj_t *firmwareStatusLabel = nullptr;
 lv_obj_t *firmwareCheckButton = nullptr;
@@ -318,6 +327,9 @@ void applyDashboardLanguage() {
   if (analogClockStyleLabel != nullptr)
     lv_label_set_text(analogClockStyleLabel,
                       english ? "ANALOG" : "ANALOGOVÉ");
+  if (valuesClockStyleLabel != nullptr)
+    lv_label_set_text(valuesClockStyleLabel,
+                      english ? "VALUES" : "HODNOTY");
   if (dayBrightnessTitleLabel != nullptr)
     lv_label_set_text(dayBrightnessTitleLabel,
                       english ? "DAY BRIGHTNESS" : "DENNÍ JAS");
@@ -373,6 +385,14 @@ void applyDashboardLanguage() {
   displayedFirmwareStatus[0] = '\0';
 }
 
+// Digitální i analogový ciferník sdílí dashboardContent; hodnotová obrazovka
+// má vlastní stránku. Viditelnost se všude řídí přes tento ukazatel, aby
+// přepnutí stylu nenechalo obě stránky odkryté naráz.
+lv_obj_t *primaryClockPage() {
+  return valuesLayoutEnabled() && valuesPage != nullptr ? valuesPage
+                                                        : dashboardContent;
+}
+
 void setRadarVisible(bool visible) {
   if (visible && !radarFeatureAvailable) return;
   if (radarVisible == visible || settingsVisible) return;
@@ -382,13 +402,13 @@ void setRadarVisible(bool visible) {
     // předchozího cyklu. Canvas znovu zobrazí až první snapshot nové animace.
     lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(radarProgressBar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(radarPage);
   } else {
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(dashboardContent);
+    lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(primaryClockPage());
   }
   if (radarVisibilityCallback != nullptr) radarVisibilityCallback(visible);
 }
@@ -2241,20 +2261,17 @@ void settingsNextEvent(lv_event_t *event) {
 }
 
 void updateClockStyleCardSelection() {
-  if (digitalClockStyleCard == nullptr || analogClockStyleCard == nullptr)
-    return;
-  const bool digitalSelected =
-      settingsSelectedClockStyle == CLOCK_STYLE_DIGITAL;
-  lv_obj_set_style_border_width(digitalClockStyleCard,
-                                digitalSelected ? 4 : 1, 0);
-  lv_obj_set_style_border_color(
-      digitalClockStyleCard, digitalSelected ? COLOR_OUTSIDE : COLOR_DIVIDER,
-      0);
-  lv_obj_set_style_border_width(analogClockStyleCard,
-                                digitalSelected ? 1 : 4, 0);
-  lv_obj_set_style_border_color(
-      analogClockStyleCard, digitalSelected ? COLOR_DIVIDER : COLOR_OUTSIDE,
-      0);
+  lv_obj_t *const cards[] = {digitalClockStyleCard, analogClockStyleCard,
+                             valuesClockStyleCard};
+  const uint8_t styles[] = {CLOCK_STYLE_DIGITAL, CLOCK_STYLE_ANALOG,
+                            CLOCK_STYLE_VALUES};
+  for (size_t index = 0; index < 3; ++index) {
+    if (cards[index] == nullptr) continue;
+    const bool selected = settingsSelectedClockStyle == styles[index];
+    lv_obj_set_style_border_width(cards[index], selected ? 4 : 1, 0);
+    lv_obj_set_style_border_color(
+        cards[index], selected ? COLOR_OUTSIDE : COLOR_DIVIDER, 0);
+  }
 }
 
 void clockStyleCardEvent(lv_event_t *event) {
@@ -2277,9 +2294,29 @@ void drawClockStylePreviewEvent(lv_event_t *event) {
   const uint8_t style = static_cast<uint8_t>(
       reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
   const AnalogDrawTarget target = {drawContext, nullptr};
+  // Náhledy byly kresleny na 136 px široké kartě; tři karty se na kulatý
+  // displej vejdou jen užší, takže se všechny poloměry škálují podle šířky.
+  const float scale =
+      static_cast<float>(coordinates.x2 - coordinates.x1 + 1) / 136.0f;
+  const auto scaled = [scale](float value) {
+    return static_cast<int>(std::lround(value * scale));
+  };
+  // Vodorovná čárka jako zástupný symbol textu v náhledu.
+  const auto drawBar = [&](int offsetX, int offsetY, int halfWidth,
+                           lv_color_t color, int thickness) {
+    const lv_point_t from = {
+        static_cast<lv_coord_t>(center.x + scaled(offsetX - halfWidth)),
+        static_cast<lv_coord_t>(center.y + scaled(offsetY)),
+    };
+    const lv_point_t to = {
+        static_cast<lv_coord_t>(center.x + scaled(offsetX + halfWidth)),
+        from.y,
+    };
+    drawAnalogLine(target, from, to, color, thickness);
+  };
 
-  drawAnalogCircle(target, center, 62, LV_COLOR_MAKE(8, 13, 17));
-  drawAnalogArc(target, center, 60,
+  drawAnalogCircle(target, center, scaled(62), LV_COLOR_MAKE(8, 13, 17));
+  drawAnalogArc(target, center, scaled(60),
                 style == CLOCK_STYLE_ANALOG ? analogTone(0.65f)
                                             : COLOR_DIVIDER,
                 2);
@@ -2288,36 +2325,56 @@ void drawClockStylePreviewEvent(lv_event_t *event) {
     for (uint8_t hour = 0; hour < 12; ++hour) {
       const bool cardinal = hour % 3 == 0;
       drawAnalogRadialLine(target, center, hour * 30.0f,
-                           cardinal ? 49.0f : 53.0f, 57.0f,
+                           cardinal ? 49.0f * scale : 53.0f * scale,
+                           57.0f * scale,
                            cardinal ? COLOR_ROOM : analogTone(0.7f),
                            cardinal ? 3 : 1);
     }
-    drawAnalogLine(target, center, analogPoint(center, 305.0f, 31.0f),
-                   COLOR_TEXT, 6);
-    drawAnalogLine(target, center, analogPoint(center, 50.0f, 45.0f),
+    drawAnalogLine(target, center,
+                   analogPoint(center, 305.0f, 31.0f * scale), COLOR_TEXT, 6);
+    drawAnalogLine(target, center, analogPoint(center, 50.0f, 45.0f * scale),
                    COLOR_TEXT, 4);
-    drawAnalogLine(target, analogPoint(center, 180.0f, 13.0f),
-                   analogPoint(center, 180.0f, 51.0f), analogTone(), 2);
-    drawAnalogCircle(target, center, 5, analogTone());
-    drawAnalogCircle(target, center, 2, COLOR_TEXT);
+    drawAnalogLine(target, analogPoint(center, 180.0f, 13.0f * scale),
+                   analogPoint(center, 180.0f, 51.0f * scale), analogTone(),
+                   2);
+    drawAnalogCircle(target, center, scaled(5), analogTone());
+    drawAnalogCircle(target, center, scaled(2), COLOR_TEXT);
+  } else if (style == CLOCK_STYLE_VALUES) {
+    // Malý čas nahoře a mřížka 2 x 4 pod ním, ve stejném pořadí barev jako
+    // na skutečné obrazovce.
+    drawBar(0, -38, 20, COLOR_TEXT, 7);
+    const lv_color_t columnColors[2] = {COLOR_OUTSIDE, COLOR_ROOM};
+    for (int row = 0; row < 4; ++row) {
+      for (int column = 0; column < 2; ++column) {
+        const int offsetX = column == 0 ? -25 : 25;
+        const int offsetY = -14 + row * 15;
+        drawBar(offsetX, offsetY, 16, columnColors[column], 4);
+      }
+    }
   } else {
     const lv_point_t dividerFrom = {
-        static_cast<lv_coord_t>(center.x - 42),
-        static_cast<lv_coord_t>(center.y + 29),
+        static_cast<lv_coord_t>(center.x + scaled(-42)),
+        static_cast<lv_coord_t>(center.y + scaled(29)),
     };
     const lv_point_t dividerTo = {
-        static_cast<lv_coord_t>(center.x + 42), dividerFrom.y,
+        static_cast<lv_coord_t>(center.x + scaled(42)), dividerFrom.y,
     };
     drawAnalogLine(target, dividerFrom, dividerTo, COLOR_DIVIDER, 1);
-    drawAnalogArc(target, center, 54, COLOR_OUTSIDE, 2, LV_OPA_60);
+    drawAnalogArc(target, center, scaled(54), COLOR_OUTSIDE, 2, LV_OPA_60);
   }
 }
+
+// Tři karty vedle sebe se musí vejít do kruhu o průměru 480 px: nejvzdálenější
+// roh karty (144 + 66, 6 + 95) leží 233 px od středu, tedy uvnitř.
+constexpr int CLOCK_STYLE_CARD_WIDTH = 132;
+constexpr int CLOCK_STYLE_CARD_HEIGHT = 190;
+constexpr int CLOCK_STYLE_CARD_PREVIEW = 104;
 
 lv_obj_t *makeClockStyleCard(lv_obj_t *parent, uint8_t style, int x,
                              lv_obj_t **textLabel) {
   lv_obj_t *card = lv_btn_create(parent);
-  lv_obj_set_size(card, 180, 236);
-  alignCenter(card, x, 10);
+  lv_obj_set_size(card, CLOCK_STYLE_CARD_WIDTH, CLOCK_STYLE_CARD_HEIGHT);
+  alignCenter(card, x, 6);
   lv_obj_set_style_radius(card, 20, 0);
   lv_obj_set_style_bg_color(card, LV_COLOR_MAKE(13, 18, 22), 0);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -2327,8 +2384,8 @@ lv_obj_t *makeClockStyleCard(lv_obj_t *parent, uint8_t style, int x,
                       reinterpret_cast<void *>(static_cast<uintptr_t>(style)));
 
   lv_obj_t *preview = lv_obj_create(card);
-  lv_obj_set_size(preview, 136, 136);
-  alignCenter(preview, 0, -30);
+  lv_obj_set_size(preview, CLOCK_STYLE_CARD_PREVIEW, CLOCK_STYLE_CARD_PREVIEW);
+  alignCenter(preview, 0, -26);
   lv_obj_set_style_bg_opa(preview, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(preview, 0, 0);
   lv_obj_set_style_pad_all(preview, 0, 0);
@@ -2339,23 +2396,25 @@ lv_obj_t *makeClockStyleCard(lv_obj_t *parent, uint8_t style, int x,
       reinterpret_cast<void *>(static_cast<uintptr_t>(style)));
 
   if (style == CLOCK_STYLE_DIGITAL) {
-    lv_obj_t *time = makeLabel(preview, &lv_font_montserrat_28, COLOR_TEXT);
+    lv_obj_t *time = makeLabel(preview, &lv_font_montserrat_20, COLOR_TEXT);
     lv_label_set_text(time, "10:09");
-    alignCenter(time, 0, -20);
+    alignCenter(time, 0, -15);
     lv_obj_t *date = makeLabel(preview, &lv_font_montserrat_12, COLOR_MUTED);
     lv_label_set_text(date, "SO 30. 8.");
-    alignCenter(date, 0, 7);
+    alignCenter(date, 0, 6);
     lv_obj_t *values =
         makeLabel(preview, &lv_font_montserrat_12, COLOR_OUTSIDE);
-    lv_label_set_text(values, "22.4°   45%");
-    alignCenter(values, 0, 30);
+    lv_label_set_text(values, "22.4°  45%");
+    alignCenter(values, 0, 24);
   }
 
   lv_obj_t *label = makeLabel(card, &clock_czech_16, COLOR_TEXT);
   if (textLabel != nullptr) *textLabel = label;
-  lv_label_set_text(label, style == CLOCK_STYLE_ANALOG ? "ANALOGOVÉ"
-                                                       : "DIGITÁLNÍ");
-  alignCenter(label, 0, 92);
+  lv_label_set_text(label,
+                    style == CLOCK_STYLE_ANALOG   ? "ANALOGOVÉ"
+                    : style == CLOCK_STYLE_VALUES ? "HODNOTY"
+                                                  : "DIGITÁLNÍ");
+  alignCenter(label, 0, 74);
   lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
   return card;
 }
@@ -2489,9 +2548,11 @@ void createSettingsPage(lv_obj_t *screen) {
   lv_label_set_text(clockStyleTitleLabel, "TYP HODIN");
   alignCenter(clockStyleTitleLabel, 0, -132);
   digitalClockStyleCard = makeClockStyleCard(
-      settingsContent[0], CLOCK_STYLE_DIGITAL, -98, &digitalClockStyleLabel);
+      settingsContent[0], CLOCK_STYLE_DIGITAL, -144, &digitalClockStyleLabel);
   analogClockStyleCard = makeClockStyleCard(
-      settingsContent[0], CLOCK_STYLE_ANALOG, 98, &analogClockStyleLabel);
+      settingsContent[0], CLOCK_STYLE_ANALOG, 0, &analogClockStyleLabel);
+  valuesClockStyleCard = makeClockStyleCard(
+      settingsContent[0], CLOCK_STYLE_VALUES, 144, &valuesClockStyleLabel);
   updateClockStyleCardSelection();
 
   dayBrightnessTitleLabel =
@@ -2634,6 +2695,111 @@ uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle) {
   return redNightVisualEnabled() || monochromeAnalogValues
              ? CLOCK_WEATHER_ICON_STYLE_MONOCHROME
              : configuredStyle;
+}
+
+// Obrazovka CLOCK_STYLE_VALUES: malý čas nahoře a osm hodnot v mřížce 2 x 4.
+// Kruhový displej ubírá šířku u okrajů, proto jsou sloupce blíž ke středu a
+// krajní řádky se drží dál od okraje než prostřední.
+constexpr int VALUE_SLOT_COLUMN_X[2] = {-104, 104};
+constexpr int VALUE_SLOT_ROW_Y[4] = {-72, -12, 48, 108};
+constexpr int VALUE_SLOT_CELL_WIDTH = 190;
+
+float valueSlotReading(size_t index) {
+  const float slotValue = currentValues.slotValues[index];
+  if (!std::isnan(slotValue)) return slotValue;
+  // Sloty 0-3 zrcadlí původní pozice, takže ukazují hodnotu i v režimu
+  // Open-Meteo, kde se nečte z Home Assistantu a slotValues zůstávají prázdné.
+  switch (index) {
+    case 0: return currentValues.leftTemperatureC;
+    case 1: return currentValues.rightTemperatureC;
+    case 2: return currentValues.metricAValue;
+    case 3: return currentValues.metricBValue;
+    default: return NAN;
+  }
+}
+
+void makeValuesPage(lv_obj_t *screen) {
+  valuesPage = lv_obj_create(screen);
+  lv_obj_set_size(valuesPage, 480, 480);
+  lv_obj_center(valuesPage);
+  lv_obj_set_style_bg_color(valuesPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(valuesPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(valuesPage, 0, 0);
+  lv_obj_set_style_pad_all(valuesPage, 0, 0);
+  lv_obj_set_style_radius(valuesPage, 0, 0);
+  lv_obj_clear_flag(valuesPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  valuesTimeLabel = makeLabel(valuesPage, &lv_font_montserrat_48, COLOR_TEXT);
+  lv_label_set_text(valuesTimeLabel, "--:--");
+  alignCenter(valuesTimeLabel, 0, -168);
+  valuesDateLabel = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
+  lv_label_set_text(valuesDateLabel, "");
+  alignCenter(valuesDateLabel, 0, -130);
+
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    const int x = VALUE_SLOT_COLUMN_X[index % 2];
+    const int y = VALUE_SLOT_ROW_Y[index / 2];
+    lv_obj_t *title = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
+    lv_obj_set_width(title, VALUE_SLOT_CELL_WIDTH);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(title, "");
+    alignCenter(title, x, y - 17);
+    valueSlotTitleLabels[index] = title;
+
+    lv_obj_t *value = makeLabel(valuesPage, &lv_font_montserrat_28, COLOR_TEXT);
+    lv_obj_set_width(value, VALUE_SLOT_CELL_WIDTH);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(value, "--");
+    alignCenter(value, x, y + 11);
+    valueSlotValueLabels[index] = value;
+  }
+
+  makeChildrenTapThrough(valuesPage);
+  lv_obj_add_flag(valuesPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(valuesPage, openSettingsEvent, LV_EVENT_LONG_PRESSED,
+                      nullptr);
+  lv_obj_add_flag(valuesPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Přepíše osm buněk podle aktuální konfigurace a naměřených hodnot. Vypnutý
+// slot zůstane prázdný, aby mřížka nedržela zbytek po dřívějším nastavení.
+void updateValuesPage() {
+  if (valuesPage == nullptr) return;
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    lv_obj_t *title = valueSlotTitleLabels[index];
+    lv_obj_t *value = valueSlotValueLabels[index];
+    if (title == nullptr || value == nullptr) continue;
+    const ClockValueSlotConfig &slot = dashboardRuntimeConfig.slots[index];
+    if (!slot.enabled) {
+      setObjectVisible(title, false);
+      setObjectVisible(value, false);
+      continue;
+    }
+    setObjectVisible(title, true);
+    setObjectVisible(value, true);
+
+    lv_label_set_text(title, slot.name[0] != '\0' ? slot.name : slot.preset);
+
+    const float reading = valueSlotReading(index);
+    char number[16];
+    formatMetricValue(number, sizeof(number), reading, slot.decimals);
+    char suffix[CLOCK_METRIC_SUFFIX_LENGTH];
+    strlcpy(suffix, slot.suffix, sizeof(suffix));
+    normalizeMicroSign(suffix);
+    char text[16 + CLOCK_METRIC_SUFFIX_LENGTH + 2];
+    if (std::isnan(reading) || suffix[0] == '\0') {
+      snprintf(text, sizeof(text), "%s", number);
+    } else {
+      snprintf(text, sizeof(text), "%s %s", number, suffix);
+    }
+    lv_label_set_text(value, text);
+
+    const lv_color_t color = metricColorForValue(reading, slot.colorScale);
+    setTextColor(value, color);
+    setTextColor(title, redNightVisualEnabled() ? color : COLOR_MUTED);
+  }
 }
 
 void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
@@ -2810,6 +2976,13 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
       makeLabel(firmwareUpdateOverlay, &lv_font_montserrat_48, COLOR_TEXT);
   lv_label_set_text(firmwareUpdateCountdownLabel, "5");
   alignCenter(firmwareUpdateCountdownLabel, 0, 35);
+  makeValuesPage(screen);
+  if (valuesLayoutEnabled()) {
+    lv_obj_add_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(valuesPage, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(valuesPage);
+  }
+
   // Změna vzhledu musí znovu naplnit oba framebuffery celým shodným
   // ciferníkem. Teprve potom se vrátíme k částečnému direct-mode renderu.
   displayDriverSetPartialRefresh(analogLayoutEnabled(),
@@ -2824,8 +2997,8 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
     radarVisible = false;
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (!settingsVisible && !firmwareUpdateActive) {
-      lv_obj_clear_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_move_foreground(dashboardContent);
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
     }
     if (radarVisibilityCallback != nullptr) radarVisibilityCallback(false);
   }
@@ -3107,7 +3280,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   const uint8_t style = constrain(
       appearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_ANALOG));
+      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
   const uint32_t tone = appearance.analogToneColor & 0xFFFFFF;
   const uint32_t handTone = appearance.analogHandToneColor & 0xFFFFFF;
   const uint32_t accentColor =
@@ -3152,7 +3325,18 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   analogDateColor = appearanceDateColor;
   monochromeWeatherIconColor = weatherColor;
   if (dashboardContent == nullptr || !dashboardRuntimeConfigAvailable) return;
+  // Přepnutí stylu musí odkrýt právě jednu stránku; radar ani nastavení
+  // přitom nesmí zmizet, proto se sahá jen na dvojici ciferníků.
+  if (styleChanged && valuesPage != nullptr && !radarVisible &&
+      !settingsVisible && !firmwareUpdateActive) {
+    lv_obj_t *hidden =
+        valuesLayoutEnabled() ? dashboardContent : valuesPage;
+    lv_obj_add_flag(hidden, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(primaryClockPage());
+  }
   clockDashboardApplyConfiguration(dashboardRuntimeConfig);
+  updateValuesPage();
   updateAnalogValueLayerOrder();
   if (analogLayoutEnabled() && (styleChanged || dialAppearanceChanged))
     rebuildAnalogDialCache();
@@ -3168,6 +3352,7 @@ void clockDashboardUpdate(const ClockValues &values) {
   char text[32];
   currentValues = values;
   if (firmwareUpdateActive) return;
+  updateValuesPage();
 
   const lv_img_dsc_t *weatherIcon =
       openWeatherIconForCode(values.weatherCode, values.weatherIsDay);
@@ -3599,7 +3784,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
   firmwareUpdateActive = active;
   if (active) {
     clockDashboardSetFirmwareUpdateBlack(false);
-    lv_obj_add_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     if (radarVisible && radarVisibilityCallback != nullptr)
@@ -3614,7 +3799,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
       if (radarVisibilityCallback != nullptr) radarVisibilityCallback(true);
     } else {
-      lv_obj_clear_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }
     clockDashboardUpdate(currentValues);
   }
@@ -3671,6 +3856,7 @@ void clockDashboardSetWebMode(uint8_t mode) {
 
 void clockDashboardSetDate(const char *dateText) {
   if (firmwareUpdateActive) return;
+  if (valuesDateLabel != nullptr) lv_label_set_text(valuesDateLabel, dateText);
   if (strcmp(lv_label_get_text(dateLabel), dateText) == 0) return;
   lv_label_set_text(dateLabel, dateText);
   alignCenter(dateLabel, 0, analogLayoutEnabled() ? -132 : -43);
@@ -3702,6 +3888,11 @@ void clockDashboardSetSecond(uint8_t second) {
 
 void clockDashboardSetTime(const char *timeText) {
   if (firmwareUpdateActive) return;
+  if (valuesTimeLabel != nullptr) lv_label_set_text(valuesTimeLabel, timeText);
+  if (valuesLayoutEnabled()) {
+    strlcpy(displayedTimeText, timeText, sizeof(displayedTimeText));
+    return;
+  }
   if (analogLayoutEnabled() && strcmp(displayedTimeText, timeText) == 0) {
     lv_obj_add_flag(timeLabel, LV_OBJ_FLAG_HIDDEN);
     return;
