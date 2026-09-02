@@ -28,9 +28,9 @@
 #include "WifiProvisioning.h"
 #include "WeatherAnimationService.h"
 
-// ClockConfig is intentionally copied under a mutex so the web server and
-// background data task always see a consistent snapshot. Keep enough room for
-// that snapshot and the display/network calls made from Arduino's loop task.
+// Zásobník úlohy loop musí unést LVGL render, webový server i TLS. Kopie
+// ClockConfig se do něj od schématu 29 (přes 5 kB) nevejde, proto ji úlohy
+// drží ve sdílených bufferech v .bss; viz loopConfigSnapshot().
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 #if !FIRMWARE_RELEASE && __has_include("local/secrets.h")
@@ -56,6 +56,8 @@ ClockConfig runtimeConfig;
 ClockConfig persistedConfig;
 ClockConfig configSaveBuffer;
 ClockConfig dashboardConfigBuffer;
+ClockConfig loopConfigBuffer;
+ClockConfig homeAssistantConfigBuffer;
 ClockAppearanceConfig persistedAppearance;
 ClockAppearanceConfig activeAppearance;
 ClockAppearanceConfig pendingAppearance;
@@ -141,23 +143,35 @@ const char *ENGLISH_MONTHS[] = {
 
 void applyDevelopmentDefaults(ClockConfig &config);
 
-ClockConfig runtimeConfigSnapshot() {
-  ClockConfig config;
-  if (runtimeConfigMutex == nullptr) return runtimeConfig;
-  xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
-  config = runtimeConfig;
-  xSemaphoreGive(runtimeConfigMutex);
-  return config;
-}
-
-void loadRuntimeConfigForWeb(ClockConfig &config) {
+void copyRuntimeConfig(ClockConfig &destination) {
   if (runtimeConfigMutex == nullptr) {
-    config = runtimeConfig;
+    destination = runtimeConfig;
     return;
   }
   xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
-  config = runtimeConfig;
+  destination = runtimeConfig;
   xSemaphoreGive(runtimeConfigMutex);
+}
+
+// Od schématu 29 má ClockConfig přes 5 kB. Vracet ho hodnotou znamenalo kopii
+// na zásobníku v každém volajícím; jen samotné loop() si tak alokovalo 10 kB
+// ze 16 kB zásobníku úlohy a na LVGL ani na uložení nastavení už nezbývalo.
+// Úloha loop je jednovláknová, proto všechna její volání sdílí jediný buffer.
+// Vrácená reference platí do dalšího volání ze stejné úlohy a smí se měnit -
+// je to pracovní kopie, ne sdílený stav.
+ClockConfig &loopConfigSnapshot() {
+  copyRuntimeConfig(loopConfigBuffer);
+  return loopConfigBuffer;
+}
+
+// Úloha home-assistant běží souběžně s loop, proto má vlastní buffer.
+const ClockConfig &homeAssistantConfigSnapshot() {
+  copyRuntimeConfig(homeAssistantConfigBuffer);
+  return homeAssistantConfigBuffer;
+}
+
+void loadRuntimeConfigForWeb(ClockConfig &config) {
+  copyRuntimeConfig(config);
 }
 
 bool saveRuntimeConfig(const ClockConfig &config, bool tokenWasSubmitted) {
@@ -332,7 +346,7 @@ void handleRadarVisibility(bool visible) {
   displayModeStartedAt = millis();
   automaticRadarRotationPaused = false;
   radarRotationWaitingForCycle = false;
-  const ClockConfig config = runtimeConfigSnapshot();
+  const ClockConfig &config = loopConfigSnapshot();
   const bool radarAvailable = clockConfigRadarAvailable(config);
   chmiRadarServiceSetActive(radarAvailable && visible,
                             radarAvailable && config.automaticRadarRotation,
@@ -344,7 +358,7 @@ void handleRadarVisibility(bool visible) {
 
 void handleRadarRangeChange(int8_t direction) {
   static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 200, 0};
-  ClockConfig config = runtimeConfigSnapshot();
+  const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigRadarAvailable(config)) return;
   size_t index = 1;
   for (size_t candidate = 0; candidate < 5; ++candidate) {
@@ -373,7 +387,7 @@ void maintainRadarRangeChange() {
       static_cast<long>(millis() - radarRadiusApplyAt) >= 0) {
     radarRadiusApplyPending = false;
     radarRadiusApplyAt = 0;
-    const ClockConfig config = runtimeConfigSnapshot();
+    const ClockConfig &config = loopConfigSnapshot();
     if (clockConfigRadarAvailable(config) &&
         (clockDashboardRadarVisible() || config.automaticRadarRotation)) {
       chmiRadarServiceSetActive(clockDashboardRadarVisible(),
@@ -391,7 +405,7 @@ void maintainRadarRangeChange() {
 void loadRadarRangeStateForWeb(uint16_t &savedRadiusKm,
                                uint16_t &activeRadiusKm) {
   savedRadiusKm = persistedConfig.radarRadiusKm;
-  activeRadiusKm = runtimeConfigSnapshot().radarRadiusKm;
+  activeRadiusKm = loopConfigSnapshot().radarRadiusKm;
 }
 
 bool previewRadarRangeFromWeb(uint16_t radiusKm) {
@@ -421,7 +435,7 @@ bool previewRadarRangeFromWeb(uint16_t radiusKm) {
 }
 
 void maintainAutomaticRadarRotation() {
-  const ClockConfig config = runtimeConfigSnapshot();
+  const ClockConfig &config = loopConfigSnapshot();
   const bool allowed =
       clockConfigRadarAvailable(config) && config.automaticRadarRotation &&
       WiFi.status() == WL_CONNECTED && timeWasSynchronized &&
@@ -477,7 +491,7 @@ void maintainAutomaticRadarRotation() {
 
 void maintainDisplayGestures() {
   const bool radarAvailable =
-      clockConfigRadarAvailable(runtimeConfigSnapshot());
+      clockConfigRadarAvailable(loopConfigSnapshot());
   if (displayDriverTakeHorizontalSwipe() &&
       radarAvailable && clockDashboardAutomaticRotationAllowed()) {
     clockDashboardSetRadarVisible(!clockDashboardRadarVisible());
@@ -512,7 +526,7 @@ void maintainRadarDisplay() {
 }
 
 void maintainRadarNightVisual() {
-  const ClockConfig config = runtimeConfigSnapshot();
+  const ClockConfig &config = loopConfigSnapshot();
   const bool enabled =
       clockDashboardNightModeEnabled() &&
       config.nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
@@ -564,7 +578,7 @@ void handleSettingsSave(uint8_t clockStyle, uint8_t dayBrightness,
                         uint8_t selectedSecondEffect,
                         bool animatedWeatherIcons, uint8_t weatherIconStyle,
                         bool automaticFirmwareUpdate, uint8_t webMode) {
-  ClockConfig config = runtimeConfigSnapshot();
+  ClockConfig &config = loopConfigSnapshot();
   config.dayBrightness = constrain(dayBrightness, 1, 100);
   config.nightBrightness = constrain(nightBrightness, 1, 100);
   config.automaticDayNight = automaticDayNight;
@@ -741,7 +755,7 @@ void maintainNetworkTime() {
     if (homeAssistantTaskHandle != nullptr) {
       xTaskNotifyGive(homeAssistantTaskHandle);
     }
-    const ClockConfig config = runtimeConfigSnapshot();
+    const ClockConfig &config = loopConfigSnapshot();
     const bool radarAvailable = clockConfigRadarAvailable(config);
     chmiRadarServiceSetActive(
         radarAvailable && clockDashboardRadarVisible(),
@@ -763,7 +777,7 @@ void maintainNetworkTime() {
   if (localTime.tm_sec == lastDisplayedSecond) return;
   lastDisplayedSecond = localTime.tm_sec;
 
-  const ClockConfig config = runtimeConfigSnapshot();
+  const ClockConfig &config = loopConfigSnapshot();
   char timeText[6];
   snprintf(timeText, sizeof(timeText), config.showLeadingHourZero ? "%02d:%02d"
                                                                   : "%d:%02d",
@@ -883,7 +897,7 @@ void maintainAutomaticFirmwareUpdate() {
       WiFi.status() != WL_CONNECTED) {
     return;
   }
-  const ClockConfig config = runtimeConfigSnapshot();
+  const ClockConfig &config = loopConfigSnapshot();
   if (!config.automaticFirmwareUpdate) return;
   time_t now;
   time(&now);
@@ -1458,7 +1472,7 @@ void homeAssistantTask(void *) {
   unsigned long nextTmepRefreshAt = 0;
   bool tmepCatalogPrimed = false;
   for (;;) {
-    const ClockConfig config = runtimeConfigSnapshot();
+    const ClockConfig &config = homeAssistantConfigSnapshot();
     ClockValues values = lastAvailableValues;
     if (WiFi.status() != WL_CONNECTED) {
       nextOpenMeteoRefreshAt = 0;
@@ -1557,7 +1571,7 @@ void homeAssistantTask(void *) {
 
       static ClockConfig lightConfig;
       static ClockValues lightValues;
-      lightConfig = runtimeConfigSnapshot();
+      copyRuntimeConfig(lightConfig);
       lightValues = lastAvailableValues;
       fetchDayNightStates(lightConfig, lightValues);
       lastAvailableValues.weatherIsDay = lightValues.weatherIsDay;
@@ -1687,7 +1701,7 @@ void loop() {
   maintainAutomaticFirmwareUpdate();
   maintainFirmwareDisplayStatus();
   applyPendingHomeAssistantValues();
-  const ClockConfig animationConfig = runtimeConfigSnapshot();
+  const ClockConfig &animationConfig = loopConfigSnapshot();
   const uint8_t weatherIconStyle =
       clockDashboardWeatherIconStyle(animationConfig.weatherIconStyle);
   weatherAnimationServiceLoop(sampleValues.weatherCode,
