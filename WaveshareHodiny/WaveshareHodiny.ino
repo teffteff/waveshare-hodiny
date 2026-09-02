@@ -1621,8 +1621,10 @@ void setup() {
   improvSerialServiceInit(wifiProvisioningStart);
 #endif
   initializeNetworkTime();
+  // Zásobník musí pokrýt kopii ClockConfig (schéma 29 má přes 5 kB) i TLS
+  // a parsování JSON ve fetch* funkcích. Při 12288 B kanárek přetekl.
   xTaskCreatePinnedToCoreWithCaps(
-      homeAssistantTask, "home-assistant", 12288, nullptr, 1,
+      homeAssistantTask, "home-assistant", 20480, nullptr, 1,
       &homeAssistantTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   firmwareUpdateServiceBegin(handleFirmwareUpdateLifecycle);
