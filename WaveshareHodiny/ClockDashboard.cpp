@@ -309,6 +309,7 @@ const lv_font_t *configuredTimeFont() {
 
 void showSettingsSubpage(uint8_t page);
 void updateClockStyleCardSelection();
+void applyValuesPageColors();
 void alignCenter(lv_obj_t *object, int x, int y);
 void setTextColor(lv_obj_t *object, lv_color_t color);
 lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
@@ -2053,6 +2054,7 @@ void applyDashboardColors() {
         animationIsMonochrome ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
   }
   applyConnectionStatusColors();
+  applyValuesPageColors();
   renderSecondRing(millis());
   renderTimeColon(millis(), true);
   applyAnalogColors();
@@ -2687,6 +2689,17 @@ void createSettingsPage(lv_obj_t *screen) {
 
   lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
 }
+// Čas a datum hodnotové obrazovky se řídí stejnými barvami jako digitální
+// ciferník, včetně červené noční palety.
+void applyValuesPageColors() {
+  if (valuesTimeLabel == nullptr || valuesDateLabel == nullptr) return;
+  const bool redNight = redNightVisualEnabled();
+  setTextColor(valuesTimeLabel,
+               redNight ? COLOR_ERROR : configuredColor(timeColor));
+  setTextColor(valuesDateLabel,
+               redNight ? COLOR_ERROR : configuredColor(dateColor));
+}
+
 }  // namespace
 
 uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle) {
@@ -2722,8 +2735,9 @@ void makeValuesPage(lv_obj_t *screen) {
   valuesPage = lv_obj_create(screen);
   lv_obj_set_size(valuesPage, 480, 480);
   lv_obj_center(valuesPage);
-  lv_obj_set_style_bg_color(valuesPage, COLOR_BACKGROUND, 0);
-  lv_obj_set_style_bg_opa(valuesPage, LV_OPA_COVER, 0);
+  // Průhledné pozadí nechá prosvítat vteřinový prstenec, stejně jako u
+  // digitálního a analogového ciferníku. Podklad kreslí sama obrazovka.
+  lv_obj_set_style_bg_opa(valuesPage, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(valuesPage, 0, 0);
   lv_obj_set_style_pad_all(valuesPage, 0, 0);
   lv_obj_set_style_radius(valuesPage, 0, 0);
@@ -2763,16 +2777,60 @@ void makeValuesPage(lv_obj_t *screen) {
   lv_obj_add_flag(valuesPage, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Popis jedné buňky. Sloty mají vlastní entitu jen v režimu Home Assistant;
+// v režimu Open-Meteo se sloty 0-3 kreslí z původních čtyř pozic, které
+// clockDashboardApplyConfiguration už přemapovala na názvy, jednotky a
+// desetinná místa Open-Meteo, případně TMEP. Bez toho by mřížka ukazovala
+// jména a jednotky zděděná po Home Assistantu.
+struct ValueSlotDisplay {
+  const char *name;
+  const char *suffix;
+  uint8_t decimals;
+  const ClockMetricColorScale *colorScale;
+};
+
+ValueSlotDisplay valueSlotDisplay(size_t index,
+                                  const ClockValueSlotConfig &slot) {
+  const bool openMeteo =
+      dashboardRuntimeConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO;
+  if (!openMeteo || index > 3) {
+    return {slot.name[0] != '\0' ? slot.name : slot.preset, slot.suffix,
+            slot.decimals, &slot.colorScale};
+  }
+  switch (index) {
+    case 0:
+      return {dashboardRuntimeConfig.openMeteoSlots[0].name, outsideUnit,
+              outsideDecimals, &leftValueColorScale};
+    case 1:
+      return {dashboardRuntimeConfig.openMeteoSlots[1].name, roomUnit,
+              roomDecimals, &rightValueColorScale};
+    case 2:
+      return {metricAConfig.name, metricAConfig.suffix, metricAConfig.decimals,
+              &metricAColorScale};
+    default:
+      return {metricBConfig.name, metricBConfig.suffix, metricBConfig.decimals,
+              &metricBColorScale};
+  }
+}
+
 // Přepíše osm buněk podle aktuální konfigurace a naměřených hodnot. Vypnutý
 // slot zůstane prázdný, aby mřížka nedržela zbytek po dřívějším nastavení.
+//
+// Ikona slotu (slot.icon) se zatím nekreslí: písmo clock_icons_42 je vysoké
+// 42 px, zatímco řádky mřížky mají rozteč 60 px a už je zabírá název s
+// hodnotou. Doplnění vyžaduje menší řez ikon, ne úpravu tohoto souboru.
 void updateValuesPage() {
   if (valuesPage == nullptr) return;
+  const bool openMeteo =
+      dashboardRuntimeConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO;
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
     lv_obj_t *title = valueSlotTitleLabels[index];
     lv_obj_t *value = valueSlotValueLabels[index];
     if (title == nullptr || value == nullptr) continue;
     const ClockValueSlotConfig &slot = dashboardRuntimeConfig.slots[index];
-    if (!slot.enabled) {
+    // Sloty 4-7 nemají v režimu Open-Meteo odkud brát hodnotu ani kde se
+    // nastavit, takže by zůstaly natrvalo prázdné.
+    if (!slot.enabled || (openMeteo && index > 3)) {
       setObjectVisible(title, false);
       setObjectVisible(value, false);
       continue;
@@ -2780,13 +2838,14 @@ void updateValuesPage() {
     setObjectVisible(title, true);
     setObjectVisible(value, true);
 
-    lv_label_set_text(title, slot.name[0] != '\0' ? slot.name : slot.preset);
+    const ValueSlotDisplay display = valueSlotDisplay(index, slot);
+    lv_label_set_text(title, display.name);
 
     const float reading = valueSlotReading(index);
     char number[16];
-    formatMetricValue(number, sizeof(number), reading, slot.decimals);
+    formatMetricValue(number, sizeof(number), reading, display.decimals);
     char suffix[CLOCK_METRIC_SUFFIX_LENGTH];
-    strlcpy(suffix, slot.suffix, sizeof(suffix));
+    strlcpy(suffix, display.suffix, sizeof(suffix));
     normalizeMicroSign(suffix);
     char text[16 + CLOCK_METRIC_SUFFIX_LENGTH + 2];
     if (std::isnan(reading) || suffix[0] == '\0') {
@@ -2796,9 +2855,13 @@ void updateValuesPage() {
     }
     lv_label_set_text(value, text);
 
-    const lv_color_t color = metricColorForValue(reading, slot.colorScale);
-    setTextColor(value, color);
-    setTextColor(title, redNightVisualEnabled() ? color : COLOR_MUTED);
+    if (redNightVisualEnabled()) {
+      setTextColor(value, COLOR_ERROR);
+      setTextColor(title, COLOR_ERROR);
+    } else {
+      setTextColor(value, metricColorForValue(reading, *display.colorScale));
+      setTextColor(title, COLOR_MUTED);
+    }
   }
 }
 
