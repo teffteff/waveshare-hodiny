@@ -35,6 +35,7 @@ constexpr uint32_t LANGUAGE_SCHEMA_VERSION = 25;
 constexpr uint32_t RADAR_SCHEMA_VERSION = 24;
 constexpr uint32_t TMEP_PREDECESSOR_SCHEMA_VERSION = 26;
 constexpr uint32_t SIDE_VALUES_PREDECESSOR_SCHEMA_VERSION = 27;
+constexpr uint32_t VALUE_SLOTS_PREDECESSOR_SCHEMA_VERSION = 28;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -66,6 +67,17 @@ struct ConfigRecordV27 {
   uint32_t checksum;
 };
 
+constexpr size_t SCHEMA_28_CONFIG_SIZE = offsetof(ClockConfig, slots);
+
+struct ConfigRecordV28 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_28_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
+void applyLegacyValueSlotDefaults(ClockConfig &config);
+
 void applyLegacySideValueDefaults(ClockConfig &config) {
   config.leftValue = ClockSideValueConfig{};
   config.rightValue = ClockSideValueConfig{};
@@ -82,6 +94,55 @@ void applyLegacySideValueDefaults(ClockConfig &config) {
   config.leftValueColorScale.points[0] = {0.0f, config.leftSide.color};
   config.rightValueColorScale = ClockMetricColorScale{};
   config.rightValueColorScale.points[0] = {0.0f, config.rightSide.color};
+  applyLegacyValueSlotDefaults(config);
+}
+
+// Naplní první čtyři sloty schématu 29 z původních čtyř pozic dashboardu.
+// Obrazovka CLOCK_STYLE_VALUES tak po migraci ukazuje přesně to, co doteď
+// ukazovaly digitální hodiny; zbylé sloty zůstanou vypnuté.
+void applyLegacyValueSlotDefaults(ClockConfig &config) {
+  for (ClockValueSlotConfig &slot : config.slots) slot = ClockValueSlotConfig{};
+
+  const ClockSideConfig *sides[] = {&config.leftSide, &config.rightSide};
+  const ClockSideValueConfig *sideValues[] = {&config.leftValue,
+                                              &config.rightValue};
+  const ClockMetricColorScale *sideScales[] = {&config.leftValueColorScale,
+                                               &config.rightValueColorScale};
+  for (size_t index = 0; index < 2; ++index) {
+    ClockValueSlotConfig &slot = config.slots[index];
+    slot.enabled = true;
+    slot.custom = sideValues[index]->custom;
+    slot.decimals = sideValues[index]->decimals;
+    clockConfigCopy(slot.preset, sizeof(slot.preset),
+                    sideValues[index]->preset);
+    clockConfigCopy(slot.name, sizeof(slot.name), sides[index]->name);
+    clockConfigCopy(slot.entityId, sizeof(slot.entityId),
+                    sides[index]->temperatureEntityId);
+    clockConfigCopy(slot.suffix, sizeof(slot.suffix),
+                    sideValues[index]->suffix);
+    clockConfigCopy(slot.icon, sizeof(slot.icon), sides[index]->icon);
+    slot.color = sides[index]->color;
+    slot.colorScale = *sideScales[index];
+  }
+
+  const ClockMetricConfig *metrics[] = {&config.metricA, &config.metricB};
+  const ClockMetricColorScale *metricScales[] = {&config.metricAColorScale,
+                                                 &config.metricBColorScale};
+  for (size_t index = 0; index < 2; ++index) {
+    ClockValueSlotConfig &slot = config.slots[2 + index];
+    slot.enabled = true;
+    slot.custom = metrics[index]->custom;
+    slot.decimals = metrics[index]->decimals;
+    clockConfigCopy(slot.preset, sizeof(slot.preset), metrics[index]->preset);
+    clockConfigCopy(slot.name, sizeof(slot.name), metrics[index]->name);
+    clockConfigCopy(slot.entityId, sizeof(slot.entityId),
+                    metrics[index]->entityId);
+    clockConfigCopy(slot.suffix, sizeof(slot.suffix), metrics[index]->suffix);
+    // Měřené hodnoty A/B dosud ikonu neměly.
+    clockConfigCopy(slot.icon, sizeof(slot.icon), "none");
+    slot.color = metricScales[index]->points[0].color;
+    slot.colorScale = *metricScales[index];
+  }
 }
 
 void applyOpenMeteoDefaults(ClockConfig &config) {
@@ -118,8 +179,13 @@ static_assert(sizeof(ConfigRecordV155) <= sizeof(ConfigRecord),
               "Migrační záznam se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV26) <= sizeof(ConfigRecord),
               "Schéma 26 se musí vejít do společného pracovního bufferu.");
+static_assert(SCHEMA_28_CONFIG_SIZE == 2688 &&
+                  sizeof(ConfigRecordV28) == 2700,
+              "Migrační záznam schématu 28 musí zachovat přesnou velikost.");
 static_assert(sizeof(ConfigRecordV27) <= sizeof(ConfigRecord),
               "Schéma 27 se musí vejít do společného pracovního bufferu.");
+static_assert(sizeof(ConfigRecordV28) <= sizeof(ConfigRecord),
+              "Schéma 28 se musí vejít do společného pracovního bufferu.");
 
 uint32_t bytesChecksum(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
@@ -261,7 +327,7 @@ bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
   appearance.style = constrain(
       preferences.getUChar(APPEARANCE_STYLE_KEY, CLOCK_STYLE_DIGITAL),
       static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_ANALOG));
+      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
   appearance.analogToneColor =
       preferences.getUInt(APPEARANCE_TONE_KEY, 0x00D6FF) & 0xFFFFFF;
   appearance.analogHandToneColor =
@@ -302,7 +368,7 @@ bool clockAppearanceSave(const ClockAppearanceConfig &appearance) {
     return false;
   const uint8_t style = constrain(
       appearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_ANALOG));
+      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
   const bool styleSaved =
       preferences.putUChar(APPEARANCE_STYLE_KEY, style) == sizeof(style);
   const bool toneSaved =
@@ -410,6 +476,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV28) ||
                              storedSize == sizeof(ConfigRecordV27) ||
                              storedSize == sizeof(ConfigRecordV26) ||
                              storedSize == sizeof(ConfigRecordV155);
@@ -428,6 +495,27 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  const ConfigRecordV28 &legacyV28 =
+      *reinterpret_cast<const ConfigRecordV28 *>(&record);
+  uint32_t embeddedSchemaV28 = 0;
+  if (readComplete && storedSize == sizeof(legacyV28)) {
+    memcpy(&embeddedSchemaV28, legacyV28.config, sizeof(embeddedSchemaV28));
+  }
+  const bool validSchema28Record =
+      readComplete && storedSize == sizeof(legacyV28) &&
+      legacyV28.magic == CONFIG_MAGIC &&
+      legacyV28.schemaVersion == VALUE_SLOTS_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV28 == VALUE_SLOTS_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV28.checksum ==
+          bytesChecksum(legacyV28.config, sizeof(legacyV28.config));
+  if (validSchema28Record) {
+    memcpy(&config, legacyV28.config, sizeof(legacyV28.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    applyLegacyValueSlotDefaults(config);
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   const ConfigRecordV27 &legacyV27 =

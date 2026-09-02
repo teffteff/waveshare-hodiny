@@ -17,6 +17,8 @@ constexpr size_t CLOCK_TMEP_SENSOR_ID_LENGTH = 16;
 constexpr size_t CLOCK_TMEP_FIELD_LENGTH = 16;
 constexpr size_t CLOCK_TMEP_UNIT_LENGTH = 16;
 constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
+// Počet hodnot na obrazovce CLOCK_STYLE_VALUES: mřížka 2 sloupce × 4 řádky.
+constexpr size_t CLOCK_VALUE_SLOT_COUNT = 8;
 // Schema 20 is the public 1.5.5 baseline. Schema 24 added CHMI radar settings
 // plus automatic clock/radar rotation. Schema 25 added the persistent UI
 // language; schema 26 distinguishes an as-yet unselected language and uses
@@ -27,7 +29,11 @@ constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
 // Schema 28 appends generic formatting and color scales for the two top Home
 // Assistant values. The complete schema 27 prefix stays byte-for-byte
 // unchanged so existing temperature-only configuration can be migrated safely.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 28;
+// Schema 29 appends eight independent value slots for the CLOCK_STYLE_VALUES
+// screen. The schema 28 prefix again stays byte-for-byte unchanged; the first
+// four slots are seeded from leftSide/rightSide/metricA/metricB during
+// migration, so an existing dashboard keeps showing exactly what it did.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 29;
 
 enum ClockLanguage : uint8_t {
   CLOCK_LANGUAGE_UNSET = 0,
@@ -88,6 +94,8 @@ enum ClockDateFormat : uint8_t {
 enum ClockStyle : uint8_t {
   CLOCK_STYLE_DIGITAL = 0,
   CLOCK_STYLE_ANALOG = 1,
+  // Malý čas nahoře a osm hodnot v mřížce 2 × 4 pod ním.
+  CLOCK_STYLE_VALUES = 2,
 };
 
 struct ClockAppearanceConfig {
@@ -151,6 +159,22 @@ struct ClockTmepSlotConfig {
   uint8_t decimals = 1;
 };
 
+// Jedna hodnota na obrazovce CLOCK_STYLE_VALUES. Slučuje to, co starší schéma
+// drželo zvlášť v ClockSideConfig, ClockSideValueConfig a ClockMetricConfig,
+// aby všech osm pozic mělo stejné možnosti: název, ikonu, jednotku i škálu.
+struct ClockValueSlotConfig {
+  bool enabled = false;
+  bool custom = false;
+  uint8_t decimals = 1;
+  char preset[16] = "temperature";
+  char name[CLOCK_METRIC_NAME_LENGTH] = "";
+  char entityId[CLOCK_ENTITY_ID_LENGTH] = "";
+  char suffix[CLOCK_METRIC_SUFFIX_LENGTH] = "°C";
+  char icon[CLOCK_ROOM_ICON_LENGTH] = "none";
+  uint32_t color = 0xFFFFFF;
+  ClockMetricColorScale colorScale;
+};
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -210,6 +234,7 @@ struct ClockConfig {
   ClockSideValueConfig rightValue;
   ClockMetricColorScale leftValueColorScale;
   ClockMetricColorScale rightValueColorScale;
+  ClockValueSlotConfig slots[CLOCK_VALUE_SLOT_COUNT];
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -217,9 +242,13 @@ static_assert(offsetof(ClockConfig, language) == 2106 &&
                   offsetof(ClockConfig, tmepExportKey) == 2108 &&
                   offsetof(ClockConfig, leftValue) == 2452 &&
                   sizeof(ClockTmepSlotConfig) == 50 &&
-                  sizeof(ClockSideValueConfig) == 34 &&
-                  sizeof(ClockConfig) == 2688,
+                  sizeof(ClockSideValueConfig) == 34,
               "Schema 28 must preserve the complete schema 27 prefix.");
+
+static_assert(offsetof(ClockConfig, slots) == 2688 &&
+                  sizeof(ClockValueSlotConfig) == 292 &&
+                  sizeof(ClockConfig) == 5024,
+              "Schema 29 must preserve the complete schema 28 prefix.");
 
 bool clockConfigBegin();
 bool clockConfigLoad(ClockConfig &config);
