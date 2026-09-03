@@ -10,7 +10,9 @@ enum class NetworkDiagnosticKind : uint8_t {
   OpenMeteoTest = 4,
   TmepRuntime = 5,
   TmepTest = 6,
-  Count = 7,
+  RssRuntime = 7,
+  RssTest = 8,
+  Count = 9,
 };
 
 struct NetworkMemorySnapshot {

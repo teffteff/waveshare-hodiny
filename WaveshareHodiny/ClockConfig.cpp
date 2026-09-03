@@ -36,6 +36,7 @@ constexpr uint32_t RADAR_SCHEMA_VERSION = 24;
 constexpr uint32_t TMEP_PREDECESSOR_SCHEMA_VERSION = 26;
 constexpr uint32_t SIDE_VALUES_PREDECESSOR_SCHEMA_VERSION = 27;
 constexpr uint32_t VALUE_SLOTS_PREDECESSOR_SCHEMA_VERSION = 28;
+constexpr uint32_t RSS_PREDECESSOR_SCHEMA_VERSION = 29;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -76,7 +77,22 @@ struct ConfigRecordV28 {
   uint32_t checksum;
 };
 
+constexpr size_t SCHEMA_29_CONFIG_SIZE = offsetof(ClockConfig, rss);
+
+struct ConfigRecordV29 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_29_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
 void applyLegacyValueSlotDefaults(ClockConfig &config);
+
+// Obrazovka zpráv se po povýšení firmwaru nesmí objevit sama od sebe: bez
+// adresy kanálu není co ukazovat a rotace by jen blikala prázdnou stránkou.
+void applyLegacyRssDefaults(ClockConfig &config) {
+  config.rss = ClockRssConfig{};
+}
 
 void applyLegacySideValueDefaults(ClockConfig &config) {
   config.leftValue = ClockSideValueConfig{};
@@ -143,6 +159,8 @@ void applyLegacyValueSlotDefaults(ClockConfig &config) {
     slot.color = metricScales[index]->points[0].color;
     slot.colorScale = *metricScales[index];
   }
+
+  applyLegacyRssDefaults(config);
 }
 
 void applyOpenMeteoDefaults(ClockConfig &config) {
@@ -182,6 +200,11 @@ static_assert(sizeof(ConfigRecordV26) <= sizeof(ConfigRecord),
 static_assert(SCHEMA_28_CONFIG_SIZE == 2688 &&
                   sizeof(ConfigRecordV28) == 2700,
               "Migrační záznam schématu 28 musí zachovat přesnou velikost.");
+static_assert(SCHEMA_29_CONFIG_SIZE == 5024 &&
+                  sizeof(ConfigRecordV29) == 5036,
+              "Migrační záznam schématu 29 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV29) <= sizeof(ConfigRecord),
+              "Schéma 29 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV27) <= sizeof(ConfigRecord),
               "Schéma 27 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV28) <= sizeof(ConfigRecord),
@@ -278,6 +301,10 @@ void normalizeConfig(ClockConfig &config) {
       constrain(config.radarDisplaySeconds, 10, 3600);
   config.radarMapOpacity = constrain(config.radarMapOpacity, 0, 100);
   config.radarPauseSeconds = constrain(config.radarPauseSeconds, 0, 30);
+  config.rss.itemCount = constrain(config.rss.itemCount, CLOCK_RSS_MIN_ITEMS,
+                                   CLOCK_RSS_MAX_ITEMS);
+  config.rss.refreshMinutes = constrain(config.rss.refreshMinutes, 5, 120);
+  config.rss.displaySeconds = constrain(config.rss.displaySeconds, 10, 3600);
   if (!std::isfinite(config.openMeteoLatitude) ||
       config.openMeteoLatitude < -90.0f || config.openMeteoLatitude > 90.0f ||
       !std::isfinite(config.openMeteoLongitude) ||
@@ -322,6 +349,10 @@ void normalizeConfig(ClockConfig &config) {
 
 bool clockConfigRadarAvailable(const ClockConfig &config) {
   return config.openMeteoCountry == CLOCK_LOCATION_COUNTRY_CZECHIA;
+}
+
+bool clockConfigRssAvailable(const ClockConfig &config) {
+  return config.rss.enabled && config.rss.url[0] != '\0';
 }
 
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
@@ -486,6 +517,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV29) ||
                              storedSize == sizeof(ConfigRecordV28) ||
                              storedSize == sizeof(ConfigRecordV27) ||
                              storedSize == sizeof(ConfigRecordV26) ||
@@ -505,6 +537,27 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  const ConfigRecordV29 &legacyV29 =
+      *reinterpret_cast<const ConfigRecordV29 *>(&record);
+  uint32_t embeddedSchemaV29 = 0;
+  if (readComplete && storedSize == sizeof(legacyV29)) {
+    memcpy(&embeddedSchemaV29, legacyV29.config, sizeof(embeddedSchemaV29));
+  }
+  const bool validSchema29Record =
+      readComplete && storedSize == sizeof(legacyV29) &&
+      legacyV29.magic == CONFIG_MAGIC &&
+      legacyV29.schemaVersion == RSS_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV29 == RSS_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV29.checksum ==
+          bytesChecksum(legacyV29.config, sizeof(legacyV29.config));
+  if (validSchema29Record) {
+    memcpy(&config, legacyV29.config, sizeof(legacyV29.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    applyLegacyRssDefaults(config);
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   const ConfigRecordV28 &legacyV28 =
@@ -645,6 +698,7 @@ bool clockConfigLoad(ClockConfig &config) {
   config.tmepExportId[0] = '\0';
   for (ClockTmepSlotConfig &slot : config.tmepSlots)
     slot = ClockTmepSlotConfig{};
+  config.rss = ClockRssConfig{};
   normalizeConfig(config);
   return clockConfigSave(config);
 }

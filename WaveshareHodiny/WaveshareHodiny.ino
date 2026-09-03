@@ -12,6 +12,7 @@
 #include "ClockDashboard.h"
 #include "ClockConfig.h"
 #include "ChmiRadarService.h"
+#include "RssService.h"
 #include "ConfigurationWeb.h"
 #include "DayNightLogic.h"
 #include "DisplayDriver.h"
@@ -63,6 +64,7 @@ ClockAppearanceConfig activeAppearance;
 ClockAppearanceConfig pendingAppearance;
 SemaphoreHandle_t runtimeConfigMutex = nullptr;
 TaskHandle_t homeAssistantTaskHandle = nullptr;
+TaskHandle_t rssTaskHandle = nullptr;
 String usbCommand;
 bool screenshotTransferActive = false;
 unsigned long displayResyncAt = 0;
@@ -105,7 +107,8 @@ char displayedRadarTime[6] = "";
 uint16_t displayedRadarRadiusKm = 50;
 bool radarRadiusApplyPending = false;
 unsigned long radarRadiusApplyAt = 0;
-bool automaticRadarRotationPaused = true;
+bool automaticRotationPaused = true;
+uint32_t displayedRssGeneration = UINT32_MAX;
 unsigned long displayModeStartedAt = 0;
 bool radarRotationWaitingForCycle = false;
 uint32_t radarRotationCycleAtTimeout = 0;
@@ -122,6 +125,9 @@ constexpr uint32_t HOME_ASSISTANT_REQUEST_RETRY_DELAY_MS = 250;
 constexpr uint32_t OPEN_METEO_REFRESH_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t TMEP_REFRESH_MS = 60UL * 1000UL;
 constexpr uint32_t EXTERNAL_DATA_RETRY_MS = 60UL * 1000UL;
+// Kanál zpráv se po chybě zkouší dřív než v nastaveném intervalu, ale ne tak
+// často, aby při trvale nedostupném serveru zatěžoval síť.
+constexpr uint32_t RSS_RETRY_MS = 2UL * 60UL * 1000UL;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 
 const char *CZECH_WEEKDAYS[] = {
@@ -150,6 +156,18 @@ void copyRuntimeConfig(ClockConfig &destination) {
   }
   xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
   destination = runtimeConfig;
+  xSemaphoreGive(runtimeConfigMutex);
+}
+
+// Úloha kanálu zpráv si nebere celou ClockConfig, aby nepotřebovala další
+// pětikilobajtový buffer ani ho neměla na zásobníku vedle TLS.
+void copyRuntimeRssConfig(ClockRssConfig &destination) {
+  if (runtimeConfigMutex == nullptr) {
+    destination = runtimeConfig.rss;
+    return;
+  }
+  xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
+  destination = runtimeConfig.rss;
   xSemaphoreGive(runtimeConfigMutex);
 }
 
@@ -191,6 +209,9 @@ bool saveRuntimeConfig(const ClockConfig &config, bool tokenWasSubmitted) {
   runtimeConfigurationApplyPending = true;
   runtimeConfigurationApplyAt = millis() + 250;
   if (homeAssistantTaskHandle != nullptr) xTaskNotifyGive(homeAssistantTaskHandle);
+  // Bez tohoto by se změna adresy nebo zapnutí kanálu projevily až po
+  // doběhnutí nastaveného intervalu, tedy klidně za dvě hodiny.
+  if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
   return true;
 }
 
@@ -254,7 +275,7 @@ void applyPendingRuntimeConfiguration() {
   }
   runtimeConfigurationApplyPending = false;
   runtimeConfigurationApplyAt = 0;
-  automaticRadarRotationPaused = true;
+  automaticRotationPaused = true;
   radarRotationWaitingForCycle = false;
   xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
   dashboardConfigBuffer = runtimeConfig;
@@ -344,7 +365,7 @@ void handleSettingsOpen() {
 
 void handleRadarVisibility(bool visible) {
   displayModeStartedAt = millis();
-  automaticRadarRotationPaused = false;
+  automaticRotationPaused = false;
   radarRotationWaitingForCycle = false;
   const ClockConfig &config = loopConfigSnapshot();
   const bool radarAvailable = clockConfigRadarAvailable(config);
@@ -434,32 +455,112 @@ bool previewRadarRangeFromWeb(uint16_t radiusKm) {
   return true;
 }
 
-void maintainAutomaticRadarRotation() {
+// Ciferník, radar a zprávy se střídají na jednom místě. Rotace i vodorovné
+// gesto procházejí tento cyklus; nedostupná obrazovka se přeskočí.
+constexpr uint8_t ROTATION_SCREEN_CLOCK = 0;
+constexpr uint8_t ROTATION_SCREEN_RADAR = 1;
+constexpr uint8_t ROTATION_SCREEN_RSS = 2;
+constexpr uint8_t ROTATION_SCREEN_COUNT = 3;
+
+uint8_t activeRotationScreen() {
+  if (clockDashboardRadarVisible()) return ROTATION_SCREEN_RADAR;
+  if (clockDashboardRssVisible()) return ROTATION_SCREEN_RSS;
+  return ROTATION_SCREEN_CLOCK;
+}
+
+void showRotationScreen(uint8_t screen) {
+  switch (screen) {
+    case ROTATION_SCREEN_RADAR:
+      clockDashboardSetRadarVisible(true);
+      break;
+    case ROTATION_SCREEN_RSS:
+      clockDashboardSetRssVisible(true);
+      break;
+    default:
+      // Obě překryvné stránky se skrývají stejnou cestou zpět na ciferník.
+      clockDashboardSetRadarVisible(false);
+      clockDashboardSetRssVisible(false);
+      break;
+  }
+}
+
+// Obrazovka je v cyklu ručního gesta, tedy nastavená a použitelná.
+bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
+  switch (screen) {
+    case ROTATION_SCREEN_RADAR: return clockConfigRadarAvailable(config);
+    case ROTATION_SCREEN_RSS: return clockConfigRssAvailable(config);
+    default: return true;
+  }
+}
+
+// Obrazovka se navíc účastní automatické rotace.
+bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
+  switch (screen) {
+    case ROTATION_SCREEN_RADAR:
+      return clockConfigRadarAvailable(config) && config.automaticRadarRotation;
+    case ROTATION_SCREEN_RSS:
+      return clockConfigRssAvailable(config) && config.rss.automaticRotation;
+    default: return true;
+  }
+}
+
+// Automatická rotace nesmí obrazovku otevřít, dokud nemá co ukázat. Ruční
+// gesto zůstává neblokované a přepne kdykoliv.
+bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
+  if (screen == ROTATION_SCREEN_RADAR) {
+    ChmiRadarSnapshot snapshot;
+    chmiRadarServiceSnapshot(snapshot);
+    return snapshot.ready && !snapshot.loading &&
+           !snapshot.fullPreparationInProgress &&
+           snapshot.animationFrameCount == config.radarFrameCount;
+  }
+  if (screen == ROTATION_SCREEN_RSS) {
+    RssStatus status;
+    rssServiceStatus(status);
+    return status.ready && status.count > 0;
+  }
+  return true;
+}
+
+unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
+  switch (screen) {
+    case ROTATION_SCREEN_RADAR:
+      return static_cast<unsigned long>(config.radarDisplaySeconds) * 1000UL;
+    case ROTATION_SCREEN_RSS:
+      return static_cast<unsigned long>(config.rss.displaySeconds) * 1000UL;
+    default:
+      return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
+  }
+}
+
+void maintainAutomaticScreenRotation() {
   const ClockConfig &config = loopConfigSnapshot();
-  const bool allowed =
-      clockConfigRadarAvailable(config) && config.automaticRadarRotation &&
-      WiFi.status() == WL_CONNECTED && timeWasSynchronized &&
-      !displayForcedOff &&
-      clockDashboardAutomaticRotationAllowed();
+  const bool anyRotation =
+      rotationScreenEnabled(config, ROTATION_SCREEN_RADAR) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_RSS);
+  const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
+                       timeWasSynchronized && !displayForcedOff &&
+                       clockDashboardAutomaticRotationAllowed();
   if (!allowed) {
-    automaticRadarRotationPaused = true;
+    automaticRotationPaused = true;
     radarRotationWaitingForCycle = false;
     return;
   }
   const unsigned long now = millis();
-  if (automaticRadarRotationPaused) {
-    automaticRadarRotationPaused = false;
+  if (automaticRotationPaused) {
+    automaticRotationPaused = false;
     displayModeStartedAt = now;
     radarRotationWaitingForCycle = false;
     return;
   }
-  const bool radarVisible = clockDashboardRadarVisible();
-  const unsigned long durationMs =
-      static_cast<unsigned long>(radarVisible ? config.radarDisplaySeconds
-                                              : config.clockDisplaySeconds) *
-      1000UL;
-  if (now - displayModeStartedAt < durationMs) return;
-  if (radarVisible) {
+  const uint8_t current = activeRotationScreen();
+  // Obrazovka mimo střídání sama nezmizí. Bez toho by ručně otevřený radar
+  // zavřela zapnutá rotace zpráv a naopak, přestože je jeho vlastní rotace
+  // vypnutá.
+  if (!rotationScreenEnabled(config, current)) return;
+  if (now - displayModeStartedAt < rotationDurationMs(config, current)) return;
+
+  if (current == ROTATION_SCREEN_RADAR) {
     ChmiRadarSnapshot snapshot;
     chmiRadarServiceSnapshot(snapshot);
     const bool staticRadarReady =
@@ -475,26 +576,38 @@ void maintainAutomaticRadarRotation() {
       if (snapshot.completedAnimationCycles == radarRotationCycleAtTimeout)
         return;
     }
-  } else {
-    ChmiRadarSnapshot snapshot;
-    chmiRadarServiceSnapshot(snapshot);
-    const bool completeAnimationReady =
-        snapshot.ready && !snapshot.loading &&
-        !snapshot.fullPreparationInProgress &&
-        snapshot.animationFrameCount == config.radarFrameCount;
-    // Automatická rotace nesmí poprvé otevřít radar uprostřed přípravy.
-    // Ruční gesto zůstává neblokované a může radar zobrazit kdykoliv.
-    if (!completeAnimationReady) return;
   }
-  clockDashboardSetRadarVisible(!radarVisible);
+
+  for (uint8_t step = 1; step < ROTATION_SCREEN_COUNT; ++step) {
+    const uint8_t candidate =
+        static_cast<uint8_t>((current + step) % ROTATION_SCREEN_COUNT);
+    if (!rotationScreenEnabled(config, candidate)) continue;
+    if (!rotationScreenReady(config, candidate)) continue;
+    radarRotationWaitingForCycle = false;
+    showRotationScreen(candidate);
+    displayModeStartedAt = millis();
+    return;
+  }
+  // Žádná další obrazovka není připravená; zkusíme to v dalším průchodu.
 }
 
 void maintainDisplayGestures() {
-  const bool radarAvailable =
-      clockConfigRadarAvailable(loopConfigSnapshot());
-  if (displayDriverTakeHorizontalSwipe() &&
-      radarAvailable && clockDashboardAutomaticRotationAllowed()) {
-    clockDashboardSetRadarVisible(!clockDashboardRadarVisible());
+  const ClockConfig &config = loopConfigSnapshot();
+  const bool radarAvailable = clockConfigRadarAvailable(config);
+  const bool anyOverlay =
+      radarAvailable || rotationScreenAvailable(config, ROTATION_SCREEN_RSS);
+  if (displayDriverTakeHorizontalSwipe() && anyOverlay &&
+      clockDashboardAutomaticRotationAllowed()) {
+    const uint8_t current = activeRotationScreen();
+    for (uint8_t step = 1; step < ROTATION_SCREEN_COUNT; ++step) {
+      const uint8_t candidate =
+          static_cast<uint8_t>((current + step) % ROTATION_SCREEN_COUNT);
+      if (!rotationScreenAvailable(config, candidate)) continue;
+      showRotationScreen(candidate);
+      displayModeStartedAt = millis();
+      radarRotationWaitingForCycle = false;
+      break;
+    }
   }
   const int8_t verticalSwipeDirection = displayDriverTakeVerticalSwipe();
   if (verticalSwipeDirection != 0 && radarAvailable &&
@@ -503,6 +616,25 @@ void maintainDisplayGestures() {
     handleRadarRangeChange(verticalSwipeDirection);
   }
   if (displayDriverTakeSingleClick()) clockDashboardHandleShortClick();
+}
+
+void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
+  clockDashboardSetRssItem(index, item.title, item.time);
+}
+
+void maintainRssDisplay() {
+  RssStatus status;
+  rssServiceStatus(status);
+  if (status.generation == displayedRssGeneration) return;
+  clockDashboardSetRssStatus(status.channelTitle, status.message,
+                             static_cast<uint8_t>(status.count));
+  // Když je mezipaměť právě zamčená stahováním, generaci si nezapíšeme a
+  // řádky doplníme při dalším průchodu.
+  if (status.count > 0 &&
+      !rssServiceVisitItems(pushRssItemToDashboard, nullptr)) {
+    return;
+  }
+  displayedRssGeneration = status.generation;
 }
 
 void maintainRadarDisplay() {
@@ -646,6 +778,38 @@ void handleUsbCommands() {
         if (homeAssistantTaskHandle != nullptr)
           xTaskNotifyGive(homeAssistantTaskHandle);
         Serial.println("NIGHT_TEST_OFF");
+      } else if (usbCommand == "RSSOFF" && !screenshotTransferActive) {
+        // Záchranná brzda: kanál se dá vypnout i s nefunkčním webem.
+        ClockConfig &config = loopConfigSnapshot();
+        config.rss.enabled = false;
+        Serial.println(saveRuntimeConfig(config, true) ? "RSS_OFF"
+                                                       : "RSS_OFF_FAILED");
+      } else if (usbCommand == "RSSON" && !screenshotTransferActive) {
+        ClockConfig &config = loopConfigSnapshot();
+        config.rss.enabled = true;
+        Serial.println(saveRuntimeConfig(config, true) ? "RSS_ON"
+                                                       : "RSS_ON_FAILED");
+      } else if (usbCommand == "RSSFETCH" && !screenshotTransferActive) {
+        // Notifikace v rssTask nuluje deadline, takže tohle opravdu vynutí
+        // stažení i uprostřed nastaveného intervalu.
+        if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
+        Serial.println("RSS_FETCH_REQUESTED");
+      } else if (usbCommand == "RSSSHOW" && !screenshotTransferActive) {
+        // Otevření sériem: připojení k portu desku resetuje, takže ručně
+        // nalistovanou obrazovku by screenshot nikdy nezastihl.
+        clockDashboardSetRssVisible(true);
+        Serial.println("RSS_SHOWN");
+      } else if (usbCommand.startsWith("RSSITEMS") &&
+                 !screenshotTransferActive) {
+        const long items = strtol(usbCommand.substring(8).c_str(), nullptr, 10);
+        if (items < CLOCK_RSS_MIN_ITEMS || items > CLOCK_RSS_MAX_ITEMS) {
+          Serial.println("RSS_ITEMS_ERROR");
+        } else {
+          ClockConfig &config = loopConfigSnapshot();
+          config.rss.itemCount = static_cast<uint8_t>(items);
+          Serial.println(saveRuntimeConfig(config, true) ? "RSS_ITEMS_SET"
+                                                         : "RSS_ITEMS_FAILED");
+        }
       } else if (usbCommand == "WEBLOCK" && !screenshotTransferActive) {
         configurationWebLockForTest();
         Serial.println("WEB_CONFIG_LOCKED");
@@ -755,6 +919,9 @@ void maintainNetworkTime() {
     if (homeAssistantTaskHandle != nullptr) {
       xTaskNotifyGive(homeAssistantTaskHandle);
     }
+    // Čas se právě synchronizoval, takže teď má smysl stáhnout zprávy: bez něj
+    // by se u nich nedal spočítat místní čas vydání.
+    if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
     const ClockConfig &config = loopConfigSnapshot();
     const bool radarAvailable = clockConfigRadarAvailable(config);
     chmiRadarServiceSetActive(
@@ -1466,6 +1633,65 @@ int weatherCodeForState(const String &state) {
   return -1;
 }
 
+// Kanál zpráv má vlastní úlohu. Do úlohy home-assistant se nevešel: její
+// zásobník je vyměřený na TLS s jedním připnutým kořenem a na parsování JSON,
+// kdežto ověření proti svazku kořenů Mozilly potřebuje výrazně víc.
+// Vrací, za jak dlouho je další pokus, nebo 0, když se kanál nepoužívá.
+unsigned long maintainRssFetch(const ClockRssConfig &config,
+                               unsigned long &nextRssRefreshAt,
+                               char *lastFetchedUrl, size_t lastFetchedUrlSize) {
+  if (!(config.enabled && config.url[0] != '\0')) {
+    if (lastFetchedUrl[0] != '\0') {
+      // Kanál se vypnul nebo se mu vymazala adresa; staré zprávy nesmí zůstat.
+      rssServiceClear();
+      lastFetchedUrl[0] = '\0';
+    }
+    nextRssRefreshAt = 0;
+    return 0;
+  }
+  if (strcmp(lastFetchedUrl, config.url) != 0) {
+    // Jiný zdroj: zahodíme zprávy z toho původního a stáhneme hned.
+    if (lastFetchedUrl[0] != '\0') rssServiceClear();
+    strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
+    nextRssRefreshAt = 0;
+  }
+  const unsigned long now = millis();
+  if (nextRssRefreshAt != 0 &&
+      static_cast<long>(now - nextRssRefreshAt) < 0) {
+    return nextRssRefreshAt - now;
+  }
+  int httpStatus = 0;
+  String error;
+  const bool ok = rssServiceFetch(config, NetworkDiagnosticKind::RssRuntime,
+                                  httpStatus, error);
+  const unsigned long interval =
+      ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
+         : RSS_RETRY_MS;
+  nextRssRefreshAt = millis() + interval;
+  return interval;
+}
+
+void rssTask(void *) {
+  unsigned long nextRssRefreshAt = 0;
+  char lastRssUrl[CLOCK_RSS_URL_LENGTH] = "";
+  ClockRssConfig config;
+  for (;;) {
+    copyRuntimeRssConfig(config);
+    if (WiFi.status() != WL_CONNECTED) {
+      nextRssRefreshAt = 0;
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
+      continue;
+    }
+    const unsigned long waitMs = maintainRssFetch(
+        config, nextRssRefreshAt, lastRssUrl, sizeof(lastRssUrl));
+    // Vypnutý kanál nemá kdy pokračovat sám; probudí ho až uložení nastavení.
+    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
+                                             : pdMS_TO_TICKS(waitMs)) > 0) {
+      nextRssRefreshAt = 0;
+    }
+  }
+}
+
 void homeAssistantTask(void *) {
   ClockValues lastAvailableValues;
   unsigned long nextOpenMeteoRefreshAt = 0;
@@ -1637,6 +1863,7 @@ void setup() {
   applyDevelopmentDefaults(runtimeConfig);
   networkCoordinatorBegin();
   tmepServiceBegin();
+  rssServiceBegin();
   LCD_Init();
   currentDisplayBrightness = runtimeConfig.dayBrightness;
   Set_Backlight(currentDisplayBrightness);
@@ -1669,6 +1896,14 @@ void setup() {
       &homeAssistantTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetHomeAssistantTask(homeAssistantTaskHandle);
+  // Ověření proti svazku kořenů Mozilly projde při handshaku stovky
+  // certifikátů a je na zásobník výrazně náročnější než jeden připnutý kořen,
+  // který používají ostatní služby. Rezervu hlídá diagnostika: "Zásobník
+  // zpráv" ukazuje, kolik úloze nejméně zbývalo.
+  xTaskCreatePinnedToCoreWithCaps(
+      rssTask, "rss", 20480, nullptr, 1, &rssTaskHandle, 0,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  configurationWebSetRssTask(rssTaskHandle);
   firmwareUpdateServiceBegin(handleFirmwareUpdateLifecycle);
   maintainFirmwareDisplayStatus();
   configurationWebBegin(loadRuntimeConfigForWeb, saveRuntimeConfig,
@@ -1725,7 +1960,8 @@ void loop() {
   maintainRadarNightVisual();
   maintainRadarRangeChange();
   maintainRadarDisplay();
-  maintainAutomaticRadarRotation();
+  maintainRssDisplay();
+  maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
   // pozastavení LVGL timerů zabrání tomu, aby GIF dekodér soupeřil s USB CDC;
   // po dokončení přenosu se animace plynule rozběhne od dalšího snímku.

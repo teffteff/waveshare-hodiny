@@ -48,3 +48,14 @@ inline String operator+(const String &left, const String &right) {
 inline String operator+(const String &left, unsigned long long right) {
   return left + String(right);
 }
+
+// Falešný čas: delay() posouvá hodiny, takže testy limitů nečinnosti proběhnou
+// okamžitě a bez skutečného čekání.
+inline uint32_t &hostShimClockMs() {
+  static uint32_t value = 0;
+  return value;
+}
+
+inline uint32_t millis() { return hostShimClockMs(); }
+
+inline void delay(uint32_t milliseconds) { hostShimClockMs() += milliseconds; }

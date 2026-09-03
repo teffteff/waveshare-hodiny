@@ -16,6 +16,7 @@
 #include <cctype>
 
 #include "ConfigurationPage.h"
+#include "RssService.h"
 #include "ConfigurationLocalization.h"
 #include "ChmiRadarService.h"
 #include "DiagnosticPage.h"
@@ -171,6 +172,7 @@ ClockAppearanceChangeCallback currentAppearancePreviewCallback = nullptr;
 ClockAppearanceChangeCallback currentAppearanceSaveCallback = nullptr;
 ClockConfig configBuffer;
 TaskHandle_t homeAssistantTaskForDiagnostics = nullptr;
+TaskHandle_t rssTaskForDiagnostics = nullptr;
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
 bool webActive = false;
 unsigned long webAvailableUntil = 0;
@@ -1257,6 +1259,18 @@ void handleGetConfig() {
   result += config.clockDisplaySeconds;
   result += F(",\"radarDisplaySeconds\":");
   result += config.radarDisplaySeconds;
+  result += F(",\"rssEnabled\":");
+  result += config.rss.enabled ? F("true") : F("false");
+  result += F(",\"rssUrl\":\"");
+  result += jsonEscape(config.rss.url);
+  result += F("\",\"rssItemCount\":");
+  result += config.rss.itemCount;
+  result += F(",\"rssRefreshMinutes\":");
+  result += config.rss.refreshMinutes;
+  result += F(",\"rssDisplaySeconds\":");
+  result += config.rss.displaySeconds;
+  result += F(",\"rssAutomaticRotation\":");
+  result += config.rss.automaticRotation ? F("true") : F("false");
   result += F(",\"clockStyle\":\"");
   result += clockStyleSlug(savedAppearance.style);
   result += F("\",\"activeClockStyle\":\"");
@@ -1554,6 +1568,51 @@ void handleSaveConfig() {
       static_cast<uint16_t>(clockDisplaySeconds);
   config.radarDisplaySeconds =
       static_cast<uint16_t>(radarDisplaySeconds);
+
+  // Stránka uložená starší verzí firmwaru pole kanálu vůbec neposílá. Takový
+  // formulář nesmí uložený kanál přepsat, proto se sahá jen na to, co přišlo.
+  if (server.hasArg("rssEnabled")) {
+    String rssUrl = server.arg("rssUrl");
+    rssUrl.trim();
+    if (rssUrl.length() >= CLOCK_RSS_URL_LENGTH) {
+      sendError(400, F("Adresa kanálu zpráv je příliš dlouhá."));
+      return;
+    }
+    if (!rssUrl.isEmpty() && !rssUrl.startsWith("http://") &&
+        !rssUrl.startsWith("https://")) {
+      sendError(400, F("Adresa kanálu musí začínat http:// nebo https://."));
+      return;
+    }
+    const bool rssEnabled = server.arg("rssEnabled") == "1";
+    if (rssEnabled && rssUrl.isEmpty()) {
+      sendError(400, F("Pro zapnutý kanál zpráv doplň jeho adresu."));
+      return;
+    }
+    const int rssItemCount = server.arg("rssItemCount").toInt();
+    if (rssItemCount < CLOCK_RSS_MIN_ITEMS ||
+        rssItemCount > CLOCK_RSS_MAX_ITEMS) {
+      sendError(400, F("Počet zpráv musí být od 3 do 6."));
+      return;
+    }
+    const int rssRefreshMinutes = server.arg("rssRefreshMinutes").toInt();
+    if (rssRefreshMinutes < 5 || rssRefreshMinutes > 120) {
+      sendError(400, F("Obnovování kanálu musí být od 5 do 120 minut."));
+      return;
+    }
+    const int rssDisplaySeconds = server.arg("rssDisplaySeconds").toInt();
+    if (rssDisplaySeconds < 10 || rssDisplaySeconds > 3600) {
+      sendError(400,
+                F("Doba zobrazení zpráv musí být od 10 do 3600 sekund."));
+      return;
+    }
+    config.rss.enabled = rssEnabled;
+    clockConfigCopy(config.rss.url, sizeof(config.rss.url), rssUrl);
+    config.rss.itemCount = static_cast<uint8_t>(rssItemCount);
+    config.rss.refreshMinutes = static_cast<uint8_t>(rssRefreshMinutes);
+    config.rss.displaySeconds = static_cast<uint16_t>(rssDisplaySeconds);
+    config.rss.automaticRotation = server.arg("rssAutomaticRotation") == "1";
+  }
+
   const String submittedTmepUrl = server.arg("tmepExportUrl");
   if (!submittedTmepUrl.isEmpty()) {
     String exportId;
@@ -1833,6 +1892,62 @@ void handleSaveConfig() {
   extendWebAvailability();
   sendJson(200, F("{\"ok\":true}"));
   applyWebMode(requestedWebMode);
+}
+
+// Zkouška kanálu zpráv z prohlížeče. Stahuje adresu z formuláře, ne uloženou,
+// takže se dá ověřit ještě před uložením.
+void handleRssTest() {
+  ClockRssConfig probe;
+  String url = server.arg("rssUrl");
+  url.trim();
+  if (url.isEmpty()) url = currentConfig().rss.url;
+  if (url.isEmpty()) {
+    sendError(400, F("Doplň adresu kanálu zpráv."));
+    return;
+  }
+  if (url.length() >= CLOCK_RSS_URL_LENGTH) {
+    sendError(400, F("Adresa kanálu zpráv je příliš dlouhá."));
+    return;
+  }
+  clockConfigCopy(probe.url, sizeof(probe.url), url);
+  const int requestedCount = server.arg("rssItemCount").toInt();
+  probe.itemCount = static_cast<uint8_t>(
+      requestedCount >= CLOCK_RSS_MIN_ITEMS && requestedCount <= CLOCK_RSS_MAX_ITEMS
+          ? requestedCount
+          : 5);
+  int httpStatus = 0;
+  String error;
+  if (!rssServiceFetch(probe, NetworkDiagnosticKind::RssTest, httpStatus,
+                       error)) {
+    sendError(502, error.isEmpty() ? String(F("Kanál se nepodařilo načíst."))
+                                   : error);
+    return;
+  }
+  RssStatus status;
+  rssServiceStatus(status);
+  String result;
+  result.reserve(1024);
+  result = F("{\"ok\":true,\"channel\":\"");
+  result += jsonEscape(status.channelTitle);
+  result += F("\",\"items\":[");
+  struct ItemContext {
+    String *result;
+    bool first;
+  } context{&result, true};
+  rssServiceVisitItems(
+      [](size_t, const RssDisplayItem &item, void *rawContext) {
+        ItemContext &target = *static_cast<ItemContext *>(rawContext);
+        if (!target.first) *target.result += ',';
+        target.first = false;
+        *target.result += F("{\"time\":\"");
+        *target.result += jsonEscape(item.time);
+        *target.result += F("\",\"title\":\"");
+        *target.result += jsonEscape(item.title);
+        *target.result += F("\"}");
+      },
+      &context);
+  result += F("]}");
+  sendJson(200, result);
 }
 
 void appendTmepValueJson(String &result, const char *field,
@@ -2280,6 +2395,11 @@ void handleDiagnostics() {
                 ? 0
                 : static_cast<uint32_t>(uxTaskGetStackHighWaterMark(
                       homeAssistantTaskForDiagnostics));
+  result += F(",\"rss\":");
+  result += rssTaskForDiagnostics == nullptr
+                ? 0
+                : static_cast<uint32_t>(
+                      uxTaskGetStackHighWaterMark(rssTaskForDiagnostics));
   result += F("},\"minimumMemory\":{\"internalFree\":");
   result += static_cast<unsigned long>(heap_caps_get_minimum_free_size(
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -2365,6 +2485,12 @@ void handleDiagnostics() {
   result += F(",\"tmepTest\":");
   appendDiagnosticJson(
       result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::TmepTest));
+  result += F(",\"rssRuntime\":");
+  appendDiagnosticJson(
+      result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::RssRuntime));
+  result += F(",\"rssTest\":");
+  appendDiagnosticJson(
+      result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::RssTest));
   result += '}';
   sendJson(200, result);
 }
@@ -2609,6 +2735,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   registerBoundedPost("/api/tmep/test", []() {
     if (requireConfigurationAccess()) handleTmepTest();
   });
+  registerBoundedPost("/api/rss/test", []() {
+    if (requireConfigurationAccess()) handleRssTest();
+  });
   registerBoundedPost("/api/tmep/remove", []() {
     if (requireConfigurationAccess()) handleTmepRemove();
   });
@@ -2657,6 +2786,10 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
 
 void configurationWebSetHomeAssistantTask(TaskHandle_t task) {
   homeAssistantTaskForDiagnostics = task;
+}
+
+void configurationWebSetRssTask(TaskHandle_t task) {
+  rssTaskForDiagnostics = task;
 }
 
 void configurationWebLoop() {

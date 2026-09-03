@@ -39,6 +39,8 @@ run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1)
 run_test home_assistant_connection_policy || failures=$((failures + 1))
 run_test clock_config "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))
 run_test value_slot_form "$FIRMWARE_DIR/ConfigurationForm.cpp" "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))
+run_test rss_parser "$FIRMWARE_DIR/RssParser.cpp" || failures=$((failures + 1))
+run_test http_body_reader "$FIRMWARE_DIR/HttpBodyReader.cpp" || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then

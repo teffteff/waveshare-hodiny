@@ -176,6 +176,12 @@ def stub_config() -> dict:
         "automaticRadarRotation": False,
         "clockDisplaySeconds": 120,
         "radarDisplaySeconds": 20,
+        "rssEnabled": True,
+        "rssUrl": "https://www.irozhlas.cz/rss/irozhlas",
+        "rssItemCount": 5,
+        "rssRefreshMinutes": 10,
+        "rssDisplaySeconds": 20,
+        "rssAutomaticRotation": False,
         "controlSecret": "nahled-bez-zarizeni",
     }
 
@@ -233,6 +239,22 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 print(f"  {key} = {fields[key]}", flush=True)
             self._json({"ok": True,
                         "saveConfirmationId": fields.get("saveConfirmationId", "")})
+            return
+        if path == "/api/rss/test":
+            # Náhled nechodí na síť; vrátí ukázku ve tvaru, který posílá firmware.
+            self._json({
+                "ok": True,
+                "channel": "iROZHLAS.cz",
+                "items": [
+                    {"time": "16:42",
+                     "title": "Zidovska obec se soudi o byvaly spolkovy dum v Brne. "
+                              "V restituci ho neziskala, podala urcovaci zalobu"},
+                    {"time": "16:38",
+                     "title": "Mlejnek: Sance Motoristu na uspech ve volbach je miziva. "
+                              "Kandidatura ministru je z nouze ctnost"},
+                    {"time": "16:30", "title": "Rozpocet silencu a populistu?"},
+                ],
+            })
             return
         print(f"POST {path}: {body[:200]}", flush=True)
         self._json({"ok": True})

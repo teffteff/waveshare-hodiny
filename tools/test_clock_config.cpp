@@ -26,6 +26,10 @@ constexpr uint32_t SCHEMA_28 = 28;
 constexpr size_t SCHEMA_28_CONFIG_SIZE = offsetof(ClockConfig, slots);
 constexpr size_t SCHEMA_28_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_28_CONFIG_SIZE;
+constexpr uint32_t SCHEMA_29 = 29;
+constexpr size_t SCHEMA_29_CONFIG_SIZE = offsetof(ClockConfig, rss);
+constexpr size_t SCHEMA_29_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_29_CONFIG_SIZE;
 
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
@@ -66,6 +70,10 @@ std::string schema28Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_28, SCHEMA_28_CONFIG_SIZE);
 }
 
+std::string schema29Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_29, SCHEMA_29_CONFIG_SIZE);
+}
+
 void seed(const std::string &record) {
   hostPreferencesSeedBlob(CONFIG_PARTITION, CONFIG_NAMESPACE, CONFIG_KEY,
                           record.data(), record.size());
@@ -85,6 +93,10 @@ void testEmptyStorageUsesDefaults() {
   assert(strcmp(config.openMeteoCity, "Brno") == 0);
   assert(config.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO);
   assert(strcmp(config.leftSide.name, "VENKU") == 0);
+  // Střídání obrazovek je stejně jako u radaru vypnuté, dokud ho uživatel
+  // sám nezapne.
+  assert(!config.automaticRadarRotation);
+  assert(!config.rss.automaticRotation);
 }
 
 // Uložení a načtení nesmí hodnoty měnit.
@@ -358,6 +370,102 @@ void testValuesStyleSurvivesAppearanceSave() {
 
 }  // namespace
 
+// Migrace 29 -> 30 nesmí sáhnout na nic ze schématu 29 a obrazovka zpráv se
+// nesmí zapnout sama: bez adresy kanálu by rotace ukazovala prázdnou stránku.
+void testSchema29MigrationAddsDisabledRss() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dataSource = CLOCK_DATA_SOURCE_HOME_ASSISTANT;
+  clockConfigCopy(source.leftSide.name, sizeof(source.leftSide.name), "VENKU");
+  source.slots[5].enabled = true;
+  clockConfigCopy(source.slots[5].name, sizeof(source.slots[5].name), "SKLEP");
+  clockConfigCopy(source.slots[5].entityId, sizeof(source.slots[5].entityId),
+                  "sensor.sklep_teplota");
+  source.slots[5].colorScale.count = 2;
+  source.slots[5].colorScale.points[1] = {18.0f, 0xFF0000};
+  source.radarDisplaySeconds = 33;
+
+  const std::string record = schema29Record(source);
+  assert(record.size() == SCHEMA_29_RECORD_SIZE);
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 29 zůstal nedotčený.
+  assert(migrated.dataSource == CLOCK_DATA_SOURCE_HOME_ASSISTANT);
+  assert(strcmp(migrated.leftSide.name, "VENKU") == 0);
+  assert(migrated.slots[5].enabled);
+  assert(strcmp(migrated.slots[5].name, "SKLEP") == 0);
+  assert(strcmp(migrated.slots[5].entityId, "sensor.sklep_teplota") == 0);
+  assert(migrated.slots[5].colorScale.count == 2);
+  assert(migrated.slots[5].colorScale.points[1].value == 18.0f);
+  assert(migrated.radarDisplaySeconds == 33);
+  // Nová část je vypnutá a prázdná.
+  assert(!migrated.rss.enabled);
+  assert(migrated.rss.url[0] == '\0');
+  assert(!clockConfigRssAvailable(migrated));
+  assert(migrated.rss.itemCount == 5);
+  assert(migrated.rss.refreshMinutes == 10);
+  assert(!migrated.rss.automaticRotation);
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
+// Nastavení kanálu musí přežít uložení i načtení a nesmyslné hodnoty se
+// musí srovnat do povoleného rozsahu.
+void testRssRoundTripAndClamping() {
+  hostPreferencesReset();
+  ClockConfig saved;
+  clockConfigApplyDefaults(saved);
+  saved.rss.enabled = true;
+  saved.rss.automaticRotation = false;
+  saved.rss.itemCount = 4;
+  saved.rss.refreshMinutes = 15;
+  saved.rss.displaySeconds = 25;
+  clockConfigCopy(saved.rss.url, sizeof(saved.rss.url),
+                  "https://www.irozhlas.cz/rss/irozhlas");
+  assert(clockConfigSave(saved));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.rss.enabled);
+  assert(!loaded.rss.automaticRotation);
+  assert(loaded.rss.itemCount == 4);
+  assert(loaded.rss.refreshMinutes == 15);
+  assert(loaded.rss.displaySeconds == 25);
+  assert(strcmp(loaded.rss.url, "https://www.irozhlas.cz/rss/irozhlas") == 0);
+  assert(clockConfigRssAvailable(loaded));
+
+  // Zapnutý kanál bez adresy se nesmí považovat za dostupný.
+  loaded.rss.url[0] = '\0';
+  assert(!clockConfigRssAvailable(loaded));
+
+  hostPreferencesReset();
+  ClockConfig extreme;
+  clockConfigApplyDefaults(extreme);
+  extreme.rss.itemCount = 99;
+  extreme.rss.refreshMinutes = 1;
+  extreme.rss.displaySeconds = 5;
+  assert(clockConfigSave(extreme));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(clamped.rss.itemCount == CLOCK_RSS_MAX_ITEMS);
+  assert(clamped.rss.refreshMinutes == 5);
+  assert(clamped.rss.displaySeconds == 10);
+
+  hostPreferencesReset();
+  ClockConfig tooFew;
+  clockConfigApplyDefaults(tooFew);
+  tooFew.rss.itemCount = 0;
+  assert(clockConfigSave(tooFew));
+  ClockConfig raised;
+  assert(clockConfigLoad(raised));
+  assert(raised.rss.itemCount == CLOCK_RSS_MIN_ITEMS);
+}
+
 int main() {
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
@@ -368,5 +476,7 @@ int main() {
   testValueSlotsRoundTrip();
   testNormalizationClampsValueSlots();
   testValuesStyleSurvivesAppearanceSave();
+  testSchema29MigrationAddsDisabledRss();
+  testRssRoundTripAndClamping();
   return 0;
 }

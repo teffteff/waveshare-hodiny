@@ -19,6 +19,11 @@ constexpr size_t CLOCK_TMEP_UNIT_LENGTH = 16;
 constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
 // Počet hodnot na obrazovce CLOCK_STYLE_VALUES: mřížka 2 sloupce × 4 řádky.
 constexpr size_t CLOCK_VALUE_SLOT_COUNT = 8;
+constexpr size_t CLOCK_RSS_URL_LENGTH = 192;
+// Kolik zpráv smí obrazovka kanálu ukázat. Kruhový displej pobere pět zpráv
+// po dvou řádcích titulku; při šesti zbývá na titulek řádek jediný.
+constexpr uint8_t CLOCK_RSS_MIN_ITEMS = 3;
+constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // Schema 20 is the public 1.5.5 baseline. Schema 24 added CHMI radar settings
 // plus automatic clock/radar rotation. Schema 25 added the persistent UI
 // language; schema 26 distinguishes an as-yet unselected language and uses
@@ -33,7 +38,10 @@ constexpr size_t CLOCK_VALUE_SLOT_COUNT = 8;
 // screen. The schema 28 prefix again stays byte-for-byte unchanged; the first
 // four slots are seeded from leftSide/rightSide/metricA/metricB during
 // migration, so an existing dashboard keeps showing exactly what it did.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 29;
+// Schema 30 appends the RSS news screen. The schema 29 prefix stays
+// byte-for-byte unchanged and the screen starts disabled, so an upgrade never
+// pushes an unconfigured screen into the rotation.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 30;
 
 enum ClockLanguage : uint8_t {
   CLOCK_LANGUAGE_UNSET = 0,
@@ -175,6 +183,20 @@ struct ClockValueSlotConfig {
   ClockMetricColorScale colorScale;
 };
 
+// Obrazovka se zprávami. Adresa je volitelná, takže se do rotace zapojí až
+// tehdy, když ji uživatel vyplní; enabled sám o sobě nestačí.
+struct ClockRssConfig {
+  bool enabled = false;
+  // Zapojení do automatické rotace. Nezávislé na radaru, aby šlo mít jen
+  // jedno z toho. Stejně jako u radaru je střídání ve výchozím stavu vypnuté;
+  // ručně otevřená obrazovka tak nezmizí dřív, než se dočte.
+  bool automaticRotation = false;
+  uint8_t itemCount = 5;
+  uint8_t refreshMinutes = 10;
+  uint16_t displaySeconds = 20;
+  char url[CLOCK_RSS_URL_LENGTH] = "";
+};
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -235,6 +257,7 @@ struct ClockConfig {
   ClockMetricColorScale leftValueColorScale;
   ClockMetricColorScale rightValueColorScale;
   ClockValueSlotConfig slots[CLOCK_VALUE_SLOT_COUNT];
+  ClockRssConfig rss;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -246,15 +269,21 @@ static_assert(offsetof(ClockConfig, language) == 2106 &&
               "Schema 28 must preserve the complete schema 27 prefix.");
 
 static_assert(offsetof(ClockConfig, slots) == 2688 &&
-                  sizeof(ClockValueSlotConfig) == 292 &&
-                  sizeof(ClockConfig) == 5024,
+                  sizeof(ClockValueSlotConfig) == 292,
               "Schema 29 must preserve the complete schema 28 prefix.");
+
+static_assert(offsetof(ClockConfig, rss) == 5024 &&
+                  sizeof(ClockRssConfig) == 198 &&
+                  sizeof(ClockConfig) == 5224,
+              "Schema 30 must preserve the complete schema 29 prefix.");
 
 bool clockConfigBegin();
 bool clockConfigLoad(ClockConfig &config);
 bool clockConfigSave(const ClockConfig &config);
 void clockConfigApplyDefaults(ClockConfig &config);
 bool clockConfigRadarAvailable(const ClockConfig &config);
+// Obrazovka zpráv se kreslí jen se zapnutým kanálem a vyplněnou adresou.
+bool clockConfigRssAvailable(const ClockConfig &config);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,
                          uint8_t defaultAnalogDateFormat =

@@ -6,6 +6,7 @@
 #include <freertos/semphr.h>
 
 #include "FirmwareHubCa.h"
+#include "HttpDownload.h"
 #include "NetworkCoordinator.h"
 
 namespace {
@@ -141,6 +142,7 @@ bool tmepFetchCatalog(const char *exportId, const char *exportKey,
   HTTPClient http;
   http.setConnectTimeout(TMEP_CONNECT_TIMEOUT_MS);
   http.setTimeout(TMEP_RESPONSE_TIMEOUT_MS);
+  httpDownloadPrepare(http);
   String payload;
   if (http.begin(client, url)) {
     httpStatus = http.GET();
@@ -157,7 +159,10 @@ bool tmepFetchCatalog(const char *exportId, const char *exportKey,
           error = F("Pro TMEP export není dostatek paměti.");
         } else {
           BoundedStringStream response(payload, TMEP_MAX_RESPONSE_BYTES);
-          const int bytesRead = http.writeToStream(&response);
+          // Ne writeToStream(): u odpovědi bez Content-Length se nemusí vrátit
+          // a nechala by viset TLS relaci i s interní RAM.
+          const int bytesRead =
+              httpDownloadBody(http, response, TMEP_RESPONSE_TIMEOUT_MS);
           if (response.overflowed()) {
             error = F("TMEP export je příliš velký.");
           } else if (response.allocationFailed()) {

@@ -46,6 +46,7 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
 // změří sama, protože v ní web server běží; na datovou úlohu je potřeba
 // handle, který zná jen skeč.
 void configurationWebSetHomeAssistantTask(TaskHandle_t task);
+void configurationWebSetRssTask(TaskHandle_t task);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();

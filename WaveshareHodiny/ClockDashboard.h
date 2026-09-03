@@ -57,6 +57,16 @@ uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle);
 void clockDashboardHandleShortClick();
 bool clockDashboardRadarVisible();
 void clockDashboardSetRadarVisible(bool visible);
+bool clockDashboardRssVisible();
+void clockDashboardSetRssVisible(bool visible);
+// Kanál bez adresy nebo vypnutý se do rotace ani pod gesto nepustí.
+void clockDashboardSetRssAvailable(bool available);
+// Hlavička obrazovky zpráv. Při count == 0 se místo seznamu ukáže hláška;
+// prázdná hláška znamená "načítám".
+void clockDashboardSetRssStatus(const char *channelTitle, const char *message,
+                                uint8_t count);
+void clockDashboardSetRssItem(size_t index, const char *title,
+                              const char *time);
 bool clockDashboardAutomaticRotationAllowed();
 void clockDashboardSetWifiAddress(const char *ipAddress);
 void clockDashboardSetFirmwareVersion(const char *version,

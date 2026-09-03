@@ -91,6 +91,13 @@ lv_obj_t *valuesTimeLabel = nullptr;
 lv_obj_t *valuesDateLabel = nullptr;
 lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_SLOT_COUNT] = {};
 lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_SLOT_COUNT] = {};
+lv_obj_t *rssPage = nullptr;
+lv_obj_t *rssHeaderLabel = nullptr;
+lv_obj_t *rssStatusLabel = nullptr;
+lv_obj_t *rssTitleLabels[CLOCK_RSS_MAX_ITEMS] = {};
+// Jen položky s časem nesou recolor značku, kterou přebarvuje applyRssColors().
+bool rssItemHasTime[CLOCK_RSS_MAX_ITEMS] = {};
+uint8_t rssVisibleItemCount = 0;
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
 lv_obj_t *radarTitleLabel = nullptr;
@@ -190,8 +197,17 @@ unsigned long lastSecondFadeFrameAt = 0;
 bool settingsVisible = false;
 bool suppressNextDashboardClick = false;
 unsigned long suppressDashboardClickUntil = 0;
-bool radarVisible = false;
+// Ciferník, radar a zprávy se střídají na jednom místě. Držet to jako jeden
+// stav je bezpečnější než dvě nezávislé viditelnosti, které by se mohly
+// odkrýt naráz.
+enum DashboardScreen : uint8_t {
+  DASHBOARD_SCREEN_CLOCK = 0,
+  DASHBOARD_SCREEN_RADAR = 1,
+  DASHBOARD_SCREEN_RSS = 2,
+};
+uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
+bool rssFeatureAvailable = false;
 bool nightModeEnabled = false;
 uint8_t nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
 bool automaticDayNightEnabled = true;
@@ -314,6 +330,7 @@ void alignCenter(lv_obj_t *object, int x, int y);
 void setTextColor(lv_obj_t *object, lv_color_t color);
 lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
                     lv_color_t color);
+void applyRssColors();
 
 bool englishLanguage() { return language == CLOCK_LANGUAGE_ENGLISH; }
 
@@ -394,24 +411,51 @@ lv_obj_t *primaryClockPage() {
                                                         : dashboardContent;
 }
 
-void setRadarVisible(bool visible) {
-  if (visible && !radarFeatureAvailable) return;
-  if (radarVisible == visible || settingsVisible) return;
-  radarVisible = visible;
-  if (visible) {
+// Stránka překrývající ciferník. Pro samotný ciferník vrací nullptr, protože
+// ten se odkrývá přes primaryClockPage().
+lv_obj_t *overlayPage(uint8_t screen) {
+  switch (screen) {
+    case DASHBOARD_SCREEN_RADAR: return radarPage;
+    case DASHBOARD_SCREEN_RSS: return rssPage;
+    default: return nullptr;
+  }
+}
+
+bool screenAvailable(uint8_t screen) {
+  switch (screen) {
+    case DASHBOARD_SCREEN_RADAR: return radarFeatureAvailable;
+    case DASHBOARD_SCREEN_RSS: return rssFeatureAvailable;
+    default: return true;
+  }
+}
+
+void setActiveScreen(uint8_t screen) {
+  if (!screenAvailable(screen)) screen = DASHBOARD_SCREEN_CLOCK;
+  if (activeScreen == screen || settingsVisible) return;
+  const uint8_t previous = activeScreen;
+  activeScreen = screen;
+  if (screen == DASHBOARD_SCREEN_RADAR) {
     // Při návratu na radar neodkrývej snímek, který zůstal v canvasu z
     // předchozího cyklu. Canvas znovu zobrazí až první snapshot nové animace.
     lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(radarProgressBar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(radarPage);
-  } else {
-    lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(primaryClockPage());
   }
-  if (radarVisibilityCallback != nullptr) radarVisibilityCallback(visible);
+  lv_obj_t *previousPage = overlayPage(previous);
+  if (previousPage == nullptr) previousPage = primaryClockPage();
+  lv_obj_t *nextPage = overlayPage(screen);
+  if (nextPage == nullptr) nextPage = primaryClockPage();
+  lv_obj_add_flag(previousPage, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(nextPage, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(nextPage);
+  // Radar si stahování zapíná a vypíná podle toho, jestli je vidět.
+  const bool wasRadar = previous == DASHBOARD_SCREEN_RADAR;
+  const bool isRadar = screen == DASHBOARD_SCREEN_RADAR;
+  if (wasRadar != isRadar && radarVisibilityCallback != nullptr)
+    radarVisibilityCallback(isRadar);
+}
+
+void setRadarVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_RADAR : DASHBOARD_SCREEN_CLOCK);
 }
 
 void setObjectVisible(lv_obj_t *object, bool visible) {
@@ -2055,6 +2099,7 @@ void applyDashboardColors() {
   }
   applyConnectionStatusColors();
   applyValuesPageColors();
+  applyRssColors();
   renderSecondRing(millis());
   renderTimeColon(millis(), true);
   applyAnalogColors();
@@ -2097,6 +2142,172 @@ void showSettings() {
 
 void openSettingsEvent(lv_event_t *event) {
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) showSettings();
+}
+
+// Obrazovka zpráv: hlavička s názvem kanálu a pod ní seznam titulků, každý
+// se svým časem vydání.
+//
+// Kruhový displej ubírá šířku u okrajů, takže se šířka řádku počítá z tětivy
+// kružnice v jeho nejužším místě. Blok je svisle na střed; hlavička se skryje,
+// jakmile by do ní seznam zasahoval.
+//
+// Čas se kreslí do stejného štítku jako titulek, jen obarvený recolor značkou.
+// Pevný sloupec by ubíral svých 52 px i na krajních řádcích, které jsou u
+// okraje kružnice nejužší, a druhý ani třetí řádek by ho stejně nevyužily.
+constexpr int RSS_RADIUS = 240;
+constexpr int RSS_INSET = 14;
+constexpr int RSS_ROW_GAP = 14;
+constexpr int RSS_BLOCK_CENTER_Y = 0;
+constexpr int RSS_HEADER_Y = -196;
+constexpr int RSS_MIN_ROW_WIDTH = 140;
+// Mezera mezi časem a titulkem na prvním řádku.
+constexpr char RSS_TIME_SEPARATOR[] = "  ";
+// "#RRGGBB " před časem. Při přepnutí palety se přepisuje jen hex, proto se
+// délka značky musí shodovat s tím, co skládá rssAppendTimeTag().
+constexpr size_t RSS_COLOR_TAG_LENGTH = 8;
+
+int rssLineHeight() {
+  return lv_font_get_line_height(&clock_czech_16);
+}
+
+// Kolik řádků dostane titulek. Tři řádky se vejdou nejvýš k pěti zprávám; při
+// šesti by krajní řádky spadly do úzkého konce kružnice a pojaly by méně textu
+// než dnešní dva řádky.
+int rssTitleLines(uint8_t count) { return count >= 6 ? 2 : 3; }
+
+// Šířka použitelná v pásu mezi yTop a yBottom. Rozhoduje ten okraj, který je
+// dál od středu, protože LVGL láme text na jednu pevnou šířku.
+int rssRowWidth(int yTop, int yBottom) {
+  const int top = yTop < 0 ? -yTop : yTop;
+  const int bottom = yBottom < 0 ? -yBottom : yBottom;
+  int extent = top > bottom ? top : bottom;
+  if (extent >= RSS_RADIUS) extent = RSS_RADIUS - 1;
+  const float half = sqrtf(static_cast<float>(RSS_RADIUS) * RSS_RADIUS -
+                           static_cast<float>(extent) * extent);
+  const int width = static_cast<int>(2.0f * half) - 2 * RSS_INSET;
+  return width < RSS_MIN_ROW_WIDTH ? RSS_MIN_ROW_WIDTH : width;
+}
+
+lv_color_t rssTimeColor() {
+  return redNightVisualEnabled() ? COLOR_ERROR : COLOR_OUTSIDE;
+}
+
+// Sestaví recolor značku "#RRGGBB ". LVGL si hex převede zpět do palety panelu,
+// takže se barva shoduje s tím, co by nastavil setTextColor().
+void rssBuildColorTag(char tag[RSS_COLOR_TAG_LENGTH + 1], lv_color_t color) {
+  const uint32_t rgb = lv_color_to32(color);
+  snprintf(tag, RSS_COLOR_TAG_LENGTH + 1, "#%02X%02X%02X ",
+           static_cast<unsigned>((rgb >> 16) & 0xFF),
+           static_cast<unsigned>((rgb >> 8) & 0xFF),
+           static_cast<unsigned>(rgb & 0xFF));
+}
+
+// V recolor režimu je '#' řídicí znak; zdvojení je jeho doslovný zápis. Bez
+// toho by mřížka v titulku spolkla kus věty.
+void rssAppendEscaped(String &target, const char *text) {
+  if (text == nullptr) return;
+  for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+    target += *cursor;
+    if (*cursor == '#') target += '#';
+  }
+}
+
+void applyRssColors() {
+  if (rssPage == nullptr) return;
+  const bool redNight = redNightVisualEnabled();
+  setTextColor(rssHeaderLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
+  setTextColor(rssStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
+  char tag[RSS_COLOR_TAG_LENGTH + 1];
+  rssBuildColorTag(tag, rssTimeColor());
+  for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+    lv_obj_t *title = rssTitleLabels[index];
+    if (title == nullptr) continue;
+    setTextColor(title, redNight ? COLOR_ERROR : COLOR_TEXT);
+    // Značka stojí na začátku a má pevnou délku, takže stačí přepsat hex.
+    // Titulek bez času žádnou nemá a sahat se do něj nesmí.
+    if (!rssItemHasTime[index]) continue;
+    char *text = lv_label_get_text(title);
+    if (text == nullptr || text[0] != '#') continue;
+    memcpy(text + 1, tag + 1, RSS_COLOR_TAG_LENGTH - 2);
+    lv_obj_invalidate(title);
+  }
+}
+
+// Rozmístí řádky pro daný počet zpráv. Volá se jen při změně počtu, ne při
+// každém obnovení kanálu.
+void layoutRssItems(uint8_t count) {
+  if (rssPage == nullptr) return;
+  if (count > CLOCK_RSS_MAX_ITEMS) count = CLOCK_RSS_MAX_ITEMS;
+  rssVisibleItemCount = count;
+  const int lineHeight = rssLineHeight();
+  const int titleLines = rssTitleLines(count);
+  const int rowHeight = titleLines * lineHeight + RSS_ROW_GAP;
+  const int total = rowHeight * count;
+  const int top = RSS_BLOCK_CENTER_Y - total / 2;
+  // Hlavička se vejde jen tehdy, když blok nezasahuje až k hornímu okraji.
+  setObjectVisible(rssHeaderLabel, count > 0 && top > RSS_HEADER_Y + 22);
+
+  for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+    lv_obj_t *title = rssTitleLabels[index];
+    if (title == nullptr) continue;
+    if (index >= count) {
+      setObjectVisible(title, false);
+      continue;
+    }
+    const int rowTop = top + static_cast<int>(index) * rowHeight;
+    const int width = rssRowWidth(rowTop, rowTop + titleLines * lineHeight);
+    const int left = -width / 2;
+    lv_obj_set_width(title, width);
+    lv_obj_set_height(title, titleLines * lineHeight);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, RSS_RADIUS + left,
+                 RSS_RADIUS + rowTop);
+  }
+}
+
+void createRssPage(lv_obj_t *screen) {
+  rssPage = lv_obj_create(screen);
+  lv_obj_set_size(rssPage, 480, 480);
+  lv_obj_center(rssPage);
+  lv_obj_set_style_bg_color(rssPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(rssPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(rssPage, 0, 0);
+  lv_obj_set_style_pad_all(rssPage, 0, 0);
+  lv_obj_set_style_radius(rssPage, 0, 0);
+  lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  rssHeaderLabel = makeLabel(rssPage, &clock_czech_16, COLOR_MUTED);
+  lv_obj_set_width(rssHeaderLabel, 300);
+  lv_label_set_long_mode(rssHeaderLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(rssHeaderLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(rssHeaderLabel, "");
+  alignCenter(rssHeaderLabel, 0, RSS_HEADER_Y);
+
+  rssStatusLabel = makeLabel(rssPage, &clock_czech_16, COLOR_OUTSIDE);
+  lv_label_set_long_mode(rssStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(rssStatusLabel, 340);
+  lv_obj_set_style_text_align(rssStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(rssStatusLabel, "");
+  alignCenter(rssStatusLabel, 0, 0);
+  lv_obj_add_flag(rssStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+    lv_obj_t *title = makeLabel(rssPage, &clock_czech_16, COLOR_TEXT);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_label_set_recolor(title, true);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(title, "");
+    rssTitleLabels[index] = title;
+    rssItemHasTime[index] = false;
+
+    lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
+  }
+  layoutRssItems(0);
+
+  makeChildrenTapThrough(rssPage);
+  lv_obj_add_flag(rssPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(rssPage, openSettingsEvent, LV_EVENT_LONG_PRESSED,
+                      nullptr);
+  lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
 }
 
 void createRadarPage(lv_obj_t *screen) {
@@ -2820,7 +3031,7 @@ ValueSlotDisplay valueSlotDisplay(size_t index,
 // 42 px, zatímco řádky mřížky mají rozteč 60 px a už je zabírá název s
 // hodnotou. Doplnění vyžaduje menší řez ikon, ne úpravu tohoto souboru.
 void updateValuesPage() {
-  if (valuesPage == nullptr) return;
+  if (valuesPage == nullptr || !valuesLayoutEnabled()) return;
   const bool openMeteo =
       dashboardRuntimeConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO;
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
@@ -3018,6 +3229,7 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lv_obj_add_event_cb(dashboardContent, openSettingsEvent, LV_EVENT_LONG_PRESSED,
                       nullptr);
   createRadarPage(screen);
+  createRssPage(screen);
   createSettingsPage(screen);
 
   firmwareUpdateOverlay = lv_obj_create(screen);
@@ -3056,8 +3268,9 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   dashboardRuntimeConfig = config;
   dashboardRuntimeConfigAvailable = true;
   radarFeatureAvailable = clockConfigRadarAvailable(config);
-  if (!radarFeatureAvailable && radarVisible) {
-    radarVisible = false;
+  clockDashboardSetRssAvailable(clockConfigRssAvailable(config));
+  if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (!settingsVisible && !firmwareUpdateActive) {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
@@ -3390,8 +3603,9 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   if (dashboardContent == nullptr || !dashboardRuntimeConfigAvailable) return;
   // Přepnutí stylu musí odkrýt právě jednu stránku; radar ani nastavení
   // přitom nesmí zmizet, proto se sahá jen na dvojici ciferníků.
-  if (styleChanged && valuesPage != nullptr && !radarVisible &&
-      !settingsVisible && !firmwareUpdateActive) {
+  if (styleChanged && valuesPage != nullptr &&
+      activeScreen == DASHBOARD_SCREEN_CLOCK && !settingsVisible &&
+      !firmwareUpdateActive) {
     lv_obj_t *hidden =
         valuesLayoutEnabled() ? dashboardContent : valuesPage;
     lv_obj_add_flag(hidden, LV_OBJ_FLAG_HIDDEN);
@@ -3734,7 +3948,74 @@ void clockDashboardHandleShortClick() {
   clockDashboardSetNightMode(!nightModeEnabled);
 }
 
-bool clockDashboardRadarVisible() { return radarVisible; }
+bool clockDashboardRadarVisible() {
+  return activeScreen == DASHBOARD_SCREEN_RADAR;
+}
+
+bool clockDashboardRssVisible() {
+  return activeScreen == DASHBOARD_SCREEN_RSS;
+}
+
+void clockDashboardSetRssVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_RSS : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetRssAvailable(bool available) {
+  if (rssFeatureAvailable == available) return;
+  rssFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_RSS) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+  }
+}
+
+void clockDashboardSetRssStatus(const char *channelTitle, const char *message,
+                                uint8_t count) {
+  if (rssPage == nullptr) return;
+  lv_label_set_text(rssHeaderLabel,
+                    channelTitle != nullptr ? channelTitle : "");
+  if (count != rssVisibleItemCount) layoutRssItems(count);
+  const bool showMessage = count == 0;
+  setObjectVisible(rssStatusLabel, showMessage);
+  if (showMessage) {
+    const char *text = message != nullptr && message[0] != '\0'
+                           ? message
+                           : (englishLanguage() ? "Loading news..."
+                                                : "Načítám zprávy...");
+    lv_label_set_text(rssStatusLabel, text);
+  }
+  applyRssColors();
+}
+
+void clockDashboardSetRssItem(size_t index, const char *title,
+                              const char *time) {
+  if (rssPage == nullptr || index >= rssVisibleItemCount) return;
+  lv_obj_t *titleLabel = rssTitleLabels[index];
+  if (titleLabel == nullptr) return;
+  const bool hasTime = time != nullptr && time[0] != '\0';
+  String text;
+  // Arduino String roste na přesnou délku, takže bez rezervace by každý
+  // připsaný znak znamenal realloc. Zdvojené '#' se do odhadu vejdou.
+  text.reserve(2 * (title != nullptr ? strlen(title) : 0) +
+               2 * (hasTime ? strlen(time) : 0) + RSS_COLOR_TAG_LENGTH +
+               sizeof(RSS_TIME_SEPARATOR) + 2);
+  if (hasTime) {
+    char tag[RSS_COLOR_TAG_LENGTH + 1];
+    rssBuildColorTag(tag, rssTimeColor());
+    text += tag;
+    rssAppendEscaped(text, time);
+    text += '#';
+    text += RSS_TIME_SEPARATOR;
+  }
+  rssAppendEscaped(text, title != nullptr ? title : "");
+  rssItemHasTime[index] = hasTime;
+  lv_label_set_text(titleLabel, text.c_str());
+  setObjectVisible(titleLabel, true);
+}
 
 void clockDashboardSetRadarVisible(bool visible) { setRadarVisible(visible); }
 
@@ -3849,8 +4130,10 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     clockDashboardSetFirmwareUpdateBlack(false);
     lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+    if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
-    if (radarVisible && radarVisibilityCallback != nullptr)
+    if (activeScreen == DASHBOARD_SCREEN_RADAR &&
+        radarVisibilityCallback != nullptr)
       radarVisibilityCallback(false);
     lv_obj_clear_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(firmwareUpdateOverlay);
@@ -3858,9 +4141,11 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     lv_obj_add_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     if (settingsVisible) {
       lv_obj_clear_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
-    } else if (radarVisible) {
+    } else if (activeScreen == DASHBOARD_SCREEN_RADAR) {
       lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
       if (radarVisibilityCallback != nullptr) radarVisibilityCallback(true);
+    } else if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr) {
+      lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     } else {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }
