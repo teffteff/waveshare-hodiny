@@ -16,7 +16,7 @@ HOME_WIFI_KEYS = ("WIFI_SSID", "WIFI_PASSWORD")
 WORK_WIFI_KEYS = ("WIFI_WORK_SSID", "WIFI_WORK_PASSWORD")
 FIRMWARE_KEYS = ("FIRMWARE_SERVER_URL", "FIRMWARE_PROJECT_SLUG")
 PUBLIC_FIRMWARE_CONFIG = {
-    "FIRMWARE_SERVER_URL": "https://coolajz.github.io",
+    "FIRMWARE_SERVER_URL": "https://teffteff.github.io",
     "FIRMWARE_PROJECT_SLUG": "waveshare-hodiny",
     "FIRMWARE_OTA_METADATA_PATH": "/waveshare-hodiny/firmware/ota.json",
     "FIRMWARE_WEATHER_ASSET_PATH": "/waveshare-hodiny/assets/weather-icons",

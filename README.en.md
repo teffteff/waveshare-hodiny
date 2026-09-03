@@ -12,7 +12,7 @@ location, radar, brightness, animations and updates are configured in a web
 interface without editing source code.
 
 <p align="center">
-  <a href="https://coolajz.github.io/waveshare-hodiny/">
+  <a href="https://teffteff.github.io/waveshare-hodiny/">
     <img src="https://img.shields.io/badge/Install_firmware_in_your_browser-00BBD4?style=for-the-badge&amp;logo=googlechrome&amp;logoColor=white" alt="Install firmware in your browser" height="46">
   </a>
 </p>
@@ -86,7 +86,7 @@ ESP32-S3. A different pinout or flash layout may prevent the device from booting
 
 ### Browser installation
 
-The public [GitHub Pages installer](https://coolajz.github.io/waveshare-hodiny/)
+The public [GitHub Pages installer](https://teffteff.github.io/waveshare-hodiny/)
 can flash a stable release from desktop Chrome or Edge over USB. The installer
 supports Czech and English. On first visit it uses Czech for browser languages
 `cs` and `sk`; every other browser language uses English. The flag buttons in

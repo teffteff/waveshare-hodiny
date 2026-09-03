@@ -11,7 +11,7 @@ Vzhled, zdroje dat, poloha, radar, jas, animace i aktualizace se nastavují
 z webového rozhraní bez úpravy zdrojového kódu.
 
 <p align="center">
-  <a href="https://coolajz.github.io/waveshare-hodiny/">
+  <a href="https://teffteff.github.io/waveshare-hodiny/">
     <img src="https://img.shields.io/badge/Nainstalovat_firmware_z_prohl%C3%AD%C5%BEe%C4%8De-00BBD4?style=for-the-badge&amp;logo=googlechrome&amp;logoColor=white" alt="Nainstalovat firmware z prohlížeče" height="46">
   </a>
 </p>
@@ -94,7 +94,7 @@ ESP32-S3. Odlišný pinout nebo flash layout může zabránit startu zařízení
 
 ### Instalace z prohlížeče
 
-Veřejná [instalační stránka na GitHub Pages](https://coolajz.github.io/waveshare-hodiny/)
+Veřejná [instalační stránka na GitHub Pages](https://teffteff.github.io/waveshare-hodiny/)
 umožňuje nahrát stabilní release přímo z desktopového Chromu nebo Edge přes
 USB. Instalační tlačítko se zpřístupní, jakmile je na GitHubu dostupný veřejný
 stabilní release se zkontrolovaným čtyřdílným factory balíčkem.
@@ -593,7 +593,7 @@ existuje a její stav je číselný nebo podporovaný stav počasí.
 
 Vývojový build OTA neinstaluje. U release buildu ověř připojení k internetu,
 synchronizovaný čas a dostupnost nakonfigurovaného HTTPS release serveru.
-Veřejný build používá `https://coolajz.github.io/waveshare-hodiny/firmware/`;
+Veřejný build používá `https://teffteff.github.io/waveshare-hodiny/firmware/`;
 interní profil může používat jiný server z lokální `.env`.
 
 ### Zařízení se neobjeví na USB
