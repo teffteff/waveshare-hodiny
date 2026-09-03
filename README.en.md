@@ -57,7 +57,8 @@ changes the system text and verbal date shown on the display.
 - static and animated weather icons based on Meteocons,
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
-- optional automatic rotation between the clock and radar,
+- optional automatic rotation between the clock, radar and news,
+- a news screen fed by any RSS or Atom feed,
 - two additional values such as CO₂, VOC, particulate matter, humidity,
   pressure or battery level,
 - eight independent values on the VALUES face, each with its own name, Home
@@ -237,14 +238,43 @@ shown on the clock and amber marks the saved default. The preview becomes
 persistent only after saving the configuration. A range selected on the device
 is temporary and the saved web value is restored after a restart.
 
-Automatic rotation is disabled by default and provides separate clock and radar
-durations. The radar duration is a minimum: an animation already in progress,
-including its final pause, always completes before the clock returns. After a
+Automatic rotation is disabled by default and provides separate clock, radar
+and news durations; only the screens you enable take part in it, and a screen
+opened by hand stays until the next gesture. The radar duration is a minimum:
+an animation already in progress, including its final pause, always completes
+before the clock returns. After a
 restart, background cache preparation begins only after Wi-Fi is connected and
 time synchronization has completed. The first automatic transition waits for
 the complete animation, so playback starts immediately from the oldest frame.
 With automatic rotation disabled, radar data is not downloaded in the
 background and loading starts when the radar is opened manually.
+
+### RSS news
+
+A separate screen shows the latest items from any RSS 2.0 or Atom feed. Enter
+the feed address on the **News** tab of the web configuration, for example
+`https://www.irozhlas.cz/rss/irozhlas`. The **Test the feed** button downloads
+the address before saving and shows exactly what will appear on the display.
+Server certificates are validated against the Mozilla roots built into the
+firmware, so any `https://` address works.
+
+The screen shows 3 to 6 items, 5 by default. With three to five items each
+headline gets two lines, which fits roughly ninety percent of a typical news
+headline. A sixth item fits only at the cost of a single headline line, so
+longer headlines are cut with an ellipsis. The publication time is shown to the
+left of each headline in local time; a feed without dates is shown without
+times and sorts after dated items.
+
+The display font has no lowercase Czech diacritics, so headlines are
+transliterated to ASCII: `Ř` becomes `R` and `ř` becomes `r`. The mapping covers
+the whole Latin-1 Supplement and Latin Extended-A blocks, so Slovak, Polish and
+German names come through as well. Typographic quotes and dashes are replaced by
+their ASCII equivalents.
+
+The feed is downloaded every 5 to 120 minutes, 10 by default. After a failure the
+firmware retries in two minutes and keeps the last successfully loaded items on
+screen; an error message appears only when the feed has never loaded. A disabled
+screen is not downloaded at all and is not reachable by the gesture.
 
 ### Color scales
 
@@ -280,12 +310,14 @@ token, TMEP.cz export URL, web password and control API secret.
 
 ## Touchscreen settings
 
-Long-press anywhere on the clock or radar to open the settings pages. A
-horizontal swipe in either direction switches between the clock and radar.
+Long-press anywhere on the clock, radar or news screen to open the settings
+pages. A horizontal swipe moves through the clock, radar and news in that order
+and back to the clock; unavailable screens are skipped, so with a single extra
+screen enabled both directions simply alternate between two screens.
 On the radar, swiping up zooms in and swiping down zooms out; this range change
 remains temporary until restart. With automatic day/night mode disabled, a
-short tap on either screen switches the appearance. Arrow buttons move between
-the three settings pages; swipes are not used inside the settings menu.
+short tap on any of these screens switches the appearance. Arrow buttons move
+between the three settings pages; swipes are not used inside the settings menu.
 Available controls include day/night brightness, automatic mode, weather icons,
 seconds effects, web-server mode and OTA checks.
 

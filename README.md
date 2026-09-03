@@ -58,7 +58,8 @@ a pod nimi mřížka až osmi nezávislých hodnot.
 - srážkový radar ČHMÚ s mapou České republiky, městy a 1 až 15 snímky,
 - rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané svislým gestem swipe,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
-- volitelné automatické střídání hodin a radaru se samostatnou dobou zobrazení,
+- volitelné automatické střídání hodin, radaru a zpráv se samostatnou dobou zobrazení,
+- obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
 - osm nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
   entitou Home Assistantu, jednotkou, přesností a barevnou škálou,
@@ -256,15 +257,44 @@ konfigurace se změna zapíše až tlačítkem **Uložit změny**. Rozsah zvolen
 dotykem na displeji zůstává pouze do restartu; po něm se obnoví hodnota
 naposledy uložená přes web.
 
-Automatické střídání hodin a radaru je ve výchozím stavu vypnuté. Po zapnutí
-lze nastavit samostatnou dobu zobrazení hodin a radaru. Nastavený čas radaru
-je minimální: rozběhnutý animační cyklus se vždy dokončí včetně závěrečné
-pauzy, takže přechod zpět na hodiny nepřeruší animaci uprostřed. Po restartu
+Automatické střídání je ve výchozím stavu vypnuté. Po zapnutí lze nastavit
+samostatnou dobu zobrazení hodin, radaru i zpráv; do střídání se zapojí jen ty
+obrazovky, které jsou zapnuté, a ručně otevřená obrazovka zůstane až do dalšího
+gesta. Nastavený čas radaru je minimální: rozběhnutý animační cyklus se vždy
+dokončí včetně závěrečné pauzy, takže přechod zpět na hodiny nepřeruší animaci
+uprostřed. Po restartu
 se příprava cache spustí na pozadí až po připojení Wi-Fi a synchronizaci času.
 První automatický přechod na radar počká na kompletní animaci; další přechody
 ji proto zobrazí okamžitě od nejstaršího snímku. Je-li automatické střídání
 vypnuté, firmware radar na pozadí nestahuje a načítání začne až při ručním
 otevření.
+
+### Zprávy z RSS
+
+Samostatná obrazovka umí zobrazit poslední zprávy z libovolného kanálu RSS 2.0
+nebo Atom. Adresu kanálu zadáš v záložce **Zprávy** webového nastavení,
+například `https://www.irozhlas.cz/rss/irozhlas`. Tlačítko **Vyzkoušet kanál**
+adresu stáhne ještě před uložením a rovnou ukáže, jak budou zprávy vypadat na
+displeji. Certifikát serveru se ověřuje proti kořenům Mozilly zabudovaným ve
+firmwaru, takže funguje libovolná adresa `https://`.
+
+Zobrazit lze 3 až 6 zpráv; výchozí je 5. U tří až pěti zpráv má titulek dva
+řádky, což u běžné české zpravodajské věty stačí přibližně na devadesát
+procent celého titulku. Šestá zpráva se vejde jen za cenu jediného řádku na
+titulek, takže se delší titulky utnou třemi tečkami. Vlevo od titulku je čas
+vydání převedený do místního času; kanál bez data se zobrazí bez času a řadí
+se za zprávy s datem.
+
+Displej používá písmo bez malé české diakritiky, proto se titulky přepisují do
+ASCII: z `Ř` se stane `R` a z `ř` pak `r`. Přepis pokrývá celé bloky Latin-1
+Supplement a Latin Extended-A, takže projdou i slovenská, polská nebo německá
+jména. Typografické uvozovky a pomlčky se nahradí jejich ASCII obdobou.
+
+Kanál se stahuje v intervalu 5 až 120 minut, výchozí je 10 minut. Po neúspěchu
+firmware zkusí stažení znovu za dvě minuty a na displeji nechá poslední
+úspěšně načtené zprávy; hláška o chybě se ukáže jen tehdy, když se kanál
+nepodařilo načíst ani jednou. Vypnutá obrazovka se nestahuje vůbec a
+neobjeví se ani gestem.
 
 ### Barevné prahy měřených hodnot
 
@@ -322,19 +352,19 @@ nemaže.
 
 ## Nastavení na displeji
 
-Nastavení otevře dlouhý stisk kdekoliv na hodinách i meteoradaru. Mezi hodinami
-a meteoradarem přepne vodorovné gesto swipe doleva nebo doprava. Protože jsou
-obrazovky pouze dvě, oba směry vždy zobrazí druhou obrazovku.
+Nastavení otevře dlouhý stisk kdekoliv na hodinách, meteoradaru i zprávách.
+Vodorovné gesto swipe doleva nebo doprava přepíná v pořadí hodiny, meteoradar,
+zprávy a zase zpět na hodiny. Nedostupná obrazovka se přeskočí, takže se
+zapnutým jedním doplňkem oba směry stále jen střídají dvě obrazovky.
 
 Na radaru swipe nahoru pohled přiblíží a swipe dolů jej oddálí. Změna provedená
 na displeji je dočasná a nezapisuje se do flash.
 
 | Obrazovka a gesto | Výsledek |
 | --- | --- |
-| Hodiny: swipe doleva nebo doprava | Otevře meteoradar |
-| Meteoradar: swipe doleva nebo doprava | Vrátí hodiny |
-| Hodiny nebo meteoradar: dlouhý stisk kdekoliv | Otevře nastavení |
-| Hodiny nebo meteoradar: krátký dotyk při vypnuté automatice den/noc | Přepne denní a noční režim |
+| Kterákoliv: swipe doleva nebo doprava | Přepne na další dostupnou obrazovku |
+| Kterákoliv: dlouhý stisk kdekoliv | Otevře nastavení |
+| Kterákoliv: krátký dotyk při vypnuté automatice den/noc | Přepne denní a noční režim |
 | Meteoradar: swipe nahoru | Přiblíží rozsah |
 | Meteoradar: swipe dolů | Oddálí rozsah |
 
