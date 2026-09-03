@@ -290,10 +290,13 @@ ASCII: z `Ř` se stane `R` a z `ř` pak `r`. Přepis pokrývá celé bloky Latin
 Supplement a Latin Extended-A, takže projdou i slovenská, polská nebo německá
 jména. Typografické uvozovky a pomlčky se nahradí jejich ASCII obdobou.
 
-Kanál se stahuje v intervalu 5 až 120 minut, výchozí je 10 minut. Po neúspěchu
-firmware zkusí stažení znovu za dvě minuty a na displeji nechá poslední
-úspěšně načtené zprávy; hláška o chybě se ukáže jen tehdy, když se kanál
-nepodařilo načíst ani jednou. Vypnutá obrazovka se nestahuje vůbec a
+Kanál se stahuje v intervalu 5 až 120 minut, výchozí je 10 minut, a to i když
+je obrazovka zpráv zavřená. Otevření obrazovky gestem nebo automatickým
+střídáním navíc stažení vyvolá hned, pokud jsou zprávy v mezipaměti starší než
+pět minut; čerstvější se znovu nestahují, aby průlety rotace kanál nezatěžovaly.
+Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na displeji nechá
+poslední úspěšně načtené zprávy; hláška o chybě se ukáže jen tehdy, když se
+kanál nepodařilo načíst ani jednou. Vypnutá obrazovka se nestahuje vůbec a
 neobjeví se ani gestem.
 
 ### Barevné prahy měřených hodnot

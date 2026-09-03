@@ -27,6 +27,10 @@ struct RssStatus {
   size_t count = 0;
   bool ready = false;
   bool loading = false;
+  // Stáří posledního úspěšného stažení. Platí jen s lastSuccessAvailable;
+  // podle něj se pozná, jestli má otevření obrazovky stahovat znovu.
+  uint32_t lastSuccessAgeMs = 0;
+  bool lastSuccessAvailable = false;
   char channelTitle[RSS_CHANNEL_TITLE_LENGTH] = "";
   char message[RSS_MESSAGE_LENGTH] = "";
 };

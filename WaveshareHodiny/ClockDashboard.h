@@ -37,6 +37,7 @@ using SettingsSaveCallback = void (*)(uint8_t clockStyle,
                                       uint8_t webMode);
 using SettingsActionCallback = void (*)();
 using RadarVisibilityCallback = void (*)(bool visible);
+using RssVisibilityCallback = void (*)(bool visible);
 using RadarRangeCallback = void (*)(int8_t direction);
 
 void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
@@ -47,7 +48,8 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
                         SettingsActionCallback firmwareCheck,
                         SettingsActionCallback firmwareInstall,
                         RadarVisibilityCallback radarVisibility,
-                        RadarRangeCallback radarRange);
+                        RadarRangeCallback radarRange,
+                        RssVisibilityCallback rssVisibility);
 void clockDashboardLoop();
 void clockDashboardShowSettings();
 void clockDashboardShowSettingsPage(uint8_t page);

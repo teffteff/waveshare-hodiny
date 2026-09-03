@@ -128,6 +128,11 @@ constexpr uint32_t EXTERNAL_DATA_RETRY_MS = 60UL * 1000UL;
 // Kanál zpráv se po chybě zkouší dřív než v nastaveném intervalu, ale ne tak
 // často, aby při trvale nedostupném serveru zatěžoval síť.
 constexpr uint32_t RSS_RETRY_MS = 2UL * 60UL * 1000UL;
+// Otevření obrazovky zpráv stáhne kanál znovu, jsou-li titulky starší. Stejná
+// mez jako u radaru: bez ní by rotace i gesto listovaly zprávami staré tolik,
+// kolik je nastavený interval, s ní zase kratší mez znamená stahování při
+// každém průletu rotace.
+constexpr uint32_t RSS_VISIBILITY_REFRESH_MS = 5UL * 60UL * 1000UL;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 
 const char *CZECH_WEEKDAYS[] = {
@@ -361,6 +366,23 @@ bool displayPowerForcedOff() {
 void handleSettingsOpen() {
   configurationWebEnsureActive();
   clockDashboardSetWebMode(configurationWebMode());
+}
+
+// Kanál zpráv se stahuje na pozadí i se zavřenou obrazovkou, takže otevření
+// nic nezapíná; jen zkrátí čekání, když jsou zprávy v mezipaměti staré.
+void handleRssVisibility(bool visible) {
+  if (!visible || rssTaskHandle == nullptr) return;
+  const ClockConfig &config = loopConfigSnapshot();
+  if (!clockConfigRssAvailable(config)) return;
+  RssStatus status;
+  rssServiceStatus(status);
+  if (status.loading) return;
+  if (status.lastSuccessAvailable &&
+      status.lastSuccessAgeMs < RSS_VISIBILITY_REFRESH_MS) {
+    return;
+  }
+  // Notifikace v rssTask nuluje deadline, takže se stahuje hned.
+  xTaskNotifyGive(rssTaskHandle);
 }
 
 void handleRadarVisibility(bool visible) {
@@ -1875,7 +1897,7 @@ void setup() {
                        handleBrightnessPreview, handleSettingsOpen,
                        handleSettingsSave, handleSettingsFirmwareCheck,
                        handleSettingsFirmwareInstall, handleRadarVisibility,
-                       handleRadarRangeChange);
+                       handleRadarRangeChange, handleRssVisibility);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
   chmiRadarServiceSetActive(

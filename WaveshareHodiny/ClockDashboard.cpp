@@ -309,6 +309,7 @@ SettingsSaveCallback settingsSaveCallback = nullptr;
 SettingsActionCallback firmwareCheckCallback = nullptr;
 SettingsActionCallback firmwareInstallCallback = nullptr;
 RadarVisibilityCallback radarVisibilityCallback = nullptr;
+RssVisibilityCallback rssVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
 
 bool redNightVisualEnabled() {
@@ -452,6 +453,12 @@ void setActiveScreen(uint8_t screen) {
   const bool isRadar = screen == DASHBOARD_SCREEN_RADAR;
   if (wasRadar != isRadar && radarVisibilityCallback != nullptr)
     radarVisibilityCallback(isRadar);
+  // Kanál zpráv běží na vlastním intervalu i skrytý; otevření obrazovky mu
+  // jen dá vědět, aby stará data stáhl znovu.
+  const bool wasRss = previous == DASHBOARD_SCREEN_RSS;
+  const bool isRss = screen == DASHBOARD_SCREEN_RSS;
+  if (wasRss != isRss && rssVisibilityCallback != nullptr)
+    rssVisibilityCallback(isRss);
 }
 
 void setRadarVisible(bool visible) {
@@ -3084,7 +3091,8 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
                         SettingsActionCallback firmwareCheck,
                         SettingsActionCallback firmwareInstall,
                         RadarVisibilityCallback radarVisibility,
-                        RadarRangeCallback radarRange) {
+                        RadarRangeCallback radarRange,
+                        RssVisibilityCallback rssVisibility) {
   savedDayBrightness = constrain(dayBrightness, 1, 100);
   savedNightBrightness = constrain(nightBrightness, 1, 100);
   automaticDayNightEnabled = automaticDayNight;
@@ -3095,6 +3103,7 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   firmwareInstallCallback = firmwareInstall;
   radarVisibilityCallback = radarVisibility;
   radarRangeCallback = radarRange;
+  rssVisibilityCallback = rssVisibility;
   lv_obj_t *screen = lv_scr_act();
   lv_obj_set_style_bg_color(screen, COLOR_BACKGROUND, 0);
   lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);

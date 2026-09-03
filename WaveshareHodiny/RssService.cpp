@@ -50,6 +50,8 @@ bool rssLoading = false;
 // zahození počká na dokončení stahování.
 bool rssFetchActive = false;
 volatile bool rssClearPending = false;
+// millis() posledního úspěšného stažení, nebo 0, když mezipaměť žádné nemá.
+unsigned long rssLastSuccessAt = 0;
 
 void releaseStorage() {
   if (rssCache != nullptr) {
@@ -63,6 +65,7 @@ void releaseStorage() {
     heap_caps_free(rssBuffer);
     rssBuffer = nullptr;
   }
+  rssLastSuccessAt = 0;
 }
 
 RssCache *ensureCache() {
@@ -150,6 +153,11 @@ void rssServiceStatus(RssStatus &status) {
     return;
   }
   status.loading = rssLoading;
+  if (rssLastSuccessAt != 0) {
+    status.lastSuccessAvailable = true;
+    status.lastSuccessAgeMs =
+        static_cast<uint32_t>(millis() - rssLastSuccessAt);
+  }
   if (rssCache != nullptr) {
     status.generation = rssCache->generation;
     status.count = rssCache->feed.count;
@@ -338,6 +346,7 @@ bool rssServiceFetch(const ClockRssConfig &config,
     cache->ready = true;
     cache->message[0] = '\0';
     ++cache->generation;
+    rssLastSuccessAt = millis();
     String detail = F("Načteno zpráv: ");
     detail += parsed.count;
     networkDiagnosticsSetDetail(diagnosticKind, detail);

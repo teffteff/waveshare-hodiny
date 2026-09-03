@@ -271,10 +271,14 @@ the whole Latin-1 Supplement and Latin Extended-A blocks, so Slovak, Polish and
 German names come through as well. Typographic quotes and dashes are replaced by
 their ASCII equivalents.
 
-The feed is downloaded every 5 to 120 minutes, 10 by default. After a failure the
-firmware retries in two minutes and keeps the last successfully loaded items on
-screen; an error message appears only when the feed has never loaded. A disabled
-screen is not downloaded at all and is not reachable by the gesture.
+The feed is downloaded every 5 to 120 minutes, 10 by default, even while the news
+screen is closed. Opening the screen — by gesture or by the automatic rotation —
+also triggers an immediate download when the cached items are older than five
+minutes; fresher items are kept as they are so that rotation passes do not hammer
+the feed. After a failure the firmware retries in two minutes and keeps the last
+successfully loaded items on screen; an error message appears only when the feed
+has never loaded. A disabled screen is not downloaded at all and is not reachable
+by the gesture.
 
 ### Color scales
 
