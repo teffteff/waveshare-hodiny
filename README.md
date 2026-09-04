@@ -217,6 +217,13 @@ Web umožňuje nastavit:
 - osm hodnot ciferníku HODNOTY, každou zvlášť zapínatelnou, s vlastní entitou,
   názvem, jednotkou, přesností a barevnou škálou; sekce se zobrazí jen se
   zdrojem dat Home Assistant, protože sloty čtou entity,
+- pořadí osmi hodnot přetažením za úchyt v záhlaví nebo tlačítky ↑ a ↓;
+  pořadí odpovídá mřížce na displeji a stěhuje se celé nastavení slotu
+  včetně barevné škály,
+- výběr entit Home Assistantu ve všech políčkách s ID entity; šipka v poli
+  rozbalí seznam, psaní ho filtruje bez ohledu na diakritiku a ručně zadané ID
+  zůstává platné. Seznam si vyžádá firmware přes `/api/template` při prvním
+  otevření nabídky, tlačítko Načíst entity ho jen obnoví,
 - barvu hodin, data a obou částí vteřinového efektu,
 - denní/noční jas, ruční nebo automatický režim a automatické střídání hodin s radarem,
 - automatické OTA aktualizace a režim webového serveru,

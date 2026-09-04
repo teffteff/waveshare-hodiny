@@ -37,6 +37,27 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
     .metric{padding:24px;margin-bottom:22px;border:1px solid var(--line);border-radius:12px;background:rgba(23,28,32,.58)}
     .metric:last-child{margin-bottom:0}.metric h2{margin-bottom:24px}
     .metric h2 .slot-toggle{float:right;display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted)}
+    .metric h2.slot-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .metric h2.slot-header .slot-title{flex:1 1 auto;min-width:0}
+    .metric h2.slot-header .slot-toggle{float:none;order:3}
+    .slot-drag,.slot-move button{min-height:34px;padding:0 10px;font-size:15px;font-weight:400;line-height:1;color:var(--muted);border-color:var(--line)}
+    .slot-drag:hover,.slot-move button:not(:disabled):hover{color:var(--cyan);border-color:var(--cyan);background:rgba(76,203,236,.1)}
+    .slot-drag{flex:0 0 auto;cursor:grab;touch-action:none}
+    .slot-drag:active{cursor:grabbing}
+    .slot-move{display:inline-flex;gap:6px;flex:0 0 auto;order:2}
+    .slot-move button:disabled{opacity:.3;cursor:default}
+    .value-slot.is-dragged{opacity:.45}
+    .value-slot.is-drop-target{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(76,203,236,.22)}
+    .entity-picker{position:relative}
+    .entity-picker input{padding-right:40px}
+    .entity-picker-toggle{position:absolute;top:0;right:0;width:38px;height:46px;min-height:46px;padding:0;border:0;border-radius:0 var(--radius) var(--radius) 0;background:transparent;color:var(--muted);font-size:12px;line-height:1}
+    .entity-picker-toggle:hover{background:transparent;color:var(--cyan)}
+    .entity-picker input:disabled+.entity-picker-toggle{opacity:.58;cursor:not-allowed}
+    .entity-picker-list{position:absolute;z-index:20;top:calc(100% + 4px);left:0;right:0;max-height:288px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:0 16px 34px rgba(0,0,0,.42)}
+    .entity-option{display:block;width:100%;min-height:0;padding:9px 13px;border:0;border-radius:0;background:transparent;color:var(--text);font-weight:400;text-align:left}
+    .entity-option:hover,.entity-option.is-active{background:rgba(76,203,236,.14)}
+    .entity-option em{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-style:normal}
+    .entity-picker-note{padding:10px 13px;color:var(--muted);font-size:13px;line-height:1.4}
     .metric-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(420px,7fr);gap:26px 32px;align-items:start}.metric-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 20px}.metric-fields .wide{grid-column:span 2}.color-editor{display:grid;gap:12px;min-width:0}.color-editor .color-scale,.color-editor .color-scale-actions{grid-column:auto}
     .display-panel>section{padding:24px;margin-bottom:20px;border:1px solid var(--line);border-radius:12px;background:rgba(23,28,32,.42)}
     .subgroup-title{margin-top:8px;padding-top:22px;border-top:1px solid var(--line)}.subgroup-title h3{margin:0;font-size:18px;letter-spacing:-.01em}
@@ -109,9 +130,10 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       <div class="grid">
         <div class="span-4"><label for="haUrl">Adresa Home Assistantu</label><input id="haUrl" name="haUrl" type="url" placeholder="http://homeassistant.local:8123" autocomplete="url"></div>
         <div class="span-5"><label for="haToken">Long-lived access token</label><input id="haToken" name="haToken" type="password" placeholder="Zadej nový token" autocomplete="new-password"><span class="hint token-state" id="tokenState">Token zatím není uložen</span></div>
-        <div class="span-3 actions-inline connection-action"><button type="button" id="testConnection">Otestovat připojení</button></div>
+        <div class="span-3 actions-inline connection-action tmep-actions"><button type="button" id="testConnection">Otestovat připojení</button><button type="button" id="loadHaEntities">Načíst entity</button></div>
       </div>
-      <p class="hint" id="haFeedback">Ověření zkontroluje adresu a token. ID entit zadej ručně; token se po uložení už nezobrazí.</p>
+      <p class="hint" id="haFeedback">Ověření zkontroluje adresu a token; token se po uložení už nezobrazí.</p>
+      <p class="hint" id="haEntityFeedback">Políčka s ID entity nabídnou seznam po kliknutí na šipku; entity se načtou samy, tímto tlačítkem se dají jen obnovit. Ručně zadané ID zůstává platné.</p>
     </section>
     <section class="open-meteo-only">
       <h2>TMEP.cz</h2>
@@ -248,6 +270,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
     <section class="ha-only">
       <h2>Hodnoty pro ciferník HODNOTY</h2>
       <p class="hint">Osm nezávislých hodnot v mřížce 2 × 4. Uplatní se jen u typu hodin HODNOTY; digitální a analogový ciferník dál používají čtyři pozice výše.</p>
+      <p class="hint">Pořadí odpovídá mřížce na displeji. Hodnotu přesuneš přetažením za úchyt ⠿ v jejím záhlaví, nebo tlačítky ↑ a ↓; nastavení se přesune celé včetně barevné škály.</p>
     </section>
     <div id="valueSlots"></div>
     </div>
@@ -466,9 +489,99 @@ function renderColorScale(prefix,points){const fallback=colorScaleFallback(prefi
 const valueSlotCount=8;
 function valueSlotPrefix(index){return "valueSlot"+index}
 // Osm sekcí se generuje, aby dostaly stejné třídy jako ruční sekce výše: .metric a data-prefix je napojí na přepínač Typ, .preset-select na nabídku a data-color-add na barevnou škálu. Musí vzniknout dřív, než se tyto posluchače registrují.
-function buildValueSlotSections(){const container=$("valueSlots");container.innerHTML=Array.from({length:valueSlotCount},(_,index)=>{const p=valueSlotPrefix(index);return`<section class="section-a metric ha-only" data-prefix="${p}"><h2>Hodnota ${index+1}<label class="slot-toggle"><input type="checkbox" id="${p}Enabled" name="${p}Enabled"><span>Zobrazit</span></label></h2><div class="metric-grid"><div class="metric-fields"><input id="${p}Mode" name="${p}Mode" type="hidden" value="preset"><div class="span-2"><label for="${p}Preset">Typ</label><select id="${p}Preset" name="${p}Preset" class="preset-select"></select></div><div class="span-3 wide"><label for="${p}Entity">Home Assistant entita</label><input id="${p}Entity" name="${p}Entity" placeholder="sensor.hodnota"></div><div class="span-2"><label for="${p}Name">Vlastní název</label><input id="${p}Name" name="${p}Name" maxlength="23"></div><div class="span-2"><label for="${p}Suffix">Suffix</label><input id="${p}Suffix" name="${p}Suffix" maxlength="15"></div><div class="span-1"><label for="${p}Decimals">Desetinná místa</label><select id="${p}Decimals" name="${p}Decimals"><option>0</option><option>1</option><option>2</option></select></div></div><div class="color-editor"><div class="color-scale" id="${p}ColorScale"></div><div class="color-scale-actions"><button class="color-scale-add" type="button" data-color-add="${p}Color">+ Přidat barvu</button><span class="hint">Maximálně 10 bodů. Mezi body se barvy plynule prolínají.</span></div></div></div></section>`}).join("")}
+function buildValueSlotSections(){const container=$("valueSlots");container.innerHTML=Array.from({length:valueSlotCount},(_,index)=>{const p=valueSlotPrefix(index);return`<section class="section-a metric ha-only value-slot" data-prefix="${p}" data-slot-index="${index}"><h2 class="slot-header"><button type="button" class="slot-drag" data-slot-drag="${index}" title="Přetažením změníš pořadí hodnot" aria-label="Přetažením změníš pořadí hodnot">⠿</button><span class="slot-title">Hodnota ${index+1}</span><span class="slot-move"><button type="button" data-slot-move="${index}" data-slot-step="-1" title="Posunout o pozici výš" aria-label="Posunout o pozici výš">↑</button><button type="button" data-slot-move="${index}" data-slot-step="1" title="Posunout o pozici níž" aria-label="Posunout o pozici níž">↓</button></span><label class="slot-toggle"><input type="checkbox" id="${p}Enabled" name="${p}Enabled"><span>Zobrazit</span></label></h2><div class="metric-grid"><div class="metric-fields"><input id="${p}Mode" name="${p}Mode" type="hidden" value="preset"><div class="span-2"><label for="${p}Preset">Typ</label><select id="${p}Preset" name="${p}Preset" class="preset-select"></select></div><div class="span-3 wide"><label for="${p}Entity">Home Assistant entita</label><input id="${p}Entity" name="${p}Entity" placeholder="sensor.hodnota"></div><div class="span-2"><label for="${p}Name">Vlastní název</label><input id="${p}Name" name="${p}Name" maxlength="23"></div><div class="span-2"><label for="${p}Suffix">Suffix</label><input id="${p}Suffix" name="${p}Suffix" maxlength="15"></div><div class="span-1"><label for="${p}Decimals">Desetinná místa</label><select id="${p}Decimals" name="${p}Decimals"><option>0</option><option>1</option><option>2</option></select></div></div><div class="color-editor"><div class="color-scale" id="${p}ColorScale"></div><div class="color-scale-actions"><button class="color-scale-add" type="button" data-color-add="${p}Color">+ Přidat barvu</button><span class="hint">Maximálně 10 bodů. Mezi body se barvy plynule prolínají.</span></div></div></div></section>`}).join("")}
 buildValueSlotSections();
 function renderValueSlots(slots=[]){for(let index=0;index<valueSlotCount;index++){const p=valueSlotPrefix(index);const slot=slots[index]||{};$(p+"Enabled").checked=slot.enabled===true;setMetric(p,{custom:slot.custom===true,preset:slot.preset||"temperature",entityId:slot.entityId||"",name:slot.name||"",suffix:slot.suffix??"",decimals:slot.decimals??1});renderColorScale(p+"Color",slot.colorScale)}}
+// Přesun hodnoty mění pořadí uložených dat, ne pořadí sekcí: pole formuláře
+// se jmenují podle indexu (valueSlot3Entity), takže samotné přeskládání sekcí
+// v DOM by se do firmwaru nijak nepropsalo. Sekce proto zůstávají na místě a
+// stěhuje se jejich obsah včetně barevné škály.
+function readValueSlot(index){const p=valueSlotPrefix(index);const custom=$(p+"Preset").value==="custom";return{enabled:$(p+"Enabled").checked,custom,preset:custom?"custom":$(p+"Preset").value,entityId:$(p+"Entity").value,name:$(p+"Name").value,suffix:$(p+"Suffix").value,decimals:Number($(p+"Decimals").value),colorScale:readColorScale(p+"Color")}}
+function moveValueSlot(from,to,focusSelector){if(!Number.isInteger(from)||!Number.isInteger(to))return;if(from===to||from<0||to<0||from>=valueSlotCount||to>=valueSlotCount)return;const slots=Array.from({length:valueSlotCount},(_,index)=>readValueSlot(index));slots.splice(to,0,slots.splice(from,1)[0]);renderValueSlots(slots);formInputDirty=true;updateDirtyFeedback();if(focusSelector)document.querySelector(focusSelector)?.focus()}
+// Krajní tlačítka nemají kam posunout. Indexy sekcí se nemění, stačí jednou.
+function updateValueSlotMoveButtons(){document.querySelectorAll("[data-slot-move]").forEach(button=>{const target=Number(button.dataset.slotMove)+Number(button.dataset.slotStep);button.disabled=target<0||target>=valueSlotCount})}
+let draggedValueSlot=-1;
+let armedValueSlot=false;
+function clearValueSlotDragState(){draggedValueSlot=-1;armedValueSlot=false;document.querySelectorAll(".value-slot").forEach(section=>{section.draggable=false;section.classList.remove("is-dragged","is-drop-target")})}
+// Přetahování se povolí až úchytem, jinak by tažení textu v políčkách sekce
+// spouštělo přesun. Dotyková zařízení tažení nehlásí, proto jsou tu i ↑ a ↓.
+function bindValueSlotOrdering(){const container=$("valueSlots");
+container.addEventListener("click",event=>{const button=event.target.closest("[data-slot-move]");if(!button||button.disabled)return;const from=Number(button.dataset.slotMove);const step=Number(button.dataset.slotStep);const to=from+step;moveValueSlot(from,to,`[data-slot-move="${to}"][data-slot-step="${step}"]`)});
+container.addEventListener("pointerdown",event=>{const handle=event.target.closest("[data-slot-drag]");if(!handle)return;handle.closest(".value-slot").draggable=true;armedValueSlot=true});
+// Kliknutí na úchyt bez tažení musí sekci zase zamknout, ať se nedá přetáhnout výběrem textu v jejích polích.
+document.addEventListener("pointerup",()=>{if(armedValueSlot&&draggedValueSlot<0)clearValueSlotDragState()});
+container.addEventListener("dragstart",event=>{const section=event.target.closest(".value-slot");if(!section||!section.draggable)return;draggedValueSlot=Number(section.dataset.slotIndex);section.classList.add("is-dragged");event.dataTransfer.effectAllowed="move";event.dataTransfer.setData("text/plain",String(draggedValueSlot))});
+container.addEventListener("dragover",event=>{if(draggedValueSlot<0)return;const section=event.target.closest(".value-slot");if(!section)return;event.preventDefault();event.dataTransfer.dropEffect="move";document.querySelectorAll(".value-slot").forEach(other=>other.classList.toggle("is-drop-target",other===section&&Number(section.dataset.slotIndex)!==draggedValueSlot))});
+container.addEventListener("drop",event=>{if(draggedValueSlot<0)return;const section=event.target.closest(".value-slot");if(!section)return;event.preventDefault();const from=draggedValueSlot;const to=Number(section.dataset.slotIndex);clearValueSlotDragState();moveValueSlot(from,to)});
+container.addEventListener("dragend",clearValueSlotDragState)}
+updateValueSlotMoveButtons();bindValueSlotOrdering();
+// Rozbalovací nabídka entit. Prohlížečový datalist nedává poli žádnou
+// viditelnou stopu, že se z něj dá vybírat, takže se seznam kreslí sám.
+// Pole ale zůstává textové: ručně zadané ID projde i s prázdnou nabídkou a
+// entita může v Home Assistantu vzniknout až po nastavení hodin.
+const haEntityGroups={values:["sensor","number","input_number"],weather:["weather"],sun:["sun"],lights:["light","switch","input_boolean","binary_sensor"]};
+const haEntityFieldGroups={weatherEntity:"weather",sunEntity:"sun",dayNightLightEntity:"lights",leftEntity:"values",rightEntity:"values",metricAEntity:"values",metricBEntity:"values"};
+// Delší nabídka se dá jen rolovat; filtrovat psaním je rychlejší než hledat očima.
+const haEntityOptionLimit=60;
+let haEntities=[];
+let haEntitiesLoaded=false;
+let haEntitiesLoading=null;
+// Diakritika se zahazuje, ať "obyvak" najde i "Obývák".
+function haEntitySearchKey(value){return String(value).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase()}
+function haEntityDetail(entity){return[entity.name,[entity.state,entity.unit].filter(Boolean).join(" ")].filter(Boolean).join(" · ")}
+function haEntitiesForGroup(group){const domains=haEntityGroups[group]||[];return haEntities.filter(entity=>domains.includes(entity.domain))}
+// Firmware posílá čtveřice [id, název, jednotka, stav], jak je vyrenderoval
+// Home Assistant. Nedůvěryhodné položky se zahodí, ať nabídka nespadne.
+function applyHaEntities(entries){haEntities=(Array.isArray(entries)?entries:[]).filter(entry=>Array.isArray(entry)&&typeof entry[0]==="string"&&entry[0].includes(".")).map(entry=>({id:entry[0],name:String(entry[1]??""),unit:String(entry[2]??""),state:String(entry[3]??""),domain:entry[0].slice(0,entry[0].indexOf("."))})).sort((first,second)=>first.id.localeCompare(second.id));return haEntities.length}
+async function loadHaEntities(){const button=$("loadHaEntities");button.disabled=true;$("haEntityFeedback").className="hint";$("haEntityFeedback").textContent="Načítám entity z Home Assistantu…";try{const payload=await request("/api/ha/entities",connectionData());const count=applyHaEntities(payload.entities);haEntitiesLoaded=true;$("haEntityFeedback").className="hint token-state";$("haEntityFeedback").textContent=count?`Načteno entit: ${count}. Nabídnou se v políčkách s ID entity.`:"Home Assistant nevrátil žádnou entitu."}catch(error){$("haEntityFeedback").className="hint feedback error";$("haEntityFeedback").textContent=error.message}finally{button.disabled=false}}
+// Entity se stahují až při prvním otevření nabídky. Dotaz na Home Assistant
+// blokuje smyčku, která překresluje displej, takže se nesmí spustit pokaždé
+// při otevření stránky, a všechna pole se musí svézt na jednom stažení.
+function ensureHaEntities(){if(haEntitiesLoaded)return Promise.resolve();if(!haEntitiesLoading)haEntitiesLoading=loadHaEntities().finally(()=>{haEntitiesLoading=null});return haEntitiesLoading}
+function entityPickerNote(text){const note=document.createElement("div");note.className="entity-picker-note";note.textContent=text;return note}
+function createEntityPicker(input,group){
+const wrapper=document.createElement("div");wrapper.className="entity-picker";input.replaceWith(wrapper);wrapper.appendChild(input);
+input.autocomplete="off";input.spellcheck=false;input.setAttribute("role","combobox");input.setAttribute("aria-autocomplete","list");input.setAttribute("aria-expanded","false");
+const toggle=document.createElement("button");toggle.type="button";toggle.className="entity-picker-toggle";toggle.tabIndex=-1;toggle.title="Zobrazit entity";toggle.setAttribute("aria-label","Zobrazit entity");toggle.textContent="▼";
+const list=document.createElement("div");list.className="entity-picker-list";list.setAttribute("role","listbox");list.hidden=true;
+wrapper.append(toggle,list);
+let expanded=false;let options=[];let activeIndex=-1;
+// Rozbalení šipkou ukáže celý seznam. Filtruje se až od chvíle, kdy uživatel
+// začne psát: jinak by kliknutí do vyplněného pole nabídlo jedinou položku,
+// totiž tu, která už je v poli.
+let filtering=false;
+// Vlastní událost input po výběru nesmí nabídku hned zase otevřít.
+let applying=false;
+const close=()=>{if(!expanded)return;expanded=false;filtering=false;activeIndex=-1;options=[];list.hidden=true;list.replaceChildren();input.setAttribute("aria-expanded","false")};
+// Ruční změna pole musí vypadat stejně jako psaní, jinak by si formulář
+// nevšiml, že má neuložené změny.
+const choose=value=>{input.value=value;close();applying=true;input.dispatchEvent(new Event("input",{bubbles:true}));applying=false;input.focus()};
+const markActive=()=>[...list.querySelectorAll(".entity-option")].forEach((option,index)=>{const active=index===activeIndex;option.classList.toggle("is-active",active);if(active)option.scrollIntoView({block:"nearest"})});
+const render=()=>{
+list.replaceChildren();options=[];activeIndex=-1;
+if(haEntitiesLoading){list.appendChild(entityPickerNote("Načítám entity z Home Assistantu…"));return}
+if(!haEntitiesLoaded){list.appendChild(entityPickerNote("Entity se nepodařilo načíst. Zkus je obnovit tlačítkem Načíst entity na kartě Obecné."));return}
+const query=filtering?haEntitySearchKey(input.value.trim()):"";
+const matches=haEntitiesForGroup(group).filter(entity=>!query||haEntitySearchKey(entity.id+" "+entity.name).includes(query));
+if(!matches.length){list.appendChild(entityPickerNote("Žádná entita neodpovídá."));return}
+options=matches.slice(0,haEntityOptionLimit);
+options.forEach(entity=>{const option=document.createElement("button");option.type="button";option.className="entity-option";option.setAttribute("role","option");option.textContent=entity.id;const detail=haEntityDetail(entity);if(detail){const line=document.createElement("em");line.textContent=detail;option.appendChild(line)}
+// Bez tohohle by pole ztratilo fokus dřív, než klik dorazí na položku.
+option.addEventListener("mousedown",event=>event.preventDefault());option.addEventListener("click",()=>choose(entity.id));list.appendChild(option)});
+if(matches.length>options.length)list.appendChild(entityPickerNote("Seznam je zkrácený, zpřesni hledání psaním."))};
+const expand=()=>{if(expanded||input.disabled)return;expanded=true;list.hidden=false;input.setAttribute("aria-expanded","true");render();if(!haEntitiesLoaded)ensureHaEntities().then(()=>{if(expanded)render()})};
+toggle.addEventListener("click",()=>{if(expanded){close();return}expand();input.focus()});
+input.addEventListener("pointerdown",expand);
+input.addEventListener("input",()=>{if(applying)return;filtering=true;if(expanded)render();else expand()});
+input.addEventListener("keydown",event=>{
+if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();if(!expanded){expand();return}if(!options.length)return;activeIndex=(activeIndex+(event.key==="ArrowDown"?1:options.length-1)+options.length)%options.length;markActive();return}
+if(event.key==="Enter"&&expanded&&activeIndex>=0){event.preventDefault();choose(options[activeIndex].id);return}
+if(event.key==="Escape"&&expanded){event.preventDefault();close()}});
+input.addEventListener("blur",event=>{if(!wrapper.contains(event.relatedTarget))close()});
+document.addEventListener("pointerdown",event=>{if(!wrapper.contains(event.target))close()});
+}
+function bindEntityPickers(){Object.entries(haEntityFieldGroups).forEach(([id,group])=>{const input=$(id);if(input)createEntityPicker(input,group)});for(let index=0;index<valueSlotCount;index++)createEntityPicker($(valueSlotPrefix(index)+"Entity"),"values")}
+bindEntityPickers();
 document.querySelectorAll("[data-color-add]").forEach(button=>button.addEventListener("click",()=>{const prefix=button.dataset.colorAdd;const current=readColorScale(prefix);if(current.length>=10)return;current.push({value:"",color:current.at(-1)?.color||colorScaleFallback(prefix)});renderColorScale(prefix,current);$(prefix+"Scale").querySelector(".color-point:last-child input[type=number]").focus()}));
 function updateWeatherIconControls(){const mode=$("weatherIconMode").value||"static-monochrome";const style=mode.endsWith("-flat")?"flat":mode.endsWith("-line")?"line":"monochrome";$("meteoconsLink").href=`https://meteocons.com/icons/?style=${style}`}
 function updateSecondEffectControls(){$("secondEffectSettings").classList.toggle("hidden",$("secondEffect").value==="off")}
@@ -492,6 +605,7 @@ async function loadFirmwareStatus(){let lastError;for(let attempt=0;attempt<3;at
 function connectionData(){return{haUrl:$("haUrl").value.trim(),haToken:$("haToken").value,haEntity:$("weatherEntity").value.trim()}}
 $("testConnection").addEventListener("click",async()=>{const button=$("testConnection");button.disabled=true;$("haFeedback").className="hint";$("haFeedback").textContent="Ověřuji spojení…";try{await request("/api/ha/test",connectionData());$("haFeedback").className="hint token-state";$("haFeedback").textContent="Spojení s Home Assistantem je v pořádku."}catch(error){$("haFeedback").className="hint feedback error";$("haFeedback").textContent=error.message}finally{button.disabled=false}});
 $("testTmep").addEventListener("click",()=>loadTmepCatalog(false));
+$("loadHaEntities").addEventListener("click",loadHaEntities);
 document.querySelectorAll("[data-tab]").forEach(button=>{button.addEventListener("click",()=>setActiveTab(button.dataset.tab));button.addEventListener("keydown",event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const tabs=[...document.querySelectorAll("[data-tab]:not(.hidden)")];const current=tabs.indexOf(button);const next=event.key==="Home"?0:event.key==="End"?tabs.length-1:(current+(event.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;setActiveTab(tabs[next].dataset.tab,true)})});
 document.querySelectorAll("[data-radar-radius]").forEach(button=>button.addEventListener("click",()=>previewRadarRange(Number(button.dataset.radarRadius))));
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeTab==="radar")refreshRadarRangeState(true);scheduleRadarStatePoll()});

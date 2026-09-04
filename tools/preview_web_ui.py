@@ -240,6 +240,22 @@ class PreviewHandler(BaseHTTPRequestHandler):
             self._json({"ok": True,
                         "saveConfirmationId": fields.get("saveConfirmationId", "")})
             return
+        if path == "/api/ha/entities":
+            # Firmware přeposílá čtveřice [id, název, jednotka, stav] tak, jak
+            # je vyrenderoval Home Assistant. Náhled dodá jejich malý vzorek.
+            self._json({"ok": True, "entities": [
+                ["sensor.venkovni_teplota", "Venkovní teplota", "°C", "12.8"],
+                ["sensor.obyvak_teplota", "Obývák teplota", "°C", "21.4"],
+                ["sensor.obyvak_vlhkost", "Obývák vlhkost", "%", "47"],
+                ["sensor.obyvak_co2", "Obývák CO2", "ppm", "812"],
+                ["sensor.obyvak_voc", "Obývák VOC", "ppb", "140"],
+                ["number.cil_teploty", "Cíl teploty", "°C", "22"],
+                ["weather.domov", "Domov", "", "cloudy"],
+                ["sun.sun", "Sun", "", "above_horizon"],
+                ["light.loznice", "Ložnice", "", "off"],
+                ["binary_sensor.dvere", "Vchodové dveře", "", "off"],
+            ]})
+            return
         if path == "/api/rss/test":
             # Náhled nechodí na síť; vrátí ukázku ve tvaru, který posílá firmware.
             self._json({

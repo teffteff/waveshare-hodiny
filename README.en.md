@@ -202,6 +202,14 @@ The web interface configures:
 - the eight values of the VALUES face, each separately enabled, with its own
   entity, name, unit, precision and color scale; the section only appears with
   the Home Assistant data source, because the slots read entities,
+- the order of the eight values, by dragging the handle in the header or with
+  the up and down buttons; the order matches the grid on the display and the
+  whole slot setting moves along, including the color scale,
+- Home Assistant entity selection in every entity ID field; the arrow in the
+  field opens the list, typing filters it regardless of diacritics and a
+  manually typed ID stays valid. The firmware asks for the list over
+  `/api/template` when a list is first opened; the Load entities button only
+  refreshes it,
 - clock and date colors, fonts, date format and seconds effects,
 - day/night brightness and automatic switching,
 - automatic OTA updates and web-server availability,

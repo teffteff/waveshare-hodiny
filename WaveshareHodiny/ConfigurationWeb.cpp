@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cctype>
+#include <cstring>
 
 #include "ConfigurationPage.h"
 #include "RssService.h"
@@ -25,6 +26,7 @@
 #include "FirmwareHubCa.h"
 #include "FirmwareUpdateService.h"
 #include "HomeAssistantConnectionPolicy.h"
+#include "HttpDownload.h"
 #include "LoginPage.h"
 #include "NetworkCoordinator.h"
 #include "NetworkDiagnostics.h"
@@ -2278,6 +2280,169 @@ void handleTestConnection() {
   }
 }
 
+// Nabídka entit pro políčka s ID entity. Seznam si vyrenderuje Home Assistant
+// sám přes /api/template, takže se sem nestahuje /api/states: ten posílá
+// všechny atributy všech entit a u větší instalace jde o megabajty, které se
+// do zařízení nevejdou. Šablona vrátí jen čtveřici id, název, jednotka a stav.
+//
+// V šabloně nesmí být uvozovka ani zpětné lomítko: vkládá se do JSON těla
+// požadavku bez escapování, proto Jinja všude používá apostrofy. Výstup
+// escapuje filtr to_json, takže apostrof ani uvozovka v názvu entity nevadí.
+const char HOME_ASSISTANT_ENTITY_TEMPLATE[] PROGMEM =
+    "{% set d = ['sensor','binary_sensor','number','input_number','weather',"
+    "'sun','light','switch','input_boolean'] %}"
+    "[{% for s in states if s.domain in d %}{% if not loop.first %},{% endif %}"
+    "{{ [s.entity_id, s.name, s.attributes.unit_of_measurement or '', "
+    "s.state[:24]] | to_json }}{% endfor %}]";
+
+// Zhruba 85 bajtů na entitu, tedy přes tisíc entit. Buffer je v PSRAM a po
+// odeslání odpovědi se hned uvolní, aby ho zařízení nedrželo mezi požadavky.
+constexpr size_t HOME_ASSISTANT_ENTITY_MAX_BYTES = 96 * 1024;
+// Stejný strop jako u testu spojení: obsluha běží v hlavní smyčce, která
+// zároveň překresluje displej, takže delší čekání znamená delší zamrznutí
+// hodin. Vyrenderovat šablonu a stáhnout desítky kilobajtů po LAN se do toho
+// vejde s rezervou.
+constexpr uint32_t HOME_ASSISTANT_ENTITY_TIMEOUT_MS = 8000;
+
+// Přijímá tělo odpovědi do bufferu v PSRAM. Nad strop přestane přijímat a
+// nahlásí přetečení, aby se useknutý seznam nevydával za úplný.
+class BoundedPsramStream : public Stream {
+ public:
+  BoundedPsramStream(uint8_t *buffer, size_t capacity)
+      : buffer_(buffer), capacity_(capacity) {}
+
+  using Print::write;
+
+  size_t write(uint8_t value) override { return write(&value, 1); }
+
+  size_t write(const uint8_t *data, size_t size) override {
+    if (data == nullptr || size == 0) return 0;
+    const size_t remaining = capacity_ - length_;
+    const size_t accepted = size < remaining ? size : remaining;
+    if (accepted > 0) memcpy(buffer_ + length_, data, accepted);
+    length_ += accepted;
+    if (accepted != size) {
+      overflowed_ = true;
+      setWriteError();
+    }
+    return accepted;
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+
+  size_t length() const { return length_; }
+  bool overflowed() const { return overflowed_; }
+
+ private:
+  uint8_t *buffer_;
+  size_t capacity_;
+  size_t length_ = 0;
+  bool overflowed_ = false;
+};
+
+template <typename Client>
+int requestHomeAssistantEntities(Client &client, const String &url,
+                                 const String &token,
+                                 BoundedPsramStream &sink) {
+  HTTPClient http;
+  if (!beginHomeAssistantRequest(http, client, url,
+                                 String(F("/api/template")), token)) {
+    return HTTPC_ERROR_CONNECTION_REFUSED;
+  }
+  http.setTimeout(HOME_ASSISTANT_ENTITY_TIMEOUT_MS);
+  // Bez tohoto si HTTPClient spojení schová k dalšímu použití a nezavolá na
+  // klientovi stop(). Kontexty mbedTLS včetně dvou šestnáctikilobajtových
+  // bufferů pak zůstanou alokované. Stejný důvod jako u čtečky RSS.
+  http.setReuse(false);
+  httpDownloadPrepare(http);
+  http.addHeader(F("Content-Type"), F("application/json"));
+  String body = F("{\"template\":\"");
+  body += FPSTR(HOME_ASSISTANT_ENTITY_TEMPLATE);
+  body += F("\"}");
+  const int status = http.POST(body);
+  if (status == HTTP_CODE_OK) {
+    // Ne writeToStream(): u chunked odpovědi se nemusí nikdy vrátit a nechá
+    // viset TLS relaci i s interní RAM.
+    httpDownloadBody(http, sink, HOME_ASSISTANT_ENTITY_TIMEOUT_MS);
+  }
+  http.end();
+  return status;
+}
+
+// Seznam entit se počítá do statistiky testu spojení: je to stejný dotaz na
+// stejnou adresu se stejným tokenem, jen s jiným koncovým bodem.
+void handleHomeAssistantEntities() {
+  String url;
+  String token;
+  resolveConnectionInput(url, token);
+  if (!validHomeAssistantUrl(url) || url.isEmpty() || token.isEmpty()) {
+    sendError(400, F("Doplň adresu Home Assistantu a token."));
+    return;
+  }
+  uint8_t *buffer = static_cast<uint8_t *>(heap_caps_malloc(
+      HOME_ASSISTANT_ENTITY_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (buffer == nullptr) {
+    sendError(507, F("Na seznam entit nezbyla paměť."));
+    return;
+  }
+  BoundedPsramStream sink(buffer, HOME_ASSISTANT_ENTITY_MAX_BYTES);
+  networkDiagnosticsBegin(NetworkDiagnosticKind::HomeAssistantTest);
+  int status;
+  {
+    NetworkOperationGuard networkGuard(HOME_ASSISTANT_ENTITY_TIMEOUT_MS);
+    if (!networkGuard) {
+      networkDiagnosticsEnd(NetworkDiagnosticKind::HomeAssistantTest, false,
+                            HTTPC_ERROR_CONNECTION_REFUSED);
+      heap_caps_free(buffer);
+      sendError(503, F("Síť je právě vytížená jinou operací."));
+      return;
+    }
+    if (url.startsWith("https://")) {
+      WiFiClientSecure client;
+      client.setInsecure();
+      status = requestHomeAssistantEntities(client, url, token, sink);
+      // Uvolnění TLS kontextů se nesmí spoléhat na destruktor, který ho nedělá.
+      client.stop();
+    } else {
+      WiFiClient client;
+      status = requestHomeAssistantEntities(client, url, token, sink);
+      client.stop();
+    }
+  }
+  const size_t length = sink.length();
+  const bool complete = !sink.overflowed() && length >= 2 &&
+                        buffer[0] == '[' && buffer[length - 1] == ']';
+  networkDiagnosticsEnd(NetworkDiagnosticKind::HomeAssistantTest,
+                        status == HTTP_CODE_OK && complete, status);
+  if (status == HTTP_CODE_OK && complete) {
+    static const char prefix[] = "{\"ok\":true,\"entities\":";
+    constexpr size_t prefixLength = sizeof(prefix) - 1;
+    addSecurityHeaders();
+    server.setContentLength(prefixLength + length + 1);
+    server.send(200, F("application/json; charset=utf-8"), "");
+    server.sendContent(prefix, prefixLength);
+    server.sendContent(reinterpret_cast<const char *>(buffer), length);
+    server.sendContent("}", 1);
+  } else if (status == HTTP_CODE_UNAUTHORIZED) {
+    sendError(401, F("Home Assistant odmítl token."));
+  } else if (status == HTTP_CODE_NOT_FOUND ||
+             status == HTTP_CODE_METHOD_NOT_ALLOWED) {
+    sendError(502, F("Home Assistant neposkytuje šablony, entitu zadej ručně."));
+  } else if (sink.overflowed()) {
+    sendError(502, F("Entit je příliš mnoho, entitu zadej ručně."));
+  } else if (status == HTTP_CODE_BAD_REQUEST || status == HTTP_CODE_OK) {
+    // Odpověď dorazila, ale není to pole: Home Assistant vrátil chybu
+    // renderování, nebo se přenos přerušil uprostřed seznamu.
+    sendError(502, F("Home Assistant nevrátil použitelný seznam entit."));
+  } else {
+    sendError(502, F("Home Assistant není dostupný na zadané adrese."));
+  }
+  heap_caps_free(buffer);
+}
+
 void appendMemoryJson(String &result, const NetworkMemorySnapshot &memory) {
   result += F("{\"internalFree\":");
   result += memory.internalFree;
@@ -2728,6 +2893,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   });
   registerBoundedPost("/api/ha/test", []() {
     if (requireConfigurationAccess()) handleTestConnection();
+  });
+  registerBoundedPost("/api/ha/entities", []() {
+    if (requireConfigurationAccess()) handleHomeAssistantEntities();
   });
   registerBoundedPost("/api/open-meteo/location", []() {
     if (requireConfigurationAccess()) handleOpenMeteoLocation();
