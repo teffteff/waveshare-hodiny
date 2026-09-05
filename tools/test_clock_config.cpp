@@ -30,6 +30,10 @@ constexpr uint32_t SCHEMA_29 = 29;
 constexpr size_t SCHEMA_29_CONFIG_SIZE = offsetof(ClockConfig, rss);
 constexpr size_t SCHEMA_29_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_29_CONFIG_SIZE;
+constexpr uint32_t SCHEMA_30 = 30;
+constexpr size_t SCHEMA_30_CONFIG_SIZE = offsetof(ClockConfig, bottomSlot);
+constexpr size_t SCHEMA_30_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_30_CONFIG_SIZE;
 
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
@@ -72,6 +76,10 @@ std::string schema28Record(const ClockConfig &source) {
 
 std::string schema29Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_29, SCHEMA_29_CONFIG_SIZE);
+}
+
+std::string schema30Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_30, SCHEMA_30_CONFIG_SIZE);
 }
 
 void seed(const std::string &record) {
@@ -466,6 +474,77 @@ void testRssRoundTripAndClamping() {
   assert(raised.rss.itemCount == CLOCK_RSS_MIN_ITEMS);
 }
 
+// Migrace 30 -> 31 nesmí sáhnout na nic ze schématu 30 a devátá hodnota se
+// nesmí zapnout sama: mřížka by se bez vědomí majitele prodloužila o řádek.
+void testSchema30MigrationAddsDisabledBottomSlot() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dataSource = CLOCK_DATA_SOURCE_HOME_ASSISTANT;
+  source.slots[7].enabled = true;
+  clockConfigCopy(source.slots[7].name, sizeof(source.slots[7].name), "GARÁŽ");
+  clockConfigCopy(source.slots[7].entityId, sizeof(source.slots[7].entityId),
+                  "sensor.garaz_teplota");
+  source.rss.enabled = true;
+  clockConfigCopy(source.rss.url, sizeof(source.rss.url),
+                  "https://www.irozhlas.cz/rss/irozhlas");
+  source.rss.itemCount = 4;
+
+  const std::string record = schema30Record(source);
+  assert(record.size() == SCHEMA_30_RECORD_SIZE);
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 30 zůstal nedotčený, včetně obrazovky zpráv na konci.
+  assert(migrated.dataSource == CLOCK_DATA_SOURCE_HOME_ASSISTANT);
+  assert(migrated.slots[7].enabled);
+  assert(strcmp(migrated.slots[7].name, "GARÁŽ") == 0);
+  assert(strcmp(migrated.slots[7].entityId, "sensor.garaz_teplota") == 0);
+  assert(migrated.rss.enabled);
+  assert(strcmp(migrated.rss.url, "https://www.irozhlas.cz/rss/irozhlas") == 0);
+  assert(migrated.rss.itemCount == 4);
+  // Devátý slot je vypnutý a prázdný.
+  assert(!clockConfigValueSlot(migrated, 8).enabled);
+  assert(clockConfigValueSlot(migrated, 8).entityId[0] == '\0');
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
+// Devátá hodnota leží kvůli migraci mimo pole slots, takže musí zvlášť projít
+// uložením, načtením i normalizací.
+void testBottomValueSlotRoundTripAndNormalization() {
+  hostPreferencesReset();
+  ClockConfig saved;
+  clockConfigApplyDefaults(saved);
+  ClockValueSlotConfig &bottom = clockConfigValueSlot(saved, 8);
+  bottom.enabled = true;
+  clockConfigCopy(bottom.name, sizeof(bottom.name), "TLAK");
+  clockConfigCopy(bottom.entityId, sizeof(bottom.entityId), "sensor.tlak");
+  clockConfigCopy(bottom.suffix, sizeof(bottom.suffix), "hPa");
+  bottom.decimals = 9;
+  bottom.color = 0xAB65C744;
+  bottom.colorScale.count = 0;
+  assert(clockConfigSave(saved));
+  assert(&clockConfigValueSlot(saved, 8) == &saved.bottomSlot);
+  assert(&clockConfigValueSlot(saved, 7) == &saved.slots[7]);
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  const ClockValueSlotConfig &reloaded = clockConfigValueSlot(loaded, 8);
+  assert(reloaded.enabled);
+  assert(strcmp(reloaded.name, "TLAK") == 0);
+  assert(strcmp(reloaded.entityId, "sensor.tlak") == 0);
+  assert(strcmp(reloaded.suffix, "hPa") == 0);
+  assert(reloaded.decimals == 2);
+  assert(reloaded.color == 0x65C744);
+  assert(reloaded.colorScale.count == 1);
+  // Mřížka o devátou hodnotu nepřišla ani se nepřepsala.
+  assert(!loaded.slots[7].enabled);
+}
+
 int main() {
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
@@ -478,5 +557,7 @@ int main() {
   testValuesStyleSurvivesAppearanceSave();
   testSchema29MigrationAddsDisabledRss();
   testRssRoundTripAndClamping();
+  testSchema30MigrationAddsDisabledBottomSlot();
+  testBottomValueSlotRoundTripAndNormalization();
   return 0;
 }

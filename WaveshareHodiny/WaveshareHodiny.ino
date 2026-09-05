@@ -1327,7 +1327,7 @@ bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
   bool filledSlot = false;
   if (stateAsFloat(state, number)) {
     for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
-      const ClockValueSlotConfig &slot = config.slots[index];
+      const ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
       if (!slot.enabled || slot.entityId[0] == '\0') continue;
       if (entityId != slot.entityId) continue;
       values.slotValues[index] = number;
@@ -1516,7 +1516,7 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
   };
   size_t entityCount = 7;
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
-    const ClockValueSlotConfig &slot = config.slots[index];
+    const ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
     if (!slot.enabled || slot.entityId[0] == '\0') continue;
     bool alreadyListed = false;
     for (size_t listed = 0; listed < entityCount; ++listed) {

@@ -1385,7 +1385,7 @@ void handleGetConfig() {
   result += F(",\"valueSlots\":[");
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
     if (index > 0) result += ',';
-    result += valueSlotJson(config.slots[index]);
+    result += valueSlotJson(clockConfigValueSlot(config, index));
   }
   result += ']';
   result += F(",\"dayBrightness\":");
@@ -1756,7 +1756,7 @@ void handleSaveConfig() {
   config.leftSide.color = config.leftValueColorScale.points[0].color;
   config.rightSide.color = config.rightValueColorScale.points[0].color;
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
-    if (!readValueSlotFromForm(index, config.slots[index])) {
+    if (!readValueSlotFromForm(index, clockConfigValueSlot(config, index))) {
       sendError(400,
                 F("Barevná škála hodnoty musí obsahovat 1 až 10 platných bodů "
                   "bez duplicitních hodnot."));

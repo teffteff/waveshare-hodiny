@@ -17,8 +17,8 @@ struct ClockValues {
   float metricAValue = NAN;
   float metricBValue = NAN;
   // Hodnoty pro obrazovku CLOCK_STYLE_VALUES. Sloty 0-3 zrcadlí čtyři pole
-  // výše, aby obě obrazovky ukazovaly totéž; sloty 4-7 mají vlastní entity.
-  float slotValues[CLOCK_VALUE_SLOT_COUNT] = {NAN, NAN, NAN, NAN,
+  // výše, aby obě obrazovky ukazovaly totéž; sloty 4-8 mají vlastní entity.
+  float slotValues[CLOCK_VALUE_SLOT_COUNT] = {NAN, NAN, NAN, NAN, NAN,
                                               NAN, NAN, NAN, NAN};
   bool homeAssistantOnline = false;
 };

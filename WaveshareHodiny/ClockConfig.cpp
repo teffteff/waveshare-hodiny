@@ -37,6 +37,7 @@ constexpr uint32_t TMEP_PREDECESSOR_SCHEMA_VERSION = 26;
 constexpr uint32_t SIDE_VALUES_PREDECESSOR_SCHEMA_VERSION = 27;
 constexpr uint32_t VALUE_SLOTS_PREDECESSOR_SCHEMA_VERSION = 28;
 constexpr uint32_t RSS_PREDECESSOR_SCHEMA_VERSION = 29;
+constexpr uint32_t BOTTOM_SLOT_PREDECESSOR_SCHEMA_VERSION = 30;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -86,12 +87,28 @@ struct ConfigRecordV29 {
   uint32_t checksum;
 };
 
+constexpr size_t SCHEMA_30_CONFIG_SIZE = offsetof(ClockConfig, bottomSlot);
+
+struct ConfigRecordV30 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_30_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
 void applyLegacyValueSlotDefaults(ClockConfig &config);
+
+// Devátá hodnota se po povýšení firmwaru nesmí rozsvítit sama: mřížka by se
+// bez vědomí majitele prodloužila o prázdný řádek.
+void applyLegacyBottomSlotDefaults(ClockConfig &config) {
+  config.bottomSlot = ClockValueSlotConfig{};
+}
 
 // Obrazovka zpráv se po povýšení firmwaru nesmí objevit sama od sebe: bez
 // adresy kanálu není co ukazovat a rotace by jen blikala prázdnou stránkou.
 void applyLegacyRssDefaults(ClockConfig &config) {
   config.rss = ClockRssConfig{};
+  applyLegacyBottomSlotDefaults(config);
 }
 
 void applyLegacySideValueDefaults(ClockConfig &config) {
@@ -203,6 +220,11 @@ static_assert(SCHEMA_28_CONFIG_SIZE == 2688 &&
 static_assert(SCHEMA_29_CONFIG_SIZE == 5024 &&
                   sizeof(ConfigRecordV29) == 5036,
               "Migrační záznam schématu 29 musí zachovat přesnou velikost.");
+static_assert(SCHEMA_30_CONFIG_SIZE == 5224 &&
+                  sizeof(ConfigRecordV30) == 5236,
+              "Migrační záznam schématu 30 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV30) <= sizeof(ConfigRecord),
+              "Schéma 30 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV29) <= sizeof(ConfigRecord),
               "Schéma 29 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV27) <= sizeof(ConfigRecord),
@@ -335,10 +357,11 @@ void normalizeConfig(ClockConfig &config) {
       &config.leftValueColorScale, &config.rightValueColorScale,
       &config.metricAColorScale, &config.metricBColorScale};
   for (ClockMetricColorScale *scale : scales) normalizeColorScale(*scale);
-  // Osm slotů obrazovky CLOCK_STYLE_VALUES prochází stejnou kontrolou jako
+  // Devět slotů obrazovky CLOCK_STYLE_VALUES prochází stejnou kontrolou jako
   // starší pozice. Prázdné entityId slot nevypíná: sloty 0-3 se v režimu
   // Open-Meteo plní z původních pozic, ne z Home Assistantu.
-  for (ClockValueSlotConfig &slot : config.slots) {
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
     slot.decimals = constrain(slot.decimals, static_cast<uint8_t>(0),
                               static_cast<uint8_t>(2));
     slot.color &= 0xFFFFFF;
@@ -517,6 +540,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV30) ||
                              storedSize == sizeof(ConfigRecordV29) ||
                              storedSize == sizeof(ConfigRecordV28) ||
                              storedSize == sizeof(ConfigRecordV27) ||
@@ -537,6 +561,27 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  const ConfigRecordV30 &legacyV30 =
+      *reinterpret_cast<const ConfigRecordV30 *>(&record);
+  uint32_t embeddedSchemaV30 = 0;
+  if (readComplete && storedSize == sizeof(legacyV30)) {
+    memcpy(&embeddedSchemaV30, legacyV30.config, sizeof(embeddedSchemaV30));
+  }
+  const bool validSchema30Record =
+      readComplete && storedSize == sizeof(legacyV30) &&
+      legacyV30.magic == CONFIG_MAGIC &&
+      legacyV30.schemaVersion == BOTTOM_SLOT_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV30 == BOTTOM_SLOT_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV30.checksum ==
+          bytesChecksum(legacyV30.config, sizeof(legacyV30.config));
+  if (validSchema30Record) {
+    memcpy(&config, legacyV30.config, sizeof(legacyV30.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    applyLegacyBottomSlotDefaults(config);
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   const ConfigRecordV29 &legacyV29 =

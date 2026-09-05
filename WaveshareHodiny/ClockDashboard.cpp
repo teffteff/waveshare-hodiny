@@ -2928,12 +2928,25 @@ uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle) {
              : configuredStyle;
 }
 
-// Obrazovka CLOCK_STYLE_VALUES: malý čas nahoře a osm hodnot v mřížce 2 x 4.
-// Kruhový displej ubírá šířku u okrajů, proto jsou sloupce blíž ke středu a
-// krajní řádky se drží dál od okraje než prostřední.
+// Obrazovka CLOCK_STYLE_VALUES: malý čas nahoře, osm hodnot v mřížce 2 x 4 a
+// devátá na středu pod mřížkou. Kruhový displej ubírá šířku u okrajů, proto
+// jsou sloupce blíž ke středu a krajní řádky se drží dál od okraje než
+// prostřední. Devátý řádek drží stejnou rozteč 60 px jako mřížka; uprostřed
+// je kruh nejširší, takže mu okraj zbude stejný jako času nahoře.
 constexpr int VALUE_SLOT_COLUMN_X[2] = {-104, 104};
 constexpr int VALUE_SLOT_ROW_Y[4] = {-72, -12, 48, 108};
+constexpr int VALUE_SLOT_BOTTOM_Y = 168;
 constexpr int VALUE_SLOT_CELL_WIDTH = 190;
+
+struct ValueSlotPosition {
+  int x;
+  int y;
+};
+
+ValueSlotPosition valueSlotPosition(size_t index) {
+  if (index >= CLOCK_VALUE_GRID_SLOT_COUNT) return {0, VALUE_SLOT_BOTTOM_Y};
+  return {VALUE_SLOT_COLUMN_X[index % 2], VALUE_SLOT_ROW_Y[index / 2]};
+}
 
 float valueSlotReading(size_t index) {
   const float slotValue = currentValues.slotValues[index];
@@ -2969,8 +2982,9 @@ void makeValuesPage(lv_obj_t *screen) {
   alignCenter(valuesDateLabel, 0, -130);
 
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
-    const int x = VALUE_SLOT_COLUMN_X[index % 2];
-    const int y = VALUE_SLOT_ROW_Y[index / 2];
+    const ValueSlotPosition position = valueSlotPosition(index);
+    const int x = position.x;
+    const int y = position.y;
     lv_obj_t *title = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
     lv_obj_set_width(title, VALUE_SLOT_CELL_WIDTH);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
@@ -3031,7 +3045,7 @@ ValueSlotDisplay valueSlotDisplay(size_t index,
   }
 }
 
-// Přepíše osm buněk podle aktuální konfigurace a naměřených hodnot. Vypnutý
+// Přepíše devět buněk podle aktuální konfigurace a naměřených hodnot. Vypnutý
 // slot zůstane prázdný, aby mřížka nedržela zbytek po dřívějším nastavení.
 //
 // Ikona slotu (slot.icon) se zatím nekreslí: písmo clock_icons_42 je vysoké
@@ -3045,8 +3059,9 @@ void updateValuesPage() {
     lv_obj_t *title = valueSlotTitleLabels[index];
     lv_obj_t *value = valueSlotValueLabels[index];
     if (title == nullptr || value == nullptr) continue;
-    const ClockValueSlotConfig &slot = dashboardRuntimeConfig.slots[index];
-    // Sloty 4-7 nemají v režimu Open-Meteo odkud brát hodnotu ani kde se
+    const ClockValueSlotConfig &slot =
+        clockConfigValueSlot(dashboardRuntimeConfig, index);
+    // Sloty 4-8 nemají v režimu Open-Meteo odkud brát hodnotu ani kde se
     // nastavit, takže by zůstaly natrvalo prázdné.
     if (!slot.enabled || (openMeteo && index > 3)) {
       setObjectVisible(title, false);

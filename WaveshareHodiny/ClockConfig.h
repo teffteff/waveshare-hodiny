@@ -17,8 +17,11 @@ constexpr size_t CLOCK_TMEP_SENSOR_ID_LENGTH = 16;
 constexpr size_t CLOCK_TMEP_FIELD_LENGTH = 16;
 constexpr size_t CLOCK_TMEP_UNIT_LENGTH = 16;
 constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
-// Počet hodnot na obrazovce CLOCK_STYLE_VALUES: mřížka 2 sloupce × 4 řádky.
-constexpr size_t CLOCK_VALUE_SLOT_COUNT = 8;
+// Počet hodnot na obrazovce CLOCK_STYLE_VALUES: mřížka 2 sloupce × 4 řádky
+// a devátá hodnota na středu pod mřížkou, kde kruhový displej nechává volné
+// místo zrcadlící okraj nad časem.
+constexpr size_t CLOCK_VALUE_GRID_SLOT_COUNT = 8;
+constexpr size_t CLOCK_VALUE_SLOT_COUNT = CLOCK_VALUE_GRID_SLOT_COUNT + 1;
 constexpr size_t CLOCK_RSS_URL_LENGTH = 192;
 // Kolik zpráv smí obrazovka kanálu ukázat. Kruhový displej pobere pět zpráv
 // po dvou řádcích titulku; při šesti zbývá na titulek řádek jediný.
@@ -41,7 +44,11 @@ constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // Schema 30 appends the RSS news screen. The schema 29 prefix stays
 // byte-for-byte unchanged and the screen starts disabled, so an upgrade never
 // pushes an unconfigured screen into the rotation.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 30;
+// Schema 31 appends the ninth value slot drawn below the 2 x 4 grid. It sits
+// after rss rather than inside slots[] so the schema 30 prefix again stays
+// byte-for-byte unchanged; the slot starts disabled, so an upgrade never adds
+// a value the owner did not ask for.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 31;
 
 enum ClockLanguage : uint8_t {
   CLOCK_LANGUAGE_UNSET = 0,
@@ -256,8 +263,12 @@ struct ClockConfig {
   ClockSideValueConfig rightValue;
   ClockMetricColorScale leftValueColorScale;
   ClockMetricColorScale rightValueColorScale;
-  ClockValueSlotConfig slots[CLOCK_VALUE_SLOT_COUNT];
+  ClockValueSlotConfig slots[CLOCK_VALUE_GRID_SLOT_COUNT];
   ClockRssConfig rss;
+  // Devátý slot leží až za rss, aby schéma 30 zůstalo přesnou předponou
+  // schématu 31 a migrace zůstala prostým zkopírováním bajtů. Zbytek firmwaru
+  // ho vidí jako index 8 přes clockConfigValueSlot().
+  ClockValueSlotConfig bottomSlot;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -273,9 +284,27 @@ static_assert(offsetof(ClockConfig, slots) == 2688 &&
               "Schema 29 must preserve the complete schema 28 prefix.");
 
 static_assert(offsetof(ClockConfig, rss) == 5024 &&
-                  sizeof(ClockRssConfig) == 198 &&
-                  sizeof(ClockConfig) == 5224,
+                  sizeof(ClockRssConfig) == 198,
               "Schema 30 must preserve the complete schema 29 prefix.");
+
+static_assert(offsetof(ClockConfig, bottomSlot) == 5224 &&
+                  sizeof(ClockConfig) == 5516,
+              "Schema 31 must preserve the complete schema 30 prefix.");
+
+// Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
+// index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
+// je kvůli migraci uložený zvlášť.
+inline ClockValueSlotConfig &clockConfigValueSlot(ClockConfig &config,
+                                                 size_t index) {
+  return index < CLOCK_VALUE_GRID_SLOT_COUNT ? config.slots[index]
+                                             : config.bottomSlot;
+}
+
+inline const ClockValueSlotConfig &clockConfigValueSlot(
+    const ClockConfig &config, size_t index) {
+  return index < CLOCK_VALUE_GRID_SLOT_COUNT ? config.slots[index]
+                                             : config.bottomSlot;
+}
 
 bool clockConfigBegin();
 bool clockConfigLoad(ClockConfig &config);

@@ -30,7 +30,7 @@ interface without editing source code.
 </p>
 
 <p align="center">
-  <img src="screenshots/dashboard-values.png" alt="VALUES clock face with a grid of eight values" width="30%">
+  <img src="screenshots/dashboard-values.png" alt="VALUES clock face with a grid of eight values and a ninth below" width="30%">
   <img src="screenshots/dashboard-night.png" alt="Waveshare Hodiny red night dashboard" width="30%">
   <img src="screenshots/dashboard-analog-night.png" alt="Waveshare Hodiny analog clock in red night mode" width="30%">
 </p>
@@ -47,7 +47,7 @@ changes the system text and verbal date shown on the display.
 
 - digital clock with Barlow, Liberation Sans, LCD DSEG and Doto fonts, an
   analog dial with a configurable tone and optional cardinal accents, or the
-  VALUES face with a grid of up to eight values,
+  VALUES face with a grid of up to eight values and a ninth below them,
 - multiple date formats and an optional seconds ring,
 - NTP time synchronization and the Czech time zone with daylight saving time,
 - Open-Meteo support without an account or token,
@@ -199,10 +199,10 @@ The web interface configures:
 - `Monochrome`, `Flat` and `Line` animated weather icon styles,
 - CHMI radar range, map opacity, frame count, pause and automatic rotation,
 - custom values, units, precision and color scales,
-- the eight values of the VALUES face, each separately enabled, with its own
+- the nine values of the VALUES face, each separately enabled, with its own
   entity, name, unit, precision and color scale; the section only appears with
   the Home Assistant data source, because the slots read entities,
-- the order of the eight values, by dragging the handle in the header or with
+- the order of the nine values, by dragging the handle in the header or with
   the up and down buttons; the order matches the grid on the display and the
   whole slot setting moves along, including the color scale,
 - Home Assistant entity selection in every entity ID field; the arrow in the
