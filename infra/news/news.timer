@@ -1,0 +1,10 @@
+[Unit]
+Description=Spousti vyber zprav dne nekolikrat denne
+
+[Timer]
+OnCalendar=06,08,10,12,14,16,18,20:05
+Persistent=true
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=timers.target

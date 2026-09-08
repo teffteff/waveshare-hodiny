@@ -1,0 +1,21 @@
+[Unit]
+Description=Staticky server se zpravami dne pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+Environment=NEWS_WWW=/opt/news/www
+Environment=NEWS_PORT=8088
+ExecStart=/opt/news/.venv/bin/python /opt/news/serve.py
+Restart=on-failure
+RestartSec=5
+# Sluzba posloucha na verejne IP, takze dostane stejne mantinely jako Caddy.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
