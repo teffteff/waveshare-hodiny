@@ -21,6 +21,9 @@ PUBLIC_FIRMWARE_CONFIG = {
     "FIRMWARE_OTA_METADATA_PATH": "/waveshare-hodiny/firmware/ota.json",
     "FIRMWARE_WEATHER_ASSET_PATH": "/waveshare-hodiny/assets/weather-icons",
 }
+# Adresa RSS kanálu se zprávami. Nezávislá na Home Assistantu: běží na vlastním
+# serveru, takže se předvyplňuje i tehdy, když HA sekce v .env chybí.
+NEWS_KEY = "NEWS_URL"
 HOME_ASSISTANT_KEYS = (
     "HOME_ASSISTANT_URL",
     "HOME_ASSISTANT_TOKEN",
@@ -137,6 +140,9 @@ def main() -> None:
                 f"#define HA_ENTITY_SUN {cpp_string(values['HA_ENTITY_SUN'])}",
             ]
         )
+    news_url = values.get(NEWS_KEY, "")
+    if news_url:
+        lines.extend(["", f"#define NEWS_URL {cpp_string(news_url)}"])
     lines.append("")
     temporary_file = OUTPUT_FILE.with_suffix(".h.tmp")
     temporary_file.write_text("\n".join(lines), encoding="utf-8")
@@ -152,6 +158,10 @@ def main() -> None:
         print(
             f"Wi-Fi profil {profile} a Home Assistant konfigurace byly připraveny pro sestavení."
         )
+    if news_url:
+        print("Adresa zpravodajského kanálu byla připravena pro sestavení.")
+    else:
+        print(f"V .env chybí {NEWS_KEY}; adresa zpráv se nepředvyplní.")
     if missing_firmware:
         print("Konfigurace Firmware Hubu chybí; OTA zůstává vypnuté.")
     else:

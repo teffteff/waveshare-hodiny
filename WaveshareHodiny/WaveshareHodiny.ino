@@ -11,6 +11,7 @@
 
 #include "ClockDashboard.h"
 #include "ClockConfig.h"
+#include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "RssService.h"
 #include "ConfigurationWeb.h"
@@ -51,6 +52,14 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #define HAS_HOME_ASSISTANT_SECRETS 1
 #else
 #define HAS_HOME_ASSISTANT_SECRETS 0
+#endif
+
+// Adresa zpráv je nezávislá na Home Assistantu; kanál běží na vlastním serveru,
+// takže se předvyplní i v sestavení bez HA sekce v .env.
+#if HAS_WIFI_SECRETS && defined(NEWS_URL)
+#define HAS_NEWS_SECRETS 1
+#else
+#define HAS_NEWS_SECRETS 0
 #endif
 
 namespace {
@@ -171,6 +180,23 @@ void copyRuntimeConfig(ClockConfig &destination) {
   destination = runtimeConfig;
   xSemaphoreGive(runtimeConfigMutex);
 }
+
+// Zkouška kanálu z webu. Ověření proti svazku kořenů Mozilly potřebuje víc
+// zásobníku, než má celá smyčka (16 kB, a leží v ní i LVGL a web server),
+// takže se stahování předává úloze kanálu, která na to má vyměřených 20 kB.
+// Web server je jednovláknový, takže stačí jediná žádost.
+struct RssProbeRequest {
+  ClockRssConfig config;
+  int httpStatus = 0;
+  bool ok = false;
+  char error[RSS_MESSAGE_LENGTH] = "";
+};
+RssProbeRequest rssProbeRequest;
+volatile bool rssProbePending = false;
+volatile bool rssProbeDone = false;
+// Nad součtem vlastních stropů stahování: 10 s čekání na síť, 5 s spojení,
+// 8 s odpověď. Kratší mez by hlásila chybu kanálu, který se ještě stahuje.
+constexpr uint32_t RSS_PROBE_TIMEOUT_MS = 30UL * 1000UL;
 
 // Úloha kanálu zpráv si nebere celou ClockConfig, aby nepotřebovala další
 // pětikilobajtový buffer ani ho neměla na zásobníku vedle TLS.
@@ -368,6 +394,13 @@ void applyDevelopmentDefaults(ClockConfig &config) {
     clockConfigCopy(config.sunEntityId, sizeof(config.sunEntityId), HA_ENTITY_SUN);
   }
 #endif
+#if HAS_NEWS_SECRETS && defined(WAVESHARE_DEVELOPMENT_BUILD)
+  // Jen prázdné pole, stejně jako u ostatních výchozích hodnot: ručně zadanou
+  // adresu tím nepřepíšeme. Obrazovku samotnou nezapínáme, to je volba uživatele.
+  if (config.rss.url[0] == '\0') {
+    clockConfigCopy(config.rss.url, sizeof(config.rss.url), NEWS_URL);
+  }
+#endif
 }
 
 void handleBrightnessPreview(uint8_t brightness) {
@@ -404,7 +437,10 @@ void handleRssVisibility(bool visible) {
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigRssAvailable(config)) return;
   RssStatus status;
-  rssServiceStatus(status);
+  // Zamčená mezipaměť znamená "nevím", ne "nic tu není". Bez téhle podmínky
+  // by se při každém takovém otevření stahovalo znovu, i kdyby byly zprávy
+  // čerstvé.
+  if (!rssServiceStatus(status)) return;
   if (status.loading) return;
   if (status.lastSuccessAvailable &&
       status.lastSuccessAgeMs < RSS_VISIBILITY_REFRESH_MS) {
@@ -412,6 +448,52 @@ void handleRssVisibility(bool visible) {
   }
   // Notifikace v rssTask nuluje deadline, takže se stahuje hned.
   xTaskNotifyGive(rssTaskHandle);
+}
+
+// Přijme zkoušku kanálu z web serveru a počká na úlohu kanálu, která ji
+// provede. Čeká se po malých krocích a mezi nimi se krmí watchdog smyčky:
+// stahování smí trvat přes dvacet sekund, což je jeho mez.
+bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
+                        String &error) {
+  httpStatus = 0;
+  if (rssTaskHandle == nullptr) {
+    error = F("Úloha kanálu zpráv neběží.");
+    return false;
+  }
+  if (rssProbePending) {
+    error = F("Zkouška kanálu už probíhá.");
+    return false;
+  }
+  rssProbeRequest.config = config;
+  rssProbeRequest.httpStatus = 0;
+  rssProbeRequest.ok = false;
+  rssProbeRequest.error[0] = '\0';
+  rssProbeDone = false;
+  rssProbePending = true;
+  xTaskNotifyGive(rssTaskHandle);
+
+  const unsigned long deadline = millis() + RSS_PROBE_TIMEOUT_MS;
+  while (!rssProbeDone) {
+    if (static_cast<long>(millis() - deadline) >= 0) {
+      // Žádost zůstává rozpracovaná; rssProbePending pustí další zkoušku, až
+      // ji úloha kanálu dokončí, takže se požadavky nepřekryjí.
+      error = F("Zkouška kanálu se nedočkala odpovědi.");
+      return false;
+    }
+    // Zkouška smí trvat desítky sekund, ale hodiny na stole mezitím nesmí
+    // zamrznout. LVGL běží v téhle úloze, takže se stačí prokousat jeho
+    // časovači stejně, jako to dělá smyčka; gesta se schválně neobsluhují,
+    // aby se během čekání nepřepínaly obrazovky.
+    if (!screenshotTransferActive) {
+      clockDashboardLoop();
+      displayDriverLoop();
+    }
+    delay(5);
+    feedLoopWDT();
+  }
+  httpStatus = rssProbeRequest.httpStatus;
+  if (!rssProbeRequest.ok) error = rssProbeRequest.error;
+  return rssProbeRequest.ok;
 }
 
 // Předpověď se stahuje na pozadí i se zavřenou obrazovkou, takže otevření nic
@@ -619,7 +701,9 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
   }
   if (screen == ROTATION_SCREEN_RSS) {
     RssStatus status;
-    rssServiceStatus(status);
+    // Zamčená mezipaměť neznamená prázdný kanál; rotace to zkusí za chvíli
+    // znovu, místo aby obrazovku přeskočila jako nepřipravenou.
+    if (!rssServiceStatus(status)) return false;
     return status.ready && status.count > 0;
   }
   if (screen == ROTATION_SCREEN_FORECAST) {
@@ -754,7 +838,9 @@ void maintainForecastDisplay() {
 
 void maintainRssDisplay() {
   RssStatus status;
-  rssServiceStatus(status);
+  // Bez téhle podmínky by zamčená mezipaměť vypadala jako prázdný kanál a
+  // obrazovka by na jeden průchod zhasla a ukázala "Načítám zprávy…".
+  if (!rssServiceStatus(status)) return;
   if (status.generation == displayedRssGeneration) return;
   clockDashboardSetRssStatus(status.channelTitle, status.message,
                              static_cast<uint8_t>(status.count));
@@ -1191,6 +1277,15 @@ void maintainNetworkTime() {
       break;
   }
   clockDashboardSetDate(dateText);
+
+  // Jmeniny jsou český pojem, takže se ukazují jen u českého data. Tabulka je
+  // pevná funkce kalendáře, počítá se přímo na zařízení bez sítě. Se skrytým
+  // datem mizí i ony: samotné jméno bez data je na ciferníku bezprizorní.
+  const bool namedayVisible =
+      !english && displayedDateFormat != CLOCK_DATE_FORMAT_HIDDEN;
+  clockDashboardSetNameday(
+      namedayVisible ? czechNamedayFor(localTime.tm_mon + 1, localTime.tm_mday)
+                     : nullptr);
 }
 
 void handleFirmwareUpdateLifecycle(bool updating) {
@@ -1854,11 +1949,33 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
   return interval;
 }
 
+// Provede zkoušku kanálu, o kterou si řekl web server. Výsledek nesahá na
+// mezipaměť obrazovky, takže zkoušená adresa nepřepíše zobrazené zprávy.
+void runPendingRssProbe() {
+  int httpStatus = 0;
+  String error;
+  const bool ok = rssServiceProbe(rssProbeRequest.config, httpStatus, error);
+  rssProbeRequest.httpStatus = httpStatus;
+  rssProbeRequest.ok = ok;
+  strlcpy(rssProbeRequest.error, error.c_str(),
+          sizeof(rssProbeRequest.error));
+  // Pořadí je závazné: rssProbePending pouští další žádost, takže se nuluje
+  // až po zapsání celého výsledku.
+  rssProbeDone = true;
+  rssProbePending = false;
+}
+
 void rssTask(void *) {
   unsigned long nextRssRefreshAt = 0;
   char lastRssUrl[CLOCK_RSS_URL_LENGTH] = "";
   ClockRssConfig config;
   for (;;) {
+    // Zkouška z webu má přednost. Běží tady právě proto, že ověření proti
+    // svazku kořenů Mozilly se do zásobníku smyčky displeje nevejde.
+    if (rssProbePending) {
+      runPendingRssProbe();
+      continue;
+    }
     copyRuntimeRssConfig(config);
     if (WiFi.status() != WL_CONNECTED) {
       nextRssRefreshAt = 0;
@@ -1870,7 +1987,9 @@ void rssTask(void *) {
     // Vypnutý kanál nemá kdy pokračovat sám; probudí ho až uložení nastavení.
     if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
                                              : pdMS_TO_TICKS(waitMs)) > 0) {
-      nextRssRefreshAt = 0;
+      // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení: zkouška
+      // kanálu není jeho obnovením, takže deadline platí dál.
+      if (!rssProbePending) nextRssRefreshAt = 0;
     }
   }
 }
@@ -2157,6 +2276,7 @@ void setup() {
       rssTask, "rss", 20480, nullptr, 1, &rssTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetRssTask(rssTaskHandle);
+  configurationWebSetRssProbe(runRssProbeFromWeb);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
   // stojí stejně zásobníku jako u kanálu zpráv.
   xTaskCreatePinnedToCoreWithCaps(
