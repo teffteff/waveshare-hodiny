@@ -12,7 +12,8 @@ enum class NetworkDiagnosticKind : uint8_t {
   TmepTest = 6,
   RssRuntime = 7,
   RssTest = 8,
-  Count = 9,
+  ForecastRuntime = 9,
+  Count = 10,
 };
 
 struct NetworkMemorySnapshot {

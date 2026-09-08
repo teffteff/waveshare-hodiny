@@ -20,6 +20,7 @@
 #include "RssService.h"
 #include "ConfigurationLocalization.h"
 #include "ChmiRadarService.h"
+#include "ClockDashboard.h"
 #include "DiagnosticPage.h"
 #include "Display_ST7701.h"
 #include "FirmwareBuild.h"
@@ -1216,7 +1217,16 @@ void handleGetConfig() {
   ClockAppearanceConfig activeAppearance;
   appearanceState(savedAppearance, activeAppearance);
   String result;
-  result.reserve(5000);
+  // Naměřená odpověď má přes 5,5 kB a s delšími názvy entit, jmény devíti
+  // hodnot a barevnými škálami ještě roste. Rezervace 5000 B ji nepokryla,
+  // takže se řetězec uprostřed skládání realokoval - a na roztříštěné vnitřní
+  // haldě (při běžícím radaru klesá největší volný blok pod 12 kB) realokace
+  // selže. String pak tiše přestane přijímat další text, prohlížeč dostane
+  // useknutý JSON a zůstane viset na „Načítám konfiguraci“.
+  if (!result.reserve(8192)) {
+    sendError(503, F("Na odpověď s konfigurací nezbyla paměť. Zkus to znovu."));
+    return;
+  }
   result = F("{\"ok\":true,\"homeAssistantUrl\":\"");
   result += jsonEscape(config.homeAssistantUrl);
   result += F("\",\"saveConfirmationId\":\"");
@@ -1255,6 +1265,18 @@ void handleGetConfig() {
   result += config.radarMapOpacity;
   result += F(",\"radarPauseSeconds\":");
   result += config.radarPauseSeconds;
+  result += F(",\"radarLegend\":");
+  result += config.radarLegend ? F("true") : F("false");
+  result += F(",\"radarSource\":\"");
+  result += config.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER
+                ? F("rainviewer")
+                : F("chmi");
+  result += F("\"");
+  result += F(",\"radarStatusLine\":");
+  result += config.radarStatusLine ? F("true") : F("false");
+  result += F(",\"radarStatusTemperatureEntityId\":\"");
+  result += jsonEscape(config.radarStatusTemperatureEntityId);
+  result += F("\"");
   result += F(",\"automaticRadarRotation\":");
   result += config.automaticRadarRotation ? F("true") : F("false");
   result += F(",\"clockDisplaySeconds\":");
@@ -1273,6 +1295,32 @@ void handleGetConfig() {
   result += config.rss.displaySeconds;
   result += F(",\"rssAutomaticRotation\":");
   result += config.rss.automaticRotation ? F("true") : F("false");
+  result += F(",\"forecastEnabled\":");
+  result += config.forecast.enabled ? F("true") : F("false");
+  result += F(",\"forecastAirQuality\":");
+  result += config.forecast.airQuality ? F("true") : F("false");
+  result += F(",\"forecastDayCount\":");
+  result += config.forecast.dayCount;
+  result += F(",\"forecastRefreshMinutes\":");
+  result += config.forecast.refreshMinutes;
+  result += F(",\"forecastDisplaySeconds\":");
+  result += config.forecast.displaySeconds;
+  result += F(",\"forecastAutomaticRotation\":");
+  result += config.forecast.automaticRotation ? F("true") : F("false");
+  // Kolik hodin se na obrazovku vejde pro každou kombinaci kvality ovzduší a
+  // počtu dní. Počítá to rozvržení obrazovky, aby si web nemusel držet vlastní
+  // kopii stejného vzorce; index je (kvalita ovzduší ? 5 : 0) + počet dní.
+  result += F(",\"forecastHourCounts\":[");
+  for (uint8_t air = 0; air <= 1; ++air) {
+    for (uint8_t days = 0; days <= CLOCK_FORECAST_MAX_DAYS; ++days) {
+      ClockForecastConfig probe;
+      probe.airQuality = air != 0;
+      probe.dayCount = days;
+      if (air != 0 || days != 0) result += ',';
+      result += clockDashboardForecastHourCapacity(probe);
+    }
+  }
+  result += ']';
   result += F(",\"clockStyle\":\"");
   result += clockStyleSlug(savedAppearance.style);
   result += F("\",\"activeClockStyle\":\"");
@@ -1476,6 +1524,13 @@ void handleGetConfig() {
   result += F(",\"secondDotBrightness\":");
   result += config.secondDotBrightness;
   result += '}';
+  // Kdyby přesto došla paměť, String zahodí konec bez varování. Neuzavřený
+  // objekt raději nahradíme chybou, aby stránka ohlásila problém místo
+  // nekonečného načítání.
+  if (!result.endsWith("}")) {
+    sendError(503, F("Odpověď s konfigurací se nevešla do paměti. Zkus to znovu."));
+    return;
+  }
   sendJson(200, result);
 }
 
@@ -1556,6 +1611,20 @@ void handleSaveConfig() {
     return;
   }
   config.radarPauseSeconds = static_cast<uint8_t>(radarPauseSeconds);
+  config.radarLegend = server.arg("radarLegend") == "1";
+  config.radarStatusLine = server.arg("radarStatusLine") == "1";
+  clockConfigCopy(config.radarStatusTemperatureEntityId,
+                  sizeof(config.radarStatusTemperatureEntityId),
+                  server.arg("radarStatusTemperatureEntityId"));
+  const String radarSource = server.arg("radarSource");
+  if (radarSource == "rainviewer") {
+    config.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  } else if (radarSource == "chmi" || radarSource.isEmpty()) {
+    config.radarSource = CLOCK_RADAR_SOURCE_CHMI;
+  } else {
+    sendError(400, F("Zdroj srážkových dat není platný."));
+    return;
+  }
   const int clockDisplaySeconds = server.arg("clockDisplaySeconds").toInt();
   const int radarDisplaySeconds = server.arg("radarDisplaySeconds").toInt();
   if (clockDisplaySeconds < 10 || clockDisplaySeconds > 3600 ||
@@ -1613,6 +1682,36 @@ void handleSaveConfig() {
     config.rss.refreshMinutes = static_cast<uint8_t>(rssRefreshMinutes);
     config.rss.displaySeconds = static_cast<uint16_t>(rssDisplaySeconds);
     config.rss.automaticRotation = server.arg("rssAutomaticRotation") == "1";
+  }
+
+  if (server.hasArg("forecastEnabled")) {
+    const int forecastDayCount = server.arg("forecastDayCount").toInt();
+    if (forecastDayCount < 0 || forecastDayCount > CLOCK_FORECAST_MAX_DAYS) {
+      sendError(400, F("Počet dní předpovědi musí být 0 až 4."));
+      return;
+    }
+    const int forecastRefreshMinutes =
+        server.arg("forecastRefreshMinutes").toInt();
+    if (forecastRefreshMinutes < 10 || forecastRefreshMinutes > 180) {
+      sendError(400, F("Interval předpovědi musí být 10 až 180 minut."));
+      return;
+    }
+    const int forecastDisplaySeconds =
+        server.arg("forecastDisplaySeconds").toInt();
+    if (forecastDisplaySeconds < 10 || forecastDisplaySeconds > 3600) {
+      sendError(400,
+                F("Doba zobrazení předpovědi musí být 10 až 3600 sekund."));
+      return;
+    }
+    config.forecast.enabled = server.arg("forecastEnabled") == "1";
+    config.forecast.airQuality = server.arg("forecastAirQuality") == "1";
+    config.forecast.dayCount = static_cast<uint8_t>(forecastDayCount);
+    config.forecast.refreshMinutes =
+        static_cast<uint8_t>(forecastRefreshMinutes);
+    config.forecast.displaySeconds =
+        static_cast<uint16_t>(forecastDisplaySeconds);
+    config.forecast.automaticRotation =
+        server.arg("forecastAutomaticRotation") == "1";
   }
 
   const String submittedTmepUrl = server.arg("tmepExportUrl");
@@ -2656,6 +2755,10 @@ void handleDiagnostics() {
   result += F(",\"rssTest\":");
   appendDiagnosticJson(
       result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::RssTest));
+  result += F(",\"forecastRuntime\":");
+  appendDiagnosticJson(
+      result,
+      networkDiagnosticsSnapshot(NetworkDiagnosticKind::ForecastRuntime));
   result += '}';
   sendJson(200, result);
 }

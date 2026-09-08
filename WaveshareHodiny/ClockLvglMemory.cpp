@@ -4,13 +4,18 @@
 
 namespace {
 constexpr size_t PSRAM_ALLOCATION_THRESHOLD = 4096;
+// Přepíná se jen z úlohy loop, ve které běží celé LVGL, takže se o souběh
+// starat nemusí.
+bool preferPsram = false;
 
 uint32_t capabilitiesForSize(size_t size) {
-  return size >= PSRAM_ALLOCATION_THRESHOLD
+  return preferPsram || size >= PSRAM_ALLOCATION_THRESHOLD
              ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
              : MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
 }
 }  // namespace
+
+extern "C" void clockLvglPreferPsram(bool prefer) { preferPsram = prefer; }
 
 extern "C" void *clockLvglAlloc(size_t size) {
   void *pointer = heap_caps_malloc(size, capabilitiesForSize(size));

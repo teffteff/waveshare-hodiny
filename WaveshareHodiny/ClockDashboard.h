@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "ClockConfig.h"
+#include "WeatherForecast.h"
 
 struct ClockValues {
   int weatherCode = -1;
@@ -14,6 +15,10 @@ struct ClockValues {
   bool dayNightLightOn = false;
   float leftTemperatureC = NAN;
   float rightTemperatureC = NAN;
+  // Venkovní teplota pro stavový řádek radaru. Je vedená zvlášť, protože
+  // pozice na ciferníku si majitel může přenastavit na cokoliv - třeba na
+  // vlhkost - a radar potřebuje mít jistotu, že ukazuje teplotu venku.
+  float outsideTemperatureC = NAN;
   float metricAValue = NAN;
   float metricBValue = NAN;
   // Hodnoty pro obrazovku CLOCK_STYLE_VALUES. Sloty 0-3 zrcadlí čtyři pole
@@ -38,6 +43,7 @@ using SettingsSaveCallback = void (*)(uint8_t clockStyle,
 using SettingsActionCallback = void (*)();
 using RadarVisibilityCallback = void (*)(bool visible);
 using RssVisibilityCallback = void (*)(bool visible);
+using ForecastVisibilityCallback = void (*)(bool visible);
 using RadarRangeCallback = void (*)(int8_t direction);
 
 void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
@@ -49,10 +55,16 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
                         SettingsActionCallback firmwareInstall,
                         RadarVisibilityCallback radarVisibility,
                         RadarRangeCallback radarRange,
-                        RssVisibilityCallback rssVisibility);
+                        RssVisibilityCallback rssVisibility,
+                        ForecastVisibilityCallback forecastVisibility);
 void clockDashboardLoop();
 void clockDashboardShowSettings();
 void clockDashboardShowSettingsPage(uint8_t page);
+bool clockDashboardSettingsVisible();
+// Zavře nastavení bez uložení; používá to podržení prstu, kterým se
+// z nastavení odchází na sousední obrazovku.
+void clockDashboardCloseSettings();
+bool clockDashboardManualScreenChangeAllowed();
 void clockDashboardSetNightMode(bool enabled);
 bool clockDashboardNightModeEnabled();
 uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle);
@@ -69,6 +81,19 @@ void clockDashboardSetRssStatus(const char *channelTitle, const char *message,
                                 uint8_t count);
 void clockDashboardSetRssItem(size_t index, const char *title,
                               const char *time);
+bool clockDashboardForecastVisible();
+void clockDashboardSetForecastVisible(bool visible);
+// Vypnutá obrazovka se do rotace ani pod gesto nepustí.
+void clockDashboardSetForecastAvailable(bool available);
+// Kolik hodin se na obrazovku vejde vedle denní části a případné kvality
+// ovzduší. Datová úloha podle toho pozná, kdy má smysl stahovat znovu, a web
+// to ukazuje jako nápovědu u přepínače kvality ovzduší.
+uint8_t clockDashboardForecastHourCapacity(const ClockForecastConfig &forecast);
+// Předá staženou předpověď obrazovce.
+void clockDashboardSetForecast(const WeatherForecastData &forecast);
+// Dokud předpověď nedorazila, drží obrazovku hláška. Text si obrazovka skládá
+// sama, aby se přepnutím jazyka přeložil i on.
+void clockDashboardSetForecastFailed(bool failed);
 bool clockDashboardAutomaticRotationAllowed();
 void clockDashboardSetWifiAddress(const char *ipAddress);
 void clockDashboardSetFirmwareVersion(const char *version,
@@ -94,4 +119,4 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                                     bool latestFrame,
                                     uint8_t currentFrameNumber,
                                     uint8_t animationFrameCount,
-                                    uint8_t pauseSeconds);
+                                    uint16_t displayedRadiusKm);

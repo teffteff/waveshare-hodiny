@@ -15,8 +15,11 @@ struct ChmiRadarSnapshot {
   bool latestFrame = false;
   uint8_t currentFrameNumber = 0;
   uint8_t animationFrameCount = 0;
-  uint8_t pauseSeconds = 5;
   uint16_t radiusKm = 50;
+  // U RainVieweru jde o poloměr, který vybrané přiblížení opravdu dává;
+  // mocniny dvou nepadnou přesně na nastavený rozsah.
+  uint16_t effectiveRadiusKm = 50;
+  bool rainViewerSource = false;
   char frameTime[6] = "";
   char message[64] = "Čekám na otevření radaru";
 };
@@ -51,7 +54,8 @@ void chmiRadarServicePrepareForFirmwareUpdate();
 void chmiRadarServiceSetActive(bool visible, bool backgroundRefresh,
                                float latitude, float longitude,
                                uint16_t radiusKm, uint8_t frameCount,
-                               uint8_t mapOpacity, uint8_t pauseSeconds);
+                               uint8_t mapOpacity, uint8_t pauseSeconds,
+                               bool showLegend, uint8_t source);
 void chmiRadarServiceSetRedNightMode(bool enabled);
 void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot);
 void chmiRadarServiceDiagnostics(ChmiRadarDiagnostics &diagnostics);

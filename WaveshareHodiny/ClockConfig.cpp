@@ -38,6 +38,9 @@ constexpr uint32_t SIDE_VALUES_PREDECESSOR_SCHEMA_VERSION = 27;
 constexpr uint32_t VALUE_SLOTS_PREDECESSOR_SCHEMA_VERSION = 28;
 constexpr uint32_t RSS_PREDECESSOR_SCHEMA_VERSION = 29;
 constexpr uint32_t BOTTOM_SLOT_PREDECESSOR_SCHEMA_VERSION = 30;
+constexpr uint32_t RADAR_SOURCE_PREDECESSOR_SCHEMA_VERSION = 31;
+constexpr uint32_t RADAR_STATUS_LINE_PREDECESSOR_SCHEMA_VERSION = 32;
+constexpr uint32_t FORECAST_PREDECESSOR_SCHEMA_VERSION = 33;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -88,6 +91,13 @@ struct ConfigRecordV29 {
 };
 
 constexpr size_t SCHEMA_30_CONFIG_SIZE = offsetof(ClockConfig, bottomSlot);
+constexpr size_t SCHEMA_31_CONFIG_SIZE = offsetof(ClockConfig, radarSource);
+// Schéma 32 končilo boolem radarLegend, takže jeho ClockConfig měl na konci
+// dva bajty zarovnávací výplně. Do záznamu i do kontrolního součtu se zapsaly,
+// proto se musí načíst také - jinak by součet nikdy neseděl.
+constexpr size_t SCHEMA_32_CONFIG_SIZE =
+    (offsetof(ClockConfig, radarStatusLine) + alignof(ClockConfig) - 1) /
+    alignof(ClockConfig) * alignof(ClockConfig);
 
 struct ConfigRecordV30 {
   uint32_t magic;
@@ -96,7 +106,43 @@ struct ConfigRecordV30 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV31 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_31_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
+struct ConfigRecordV32 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_32_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
+// Schéma 33 končilo polem char[128], které leželo na zarovnané adrese, takže
+// jeho ClockConfig žádnou koncovou výplň neměl - offset předpovědi se rovná
+// jeho velikosti.
+constexpr size_t SCHEMA_33_CONFIG_SIZE = offsetof(ClockConfig, forecast);
+
+struct ConfigRecordV33 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_33_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
 void applyLegacyValueSlotDefaults(ClockConfig &config);
+
+// Zarovnávací výplň schématu 32 leží přesně tam, kde schéma 33 začíná, takže
+// zkopírované bajty přepíšou první dvě nová pole nulami. Vrátíme jim proto
+// výchozí hodnoty: stavový řádek radaru je součást obrazovky, ne obrazovka
+// navíc, a tak se po povýšení firmwaru rovnou ukáže.
+void applyLegacyRadarStatusLineDefaults(ClockConfig &config) {
+  const ClockConfig defaults;
+  config.radarStatusLine = defaults.radarStatusLine;
+  config.radarStatusTemperatureEntityId[0] = '\0';
+}
 
 // Devátá hodnota se po povýšení firmwaru nesmí rozsvítit sama: mřížka by se
 // bez vědomí majitele prodloužila o prázdný řádek.
@@ -223,6 +269,15 @@ static_assert(SCHEMA_29_CONFIG_SIZE == 5024 &&
 static_assert(SCHEMA_30_CONFIG_SIZE == 5224 &&
                   sizeof(ConfigRecordV30) == 5236,
               "Migrační záznam schématu 30 musí zachovat přesnou velikost.");
+static_assert(SCHEMA_32_CONFIG_SIZE == 5520,
+              "Migrační záznam schématu 32 musí zachovat přesnou velikost.");
+static_assert(SCHEMA_33_CONFIG_SIZE == 5648 &&
+                  sizeof(ConfigRecordV33) == 5660,
+              "Migrační záznam schématu 33 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV33) <= sizeof(ConfigRecord),
+              "Schéma 33 se musí vejít do společného pracovního bufferu.");
+static_assert(sizeof(ConfigRecordV32) <= sizeof(ConfigRecord),
+              "Schéma 32 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV30) <= sizeof(ConfigRecord),
               "Schéma 30 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV29) <= sizeof(ConfigRecord),
@@ -323,10 +378,19 @@ void normalizeConfig(ClockConfig &config) {
       constrain(config.radarDisplaySeconds, 10, 3600);
   config.radarMapOpacity = constrain(config.radarMapOpacity, 0, 100);
   config.radarPauseSeconds = constrain(config.radarPauseSeconds, 0, 30);
+  if (config.radarSource > CLOCK_RADAR_SOURCE_RAINVIEWER)
+    config.radarSource = CLOCK_RADAR_SOURCE_CHMI;
   config.rss.itemCount = constrain(config.rss.itemCount, CLOCK_RSS_MIN_ITEMS,
                                    CLOCK_RSS_MAX_ITEMS);
   config.rss.refreshMinutes = constrain(config.rss.refreshMinutes, 5, 120);
   config.rss.displaySeconds = constrain(config.rss.displaySeconds, 10, 3600);
+  config.forecast.dayCount =
+      constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
+                CLOCK_FORECAST_MAX_DAYS);
+  config.forecast.refreshMinutes =
+      constrain(config.forecast.refreshMinutes, 10, 180);
+  config.forecast.displaySeconds =
+      constrain(config.forecast.displaySeconds, 10, 3600);
   if (!std::isfinite(config.openMeteoLatitude) ||
       config.openMeteoLatitude < -90.0f || config.openMeteoLatitude > 90.0f ||
       !std::isfinite(config.openMeteoLongitude) ||
@@ -371,11 +435,19 @@ void normalizeConfig(ClockConfig &config) {
 }  // namespace
 
 bool clockConfigRadarAvailable(const ClockConfig &config) {
+  // Kompozice ČHMÚ končí na hranicích, takže mimo ČR nemá co ukázat.
+  // RainViewer pokrývá celou Evropu, a proto tuhle podmínku obchází - právě
+  // kvůli tomu je druhý zdroj v nastavení.
+  if (config.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER) return true;
   return config.openMeteoCountry == CLOCK_LOCATION_COUNTRY_CZECHIA;
 }
 
 bool clockConfigRssAvailable(const ClockConfig &config) {
   return config.rss.enabled && config.rss.url[0] != '\0';
+}
+
+bool clockConfigForecastAvailable(const ClockConfig &config) {
+  return config.forecast.enabled;
 }
 
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
@@ -540,6 +612,9 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV33) ||
+                             storedSize == sizeof(ConfigRecordV32) ||
+                             storedSize == sizeof(ConfigRecordV31) ||
                              storedSize == sizeof(ConfigRecordV30) ||
                              storedSize == sizeof(ConfigRecordV29) ||
                              storedSize == sizeof(ConfigRecordV28) ||
@@ -561,6 +636,74 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  // Schéma 33 je přesnou předponou schématu 34; obrazovka předpovědi si po
+  // zkopírování bajtů podrží výchozí hodnoty z clockConfigApplyDefaults(),
+  // tedy vypnutou obrazovku.
+  const ConfigRecordV33 &legacyV33 =
+      *reinterpret_cast<const ConfigRecordV33 *>(&record);
+  uint32_t embeddedSchemaV33 = 0;
+  if (readComplete && storedSize == sizeof(legacyV33)) {
+    memcpy(&embeddedSchemaV33, legacyV33.config, sizeof(embeddedSchemaV33));
+  }
+  const bool validSchema33Record =
+      readComplete && storedSize == sizeof(legacyV33) &&
+      legacyV33.magic == CONFIG_MAGIC &&
+      legacyV33.schemaVersion == FORECAST_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV33 == FORECAST_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV33.checksum ==
+          bytesChecksum(legacyV33.config, sizeof(legacyV33.config));
+  if (validSchema33Record) {
+    memcpy(&config, legacyV33.config, sizeof(legacyV33.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
+  }
+
+  // Schéma 32 je přesnou předponou schématu 33; stavový řádek radaru si po
+  // zkopírování bajtů podrží výchozí hodnoty z clockConfigApplyDefaults().
+  const ConfigRecordV32 &legacyV32 =
+      *reinterpret_cast<const ConfigRecordV32 *>(&record);
+  uint32_t embeddedSchemaV32 = 0;
+  if (readComplete && storedSize == sizeof(legacyV32)) {
+    memcpy(&embeddedSchemaV32, legacyV32.config, sizeof(embeddedSchemaV32));
+  }
+  const bool validSchema32Record =
+      readComplete && storedSize == sizeof(legacyV32) &&
+      legacyV32.magic == CONFIG_MAGIC &&
+      legacyV32.schemaVersion == RADAR_STATUS_LINE_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV32 == RADAR_STATUS_LINE_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV32.checksum ==
+          bytesChecksum(legacyV32.config, sizeof(legacyV32.config));
+  if (validSchema32Record) {
+    memcpy(&config, legacyV32.config, sizeof(legacyV32.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    applyLegacyRadarStatusLineDefaults(config);
+    normalizeConfig(config);
+    return clockConfigSave(config);
+  }
+
+  // Schéma 31 je přesnou předponou schématu 32; zdroj radaru a legenda si po
+  // zkopírování bajtů podrží výchozí hodnoty z clockConfigApplyDefaults().
+  const ConfigRecordV31 &legacyV31 =
+      *reinterpret_cast<const ConfigRecordV31 *>(&record);
+  uint32_t embeddedSchemaV31 = 0;
+  if (readComplete && storedSize == sizeof(legacyV31)) {
+    memcpy(&embeddedSchemaV31, legacyV31.config, sizeof(embeddedSchemaV31));
+  }
+  const bool validSchema31Record =
+      readComplete && storedSize == sizeof(legacyV31) &&
+      legacyV31.magic == CONFIG_MAGIC &&
+      legacyV31.schemaVersion == RADAR_SOURCE_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV31 == RADAR_SOURCE_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV31.checksum ==
+          bytesChecksum(legacyV31.config, sizeof(legacyV31.config));
+  if (validSchema31Record) {
+    memcpy(&config, legacyV31.config, sizeof(legacyV31.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   const ConfigRecordV30 &legacyV30 =
@@ -737,6 +880,8 @@ bool clockConfigLoad(ClockConfig &config) {
   config.radarDisplaySeconds = 20;
   config.radarMapOpacity = 100;
   config.radarPauseSeconds = 5;
+  config.radarSource = CLOCK_RADAR_SOURCE_CHMI;
+  config.radarLegend = true;
   config.language = CLOCK_LANGUAGE_UNSET;
   config.openMeteoCountry = CLOCK_LOCATION_COUNTRY_CZECHIA;
   config.tmepExportKey[0] = '\0';

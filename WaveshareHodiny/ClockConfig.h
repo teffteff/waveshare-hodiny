@@ -48,7 +48,15 @@ constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // after rss rather than inside slots[] so the schema 30 prefix again stays
 // byte-for-byte unchanged; the slot starts disabled, so an upgrade never adds
 // a value the owner did not ask for.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 31;
+// Schema 33 appends the radar status line - the clock plus the outside
+// temperature drawn under the screen dots - together with the Home Assistant
+// entity that feeds that temperature. Open-Meteo reads temperature_2m from the
+// response it already fetches, so the entity matters only for the Home
+// Assistant source. The schema 32 prefix stays byte-for-byte unchanged.
+// Schema 34 appends the weather forecast screen. The schema 33 prefix stays
+// byte-for-byte unchanged and the screen starts disabled, so an upgrade never
+// pushes another screen into the rotation.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 34;
 
 enum ClockLanguage : uint8_t {
   CLOCK_LANGUAGE_UNSET = 0,
@@ -83,6 +91,13 @@ enum ClockWeatherIconStyle : uint8_t {
   CLOCK_WEATHER_ICON_STYLE_MONOCHROME = 0,
   CLOCK_WEATHER_ICON_STYLE_FLAT = 1,
   CLOCK_WEATHER_ICON_STYLE_LINE = 2,
+};
+
+enum ClockRadarSource : uint8_t {
+  // ČHMÚ je jediná celostátní kompozice pro ČR; RainViewer je dlaždicová
+  // služba, která pokrývá i zbytek Evropy.
+  CLOCK_RADAR_SOURCE_CHMI = 0,
+  CLOCK_RADAR_SOURCE_RAINVIEWER = 1,
 };
 
 enum ClockNightVisualMode : uint8_t {
@@ -204,6 +219,25 @@ struct ClockRssConfig {
   char url[CLOCK_RSS_URL_LENGTH] = "";
 };
 
+// Obrazovka předpovědi. Hodiny se počítají z místa, které na kruhovém displeji
+// zbude, takže se nenastavují: kdo chce víc hodin, vypne kvalitu ovzduší nebo
+// ubere dny. Meze tady drží web i normalizace, aby se počítalo se stejnými
+// čísly jako v rozvržení obrazovky.
+constexpr uint8_t CLOCK_FORECAST_MAX_DAYS = 4;
+
+struct ClockForecastConfig {
+  bool enabled = false;
+  // Zapojení do automatické rotace, stejně jako u radaru a zpráv. Ve výchozím
+  // stavu vypnuté, aby ručně otevřená obrazovka nezmizela dřív, než se dočte.
+  bool automaticRotation = false;
+  // Sekce s kvalitou ovzduší pod předpovědí. Vypnutá uvolní tři řádky, které
+  // rozvržení rozdá hodinám - z šesti se tak stane devět.
+  bool airQuality = true;
+  uint8_t dayCount = 3;
+  uint8_t refreshMinutes = 30;
+  uint16_t displaySeconds = 20;
+};
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -269,6 +303,20 @@ struct ClockConfig {
   // schématu 31 a migrace zůstala prostým zkopírováním bajtů. Zbytek firmwaru
   // ho vidí jako index 8 přes clockConfigValueSlot().
   ClockValueSlotConfig bottomSlot;
+  // Pole schématu 32 leží až za bottomSlot, aby schéma 31 zůstalo přesnou
+  // předponou a migrace byla opět jen zkopírováním bajtů.
+  uint8_t radarSource = CLOCK_RADAR_SOURCE_CHMI;
+  bool radarLegend = true;
+  // Pole schématu 33 leží až za radarLegend, aby schéma 32 zůstalo přesnou
+  // předponou a migrace byla opět jen zkopírováním bajtů.
+  bool radarStatusLine = true;
+  // Venkovní teplota do stavového řádku radaru. Open-Meteo si ji vezme
+  // z odpovědi, kterou stahuje tak jako tak; s Home Assistantem se musí říct,
+  // která entita ji nese.
+  char radarStatusTemperatureEntityId[CLOCK_ENTITY_ID_LENGTH] = "";
+  // Pole schématu 34 leží až za radarStatusTemperatureEntityId, aby schéma 33
+  // zůstalo přesnou předponou a migrace byla opět jen zkopírováním bajtů.
+  ClockForecastConfig forecast;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -287,9 +335,18 @@ static_assert(offsetof(ClockConfig, rss) == 5024 &&
                   sizeof(ClockRssConfig) == 198,
               "Schema 30 must preserve the complete schema 29 prefix.");
 
-static_assert(offsetof(ClockConfig, bottomSlot) == 5224 &&
-                  sizeof(ClockConfig) == 5516,
+static_assert(offsetof(ClockConfig, bottomSlot) == 5224,
               "Schema 31 must preserve the complete schema 30 prefix.");
+
+static_assert(offsetof(ClockConfig, radarSource) == 5516,
+              "Schema 32 must preserve the complete schema 31 prefix.");
+
+static_assert(offsetof(ClockConfig, radarStatusLine) == 5518,
+              "Schema 33 must preserve the complete schema 32 prefix.");
+
+static_assert(offsetof(ClockConfig, forecast) == 5648 &&
+                  sizeof(ClockForecastConfig) == 8,
+              "Schema 34 must preserve the complete schema 33 prefix.");
 
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
@@ -313,6 +370,10 @@ void clockConfigApplyDefaults(ClockConfig &config);
 bool clockConfigRadarAvailable(const ClockConfig &config);
 // Obrazovka zpráv se kreslí jen se zapnutým kanálem a vyplněnou adresou.
 bool clockConfigRssAvailable(const ClockConfig &config);
+// Předpověď stojí na Open-Meteo, takže se kreslí jen se zapnutou obrazovkou.
+// Zdroj hodnot na ciferníku na tom nezáleží: souřadnice má konfigurace i tehdy,
+// když hodnoty čte z Home Assistantu.
+bool clockConfigForecastAvailable(const ClockConfig &config);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,
                          uint8_t defaultAnalogDateFormat =

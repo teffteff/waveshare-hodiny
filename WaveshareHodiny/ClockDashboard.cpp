@@ -5,10 +5,14 @@
 #include <lvgl.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <esp_heap_caps.h>
 
 #include "ClockFonts.h"
+#include "ClockLvglMemory.h"
+#include "WeatherForecastLayout.h"
 #include "DisplayDriver.h"
 #include "FirmwareUpdateService.h"
 
@@ -91,6 +95,10 @@ lv_obj_t *valuesTimeLabel = nullptr;
 lv_obj_t *valuesDateLabel = nullptr;
 lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_SLOT_COUNT] = {};
 lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_SLOT_COUNT] = {};
+// Kořen obrazovky se drží kvůli stránce předpovědi, která se zakládá až při
+// prvním zapnutí - do té doby nestojí ani jeden objekt LVGL.
+lv_obj_t *dashboardScreen = nullptr;
+lv_obj_t *forecastPage = nullptr;
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *rssHeaderLabel = nullptr;
 lv_obj_t *rssStatusLabel = nullptr;
@@ -100,10 +108,60 @@ bool rssItemHasTime[CLOCK_RSS_MAX_ITEMS] = {};
 uint8_t rssVisibleItemCount = 0;
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
+// Pás pod ukazatelem obrazovek: čas a venkovní teplota. Stejná informace na
+// stejném místě jako na ostatních obrazovkách, aby se radar nemusel opouštět
+// jen kvůli pohledu na hodiny.
+lv_obj_t *radarClockLabel = nullptr;
+// Řádek o snímku animace - "NYNÍ 14:35" nebo "-25 min 14:10".
 lv_obj_t *radarTitleLabel = nullptr;
-lv_obj_t *radarProgressBar = nullptr;
+// Rozsah patří dolů pod mapu, hned nad svoje tečky.
+lv_obj_t *radarRangeLabel = nullptr;
+// Tečky místo pruhu: jedna na snímek animace nahoře, jedna na rozsah dole.
+// Horní řada tak rovnou ukazuje, kolik snímků je připravených, a spodní, kde
+// v řadě rozsahů se člověk právě nachází.
+constexpr uint8_t RADAR_FRAME_DOT_CAPACITY = 15;
+constexpr uint8_t RADAR_RANGE_DOT_COUNT = 5;
+lv_obj_t *radarFrameDots[RADAR_FRAME_DOT_CAPACITY] = {};
+lv_obj_t *radarRangeDots[RADAR_RANGE_DOT_COUNT] = {};
+// Tečky leží přímo na mapě. Nad hustými srážkami by šedá i červená zanikly,
+// proto má každá řada pod sebou stejný tmavý podklad jako popisek nahoře.
+lv_obj_t *radarFrameDotsBacking = nullptr;
+lv_obj_t *radarRangeDotsBacking = nullptr;
+// Musí souhlasit s pořadím rozsahů v handleRadarRangeChange().
+constexpr uint16_t RADAR_RANGE_DOT_RADII[RADAR_RANGE_DOT_COUNT] = {25, 50, 100,
+                                                                   200, 0};
 bool radarFullPreparationInProgress = false;
 lv_obj_t *radarStatusLabel = nullptr;
+
+// Ukazatel obrazovek. Leží nad všemi stránkami, ne v jedné z nich - jinak by
+// z něj byl ukazatel jediné obrazovky. Pořadí teček odpovídá pořadí, ve kterém
+// se obrazovky střídají.
+constexpr uint8_t SCREEN_DOT_COUNT = 4;
+lv_obj_t *screenDots[SCREEN_DOT_COUNT] = {};
+lv_obj_t *screenDotsBacking = nullptr;
+// Vteřinový prstenec má poloměr 226 a jeho největší tečka (kometa při velikosti
+// 10) sahá k y=20. Pás teček tedy začíná až na y=22 a má užší podklad než řady
+// na radaru, aby se pod něj vešla i hlavička obrazovky zpráv.
+constexpr int SCREEN_DOT_OFFSET_Y = -212;
+constexpr int SCREEN_DOT_BACKING_PADDING = 4;
+
+// Pásy radarové obrazovky odshora dolů, v pořadí ukazatel obrazovek - čas
+// a teplota - tečky snímků - čas snímku. Rozestupy vycházejí z MeteoPlaneRadar,
+// jen přepočtené na střed prvku místo horního okraje textu a roztažené o to,
+// oč je zdejší písmo vyšší než vestavěné GFX. Čísla musí sedět s výškami
+// clock_czech_20 (24 px) a clock_czech_16 (20 px) plus 2 px odsazení nahoře
+// i dole - jinak si dva pásy vlezou do sebe.
+// Mezera mezi časem a venkovní teplotou ve stavovém řádku. Sdílí ji radar
+// i hlavička předpovědi, aby na obou obrazovkách seděl stejný odstup; mezery
+// jsou v proporcionálním písmu úzké, takže jich pár musí být.
+constexpr char STATUS_LINE_GAP[] = "      ";
+constexpr int RADAR_CLOCK_OFFSET_Y = -186;
+constexpr int RADAR_FRAME_DOTS_OFFSET_Y = -162;
+constexpr int RADAR_FRAME_LABEL_OFFSET_Y = -140;
+constexpr int RADAR_RANGE_LABEL_OFFSET_Y = 164;
+constexpr int RADAR_RANGE_DOTS_OFFSET_Y = 190;
+// Stavový řádek se dá vypnout; ostatní pásy jsou pevná výbava obrazovky.
+bool radarStatusLineEnabled = true;
 lv_obj_t *settingsPage = nullptr;
 lv_obj_t *dayBrightnessSlider = nullptr;
 lv_obj_t *nightBrightnessSlider = nullptr;
@@ -204,10 +262,12 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_CLOCK = 0,
   DASHBOARD_SCREEN_RADAR = 1,
   DASHBOARD_SCREEN_RSS = 2,
+  DASHBOARD_SCREEN_FORECAST = 3,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
 bool rssFeatureAvailable = false;
+bool forecastFeatureAvailable = false;
 bool nightModeEnabled = false;
 uint8_t nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
 bool automaticDayNightEnabled = true;
@@ -310,6 +370,7 @@ SettingsActionCallback firmwareCheckCallback = nullptr;
 SettingsActionCallback firmwareInstallCallback = nullptr;
 RadarVisibilityCallback radarVisibilityCallback = nullptr;
 RssVisibilityCallback rssVisibilityCallback = nullptr;
+ForecastVisibilityCallback forecastVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
 
 bool redNightVisualEnabled() {
@@ -325,6 +386,11 @@ const lv_font_t *configuredTimeFont() {
 }
 
 void showSettingsSubpage(uint8_t page);
+void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber);
+void updateScreenDots();
+void updateRadarClockLabel();
+void updateOverlayStatusLabels();
+const char *radarEmptyStateText(bool busy);
 void updateClockStyleCardSelection();
 void applyValuesPageColors();
 void alignCenter(lv_obj_t *object, int x, int y);
@@ -332,6 +398,8 @@ void setTextColor(lv_obj_t *object, lv_color_t color);
 lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
                     lv_color_t color);
 void applyRssColors();
+void updateForecastPage();
+void updateForecastHeaderLabel();
 
 bool englishLanguage() { return language == CLOCK_LANGUAGE_ENGLISH; }
 
@@ -400,6 +468,16 @@ void applyDashboardLanguage() {
     lv_label_set_text(firmwareUpdateTitleLabel,
                       english ? "FIRMWARE UPDATE"
                               : "AKTUALIZACE FIRMWARE");
+  // Hláška prázdné obrazovky se překládá jen tehdy, když je opravdu vidět;
+  // pod snímkem je skrytá a další snapshot si ji stejně přepíše.
+  if (radarStatusLabel != nullptr &&
+      !lv_obj_has_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN)) {
+    lv_label_set_text(radarStatusLabel, radarEmptyStateText(false));
+    alignCenter(radarStatusLabel, 0, 0);
+  }
+  // Předpověď má v každém řádku vlastní text, takže se překládá tím, že se
+  // řádky složí znovu.
+  updateForecastPage();
   displayedDeviceInfo[0] = '\0';
   displayedFirmwareStatus[0] = '\0';
 }
@@ -418,6 +496,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
   switch (screen) {
     case DASHBOARD_SCREEN_RADAR: return radarPage;
     case DASHBOARD_SCREEN_RSS: return rssPage;
+    case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     default: return nullptr;
   }
 }
@@ -426,6 +505,10 @@ bool screenAvailable(uint8_t screen) {
   switch (screen) {
     case DASHBOARD_SCREEN_RADAR: return radarFeatureAvailable;
     case DASHBOARD_SCREEN_RSS: return rssFeatureAvailable;
+    // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji
+    // majitel nechce, nestojí ani jeden objekt LVGL.
+    case DASHBOARD_SCREEN_FORECAST:
+      return forecastFeatureAvailable && forecastPage != nullptr;
     default: return true;
   }
 }
@@ -439,7 +522,14 @@ void setActiveScreen(uint8_t screen) {
     // Při návratu na radar neodkrývej snímek, který zůstal v canvasu z
     // předchozího cyklu. Canvas znovu zobrazí až první snapshot nové animace.
     lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(radarProgressBar, LV_OBJ_FLAG_HIDDEN);
+    updateRadarFrameDots(0, 0);
+    // Popisky patří ke snímku, který zrovna zmizel; nechat je viset nad
+    // prázdnou stránkou by tvrdilo, že se něco ukazuje.
+    if (radarTitleLabel != nullptr)
+      lv_obj_add_flag(radarTitleLabel, LV_OBJ_FLAG_HIDDEN);
+    if (radarRangeLabel != nullptr)
+      lv_obj_add_flag(radarRangeLabel, LV_OBJ_FLAG_HIDDEN);
+    updateOverlayStatusLabels();
   }
   lv_obj_t *previousPage = overlayPage(previous);
   if (previousPage == nullptr) previousPage = primaryClockPage();
@@ -459,6 +549,14 @@ void setActiveScreen(uint8_t screen) {
   const bool isRss = screen == DASHBOARD_SCREEN_RSS;
   if (wasRss != isRss && rssVisibilityCallback != nullptr)
     rssVisibilityCallback(isRss);
+  // Předpověď běží na vlastním intervalu i skrytá; otevření obrazovky jí jen
+  // dá vědět, aby stará data stáhla znovu.
+  const bool wasForecast = previous == DASHBOARD_SCREEN_FORECAST;
+  const bool isForecast = screen == DASHBOARD_SCREEN_FORECAST;
+  if (wasForecast != isForecast && forecastVisibilityCallback != nullptr)
+    forecastVisibilityCallback(isForecast);
+  // Stránka se právě vytáhla dopředu, takže ukazatel musí zpátky nad ni.
+  updateScreenDots();
 }
 
 void setRadarVisible(bool visible) {
@@ -2032,14 +2130,10 @@ void applyDashboardColors() {
         humidityValueLabel, humidityUnitLabel,
     };
     for (lv_obj_t *label : coloredLabels) setTextColor(label, COLOR_ERROR);
+    setTextColor(radarClockLabel, COLOR_ERROR);
     setTextColor(radarTitleLabel, COLOR_ERROR);
+    setTextColor(radarRangeLabel, COLOR_ERROR);
     setTextColor(radarStatusLabel, COLOR_ERROR);
-    if (radarProgressBar != nullptr) {
-      lv_obj_set_style_bg_color(radarProgressBar,
-                                LV_COLOR_MAKE(58, 14, 14), LV_PART_MAIN);
-      lv_obj_set_style_bg_color(radarProgressBar, COLOR_ERROR,
-                                LV_PART_INDICATOR);
-    }
     lv_obj_set_style_img_recolor(weatherImage, COLOR_ERROR, 0);
     lv_obj_set_style_img_recolor_opa(weatherImage, LV_OPA_COVER, 0);
     lv_obj_set_style_img_recolor(roomWeatherImage, COLOR_ERROR, 0);
@@ -2056,16 +2150,10 @@ void applyDashboardColors() {
         metricColorForValue(currentValues.rightTemperatureC,
                             rightValueColorScale);
     setTextColor(timeLabel, configuredColor(timeColor));
-    setTextColor(radarTitleLabel, COLOR_TEXT);
+    setTextColor(radarClockLabel, COLOR_TEXT);
+    setTextColor(radarTitleLabel, COLOR_OUTSIDE);
+    setTextColor(radarRangeLabel, COLOR_OUTSIDE);
     setTextColor(radarStatusLabel, COLOR_OUTSIDE);
-    if (radarProgressBar != nullptr) {
-      lv_obj_set_style_bg_color(radarProgressBar, COLOR_DIVIDER,
-                                LV_PART_MAIN);
-      lv_obj_set_style_bg_color(radarProgressBar,
-                                radarFullPreparationInProgress ? COLOR_ERROR
-                                                               : COLOR_OUTSIDE,
-                                LV_PART_INDICATOR);
-    }
     setTextColor(dateLabel,
                  configuredColor(analogLayoutEnabled() ? analogDateColor
                                                        : dateColor));
@@ -2107,6 +2195,11 @@ void applyDashboardColors() {
   applyConnectionStatusColors();
   applyValuesPageColors();
   applyRssColors();
+  // Předpověď má barvu v každé hodnotě zvlášť, takže se přebarvuje tím, že se
+  // řádky složí znovu.
+  updateForecastPage();
+  // Ukazatel obrazovek přebarvuje noční režim stejně jako všechno ostatní.
+  updateScreenDots();
   renderSecondRing(millis());
   renderTimeColon(millis(), true);
   applyAnalogColors();
@@ -2145,10 +2238,7 @@ void showSettings() {
   settingsVisible = true;
   lv_obj_clear_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(settingsPage);
-}
-
-void openSettingsEvent(lv_event_t *event) {
-  if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) showSettings();
+  updateScreenDots();
 }
 
 // Obrazovka zpráv: hlavička s názvem kanálu a pod ní seznam titulků, každý
@@ -2165,7 +2255,9 @@ constexpr int RSS_RADIUS = 240;
 constexpr int RSS_INSET = 14;
 constexpr int RSS_ROW_GAP = 14;
 constexpr int RSS_BLOCK_CENTER_Y = 0;
-constexpr int RSS_HEADER_Y = -196;
+// Posunuto o 6 px dolů, aby se hlavička nedotýkala podkladu pod ukazatelem
+// obrazovek, který sahá k y=34.
+constexpr int RSS_HEADER_Y = -190;
 constexpr int RSS_MIN_ROW_WIDTH = 140;
 // Mezera mezi časem a titulkem na prvním řádku.
 constexpr char RSS_TIME_SEPARATOR[] = "  ";
@@ -2252,7 +2344,9 @@ void layoutRssItems(uint8_t count) {
   const int total = rowHeight * count;
   const int top = RSS_BLOCK_CENTER_Y - total / 2;
   // Hlavička se vejde jen tehdy, když blok nezasahuje až k hornímu okraji.
-  setObjectVisible(rssHeaderLabel, count > 0 && top > RSS_HEADER_Y + 22);
+  // Mez zůstává na -174 i po posunu hlavičky, aby se počet zpráv, při kterém
+  // hlavička mizí, nezměnil.
+  setObjectVisible(rssHeaderLabel, count > 0 && top > RSS_HEADER_Y + 16);
 
   for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
     lv_obj_t *title = rssTitleLabels[index];
@@ -2312,9 +2406,807 @@ void createRssPage(lv_obj_t *screen) {
 
   makeChildrenTapThrough(rssPage);
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(rssPage, openSettingsEvent, LV_EVENT_LONG_PRESSED,
-                      nullptr);
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Obrazovka předpovědi. Svislý rozpočet - kolik hodin po denní části a
+// kvalitě ovzduší zbude - je ve WeatherForecastLayout.h, aby ho šlo testovat
+// bez LVGL; tady zůstávají jen vodorovné sloupce a kreslení.
+constexpr int FORECAST_ROW_HEIGHT = WEATHER_FORECAST_ROW_HEIGHT;
+constexpr int FORECAST_HEADER_Y = -190;
+constexpr int FORECAST_AIR_LINE_COUNT = WEATHER_FORECAST_AIR_LINE_COUNT;
+constexpr int FORECAST_AIR_LINE_HEIGHT = WEATHER_FORECAST_AIR_LINE_HEIGHT;
+constexpr int FORECAST_AIR_TOP_Y = WEATHER_FORECAST_AIR_TOP_Y;
+constexpr int FORECAST_RADIUS = 240;
+constexpr int FORECAST_DIVIDER_INSET = 24;
+// Ikony jsou stejné meteocons jako na ciferníku, jen zmenšené z 84 na 24 px.
+constexpr int FORECAST_ICON_SIZE = 24;
+constexpr uint16_t FORECAST_ICON_ZOOM =
+    (256 * FORECAST_ICON_SIZE + 42) / 84;
+constexpr int FORECAST_LABEL_X = -134;
+constexpr int FORECAST_LABEL_WIDTH = 32;
+constexpr int FORECAST_ICON_X = -96;
+constexpr int FORECAST_TEMPERATURE_X = -49;
+constexpr int FORECAST_TEMPERATURE_WIDTH = 70;
+constexpr int FORECAST_PRECIPITATION_X = 28;
+constexpr int FORECAST_PRECIPITATION_WIDTH = 76;
+constexpr int FORECAST_WIND_X = 110;
+constexpr int FORECAST_WIND_WIDTH = 84;
+// Nejvíc řádků, které si obrazovka může vyžádat naráz. Objekty se zakládají
+// jen pro ty, které aktuální nastavení opravdu kreslí.
+constexpr size_t FORECAST_MAX_ROWS =
+    WEATHER_FORECAST_MAX_HOURS + WEATHER_FORECAST_MAX_DAYS;
+
+// Objekty obrazovky předpovědi se zakládají do PSRAM. Je jich přes padesát a
+// v interní RAM by ubraly kolem dvanácti kilobajtů, o které pak přijde TLS:
+// handshake si bere dva šestnáctikilobajtové buffery a bez souvislého místa
+// selže s MBEDTLS_ERR_SSL_ALLOC_FAILED - a to i kanálu zpráv, který o
+// předpovědi nic neví. Obrazovka se staví jednou a překresluje jen při změně
+// dat, takže pomalejší přístup do PSRAM na ní není poznat.
+class ForecastPsramAllocations {
+ public:
+  ForecastPsramAllocations() { clockLvglPreferPsram(true); }
+  ~ForecastPsramAllocations() { clockLvglPreferPsram(false); }
+
+  ForecastPsramAllocations(const ForecastPsramAllocations &) = delete;
+  ForecastPsramAllocations &operator=(const ForecastPsramAllocations &) =
+      delete;
+};
+
+// Jeden řádek předpovědi. Hodnota a jednotka sdílejí jeden popisek s recolor
+// značkou: dva objekty na sloupec by na šestnácti řádcích znamenaly desítky
+// kilobajtů paměti navíc.
+struct ForecastRow {
+  lv_obj_t *label = nullptr;
+  lv_obj_t *icon = nullptr;
+  lv_obj_t *temperature = nullptr;
+  lv_obj_t *precipitation = nullptr;
+  lv_obj_t *wind = nullptr;
+};
+
+lv_obj_t *forecastHeaderLabel = nullptr;
+lv_obj_t *forecastMessageLabel = nullptr;
+lv_obj_t *forecastDivider = nullptr;
+lv_obj_t *forecastAirLabels[FORECAST_AIR_LINE_COUNT] = {};
+ForecastRow forecastRows[FORECAST_MAX_ROWS];
+uint8_t forecastCreatedRowCount = 0;
+uint8_t forecastHourRowCount = 0;
+uint8_t forecastDayRowCount = 0;
+bool forecastAirQualityEnabled = true;
+WeatherForecastData forecastDisplayed;
+bool forecastDisplayedAvailable = false;
+bool forecastFetchFailed = false;
+
+// Šířka tětivy kruhu v dané výšce, zmenšená o okraj. Používá to jen dělicí
+// čára, která má být tak dlouhá, jak jí displej dovolí.
+int forecastChordWidth(int y, int inset) {
+  const int extent = y < 0 ? -y : y;
+  if (extent >= FORECAST_RADIUS) return 0;
+  const float half =
+      sqrtf(static_cast<float>(FORECAST_RADIUS) * FORECAST_RADIUS -
+            static_cast<float>(extent) * extent);
+  const int width = static_cast<int>(2.0f * half) - 2 * inset;
+  return width < 0 ? 0 : width;
+}
+
+lv_color_t forecastMutedColor() {
+  return redNightVisualEnabled() ? lv_color_make(140, 0, 0) : COLOR_MUTED;
+}
+
+// Teplotní škála pro hodinové i denní řádky. Denní řádek se barví podle
+// maxima, protože to je z dvojice ta hodnota, kvůli které se člověk obléká.
+lv_color_t forecastTemperatureColor(float degrees) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  if (std::isnan(degrees)) return COLOR_MUTED;
+  if (degrees < 0.0f) return lv_color_make(143, 211, 255);
+  if (degrees < 20.0f) return COLOR_OUTSIDE;
+  if (degrees < 27.0f) return COLOR_TEXT;
+  if (degrees < 32.0f) return COLOR_ROOM;
+  return COLOR_ERROR;
+}
+
+lv_color_t forecastWindColor(float kmh) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  if (std::isnan(kmh)) return COLOR_MUTED;
+  // Hranice odpovídají Beaufortově stupnici: od 6 stupně se hůř chodí, od 8
+  // se lámou větve.
+  if (kmh < 39.0f) return COLOR_MUTED;
+  if (kmh < 62.0f) return COLOR_ROOM;
+  return COLOR_ERROR;
+}
+
+// Barva ikony podle podmínek. Statické meteocons jsou bílé masky s alfou,
+// takže barvu určuje až img_recolor - stejně jako u ikony na ciferníku.
+lv_color_t forecastIconColor(int weatherCode, bool isDay) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  switch (weatherIconConditionForCode(weatherCode, isDay)) {
+    case WeatherIconCondition::ClearDay:
+    case WeatherIconCondition::MostlyClearDay:
+    case WeatherIconCondition::PartlyCloudyDay:
+      return lv_color_make(255, 209, 102);
+    case WeatherIconCondition::ClearNight:
+    case WeatherIconCondition::MostlyClearNight:
+    case WeatherIconCondition::PartlyCloudyNight:
+    case WeatherIconCondition::OvercastNight:
+      return lv_color_make(181, 199, 232);
+    case WeatherIconCondition::Drizzle:
+    case WeatherIconCondition::Rain:
+      return COLOR_OUTSIDE;
+    case WeatherIconCondition::Sleet:
+      return lv_color_make(143, 211, 255);
+    case WeatherIconCondition::Snow:
+      return lv_color_make(232, 244, 255);
+    case WeatherIconCondition::Thunderstorms:
+      return COLOR_ROOM;
+    default:
+      return COLOR_MUTED;
+  }
+}
+
+// Pásma evropského indexu kvality ovzduší (0-20 dobrý až nad 100 mimořádně
+// špatný), jak je definuje Evropská agentura pro životní prostředí.
+lv_color_t forecastAqiColor(float aqi) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  if (std::isnan(aqi)) return COLOR_MUTED;
+  if (aqi <= 20.0f) return COLOR_AIR;
+  if (aqi <= 40.0f) return lv_color_make(168, 216, 84);
+  if (aqi <= 60.0f) return lv_color_make(255, 213, 79);
+  if (aqi <= 80.0f) return COLOR_ROOM;
+  return COLOR_ERROR;
+}
+
+// Denní pásma PM2.5 podle stejné stupnice; pod 10 µg/m3 je vzduch dobrý.
+lv_color_t forecastPm25Color(float value) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  if (std::isnan(value)) return COLOR_MUTED;
+  if (value <= 10.0f) return COLOR_AIR;
+  if (value <= 20.0f) return lv_color_make(168, 216, 84);
+  if (value <= 25.0f) return lv_color_make(255, 213, 79);
+  if (value <= 50.0f) return COLOR_ROOM;
+  return COLOR_ERROR;
+}
+
+// Pyl trav v zrnech na krychlový metr. Alergikům začíná být nepříjemně kolem
+// dvaceti zrn, nad padesáti je sezóna v plném proudu.
+lv_color_t forecastPollenColor(float value) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  if (std::isnan(value)) return COLOR_MUTED;
+  if (value < 1.0f) return COLOR_MUTED;
+  if (value < 20.0f) return COLOR_AIR;
+  if (value < 50.0f) return lv_color_make(255, 213, 79);
+  if (value < 200.0f) return COLOR_ROOM;
+  return COLOR_ERROR;
+}
+
+// Recolor značka LVGL: "#RRGGBB text#". Skládá se ručně, protože barvy jsou
+// lv_color_t a v 16bitovém režimu se z nich musí složky vytáhnout zpátky.
+void forecastAppendColorTag(char *destination, size_t capacity,
+                            lv_color_t color) {
+  const uint32_t rgb = lv_color_to32(color);
+  snprintf(destination, capacity, "#%02X%02X%02X ",
+           static_cast<unsigned>((rgb >> 16) & 0xFF),
+           static_cast<unsigned>((rgb >> 8) & 0xFF),
+           static_cast<unsigned>(rgb & 0xFF));
+}
+
+// Hodnota s jednotkou v jednom popisku. Jednotka je vždycky tlumená, aby
+// z řádku vystoupilo číslo; prázdná hodnota se nekreslí vůbec.
+void forecastSetValue(lv_obj_t *label, const char *value, const char *unit,
+                      lv_color_t color) {
+  if (label == nullptr) return;
+  if (value == nullptr || value[0] == '\0') {
+    lv_label_set_text(label, "");
+    return;
+  }
+  setTextColor(label, color);
+  if (unit == nullptr || unit[0] == '\0') {
+    lv_label_set_text(label, value);
+    return;
+  }
+  char tag[10];
+  forecastAppendColorTag(tag, sizeof(tag), forecastMutedColor());
+  char text[48];
+  snprintf(text, sizeof(text), "%s %s%s#", value, tag, unit);
+  lv_label_set_text(label, text);
+}
+
+// Zaokrouhlená hodnota, nebo pomlčky, když ji odpověď nenesla.
+void forecastRoundedValue(char *destination, size_t capacity, float value) {
+  if (std::isnan(value)) {
+    snprintf(destination, capacity, "--");
+    return;
+  }
+  snprintf(destination, capacity, "%d", static_cast<int>(std::lround(value)));
+}
+
+// Zkratka dne v týdnu. Dvě písmena drží sloupec úzký a v obou jazycích se
+// v nich den pozná. Česky velkými písmeny, protože z háčků a čárek mají
+// dashboardové fonty jen ty nad velkými - "Pá" by skončilo čtverečkem.
+const char *forecastWeekdayName(int weekday) {
+  static const char *const CZECH[] = {"NE", "PO", "ÚT", "ST",
+                                      "ČT", "PÁ", "SO"};
+  static const char *const ENGLISH[] = {"Su", "Mo", "Tu", "We",
+                                        "Th", "Fr", "Sa"};
+  if (weekday < 0 || weekday > 6) return "";
+  return englishLanguage() ? ENGLISH[weekday] : CZECH[weekday];
+}
+
+// Řádky kreslí clock_czech_16, ne clock_czech_18: osmnáctka nemá stupeň ani
+// mikro, takže by z "°C" i z "µg/m³" byly prázdné čtverečky.
+lv_obj_t *createForecastValueLabel(int width) {
+  lv_obj_t *label = makeLabel(forecastPage, &clock_czech_16, COLOR_TEXT);
+  lv_label_set_recolor(label, true);
+  lv_obj_set_width(label, width);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_label_set_text(label, "");
+  return label;
+}
+
+void createForecastRow(ForecastRow &row) {
+  row.label = makeLabel(forecastPage, &clock_czech_16, COLOR_MUTED);
+  lv_obj_set_width(row.label, FORECAST_LABEL_WIDTH);
+  lv_obj_set_style_text_align(row.label, LV_TEXT_ALIGN_LEFT, 0);
+  lv_label_set_text(row.label, "");
+
+  // Ikona si drží svých 84 x 84 px a kreslí se zmenšená kolem středu, takže
+  // se zarovnává středem. Menší objekt by zmenšenou kresbu odřízl.
+  row.icon = lv_img_create(forecastPage);
+  lv_img_set_zoom(row.icon, FORECAST_ICON_ZOOM);
+  lv_img_set_antialias(row.icon, true);
+  lv_obj_set_style_img_recolor_opa(row.icon, LV_OPA_COVER, 0);
+  lv_obj_add_flag(row.icon, LV_OBJ_FLAG_HIDDEN);
+
+  row.temperature = createForecastValueLabel(FORECAST_TEMPERATURE_WIDTH);
+  row.precipitation = createForecastValueLabel(FORECAST_PRECIPITATION_WIDTH);
+  row.wind = createForecastValueLabel(FORECAST_WIND_WIDTH);
+}
+
+void layoutForecastRow(const ForecastRow &row, int y) {
+  alignCenter(row.label, FORECAST_LABEL_X, y);
+  alignCenter(row.icon, FORECAST_ICON_X, y);
+  alignCenter(row.temperature, FORECAST_TEMPERATURE_X, y);
+  alignCenter(row.precipitation, FORECAST_PRECIPITATION_X, y);
+  alignCenter(row.wind, FORECAST_WIND_X, y);
+}
+
+void setForecastRowVisible(const ForecastRow &row, bool visible) {
+  setObjectVisible(row.label, visible);
+  setObjectVisible(row.temperature, visible);
+  setObjectVisible(row.precipitation, visible);
+  setObjectVisible(row.wind, visible);
+  if (!visible) lv_obj_add_flag(row.icon, LV_OBJ_FLAG_HIDDEN);
+}
+
+int forecastRowY(size_t index) {
+  return weatherForecastRowY(static_cast<uint8_t>(index),
+                             forecastHourRowCount);
+}
+
+int forecastDividerY() {
+  if (forecastHourRowCount == 0 || forecastDayRowCount == 0) return 0;
+  const int lastHour = forecastRowY(forecastHourRowCount - 1);
+  const int firstDay = forecastRowY(forecastHourRowCount);
+  return (lastHour + firstDay) / 2;
+}
+
+void layoutForecastPage() {
+  if (forecastPage == nullptr) return;
+  const size_t needed = forecastHourRowCount + forecastDayRowCount;
+  for (size_t index = 0; index < forecastCreatedRowCount; ++index) {
+    if (index < needed) {
+      layoutForecastRow(forecastRows[index], forecastRowY(index));
+    } else {
+      setForecastRowVisible(forecastRows[index], false);
+    }
+  }
+  const bool showDivider = forecastHourRowCount > 0 && forecastDayRowCount > 0;
+  setObjectVisible(forecastDivider, showDivider);
+  if (showDivider) {
+    const int y = forecastDividerY();
+    lv_obj_set_width(forecastDivider,
+                     forecastChordWidth(y, FORECAST_DIVIDER_INSET));
+    alignCenter(forecastDivider, 0, y);
+  }
+  for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line) {
+    alignCenter(forecastAirLabels[line], 0,
+                FORECAST_AIR_TOP_Y + line * FORECAST_AIR_LINE_HEIGHT);
+  }
+}
+
+// Založí tolik řádků, kolik jich současné nastavení kreslí. Volá se při
+// každé změně nastavení; ubrané řádky se ruší, aby nedržely paměť pro
+// obrazovku, na které už nejsou.
+void rebuildForecastRows(uint8_t hourCount, uint8_t dayCount) {
+  if (forecastPage == nullptr) return;
+  const ForecastPsramAllocations psramAllocations;
+  forecastHourRowCount = hourCount;
+  forecastDayRowCount = dayCount;
+  const size_t needed = hourCount + dayCount;
+  while (forecastCreatedRowCount < needed) {
+    createForecastRow(forecastRows[forecastCreatedRowCount]);
+    ++forecastCreatedRowCount;
+  }
+  while (forecastCreatedRowCount > needed) {
+    --forecastCreatedRowCount;
+    ForecastRow &row = forecastRows[forecastCreatedRowCount];
+    lv_obj_del(row.label);
+    lv_obj_del(row.icon);
+    lv_obj_del(row.temperature);
+    lv_obj_del(row.precipitation);
+    lv_obj_del(row.wind);
+    row = ForecastRow{};
+  }
+  makeChildrenTapThrough(forecastPage);
+  layoutForecastPage();
+  updateForecastPage();
+}
+
+void createForecastPage(lv_obj_t *screen) {
+  const ForecastPsramAllocations psramAllocations;
+  forecastPage = lv_obj_create(screen);
+  lv_obj_set_size(forecastPage, 480, 480);
+  lv_obj_center(forecastPage);
+  lv_obj_set_style_bg_color(forecastPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(forecastPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(forecastPage, 0, 0);
+  lv_obj_set_style_pad_all(forecastPage, 0, 0);
+  lv_obj_set_style_radius(forecastPage, 0, 0);
+  lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  forecastHeaderLabel = makeLabel(forecastPage, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_recolor(forecastHeaderLabel, true);
+  lv_label_set_text(forecastHeaderLabel, "");
+  alignCenter(forecastHeaderLabel, 0, FORECAST_HEADER_Y);
+
+  forecastMessageLabel =
+      makeLabel(forecastPage, &clock_czech_20, COLOR_OUTSIDE);
+  lv_label_set_long_mode(forecastMessageLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(forecastMessageLabel, 340);
+  lv_obj_set_style_text_align(forecastMessageLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(forecastMessageLabel, "");
+  alignCenter(forecastMessageLabel, 0, 0);
+  lv_obj_add_flag(forecastMessageLabel, LV_OBJ_FLAG_HIDDEN);
+
+  forecastDivider = makeDivider(forecastPage, 300, 1, 0, 0);
+  lv_obj_add_flag(forecastDivider, LV_OBJ_FLAG_HIDDEN);
+
+  for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line) {
+    lv_obj_t *label = makeLabel(forecastPage, &clock_czech_20, COLOR_TEXT);
+    lv_label_set_recolor(label, true);
+    lv_label_set_text(label, "");
+    forecastAirLabels[line] = label;
+  }
+
+  makeChildrenTapThrough(forecastPage);
+  lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Hlavička obrazovky: čas a venkovní teplota, stejně jako ve stavovém řádku
+// radaru. Předpověď totiž zabírá celý displej a ciferník pod ní není vidět.
+void updateForecastHeaderLabel() {
+  if (forecastHeaderLabel == nullptr) return;
+  const bool haveTime = displayedTimeText[0] != '\0' &&
+                        strcmp(displayedTimeText, "--:--") != 0;
+  char temperature[12] = "";
+  const float degrees = currentValues.outsideTemperatureC;
+  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
+    snprintf(temperature, sizeof(temperature), "%d°C",
+             static_cast<int>(std::lround(degrees)));
+  }
+  char tag[10];
+  forecastAppendColorTag(tag, sizeof(tag),
+                         forecastTemperatureColor(degrees));
+  char text[48];
+  if (haveTime && temperature[0] != '\0') {
+    snprintf(text, sizeof(text), "%s%s%s%s#", displayedTimeText,
+             STATUS_LINE_GAP, tag, temperature);
+  } else if (haveTime) {
+    snprintf(text, sizeof(text), "%s", displayedTimeText);
+  } else if (temperature[0] != '\0') {
+    snprintf(text, sizeof(text), "%s%s#", tag, temperature);
+  } else {
+    text[0] = '\0';
+  }
+  setObjectVisible(forecastHeaderLabel, text[0] != '\0');
+  if (text[0] == '\0') return;
+  setTextColor(forecastHeaderLabel,
+               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  lv_label_set_text(forecastHeaderLabel, text);
+  alignCenter(forecastHeaderLabel, 0, FORECAST_HEADER_Y);
+}
+
+// Srážky pod desetinu milimetru nejsou déšť, jen vlhko ve vzduchu. Prázdný
+// sloupec je čitelnější než les nul.
+void forecastSetPrecipitation(lv_obj_t *label, float millimeters) {
+  if (std::isnan(millimeters) || millimeters < 0.05f) {
+    lv_label_set_text(label, "");
+    return;
+  }
+  char value[12];
+  snprintf(value, sizeof(value), "%.1f", millimeters);
+  forecastSetValue(label, value, "mm",
+                   redNightVisualEnabled() ? COLOR_ERROR : COLOR_OUTSIDE);
+}
+
+void forecastSetWind(lv_obj_t *label, float kmh) {
+  if (std::isnan(kmh)) {
+    lv_label_set_text(label, "");
+    return;
+  }
+  char value[12];
+  snprintf(value, sizeof(value), "%d", static_cast<int>(std::lround(kmh)));
+  forecastSetValue(label, value, "km/h", forecastWindColor(kmh));
+}
+
+void forecastSetIcon(lv_obj_t *icon, int wmoCode, bool isDay) {
+  const int code = weatherCodeFromWmo(wmoCode);
+  const lv_img_dsc_t *source = openWeatherIconForCode(code, isDay);
+  if (source == nullptr) {
+    lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_img_set_src(icon, source);
+  // lv_img_set_src si objekt roztáhne na velikost zdroje, takže zarovnání
+  // musí přijít až po něm.
+  lv_obj_set_style_img_recolor(icon, forecastIconColor(code, isDay), 0);
+  lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
+}
+
+void updateForecastAirQuality() {
+  const bool show = forecastAirQualityEnabled && forecastDisplayedAvailable &&
+                    forecastDisplayed.airAvailable;
+  for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line)
+    setObjectVisible(forecastAirLabels[line], show);
+  if (!show) return;
+  const WeatherForecastAirQuality &air = forecastDisplayed.air;
+  const bool english = englishLanguage();
+  char muted[10];
+  forecastAppendColorTag(muted, sizeof(muted), forecastMutedColor());
+  char text[64];
+  char number[12];
+
+  forecastRoundedValue(number, sizeof(number), air.europeanAqi);
+  snprintf(text, sizeof(text), "%sAQI# %s", muted, number);
+  setTextColor(forecastAirLabels[0], forecastAqiColor(air.europeanAqi));
+  lv_label_set_text(forecastAirLabels[0], text);
+
+  forecastRoundedValue(number, sizeof(number), air.pm25);
+  if (std::isnan(air.pm25)) {
+    snprintf(text, sizeof(text), "%sPM2.5# %s", muted, number);
+  } else {
+    snprintf(text, sizeof(text), "%sPM2.5# %s %sµg/m³#", muted, number, muted);
+  }
+  setTextColor(forecastAirLabels[1], forecastPm25Color(air.pm25));
+  lv_label_set_text(forecastAirLabels[1], text);
+
+  // Mimo evropskou doménu modelu CAMS pyl nikdo nepočítá; řádek pak jen
+  // přizná, že hodnotu nemá.
+  forecastRoundedValue(number, sizeof(number), air.grassPollen);
+  snprintf(text, sizeof(text), "%s%s# %s", muted,
+           english ? "Grass pollen" : "Pyl trav", number);
+  setTextColor(forecastAirLabels[2], forecastPollenColor(air.grassPollen));
+  lv_label_set_text(forecastAirLabels[2], text);
+  alignCenter(forecastAirLabels[0], 0, FORECAST_AIR_TOP_Y);
+  alignCenter(forecastAirLabels[1], 0,
+              FORECAST_AIR_TOP_Y + FORECAST_AIR_LINE_HEIGHT);
+  alignCenter(forecastAirLabels[2], 0,
+              FORECAST_AIR_TOP_Y + 2 * FORECAST_AIR_LINE_HEIGHT);
+}
+
+void updateForecastPage() {
+  if (forecastPage == nullptr) return;
+  updateForecastHeaderLabel();
+
+  // Dokud předpověď nedorazila, drží obrazovku jediná hláška - poloprázdné
+  // řádky by tvrdily, že data jsou a jen chybí čísla.
+  const bool showRows = forecastDisplayedAvailable &&
+                        forecastDisplayed.hourCount > 0;
+  setObjectVisible(forecastMessageLabel, !showRows);
+  if (!showRows) {
+    for (size_t index = 0; index < forecastCreatedRowCount; ++index)
+      setForecastRowVisible(forecastRows[index], false);
+    setObjectVisible(forecastDivider, false);
+    for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line)
+      setObjectVisible(forecastAirLabels[line], false);
+    setTextColor(forecastMessageLabel,
+                 redNightVisualEnabled() ? COLOR_ERROR : COLOR_OUTSIDE);
+    // Verzálkami: z háčků a čárek mají dashboardové fonty jen ty nad velkými
+    // písmeny, takže by z malého "ř" nebo "ě" byl prázdný čtvereček.
+    const bool english = englishLanguage();
+    lv_label_set_text(
+        forecastMessageLabel,
+        forecastFetchFailed
+            ? (english ? "FORECAST IS NOT AVAILABLE"
+                       : "PŘEDPOVĚĎ NENÍ DOSTUPNÁ")
+            : (english ? "LOADING FORECAST..." : "NAČÍTÁM PŘEDPOVĚĎ..."));
+    alignCenter(forecastMessageLabel, 0, 0);
+    return;
+  }
+
+  char value[16];
+  for (size_t index = 0; index < forecastHourRowCount; ++index) {
+    const ForecastRow &row = forecastRows[index];
+    const bool present = index < forecastDisplayed.hourCount;
+    setForecastRowVisible(row, present);
+    if (!present) continue;
+    const WeatherForecastHour &hour = forecastDisplayed.hours[index];
+    const time_t stamp = static_cast<time_t>(hour.time);
+    struct tm local;
+    if (localtime_r(&stamp, &local) != nullptr) {
+      snprintf(value, sizeof(value), "%02d", local.tm_hour);
+    } else {
+      snprintf(value, sizeof(value), "--");
+    }
+    setTextColor(row.label, forecastMutedColor());
+    lv_label_set_text(row.label, value);
+    forecastSetIcon(row.icon, hour.weatherCode, hour.isDay);
+    if (std::isnan(hour.temperatureC)) {
+      lv_label_set_text(row.temperature, "");
+    } else {
+      snprintf(value, sizeof(value), "%d",
+               static_cast<int>(std::lround(hour.temperatureC)));
+      forecastSetValue(row.temperature, value, "°C",
+                       forecastTemperatureColor(hour.temperatureC));
+    }
+    forecastSetPrecipitation(row.precipitation, hour.precipitationMm);
+    forecastSetWind(row.wind, hour.windKmh);
+  }
+
+  for (size_t offset = 0; offset < forecastDayRowCount; ++offset) {
+    const size_t index = forecastHourRowCount + offset;
+    if (index >= forecastCreatedRowCount) break;
+    const ForecastRow &row = forecastRows[index];
+    const bool present = offset < forecastDisplayed.dayCount;
+    setForecastRowVisible(row, present);
+    if (!present) continue;
+    const WeatherForecastDay &day = forecastDisplayed.days[offset];
+    const time_t stamp = static_cast<time_t>(day.time);
+    struct tm local;
+    setTextColor(row.label, forecastMutedColor());
+    lv_label_set_text(row.label, localtime_r(&stamp, &local) != nullptr
+                                     ? forecastWeekdayName(local.tm_wday)
+                                     : "");
+    forecastSetIcon(row.icon, day.weatherCode, true);
+    if (std::isnan(day.maximumC) && std::isnan(day.minimumC)) {
+      lv_label_set_text(row.temperature, "");
+    } else if (std::isnan(day.minimumC)) {
+      snprintf(value, sizeof(value), "%d",
+               static_cast<int>(std::lround(day.maximumC)));
+      forecastSetValue(row.temperature, value, "",
+                       forecastTemperatureColor(day.maximumC));
+    } else {
+      // Maximum a minimum v jednom sloupci: "27/17" se vejde tam, kde by dvě
+      // čísla s jednotkami řádek přetáhla přes okraj kruhu.
+      snprintf(value, sizeof(value), "%d/%d",
+               static_cast<int>(std::lround(day.maximumC)),
+               static_cast<int>(std::lround(day.minimumC)));
+      forecastSetValue(row.temperature, value, "",
+                       forecastTemperatureColor(day.maximumC));
+    }
+    forecastSetPrecipitation(row.precipitation, day.precipitationMm);
+    forecastSetWind(row.wind, day.windKmh);
+  }
+
+  setObjectVisible(forecastDivider,
+                   forecastHourRowCount > 0 && forecastDayRowCount > 0 &&
+                       forecastDisplayed.dayCount > 0);
+  updateForecastAirQuality();
+}
+
+// Jedna tečka ukazatele. lv_obj_create přináší vlastní rámeček i odsazení,
+// obojí je tady na obtíž, proto se ruší.
+lv_obj_t *createRadarDot(lv_obj_t *parent, int diameter) {
+  lv_obj_t *dot = lv_obj_create(parent);
+  lv_obj_set_size(dot, diameter, diameter);
+  lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(dot, 0, 0);
+  lv_obj_set_style_pad_all(dot, 0, 0);
+  lv_obj_set_style_bg_color(dot, COLOR_DIVIDER, 0);
+  lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+  return dot;
+}
+
+// Podklad jedné řady teček. Kreslí se jako první, takže zůstane pod nimi.
+lv_obj_t *createRadarDotBacking(lv_obj_t *parent) {
+  lv_obj_t *backing = lv_obj_create(parent);
+  lv_obj_set_style_radius(backing, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(backing, 0, 0);
+  lv_obj_set_style_pad_all(backing, 0, 0);
+  lv_obj_set_style_bg_color(backing, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(backing, LV_OPA_80, 0);
+  lv_obj_clear_flag(backing, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(backing, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(backing, LV_OBJ_FLAG_HIDDEN);
+  return backing;
+}
+
+// Podklad podle počtu teček v řadě; skryje se s prázdnou řadou.
+void layoutRadarDotBacking(lv_obj_t *backing, uint8_t count, int gap,
+                           int diameter, int offsetY, int padding = 8) {
+  if (backing == nullptr) return;
+  if (count == 0) {
+    lv_obj_add_flag(backing, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const int width = (count - 1) * gap + diameter + 12;
+  lv_obj_set_size(backing, width, diameter + padding);
+  lv_obj_align(backing, LV_ALIGN_CENTER, 0, offsetY);
+  lv_obj_clear_flag(backing, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Barva zvýrazněné tečky. Červená v nočním režimu a také tehdy, když se na
+// pozadí teprve chystá kompletní animace - tuhle informaci dřív nesl pruh.
+lv_color_t radarDotAccentColor() {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  return radarFullPreparationInProgress ? COLOR_ERROR : COLOR_OUTSIDE;
+}
+
+void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber) {
+  // Jediný snímek není animace, řada teček by o něm nic neřekla.
+  const bool visibleRow = frameCount > 1 && currentFrameNumber > 0;
+  const uint8_t shown =
+      visibleRow ? min<uint8_t>(frameCount, RADAR_FRAME_DOT_CAPACITY) : 0;
+  // Při patnácti snímcích by se řada s roztečí 16 px rozlezla přes celý kruh.
+  const int gap = shown > 8 ? 12 : 16;
+  const int firstX = -((shown - 1) * gap) / 2;
+  const lv_color_t accent = radarDotAccentColor();
+  layoutRadarDotBacking(radarFrameDotsBacking, shown, gap, 8,
+                        RADAR_FRAME_DOTS_OFFSET_Y);
+  for (uint8_t index = 0; index < RADAR_FRAME_DOT_CAPACITY; ++index) {
+    lv_obj_t *dot = radarFrameDots[index];
+    if (dot == nullptr) continue;
+    if (index >= shown) {
+      lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_set_style_bg_color(
+        dot, index + 1 == currentFrameNumber ? accent : COLOR_DIVIDER, 0);
+    lv_obj_align(dot, LV_ALIGN_CENTER, firstX + index * gap,
+                 RADAR_FRAME_DOTS_OFFSET_Y);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void updateRadarRangeDots(uint16_t radiusKm) {
+  const int gap = 16;
+  const int firstX = -((RADAR_RANGE_DOT_COUNT - 1) * gap) / 2;
+  const lv_color_t accent =
+      redNightVisualEnabled() ? COLOR_ERROR : COLOR_OUTSIDE;
+  layoutRadarDotBacking(radarRangeDotsBacking, RADAR_RANGE_DOT_COUNT, gap, 6,
+                        RADAR_RANGE_DOTS_OFFSET_Y);
+  for (uint8_t index = 0; index < RADAR_RANGE_DOT_COUNT; ++index) {
+    lv_obj_t *dot = radarRangeDots[index];
+    if (dot == nullptr) continue;
+    lv_obj_set_style_bg_color(
+        dot, RADAR_RANGE_DOT_RADII[index] == radiusKm ? accent : COLOR_DIVIDER,
+        0);
+    lv_obj_align(dot, LV_ALIGN_CENTER, firstX + index * gap,
+                 RADAR_RANGE_DOTS_OFFSET_Y);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+// Text prázdné obrazovky. Hlášky ze služby jsou diagnostické a jen česky
+// ("Snimek CHMU se nepodarilo pripravit"), takže patří na stránku diagnostiky;
+// na displeji stačí přeložený stav.
+const char *radarEmptyStateText(bool busy) {
+  if (busy) return englishLanguage() ? "Loading radar..." : "Načítám radar...";
+  return englishLanguage() ? "No radar frame yet" : "Radar zatím nemá snímek";
+}
+
+// Čas a venkovní teplota do jednoho řádku. Ukáže jen tu polovinu, kterou už
+// zařízení zná - půl řádku je pořád lepší než prázdné místo.
+void updateRadarClockLabel() {
+  if (radarClockLabel == nullptr) return;
+  if (!radarStatusLineEnabled) {
+    lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  // "--:--" drží místo, dokud se čas nesynchronizuje; jako údaj nemá cenu.
+  const bool haveTime = displayedTimeText[0] != '\0' &&
+                        strcmp(displayedTimeText, "--:--") != 0;
+  char temperature[12] = "";
+  const float degrees = currentValues.outsideTemperatureC;
+  // Zaokrouhluje se na celé stupně: desetina je u venkovní teploty šum a dva
+  // znaky navíc rozhodují o tom, jestli se řádek do kruhu vejde.
+  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
+    snprintf(temperature, sizeof(temperature), "%d°C",
+             static_cast<int>(std::lround(degrees)));
+  }
+  char text[32];
+  if (haveTime && temperature[0] != '\0') {
+    snprintf(text, sizeof(text), "%s%s%s", displayedTimeText, STATUS_LINE_GAP,
+             temperature);
+  } else if (haveTime) {
+    snprintf(text, sizeof(text), "%s", displayedTimeText);
+  } else {
+    snprintf(text, sizeof(text), "%s", temperature);
+  }
+  if (text[0] == '\0') {
+    lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_label_set_text(radarClockLabel, text);
+  alignCenter(radarClockLabel, 0, RADAR_CLOCK_OFFSET_Y);
+  lv_obj_clear_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Čas a venkovní teplota se ukazují ve stavovém řádku radaru i v hlavičce
+// předpovědi, takže je obě obnovuje jedno volání.
+void updateOverlayStatusLabels() {
+  updateRadarClockLabel();
+  updateForecastHeaderLabel();
+}
+
+// Stáří snímku v minutách podle jeho času "HH:MM" v místním čase. Vrací -1,
+// když čas ještě není synchronizovaný nebo je popisek nečitelný; půlnoc se
+// řeší tím, že se záporný rozdíl posune o celý den.
+int radarFrameMinutesAgo(const char *frameTime) {
+  if (frameTime == nullptr || frameTime[0] == '\0') return -1;
+  int frameHour = 0;
+  int frameMinute = 0;
+  if (sscanf(frameTime, "%d:%d", &frameHour, &frameMinute) != 2) return -1;
+  const time_t now = time(nullptr);
+  if (now < 1600000000) return -1;
+  struct tm localNow;
+  if (localtime_r(&now, &localNow) == nullptr) return -1;
+  int minutes = (localNow.tm_hour * 60 + localNow.tm_min) -
+                (frameHour * 60 + frameMinute);
+  if (minutes < 0) minutes += 24 * 60;
+  // Radar drží nanejvýš pár hodin dozadu; cokoliv víc znamená, že čas snímku
+  // a hodiny nesedí, a tvrdit "-1400 min" by bylo horší než mlčet.
+  if (minutes > 6 * 60) return -1;
+  return minutes;
+}
+
+// Ukazatel obrazovek se zakládá až po všech stránkách, aby ležel nad nimi.
+// Stránky se při přepnutí vytahují dopředu, takže si ho updateScreenDots()
+// vytáhne zpátky nad ně.
+void createScreenDots(lv_obj_t *screen) {
+  screenDotsBacking = createRadarDotBacking(screen);
+  for (uint8_t index = 0; index < SCREEN_DOT_COUNT; ++index)
+    screenDots[index] = createRadarDot(screen, 8);
+  updateScreenDots();
+}
+
+void updateScreenDots() {
+  if (screenDotsBacking == nullptr) return;
+  uint8_t activeIndex = 0;
+  uint8_t count = 0;
+  for (uint8_t screen = 0; screen < SCREEN_DOT_COUNT; ++screen) {
+    if (!screenAvailable(screen)) continue;
+    if (screen == activeScreen) activeIndex = count;
+    ++count;
+  }
+  // Jediná obrazovka nemá mezi čím přepínat a jedna tečka by o ničem
+  // nevypovídala. Nastavení ani aktualizace firmwaru do rotace nepatří.
+  const bool visible = count > 1 && !settingsVisible && !firmwareUpdateActive;
+  const int gap = 20;
+  const int firstX = -((count - 1) * gap) / 2;
+  const lv_color_t accent =
+      redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT;
+  layoutRadarDotBacking(screenDotsBacking, visible ? count : 0, gap, 8,
+                        SCREEN_DOT_OFFSET_Y, SCREEN_DOT_BACKING_PADDING);
+  lv_obj_move_foreground(screenDotsBacking);
+  for (uint8_t index = 0; index < SCREEN_DOT_COUNT; ++index) {
+    lv_obj_t *dot = screenDots[index];
+    if (dot == nullptr) continue;
+    if (!visible || index >= count) {
+      lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_set_style_bg_color(dot, index == activeIndex ? accent
+                                                        : COLOR_DIVIDER,
+                              0);
+    lv_obj_align(dot, LV_ALIGN_CENTER, firstX + index * gap,
+                 SCREEN_DOT_OFFSET_Y);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(dot);
+  }
 }
 
 void createRadarPage(lv_obj_t *screen) {
@@ -2334,49 +3226,55 @@ void createRadarPage(lv_obj_t *screen) {
   lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(radarCanvas, LV_OBJ_FLAG_CLICKABLE);
 
-  radarTitleLabel = makeLabel(radarPage, &clock_czech_16, COLOR_TEXT);
+  // Čas a venkovní teplota. Tmavý podklad tu není ozdoba: řádek leží přímo na
+  // mapě a nad žlutými srážkami by bílý text zmizel.
+  radarClockLabel = makeLabel(radarPage, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_text(radarClockLabel, "");
+  lv_obj_set_style_bg_color(radarClockLabel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(radarClockLabel, LV_OPA_80, 0);
+  lv_obj_set_style_pad_hor(radarClockLabel, 8, 0);
+  lv_obj_set_style_pad_ver(radarClockLabel, 2, 0);
+  alignCenter(radarClockLabel, 0, RADAR_CLOCK_OFFSET_Y);
+  lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
+
+  radarTitleLabel = makeLabel(radarPage, &clock_czech_16, COLOR_OUTSIDE);
   lv_label_set_recolor(radarTitleLabel, true);
-  lv_label_set_text(radarTitleLabel, "ČHMÚ - 50 km");
+  lv_label_set_text(radarTitleLabel, "");
   lv_obj_set_style_bg_color(radarTitleLabel, COLOR_BACKGROUND, 0);
   lv_obj_set_style_bg_opa(radarTitleLabel, LV_OPA_80, 0);
   lv_obj_set_style_pad_hor(radarTitleLabel, 8, 0);
-  lv_obj_set_style_pad_ver(radarTitleLabel, 4, 0);
-  alignCenter(radarTitleLabel, 0, -205);
+  lv_obj_set_style_pad_ver(radarTitleLabel, 2, 0);
+  alignCenter(radarTitleLabel, 0, RADAR_FRAME_LABEL_OFFSET_Y);
 
-  radarProgressBar = lv_bar_create(radarPage);
-  lv_obj_set_size(radarProgressBar, 220, 3);
-  lv_obj_align(radarProgressBar, LV_ALIGN_CENTER, 0, -186);
-  lv_bar_set_range(radarProgressBar, 0, 1);
-  lv_bar_set_value(radarProgressBar, 0, LV_ANIM_OFF);
-  lv_obj_set_style_radius(radarProgressBar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-  lv_obj_set_style_radius(radarProgressBar, LV_RADIUS_CIRCLE,
-                          LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(radarProgressBar, COLOR_DIVIDER, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(radarProgressBar, LV_OPA_70, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(radarProgressBar, COLOR_OUTSIDE,
-                            LV_PART_INDICATOR);
-  lv_obj_set_style_bg_opa(radarProgressBar, LV_OPA_70, LV_PART_INDICATOR);
-  lv_obj_clear_flag(radarProgressBar, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(radarProgressBar, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_flag(radarProgressBar, LV_OBJ_FLAG_HIDDEN);
+  radarRangeLabel = makeLabel(radarPage, &clock_czech_20, COLOR_OUTSIDE);
+  lv_label_set_text(radarRangeLabel, "");
+  lv_obj_set_style_bg_color(radarRangeLabel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(radarRangeLabel, LV_OPA_80, 0);
+  lv_obj_set_style_pad_hor(radarRangeLabel, 8, 0);
+  lv_obj_set_style_pad_ver(radarRangeLabel, 2, 0);
+  alignCenter(radarRangeLabel, 0, RADAR_RANGE_LABEL_OFFSET_Y);
 
-  radarStatusLabel = makeLabel(radarPage, &clock_czech_16, COLOR_OUTSIDE);
+  radarFrameDotsBacking = createRadarDotBacking(radarPage);
+  for (uint8_t index = 0; index < RADAR_FRAME_DOT_CAPACITY; ++index)
+    radarFrameDots[index] = createRadarDot(radarPage, 8);
+  radarRangeDotsBacking = createRadarDotBacking(radarPage);
+  for (uint8_t index = 0; index < RADAR_RANGE_DOT_COUNT; ++index)
+    radarRangeDots[index] = createRadarDot(radarPage, 6);
+
+  // Dokud není ani jeden snímek, je obrazovka prázdná a hláška patří doprostřed
+  // - u spodního okraje kruhu by se dlouhý text neměl kam zalomit.
+  radarStatusLabel = makeLabel(radarPage, &clock_czech_20, COLOR_OUTSIDE);
   lv_label_set_long_mode(radarStatusLabel, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(radarStatusLabel, 340);
   lv_obj_set_style_text_align(radarStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(radarStatusLabel, englishLanguage()
-                                          ? "LOADING CHMI RADAR..."
-                                          : "Načítám radar ČHMÚ...");
+  lv_label_set_text(radarStatusLabel, radarEmptyStateText(false));
   lv_obj_set_style_bg_color(radarStatusLabel, COLOR_BACKGROUND, 0);
   lv_obj_set_style_bg_opa(radarStatusLabel, LV_OPA_80, 0);
   lv_obj_set_style_pad_all(radarStatusLabel, 6, 0);
-  alignCenter(radarStatusLabel, 0, 205);
-  lv_obj_add_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  alignCenter(radarStatusLabel, 0, 0);
 
   makeChildrenTapThrough(radarPage);
   lv_obj_add_flag(radarPage, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(radarPage, openSettingsEvent, LV_EVENT_LONG_PRESSED,
-                      nullptr);
   lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -2421,6 +3319,7 @@ void closeSettings(bool saveChanges) {
   suppressDashboardClickUntil = millis() + 3000;
   settingsVisible = false;
   lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
+  updateScreenDots();
 }
 
 void cancelSettingsEvent(lv_event_t *event) {
@@ -3004,8 +3903,6 @@ void makeValuesPage(lv_obj_t *screen) {
 
   makeChildrenTapThrough(valuesPage);
   lv_obj_add_flag(valuesPage, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(valuesPage, openSettingsEvent, LV_EVENT_LONG_PRESSED,
-                      nullptr);
   lv_obj_add_flag(valuesPage, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -3107,7 +4004,8 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
                         SettingsActionCallback firmwareInstall,
                         RadarVisibilityCallback radarVisibility,
                         RadarRangeCallback radarRange,
-                        RssVisibilityCallback rssVisibility) {
+                        RssVisibilityCallback rssVisibility,
+                        ForecastVisibilityCallback forecastVisibility) {
   savedDayBrightness = constrain(dayBrightness, 1, 100);
   savedNightBrightness = constrain(nightBrightness, 1, 100);
   automaticDayNightEnabled = automaticDayNight;
@@ -3119,7 +4017,9 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   radarVisibilityCallback = radarVisibility;
   radarRangeCallback = radarRange;
   rssVisibilityCallback = rssVisibility;
+  forecastVisibilityCallback = forecastVisibility;
   lv_obj_t *screen = lv_scr_act();
+  dashboardScreen = screen;
   lv_obj_set_style_bg_color(screen, COLOR_BACKGROUND, 0);
   lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
   lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
@@ -3250,8 +4150,6 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
 
   clockDashboardUpdate(values);
   makeChildrenTapThrough(dashboardContent);
-  lv_obj_add_event_cb(dashboardContent, openSettingsEvent, LV_EVENT_LONG_PRESSED,
-                      nullptr);
   createRadarPage(screen);
   createRssPage(screen);
   createSettingsPage(screen);
@@ -3281,6 +4179,7 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
     lv_obj_clear_flag(valuesPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(valuesPage);
   }
+  createScreenDots(screen);
 
   // Změna vzhledu musí znovu naplnit oba framebuffery celým shodným
   // ciferníkem. Teprve potom se vrátíme k částečnému direct-mode renderu.
@@ -3292,7 +4191,22 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   dashboardRuntimeConfig = config;
   dashboardRuntimeConfigAvailable = true;
   radarFeatureAvailable = clockConfigRadarAvailable(config);
+  radarStatusLineEnabled = config.radarStatusLine;
   clockDashboardSetRssAvailable(clockConfigRssAvailable(config));
+  clockDashboardSetForecastAvailable(clockConfigForecastAvailable(config));
+  // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
+  // změně nastavení musí přepočítat - jinak by obrazovka kreslila hodiny do
+  // místa, které si mezitím vzala spodní sekce.
+  if (forecastPage != nullptr) {
+    const uint8_t hours = weatherForecastHourCapacity(
+        config.forecast.airQuality, config.forecast.dayCount);
+    if (forecastAirQualityEnabled != config.forecast.airQuality ||
+        forecastHourRowCount != hours ||
+        forecastDayRowCount != config.forecast.dayCount) {
+      forecastAirQualityEnabled = config.forecast.airQuality;
+      rebuildForecastRows(hours, config.forecast.dayCount);
+    }
+  }
   if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
     activeScreen = DASHBOARD_SCREEN_CLOCK;
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
@@ -3575,6 +4489,8 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   alignConnectionStatusIcons();
   renderSecondRing(millis());
   clockDashboardUpdate(currentValues);
+  // Radar mohl přibýt nebo zmizet a stavový řádek se mohl vypnout.
+  updateScreenDots();
 }
 
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
@@ -3653,6 +4569,7 @@ void clockDashboardUpdate(const ClockValues &values) {
   char text[32];
   currentValues = values;
   if (firmwareUpdateActive) return;
+  updateOverlayStatusLabels();
   updateValuesPage();
 
   const lv_img_dsc_t *weatherIcon =
@@ -3942,6 +4859,22 @@ void clockDashboardShowSettingsPage(uint8_t page) {
   showSettingsSubpage(page);
 }
 
+bool clockDashboardSettingsVisible() { return settingsVisible; }
+
+// Podržení prstu opouští nastavení stejnou cestou jako tlačítko Zrušit: co
+// nebylo uloženo, se zahodí.
+void clockDashboardCloseSettings() {
+  if (!settingsVisible) return;
+  closeSettings(false);
+  // Zavření gestem nekončí klepnutím, není tedy co potlačovat. Bez tohoto
+  // řádku by potlačení spolklo první opravdové klepnutí po návratu.
+  suppressNextDashboardClick = false;
+}
+
+// Ruční přepnutí obrazovky projde i přes otevřené nastavení; zastaví ho jen
+// probíhající aktualizace firmwaru, do které se vstupovat nesmí.
+bool clockDashboardManualScreenChangeAllowed() { return !firmwareUpdateActive; }
+
 void clockDashboardSetNightMode(bool enabled) {
   const bool wasRedNight = redNightVisualEnabled();
   const bool modeChanged = nightModeEnabled != enabled;
@@ -3995,6 +4928,72 @@ void clockDashboardSetRssAvailable(bool available) {
       lv_obj_move_foreground(primaryClockPage());
     }
   }
+  // O jednu obrazovku v rotaci míň nebo víc: ukazatel musí ubrat či přidat
+  // tečku, jinak by sliboval obrazovku, na kterou se nedá přepnout.
+  updateScreenDots();
+}
+
+bool clockDashboardForecastVisible() {
+  return activeScreen == DASHBOARD_SCREEN_FORECAST;
+}
+
+void clockDashboardSetForecastVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_FORECAST
+                          : DASHBOARD_SCREEN_CLOCK);
+}
+
+uint8_t clockDashboardForecastHourCapacity(
+    const ClockForecastConfig &forecast) {
+  return weatherForecastHourCapacity(forecast.airQuality,
+                                     forecast.dayCount);
+}
+
+void clockDashboardSetForecastAvailable(bool available) {
+  if (available && forecastPage == nullptr && dashboardScreen != nullptr) {
+    createForecastPage(dashboardScreen);
+    const ClockForecastConfig &forecast = dashboardRuntimeConfig.forecast;
+    forecastAirQualityEnabled = forecast.airQuality;
+    rebuildForecastRows(
+        weatherForecastHourCapacity(forecast.airQuality, forecast.dayCount),
+        forecast.dayCount);
+  }
+  if (forecastFeatureAvailable == available) return;
+  forecastFeatureAvailable = available;
+  if (!available) {
+    // Služba mezipaměť zahodí také, takže po opětovném zapnutí nesmí na
+    // obrazovce bliknout předpověď z minulé konfigurace.
+    forecastDisplayedAvailable = false;
+    forecastFetchFailed = false;
+    updateForecastPage();
+  }
+  if (!available && activeScreen == DASHBOARD_SCREEN_FORECAST) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (forecastPage != nullptr)
+      lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (forecastVisibilityCallback != nullptr)
+      forecastVisibilityCallback(false);
+  }
+  // O jednu obrazovku v rotaci míň nebo víc: ukazatel musí ubrat či přidat
+  // tečku, jinak by sliboval obrazovku, na kterou se nedá přepnout.
+  updateScreenDots();
+}
+
+void clockDashboardSetForecast(const WeatherForecastData &forecast) {
+  forecastDisplayed = forecast;
+  forecastDisplayedAvailable = true;
+  forecastFetchFailed = false;
+  updateForecastPage();
+}
+
+void clockDashboardSetForecastFailed(bool failed) {
+  forecastFetchFailed = failed;
+  // Hláška se ukáže jen tam, kde ještě není co kreslit; stará předpověď na
+  // obrazovce je pořád lepší než oznámení, že se ji nepovedlo obnovit.
+  if (!forecastDisplayedAvailable) updateForecastPage();
 }
 
 void clockDashboardSetRssStatus(const char *channelTitle, const char *message,
@@ -4054,68 +5053,75 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                                     bool latestFrame,
                                     uint8_t currentFrameNumber,
                                     uint8_t animationFrameCount,
-                                    uint8_t pauseSeconds) {
+                                    uint16_t displayedRadiusKm) {
   if (radarCanvas == nullptr || radarStatusLabel == nullptr ||
-      radarTitleLabel == nullptr || radarProgressBar == nullptr)
+      radarTitleLabel == nullptr || radarRangeLabel == nullptr)
     return;
   radarFullPreparationInProgress = fullPreparationInProgress;
-  if (!redNightVisualEnabled()) {
-    lv_obj_set_style_bg_color(
-        radarProgressBar,
-        fullPreparationInProgress ? COLOR_ERROR : COLOR_OUTSIDE,
-        LV_PART_INDICATOR);
-  }
-  if (pixels != nullptr) {
+  const bool haveFrame = pixels != nullptr;
+  if (haveFrame) {
     lv_canvas_set_buffer(radarCanvas, const_cast<uint16_t *>(pixels), 480, 480,
                          LV_IMG_CF_TRUE_COLOR);
     lv_obj_clear_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(radarCanvas);
   }
-  if (pixels != nullptr && currentFrameNumber > 0 &&
-      animationFrameCount > 1) {
-    lv_bar_set_range(radarProgressBar, 0, animationFrameCount);
-    if (latestFrame) {
-      lv_bar_set_value(radarProgressBar, animationFrameCount, LV_ANIM_OFF);
-      if (pauseSeconds > 0) {
-        lv_obj_set_style_anim_time(
-            radarProgressBar,
-            static_cast<uint32_t>(pauseSeconds) * 1000UL, LV_PART_MAIN);
-        lv_bar_set_value(radarProgressBar, 0, LV_ANIM_ON);
-      } else {
-        lv_bar_set_value(radarProgressBar, 0, LV_ANIM_OFF);
-      }
-    } else {
-      lv_bar_set_value(radarProgressBar, currentFrameNumber, LV_ANIM_OFF);
-    }
-    lv_obj_clear_flag(radarProgressBar, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(radarProgressBar, LV_OBJ_FLAG_HIDDEN);
+  updateRadarFrameDots(haveFrame ? animationFrameCount : 0, currentFrameNumber);
+  updateRadarRangeDots(radiusKm);
+  updateOverlayStatusLabels();
+
+  // Bez jediného snímku není co překrývat: doprostřed přijde hláška a zbytek
+  // výbavy obrazovky se schová, aby prázdný kruh nevypadal jako porucha.
+  if (!haveFrame) {
+    lv_label_set_text(radarStatusLabel,
+                      radarEmptyStateText(loading || fullPreparationInProgress));
+    alignCenter(radarStatusLabel, 0, 0);
+    lv_obj_clear_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(radarTitleLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(radarRangeLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
   }
-  char title[96];
-  const bool highlightLatestFrame = latestFrame && !redNightVisualEnabled();
-  const char *timePrefix = highlightLatestFrame ? "#65FF45 " : "";
-  const char *timeSuffix = highlightLatestFrame ? "#" : "";
-  if (radiusKm == 0 && frameTime != nullptr && frameTime[0] != '\0')
-    snprintf(title, sizeof(title), englishLanguage() ? "CHMI - CZ - %s%s%s"
-                                                    : "ČHMÚ - ČR - %s%s%s",
-             timePrefix,
-             frameTime, timeSuffix);
-  else if (radiusKm == 0)
-    snprintf(title, sizeof(title), englishLanguage() ? "CHMI - CZ"
-                                                    : "ČHMÚ - ČR");
-  else if (frameTime != nullptr && frameTime[0] != '\0')
-    snprintf(title, sizeof(title),
-             englishLanguage() ? "CHMI - %u km - %s%s%s"
-                               : "ČHMÚ - %u km - %s%s%s",
-             radiusKm,
-             timePrefix, frameTime, timeSuffix);
+  lv_obj_add_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Řádek o snímku: nejnovější se pojmenuje "NYNÍ" a zezelená, starší nese
+  // svoje stáří. Bez zelené v nočním červeném režimu, kde by byla jediná
+  // barevná věc na displeji.
+  char frameText[48];
+  const bool haveTime = frameTime != nullptr && frameTime[0] != '\0';
+  if (haveTime && latestFrame) {
+    const bool highlight = !redNightVisualEnabled();
+    snprintf(frameText, sizeof(frameText), "%s%s %s%s",
+             highlight ? "#65FF45 " : "", englishLanguage() ? "NOW" : "NYNÍ",
+             frameTime, highlight ? "#" : "");
+  } else if (haveTime) {
+    const int minutesAgo = radarFrameMinutesAgo(frameTime);
+    if (minutesAgo > 0)
+      snprintf(frameText, sizeof(frameText), "-%d %s  %s", minutesAgo,
+               englishLanguage() ? "min" : "min", frameTime);
+    else
+      snprintf(frameText, sizeof(frameText), "%s", frameTime);
+  } else {
+    frameText[0] = '\0';
+  }
+  lv_label_set_text(radarTitleLabel, frameText);
+  alignCenter(radarTitleLabel, 0, RADAR_FRAME_LABEL_OFFSET_Y);
+  setObjectVisible(radarTitleLabel, frameText[0] != '\0');
+
+  // Rozsah dole nad svými tečkami. Zdroj dat se nejmenuje: vybírá se
+  // v nastavení a mění se nanejvýš jednou za život hodin, takže by na každém
+  // snímku jen ubíral místo. Kdo ho potřebuje ověřit, najde ho na záložce
+  // Meteoradar i na stránce diagnostiky. U RainVieweru je v popisku poloměr,
+  // který vybrané přiblížení opravdu dává.
+  // Verzálkami: z háčků a čárek mají dashboardové fonty jen ty nad velkými
+  // písmeny, takže malé "á" v "Celá ČR" by skončilo prázdným čtverečkem.
+  char rangeText[40];
+  if (radiusKm == 0)
+    snprintf(rangeText, sizeof(rangeText), "%s",
+             englishLanguage() ? "ALL OF CZECHIA" : "CELÁ ČR");
   else
-    snprintf(title, sizeof(title), englishLanguage() ? "CHMI - %u km"
-                                                    : "ČHMÚ - %u km",
-             radiusKm);
-  lv_label_set_text(radarTitleLabel, title);
-  lv_label_set_text(radarStatusLabel, "");
-  alignCenter(radarTitleLabel, 0, -205);
+    snprintf(rangeText, sizeof(rangeText), "%u km", displayedRadiusKm);
+  lv_label_set_text(radarRangeLabel, rangeText);
+  alignCenter(radarRangeLabel, 0, RADAR_RANGE_LABEL_OFFSET_Y);
+  lv_obj_clear_flag(radarRangeLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
 void clockDashboardSetWifiAddress(const char *ipAddress) {
@@ -4155,12 +5161,15 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+    if (forecastPage != nullptr)
+      lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     if (activeScreen == DASHBOARD_SCREEN_RADAR &&
         radarVisibilityCallback != nullptr)
       radarVisibilityCallback(false);
     lv_obj_clear_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(firmwareUpdateOverlay);
+    updateScreenDots();
   } else {
     lv_obj_add_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     if (settingsVisible) {
@@ -4170,10 +5179,14 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       if (radarVisibilityCallback != nullptr) radarVisibilityCallback(true);
     } else if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr) {
       lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_FORECAST &&
+               forecastPage != nullptr) {
+      lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
     } else {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }
     clockDashboardUpdate(currentValues);
+    updateScreenDots();
   }
   lv_obj_invalidate(lv_scr_act());
 }
@@ -4263,15 +5276,18 @@ void clockDashboardSetTime(const char *timeText) {
   if (valuesTimeLabel != nullptr) lv_label_set_text(valuesTimeLabel, timeText);
   if (valuesLayoutEnabled()) {
     strlcpy(displayedTimeText, timeText, sizeof(displayedTimeText));
+    updateOverlayStatusLabels();
     return;
   }
   if (analogLayoutEnabled() && strcmp(displayedTimeText, timeText) == 0) {
     lv_obj_add_flag(timeLabel, LV_OBJ_FLAG_HIDDEN);
+    updateOverlayStatusLabels();
     return;
   }
   lv_obj_set_style_text_font(timeLabel, configuredTimeFont(), 0);
   if (analogLayoutEnabled()) invalidateAnalogHands(true, false);
   strlcpy(displayedTimeText, timeText, sizeof(displayedTimeText));
+  updateOverlayStatusLabels();
   if (analogLayoutEnabled()) {
     lv_obj_add_flag(timeLabel, LV_OBJ_FLAG_HIDDEN);
     invalidateAnalogHands(true, false);

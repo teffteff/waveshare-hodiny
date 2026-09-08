@@ -37,6 +37,9 @@ Na převzaté a odvozené části se vztahují podmínky MIT licence. Její úpl
 znění je součástí souboru `LICENSE` v kořeni tohoto repozitáře. Děkuji
 autorovi za zveřejnění zdrojového kódu a inspiraci pro integraci radaru ČHMÚ.
 
+Odtud pochází i řešení druhého zdroje srážek (RainViewer), stupnice intenzity
+a evropský mapový podklad v `WaveshareHodiny/EuropeMapData.h`.
+
 ## Meteorologická data ČHMÚ
 
 Meteoradar používá radarový kompozit MAX_Z poskytovaný Českým
@@ -45,13 +48,33 @@ vyžadují uvedení zdroje.
 
 Zdroj: https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/png/
 
+## Data Open-Meteo
+
+Aktuální počasí i obrazovka předpovědi používají veřejné API Open-Meteo,
+předpověď navíc jeho službu kvality ovzduší nad daty evropského modelu CAMS
+programu Copernicus. Data nejsou součástí licence zdrojového kódu, jsou
+zveřejněná pod CC BY 4.0 a vyžadují uvedení zdroje.
+
+Zdroje: https://open-meteo.com/ · https://open-meteo.com/en/docs/air-quality-api
+· https://atmosphere.copernicus.eu/
+
+## Srážková data RainViewer
+
+Druhý zdroj meteoradaru používá veřejné dlaždice RainVieweru. Data nejsou
+součástí licence zdrojového kódu, jsou určená pro osobní nekomerční použití a
+vyžadují uvedení zdroje.
+
+Zdroj: https://www.rainviewer.com/
+
 ## Mapový podklad meteoradaru
 
-Obrys České republiky vychází z volně použitelných dat Natural Earth 1:10m,
-zjednodušených v projektu MeteoPlaneRadar. Souřadnice měst pocházejí z
-GeoNames a podléhají licenci CC BY 4.0.
+Obrys České republiky i obrysy evropských států vycházejí z volně použitelných
+dat Natural Earth 1:10m, zjednodušených v projektu MeteoPlaneRadar; evropská
+sada přes redistribuci world-atlas. Souřadnice měst pocházejí z GeoNames a
+podléhají licenci CC BY 4.0.
 
 Zdroje: https://www.naturalearthdata.com/ · https://www.geonames.org/ ·
+https://github.com/topojson/world-atlas ·
 https://github.com/petus/MeteoPlaneRadar
 
 ## Písma a ikony

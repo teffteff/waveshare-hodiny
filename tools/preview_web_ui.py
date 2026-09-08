@@ -182,6 +182,14 @@ def stub_config() -> dict:
         "rssRefreshMinutes": 10,
         "rssDisplaySeconds": 20,
         "rssAutomaticRotation": False,
+        "forecastEnabled": True,
+        "forecastAirQuality": True,
+        "forecastDayCount": 3,
+        "forecastRefreshMinutes": 30,
+        "forecastDisplaySeconds": 20,
+        "forecastAutomaticRotation": False,
+        # Stejné pořadí jako ve firmwaru: (kvalita ovzduší ? 5 : 0) + dny.
+        "forecastHourCounts": [12, 11, 10, 9, 8, 10, 8, 7, 6, 5],
         "controlSecret": "nahled-bez-zarizeni",
     }
 

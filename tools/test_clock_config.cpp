@@ -34,6 +34,14 @@ constexpr uint32_t SCHEMA_30 = 30;
 constexpr size_t SCHEMA_30_CONFIG_SIZE = offsetof(ClockConfig, bottomSlot);
 constexpr size_t SCHEMA_30_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_30_CONFIG_SIZE;
+constexpr uint32_t SCHEMA_32 = 32;
+// Schéma 32 končilo boolem, takže jeho záznam nesl i dva bajty zarovnávací
+// výplně; bez nich by kontrolní součet neseděl.
+constexpr size_t SCHEMA_32_CONFIG_SIZE =
+    (offsetof(ClockConfig, radarStatusLine) + alignof(ClockConfig) - 1) /
+    alignof(ClockConfig) * alignof(ClockConfig);
+constexpr size_t SCHEMA_32_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_32_CONFIG_SIZE;
 
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
@@ -80,6 +88,10 @@ std::string schema29Record(const ClockConfig &source) {
 
 std::string schema30Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_30, SCHEMA_30_CONFIG_SIZE);
+}
+
+std::string schema32Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_32, SCHEMA_32_CONFIG_SIZE);
 }
 
 void seed(const std::string &record) {
@@ -545,6 +557,49 @@ void testBottomValueSlotRoundTripAndNormalization() {
   assert(!loaded.slots[7].enabled);
 }
 
+// Migrace 32 -> 33 nesmí sáhnout na nic ze schématu 32. Stavový řádek radaru
+// se zapne, protože jde o kus obrazovky, ne o novou obrazovku navíc; entita
+// teploty zůstane prázdná, dokud si ji majitel nevyplní.
+void testSchema32MigrationAddsRadarStatusLine() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dataSource = CLOCK_DATA_SOURCE_HOME_ASSISTANT;
+  source.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  source.radarLegend = false;
+  source.radarRadiusKm = 100;
+  clockConfigCopy(source.rss.url, sizeof(source.rss.url),
+                  "https://www.irozhlas.cz/rss/irozhlas");
+  source.rss.enabled = true;
+  // Bajty, které schéma 32 mělo jako výplň, musí migrace přepsat výchozími
+  // hodnotami, ne tím, co v nich zůstalo.
+  source.radarStatusLine = false;
+  clockConfigCopy(source.radarStatusTemperatureEntityId,
+                  sizeof(source.radarStatusTemperatureEntityId),
+                  "sensor.zbytek");
+
+  const std::string record = schema32Record(source);
+  assert(record.size() == SCHEMA_32_RECORD_SIZE);
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 32 zůstal nedotčený, včetně jeho posledních polí.
+  assert(migrated.dataSource == CLOCK_DATA_SOURCE_HOME_ASSISTANT);
+  assert(migrated.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER);
+  assert(!migrated.radarLegend);
+  assert(migrated.radarRadiusKm == 100);
+  assert(migrated.rss.enabled);
+  assert(strcmp(migrated.rss.url, "https://www.irozhlas.cz/rss/irozhlas") == 0);
+  // Nová pole dostanou výchozí hodnoty.
+  assert(migrated.radarStatusLine);
+  assert(migrated.radarStatusTemperatureEntityId[0] == '\0');
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
 int main() {
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
@@ -559,5 +614,6 @@ int main() {
   testRssRoundTripAndClamping();
   testSchema30MigrationAddsDisabledBottomSlot();
   testBottomValueSlotRoundTripAndNormalization();
+  testSchema32MigrationAddsRadarStatusLine();
   return 0;
 }

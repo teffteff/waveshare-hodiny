@@ -10,6 +10,28 @@ inline const char *weatherIconStyleName(uint8_t style) {
   return "monochrome";
 }
 
+// Kód WMO z Open-Meteo na kód OpenWeather, kterým se v celém firmwaru vybírá
+// ikona. Používá to jak aktuální počasí na ciferníku, tak každý řádek
+// předpovědi, takže tabulka musí být jen jedna.
+inline int weatherCodeFromWmo(int wmoCode) {
+  if (wmoCode == 0) return 800;
+  if (wmoCode == 1 || wmoCode == 2) return 801;
+  if (wmoCode == 3) return 804;
+  if (wmoCode == 45 || wmoCode == 48) return 741;
+  if (wmoCode == 51 || wmoCode == 53 || wmoCode == 55) return 300;
+  if (wmoCode == 56 || wmoCode == 57) return 511;
+  if (wmoCode == 61 || wmoCode == 63 || wmoCode == 80 || wmoCode == 81)
+    return 500;
+  if (wmoCode == 65 || wmoCode == 82) return 502;
+  if (wmoCode == 66 || wmoCode == 67) return 511;
+  if (wmoCode == 71 || wmoCode == 73 || wmoCode == 77 || wmoCode == 85)
+    return 600;
+  if (wmoCode == 75 || wmoCode == 86) return 602;
+  if (wmoCode == 95) return 200;
+  if (wmoCode == 96 || wmoCode == 99) return 202;
+  return -1;
+}
+
 enum class WeatherIconCondition : uint8_t {
   ClearDay,
   ClearNight,

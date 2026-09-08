@@ -56,10 +56,16 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   ikonou a plynulou barevnou škálou,
 - animované i statické ikony počasí založené na Meteocons,
 - srážkový radar ČHMÚ s mapou České republiky, městy a 1 až 15 snímky,
-- rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané svislým gestem swipe,
+- druhý zdroj srážek RainViewer s obrysy evropských států a městy, takže radar
+  funguje i mimo Českou republiku,
+- volitelnou stupnici intenzity srážek v dBZ a mm/h podle zvoleného zdroje,
+- rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané přetažením prstu,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
-- volitelné automatické střídání hodin, radaru a zpráv se samostatnou dobou zobrazení,
+- volitelné automatické střídání hodin, radaru, zpráv a předpovědi se
+  samostatnou dobou zobrazení,
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
+- obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
+  ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
 - devět nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
   entitou Home Assistantu, jednotkou, přesností a barevnou škálou,
@@ -237,19 +243,77 @@ hydrometeorologického ústavu. Nabízí pohledy 25, 50, 100 a 200 km kolem
 uložené GPS polohy a přehled celé České republiky. Mapový podklad obsahuje
 obrys státu a města přizpůsobená jednotlivým rozsahům.
 
-Meteoradar je dostupný pouze pro polohy, které vyhledávání Open-Meteo označí
-kódem země `CZ`. U lokality mimo Českou republiku firmware radar nespouští,
-nestahuje jeho data na pozadí, nereaguje na radarová gesta a automatické
-střídání obrazovek vypne. Počasí Open-Meteo i Home Assistant zůstávají bez
-tohoto omezení.
+### Zdroj srážkových dat
+
+Radar má dva zdroje a přepínají se v nastavení webu.
+
+Kompozice **ČHMÚ** je nad Českem ostřejší a zůstává výchozí, ale za hranicemi
+nemá co ukázat. Proto je dostupná pouze pro polohy, které vyhledávání
+Open-Meteo označí kódem země `CZ`. U lokality mimo Českou republiku firmware
+radar ČHMÚ nespouští, nestahuje jeho data na pozadí, nereaguje na radarová
+gesta a automatické střídání obrazovek vypne. Počasí Open-Meteo i Home
+Assistant zůstávají bez tohoto omezení.
+
+**RainViewer** pokrývá Evropu i svět, je zdarma a nepotřebuje klíč, jen je
+hrubší. Po jeho zapnutí je radar dostupný i mimo ČR a mapový podklad se
+přepne na obrysy evropských států a evropská města; česká města si přitom
+ponechají zkratky, na které jsi zvyklý. RainViewer servíruje dlaždice Web
+Mercatoru a jeho přiblížení jde po mocninách dvou, takže vyjde nejbližší
+dostupný rozsah, a ne přesně číslo z nastavení; popisek nahoře proto ukazuje
+poloměr, který opravdu vyšel. Dlaždice se necachují, takže změna rozsahu
+znamená stažení animace znovu.
+
+### Stupnice intenzity
+
+Volitelná stupnice u levého okraje ukazuje šest odstínů s odrazivostí v dBZ a
+odpovídajícími srážkami v mm/h; převod je Marshallův-Palmerův vztah
+(Z = 200 R^1,6). Paleta i popisky se mění se zvoleným zdrojem, protože stejná
+žlutá znamená na jedné stupnici 40 dBZ a na druhé 35; kterou právě čteš, říkají
+její vlastní čísla. Zabírá kus mapy, takže ji lze vypnout; místo se pak vrátí
+popiskům měst.
+
+### Rozvržení radarové obrazovky
+
+Obrazovka má nad mapou i pod ní pevné pásy, aby stejná informace byla vždy na
+stejném řádku:
+
+1. **ukazatel obrazovek** úplně nahoře (společný všem obrazovkám, viz níže),
+2. **čas a venkovní teplota** — jde se tak na radar podívat, aniž by ses musel
+   přepínat zpátky na hodiny,
+3. **řada teček snímků**, jedna na snímek animace,
+4. **čas snímku** — nejaktuálnější snímek se jmenuje `NYNÍ` a je v denním
+   režimu jasně zelený, starší nesou svoje stáří ve tvaru `-25 min 14:10`,
+5. dole **rozsah** (`50 km`, nebo `CELÁ ČR`) a pod ním **řada teček rozsahů**.
+   Zdroj dat se na obrazovce nejmenuje — ani u rozsahu, ani v hlavičce
+   stupnice. Vybírá se v nastavení a mění se nanejvýš jednou za život hodin,
+   takže by na každém snímku jen ubíral místo; ověřit ho jde na záložce
+   Meteoradar i na stránce diagnostiky.
+
+Řádek s časem a teplotou se dá v nastavení vypnout. Teplotu bere firmware ze
+zdroje, který má nastavený: u Open-Meteo z předpovědi pro uložené město, u Home
+Assistantu z entity, kterou vybereš v poli **Entita venkovní teploty** na
+záložce Meteoradar. Bez vyplněné entity zůstane v řádku jen čas. Teplota se
+zaokrouhluje na celé stupně — desetina je u venkovní teploty šum a dva znaky
+navíc rozhodují o tom, jestli se řádek do kruhu vejde.
+
+Dokud není připravený ani jeden snímek, zůstane uprostřed prázdné obrazovky
+hláška o stavu stahování a ostatní popisky se schovají.
 
 Počet snímků lze nastavit od 1 do 15. Jeden snímek znamená statický radar;
 vyšší počet vytvoří animaci od nejstaršího snímku k nejnovějšímu. Po posledním
 snímku následuje nastavitelná pauza 0 až 30 sekund; výchozí hodnota je 5 sekund.
-Čas posledního, tedy nejaktuálnějšího snímku je v denním režimu zvýrazněný
-jasně zeleně. Decentní pruh pod popisem ukazuje průběh animace a během kompletní
-přípravy prázdné cache je červený. Nová data se kontrolují v pevných
-pětiminutových slotech přibližně minutu po čase publikace ČHMÚ.
+Rozsvícená tečka ukazuje, kde v animaci právě jsi, a během kompletní přípravy
+prázdné cache je červená. Nová data se kontrolují v pevných pětiminutových
+slotech přibližně minutu po čase publikace ČHMÚ.
+
+### Ukazatel obrazovek
+
+Nahoře na **každé** obrazovce je řada teček, jedna na obrazovku zapojenou do
+střídání — hodiny, meteoradar, zprávy a předpověď. Plná tečka je ta, na kterou se právě
+díváš. Vypnutá obrazovka svoji tečku nemá, takže řada vždycky odpovídá tomu,
+kam se dá gestem přepnout. Při jediné dostupné obrazovce se ukazatel nekreslí,
+protože jedna tečka o ničem nevypovídá; v nastavení a při aktualizaci firmwaru
+je také skrytý.
 
 Při červeném nočním vzhledu se mapový podklad, města, poloha, čas i jednotlivé
 stupně odrazivosti převedou do odstínů červené. Jas jednotlivých stupňů dál
@@ -265,7 +329,7 @@ dotykem na displeji zůstává pouze do restartu; po něm se obnoví hodnota
 naposledy uložená přes web.
 
 Automatické střídání je ve výchozím stavu vypnuté. Po zapnutí lze nastavit
-samostatnou dobu zobrazení hodin, radaru i zpráv; do střídání se zapojí jen ty
+samostatnou dobu zobrazení hodin, radaru, zpráv i předpovědi; do střídání se zapojí jen ty
 obrazovky, které jsou zapnuté, a ručně otevřená obrazovka zůstane až do dalšího
 gesta. Nastavený čas radaru je minimální: rozběhnutý animační cyklus se vždy
 dokončí včetně závěrečné pauzy, takže přechod zpět na hodiny nepřeruší animaci
@@ -305,6 +369,47 @@ Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na displeji nech
 poslední úspěšně načtené zprávy; hláška o chybě se ukáže jen tehdy, když se
 kanál nepodařilo načíst ani jednou. Vypnutá obrazovka se nestahuje vůbec a
 neobjeví se ani gestem.
+
+### Předpověď počasí
+
+Samostatná obrazovka ukazuje předpověď z Open-Meteo pro město uložené v záložce
+**Obecné**. Nezáleží na tom, odkud ciferník bere své hodnoty: souřadnice má
+konfigurace i tehdy, když hodnoty čte z Home Assistantu, takže obrazovka
+funguje v obou režimech. Zapíná se v záložce **Počasí**; ve výchozím stavu je
+vypnutá, takže se po aktualizaci firmwaru sama neobjeví.
+
+Nahoře je čas a venkovní teplota, stejně jako ve stavovém řádku radaru — celý
+displej totiž zabírá předpověď a ciferník pod ní vidět není. Pod hlavičkou jsou
+hodinové řádky (hodina, ikona, teplota, srážky, vítr) a pod dělicí čárou denní
+řádky se zkratkou dne a maximem s minimem. Srážky pod desetinu milimetru se
+nevypisují, aby ve sloupci nebyl les nul.
+
+<p align="center">
+  <img src="screenshots/forecast-air-quality.png" alt="Obrazovka předpovědi se sekcí kvality ovzduší" width="46%">
+  <img src="screenshots/forecast-nine-hours.png" alt="Obrazovka předpovědi bez kvality ovzduší s devíti hodinami" width="46%">
+</p>
+
+Dole je volitelná sekce s evropským indexem kvality ovzduší, koncentrací PM2.5
+a pylem trav; hodnoty se barví podle pásem Evropské agentury pro životní
+prostředí. Pyl počítá jen evropská doména modelu CAMS, takže mimo Evropu
+zůstane řádek s pomlčkou.
+
+**Počet hodin se nenastavuje, dopočítává se.** Kruhový displej má pevný počet
+řádků a každý řádek, který si vezme něco jiného, hodinám chybí. Sekce kvality
+ovzduší zabírá spodní tři řádky: s ní se vejde **šest hodin**, bez ní jich je
+**devět**. Stejně tak každý ubraný den (0 až 4, výchozí 3) je jedna hodina
+navíc. Web u přepínače kvality ovzduší rovnou píše, kolik hodin z aktuální
+kombinace vyjde a kolik by jich bylo po přepnutí; čísla počítá firmware, aby se
+nemohla rozejít s tím, co obrazovka opravdu nakreslí.
+
+Předpověď se stahuje v intervalu 10 až 180 minut, výchozí je 30 minut, a to
+i když je obrazovka zavřená. Otevření obrazovky gestem nebo automatickým
+střídáním navíc stažení vyvolá hned, pokud jsou data v mezipaměti starší než
+čtvrt hodiny. Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na
+displeji nechá poslední úspěšně načtenou předpověď; hláška o chybě se ukáže jen
+tehdy, když se předpověď nepodařilo načíst ani jednou. Kvalita ovzduší je
+doplněk: když se nestáhne, předpověď se ukáže bez spodní sekce. Vypnutá
+obrazovka se nestahuje vůbec a neobjeví se ani gestem.
 
 ### Barevné prahy měřených hodnot
 
@@ -362,24 +467,33 @@ nemaže.
 
 ## Nastavení na displeji
 
-Nastavení otevře dlouhý stisk kdekoliv na hodinách, meteoradaru i zprávách.
-Vodorovné gesto swipe doleva nebo doprava přepíná v pořadí hodiny, meteoradar,
-zprávy a zase zpět na hodiny. Nedostupná obrazovka se přeskočí, takže se
-zapnutým jedním doplňkem oba směry stále jen střídají dvě obrazovky.
+Obrazovky přepíná podržení prstu na místě, zhruba půl sekundy. Záleží na tom,
+kde prst leží: v levé polovině displeje se jde o obrazovku zpět, v pravé
+vpřed. Pořadí je hodiny, meteoradar, zprávy, předpověď, nastavení a zase zpět
+na hodiny, takže nastavení je z hodin na jedno podržení v levé polovině.
+Nedostupná obrazovka se přeskočí; nastavení vypnout nejde, aby hodiny bez
+radaru, zpráv i předpovědi neztratily cestu k webové adrese.
 
-Na radaru swipe nahoru pohled přiblíží a swipe dolů jej oddálí. Změna provedená
-na displeji je dočasná a nezapisuje se do flash.
+Z nastavení se odchází stejným podržením. Neuložené změny se přitom zahodí,
+uloží je jen tlačítko Uložit.
+
+Na radaru přetažení prstu nahoru nebo doprava pohled přiblíží, dolů nebo doleva
+jej oddálí. Změna provedená na displeji je dočasná a nezapisuje se do flash.
 
 | Obrazovka a gesto | Výsledek |
 | --- | --- |
-| Kterákoliv: swipe doleva nebo doprava | Přepne na další dostupnou obrazovku |
-| Kterákoliv: dlouhý stisk kdekoliv | Otevře nastavení |
+| Kterákoliv: podržení prstu v levé polovině | Přepne na předchozí dostupnou obrazovku |
+| Kterákoliv: podržení prstu v pravé polovině | Přepne na další dostupnou obrazovku |
 | Kterákoliv: krátký dotyk při vypnuté automatice den/noc | Přepne denní a noční režim |
-| Meteoradar: swipe nahoru | Přiblíží rozsah |
-| Meteoradar: swipe dolů | Oddálí rozsah |
+| Meteoradar: přetažení nahoru nebo doprava | Přiblíží rozsah |
+| Meteoradar: přetažení dolů nebo doleva | Oddálí rozsah |
 
-Nastavení má tři stránky. Velká tlačítka se šipkami je přepínají; gesto swipe
-se nepoužívá.
+Gesta se rozpoznávají v software z hrubých souřadnic dotyku, ne z gestového
+registru řadiče CST820. Vyhodnocují se až po zvednutí prstu, takže krátké tahy
+po zaobleném displeji nepropadnou a jedno gesto se nezopakuje dvakrát.
+
+Nastavení má tři stránky. Velká tlačítka se šipkami je přepínají; přetažení
+prstu se uvnitř nastavení nepoužívá.
 
 <p align="center">
   <img src="screenshots/device-settings.png" alt="První stránka nastavení denního a nočního jasu" width="31%">

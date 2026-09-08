@@ -17,18 +17,46 @@ void *frameBuffer1 = nullptr;
 void *frameBuffer2 = nullptr;
 uint8_t *screenshotBuffer = nullptr;
 size_t screenshotOffset = 0;
-bool horizontalSwipePending = false;
-bool horizontalSwipeLatched = false;
-int8_t verticalSwipePending = 0;
-bool verticalSwipeLatched = false;
-bool singleClickPending = false;
-bool singleClickLatched = false;
+int8_t screenHoldPending = 0;
+int8_t rangeSwipePending = 0;
+bool shortTapPending = false;
+bool touchDown = false;
+uint16_t touchStartX = 0;
+uint16_t touchStartY = 0;
+uint16_t touchLastX = 0;
+uint16_t touchLastY = 0;
+uint32_t touchStartedAt = 0;
+uint32_t touchLastSeenAt = 0;
 uint8_t partialRefreshWarmupFrames = 0;
 bool partialRefreshWarmupRequested = false;
 bool partialRefreshEnableRequested = false;
 
 constexpr size_t FRAMEBUFFER_BYTES = 480 * 480 * sizeof(lv_color_t);
 constexpr size_t SCREENSHOT_CHUNK_BYTES = 2048;
+
+// Řadič občas jeden vzorek vynechá; prázdné čtení uprostřed tahu tedy není
+// zvednutý prst. Gesto ukončíme teprve po této době ticha, jinak by se jeden
+// tah rozpadl na několik klepnutí.
+constexpr uint32_t TOUCH_RELEASE_MS = 60;
+// Podržení prstu na místě. Kratší dotyk je klepnutí.
+constexpr uint32_t TOUCH_HOLD_MS = 500;
+// Do jaké vzdálenosti se dotyk ještě považuje za dotyk na jednom místě.
+constexpr int32_t TOUCH_STILL_PX = 60;
+// Přetažení musí být dost dlouhé v jedné ose, málo šikmé a rychlé.
+constexpr int32_t TOUCH_SWIPE_PX = 70;
+constexpr int32_t TOUCH_SWIPE_CROSS_PX = 90;
+constexpr uint32_t TOUCH_SWIPE_MS = 700;
+// Svislá osa displeje; podržení vlevo od ní znamená zpět, vpravo vpřed.
+constexpr int32_t TOUCH_MIDDLE_X = 240;
+// Hranice dlouhého stisku pro LVGL. Musí padnout přesně tam, kde si dotyk
+// přebírá podržení, jinak by se na jedno gesto stalo dvakrát: LVGL posílá
+// LV_EVENT_SHORT_CLICKED jen do své hranice, ale my držíme stisk ještě
+// TOUCH_RELEASE_MS po posledním vzorku, takže LVGL vidí dotyk vždy o tuhle
+// dobu delší. Bez zarovnání by podržení nad tlačítkem v nastavení současně
+// přepnulo obrazovku i zmáčklo tlačítko pod prstem - a jedním z nich je
+// aktualizace firmwaru. LVGL porovnává ostrým ">", proto o milisekundu níž.
+constexpr uint16_t TOUCH_LVGL_LONG_PRESS_MS =
+    TOUCH_HOLD_MS + TOUCH_RELEASE_MS - 1;
 
 void flushDisplay(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixels) {
   // V direct mode může LVGL zavolat flush pro několik samostatných
@@ -82,46 +110,66 @@ void flushDisplay(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixe
   lv_disp_flush_ready(driver);
 }
 
+// Gesto se pozná až po zvednutí prstu z celého tahu, ne z gestového registru
+// CST820. Ten hlásí směr už v průběhu tahu a při každém dalším čtení znovu, což
+// se muselo zamykat, a krátké tahy po zaobleném displeji často propásl. Tady
+// se drží jen začátek a konec tahu a rozhodne se jednou.
+void classifyTouchGesture() {
+  const int32_t dx = static_cast<int32_t>(touchLastX) - touchStartX;
+  const int32_t dy = static_cast<int32_t>(touchLastY) - touchStartY;
+  const uint32_t duration = touchLastSeenAt - touchStartedAt;
+  const bool stillFinger =
+      abs(dx) < TOUCH_STILL_PX && abs(dy) < TOUCH_STILL_PX;
+
+  if (duration <= TOUCH_SWIPE_MS && abs(dx) >= TOUCH_SWIPE_PX &&
+      abs(dy) <= TOUCH_SWIPE_CROSS_PX) {
+    // Tažení doleva rozsah oddálí, doprava přiblíží.
+    rangeSwipePending = dx < 0 ? 1 : -1;
+  } else if (duration <= TOUCH_SWIPE_MS && abs(dy) >= TOUCH_SWIPE_PX &&
+             abs(dx) <= TOUCH_SWIPE_CROSS_PX) {
+    rangeSwipePending = dy < 0 ? -1 : 1;
+  } else if (stillFinger && duration >= TOUCH_HOLD_MS) {
+    // Podržení v levé polovině vrací zpět, v pravé jde vpřed.
+    screenHoldPending = touchLastX < TOUCH_MIDDLE_X ? -1 : 1;
+  } else if (stillFinger) {
+    shortTapPending = true;
+  }
+}
+
 void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
   Touch_Read_Data();
-  const bool horizontalSwipe =
-      touch_data.gesture == SWIPE_LEFT || touch_data.gesture == SWIPE_RIGHT;
-  const bool verticalSwipe =
-      touch_data.gesture == SWIPE_UP || touch_data.gesture == SWIPE_DOWN;
-  const bool singleClick = touch_data.gesture == SINGLE_CLICK;
-  if (horizontalSwipe) {
-    if (!horizontalSwipeLatched) {
-      horizontalSwipeLatched = true;
-      horizontalSwipePending = true;
+  const uint32_t now = millis();
+
+  // Přenos po I2C může uspět a přesto vrátit nesmysl, typicky samé 0xFF.
+  // Dekóduje se jako dotyk daleko mimo panel; takový vzorek zahodíme, jinak by
+  // uprostřed tahu posunul jeho konec a gesto by vyšlo úplně jinak.
+  const bool validSample =
+      touch_data.points > 0 && touch_data.x < 480 && touch_data.y < 480;
+
+  if (validSample) {
+    if (!touchDown) {
+      touchDown = true;
+      touchStartX = touch_data.x;
+      touchStartY = touch_data.y;
+      touchStartedAt = now;
     }
-    if (lv_indev_get_obj_act() != nullptr)
-      lv_indev_wait_release(lv_indev_get_act());
-    data->state = LV_INDEV_STATE_REL;
-  } else if (verticalSwipe) {
-    horizontalSwipeLatched = false;
-    if (!verticalSwipeLatched) {
-      verticalSwipePending = touch_data.gesture == SWIPE_UP ? -1 : 1;
-      verticalSwipeLatched = true;
-    }
-    if (lv_indev_get_obj_act() != nullptr)
-      lv_indev_wait_release(lv_indev_get_act());
-    data->state = LV_INDEV_STATE_REL;
+    touchLastX = touch_data.x;
+    touchLastY = touch_data.y;
+    touchLastSeenAt = now;
+  } else if (touchDown && now - touchLastSeenAt >= TOUCH_RELEASE_MS) {
+    touchDown = false;
+    classifyTouchGesture();
+  }
+
+  // LVGL dostává dotyk beze změny, aby nastavení na displeji zůstalo plně
+  // ovladatelné. Během krátkého ticha po vzorku držíme poslední souřadnici
+  // stisknutou, jinak by se jeden tah po stránce rozpadl na několik stisků.
+  if (touchDown) {
+    data->point.x = touchLastX;
+    data->point.y = touchLastY;
+    data->state = LV_INDEV_STATE_PR;
   } else {
-    horizontalSwipeLatched = false;
-    verticalSwipeLatched = false;
-    if (singleClick && !singleClickLatched) {
-      singleClickPending = true;
-      singleClickLatched = true;
-    } else if (!singleClick) {
-      singleClickLatched = false;
-    }
-    if (touch_data.points > 0) {
-      data->point.x = touch_data.x;
-      data->point.y = touch_data.y;
-      data->state = LV_INDEV_STATE_PR;
-    } else {
-      data->state = LV_INDEV_STATE_REL;
-    }
+    data->state = LV_INDEV_STATE_REL;
   }
 
   touch_data.points = 0;
@@ -156,7 +204,7 @@ void displayDriverInit() {
   lv_indev_drv_init(&inputDriver);
   inputDriver.type = LV_INDEV_TYPE_POINTER;
   inputDriver.read_cb = readTouch;
-  inputDriver.long_press_time = 800;
+  inputDriver.long_press_time = TOUCH_LVGL_LONG_PRESS_MS;
   lv_indev_drv_register(&inputDriver);
 
   const esp_timer_create_args_t tickTimerArgs = {
@@ -210,21 +258,21 @@ void displayDriverSetPartialRefresh(bool enabled, bool rebuildBuffers) {
   displayDriverRefresh();
 }
 
-bool displayDriverTakeHorizontalSwipe() {
-  if (!horizontalSwipePending) return false;
-  horizontalSwipePending = false;
-  return true;
-}
-
-int8_t displayDriverTakeVerticalSwipe() {
-  const int8_t direction = verticalSwipePending;
-  verticalSwipePending = 0;
+int8_t displayDriverTakeScreenHold() {
+  const int8_t direction = screenHoldPending;
+  screenHoldPending = 0;
   return direction;
 }
 
-bool displayDriverTakeSingleClick() {
-  if (!singleClickPending) return false;
-  singleClickPending = false;
+int8_t displayDriverTakeRangeSwipe() {
+  const int8_t direction = rangeSwipePending;
+  rangeSwipePending = 0;
+  return direction;
+}
+
+bool displayDriverTakeShortTap() {
+  if (!shortTapPending) return false;
+  shortTapPending = false;
   return true;
 }
 

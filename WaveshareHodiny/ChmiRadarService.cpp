@@ -14,7 +14,10 @@
 #include <time.h>
 
 #include "ChmiCa.h"
+#include "ClockConfig.h"
 #include "CzechMapData.h"
+#include "EuropeMapData.h"
+#include "RainViewerSource.h"
 #include "NetworkCoordinator.h"
 
 namespace {
@@ -24,6 +27,9 @@ constexpr char FILE_PREFIX[] = "pacz2gmaps3.z_max3d.";
 constexpr size_t FILE_NAME_CAPACITY = 56;
 constexpr size_t PNG_CAPACITY = 131072;
 constexpr size_t MAX_ANIMATION_FRAME_COUNT = 15;
+// Snímky z obou zdrojů leží ve stejných polích, takže se stropy nesmí rozejít.
+static_assert(RAIN_VIEWER_MAX_FRAMES <= MAX_ANIMATION_FRAME_COUNT,
+              "RainViewer must not return more frames than the animation holds.");
 constexpr size_t MAX_PENDING_REFRESH_FRAMES = 4;
 constexpr size_t DISPLAY_BUFFER_COUNT = 2;
 constexpr size_t RADAR_PIXEL_COUNT = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
@@ -71,6 +77,8 @@ bool reloadRequested = false;
 bool showBaseMapRequested = false;
 bool restartAnimationRequested = false;
 bool redNightMode = false;
+bool legendEnabled = true;
+uint8_t radarSource = CLOCK_RADAR_SOURCE_CHMI;
 bool nightVisualRedrawRequested = false;
 size_t animationFrameCount = 0;
 int displayedFrame = -1;
@@ -584,8 +592,22 @@ const uint8_t *mapGlyph(char character) {
       {0x3f, 0x40, 0x38, 0x40, 0x3f}, {0x63, 0x14, 0x08, 0x14, 0x63},
       {0x07, 0x08, 0x70, 0x08, 0x07}, {0x61, 0x51, 0x49, 0x45, 0x43},
   };
-  return character >= 'A' && character <= 'Z' ? glyphs[character - 'A']
-                                                : nullptr;
+  static const uint8_t digits[10][5] = {
+      {0x3e, 0x51, 0x49, 0x45, 0x3e}, {0x00, 0x42, 0x7f, 0x40, 0x00},
+      {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4b, 0x31},
+      {0x18, 0x14, 0x12, 0x7f, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39},
+      {0x3c, 0x4a, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03},
+      {0x36, 0x49, 0x49, 0x49, 0x36}, {0x06, 0x49, 0x49, 0x29, 0x1e},
+  };
+  static const uint8_t slash[5] = {0x20, 0x10, 0x08, 0x04, 0x02};
+  static const uint8_t greater[5] = {0x00, 0x41, 0x22, 0x14, 0x08};
+  static const uint8_t less[5] = {0x00, 0x08, 0x14, 0x22, 0x41};
+  if (character >= 'A' && character <= 'Z') return glyphs[character - 'A'];
+  if (character >= '0' && character <= '9') return digits[character - '0'];
+  if (character == '/') return slash;
+  if (character == '>') return greater;
+  if (character == '<') return less;
+  return nullptr;
 }
 
 void fillMapRect(uint16_t *buffer, int x, int y, int width, int height,
@@ -616,12 +638,27 @@ void drawMapText(uint16_t *buffer, int x, int y, const char *text,
   }
 }
 
-void projectRadarPoint(float latitude, float longitude, int cropX1, int cropX2,
-                       int cropY1, int cropY2, int &x, int &y) {
-  x = static_cast<int64_t>(longitudeToX(longitude) - cropX1) *
-      CHMI_RADAR_WIDTH / (cropX2 - cropX1 + 1);
-  y = static_cast<int64_t>(latitudeToY(latitude) - cropY1) *
-      CHMI_RADAR_HEIGHT / (cropY2 - cropY1 + 1);
+// Oba zdroje kreslí stejnou mapovou vrstvu, jen do jiné projekce. ČHMÚ ji
+// odvozuje z výřezu své kompozice, RainViewer si ji drží sám podle přiblížení,
+// které vybral pro dlaždice.
+struct RadarProjection {
+  bool rainViewer = false;
+  int cropX1 = 0;
+  int cropX2 = 0;
+  int cropY1 = 0;
+  int cropY2 = 0;
+};
+
+void projectRadarPoint(const RadarProjection &projection, float latitude,
+                       float longitude, int &x, int &y) {
+  if (projection.rainViewer) {
+    rainViewerProject(latitude, longitude, x, y);
+    return;
+  }
+  x = static_cast<int64_t>(longitudeToX(longitude) - projection.cropX1) *
+      CHMI_RADAR_WIDTH / (projection.cropX2 - projection.cropX1 + 1);
+  y = static_cast<int64_t>(latitudeToY(latitude) - projection.cropY1) *
+      CHMI_RADAR_HEIGHT / (projection.cropY2 - projection.cropY1 + 1);
 }
 
 struct MapLabelBox {
@@ -636,78 +673,276 @@ bool mapBoxesOverlap(const MapLabelBox &left, const MapLabelBox &right) {
          left.y < right.y + right.height && left.y + left.height > right.y;
 }
 
-void drawMapOverlay(uint16_t *buffer, float markerLatitude,
-                    float markerLongitude, uint16_t radiusKm, int cropX1,
-                    int cropX2, int cropY1, int cropY2, uint8_t opacity) {
-  if (opacity == 0) return;
-  constexpr uint16_t borderColor = 0xbdf7;
-  constexpr uint16_t cityColor = 0x07ff;
+// Stupnice intenzity srážek. Šest odstínů palety ČHMÚ od nejsilnějšího po
+// nejslabší, u každého odrazivost v dBZ a jí odpovídající srážky v mm/h podle
+// Marshallova-Palmerova vztahu. Odstíny jsou přesně ty, které dorazí z PNG,
+// takže je noční paleta obarví stejně jako samotné srážky na mapě.
+constexpr int LEGEND_X = 30;
+constexpr int LEGEND_Y = 142;
+constexpr int LEGEND_WIDTH = 96;
+// Bez řádku se jménem zdroje: ten se vybírá v nastavení a na každém snímku by
+// jen ubíral místo. Stupnici popisují její vlastní čísla.
+constexpr int LEGEND_HEIGHT = 12 + 6 * 13 + 2;
+
+void drawIntensityLegend(uint16_t *buffer, bool rainViewerSource) {
+  // Paleta musí sedět s tím, co je zrovna na displeji - stejná žlutá znamená
+  // na jedné stupnici 40 dBZ a na druhé 35 - proto si každý zdroj nese vlastní
+  // tabulku a stupnice říká, kterou z nich právě čteš. Sloupec mm/h je
+  // Marshallův-Palmerův převod (Z = 200 R^1.6), takže se obě čtou stejně.
+  static const uint16_t chmiColors[6] = {0xa000, 0xf800, 0xfc20,
+                                         0xe6e0, 0x05e0, 0x001f};
+  static const char *chmiLabels[6] = {">56 / >100", "52 / 65", "46 / 27",
+                                      "40 / 12",    "32 / 3.6", "20 / <1"};
+  static const uint16_t rainViewerColors[6] = {0xfd5f, 0xc000, 0xfa20,
+                                               0xfd40, 0x02b1, 0x051c};
+  static const char *rainViewerLabels[6] = {">55 / >100", "50 / 49", "45 / 24",
+                                            "40 / 12",    "30 / 2.7", "20 / 0.7"};
+  const uint16_t *levelColors = rainViewerSource ? rainViewerColors : chmiColors;
+  const char *const *levelLabels =
+      rainViewerSource ? rainViewerLabels : chmiLabels;
+  constexpr uint16_t unitColor = 0x8410;
+  constexpr uint16_t labelColor = 0xffff;
+  constexpr uint16_t swatchEdge = 0x4208;
+  fillMapRect(buffer, LEGEND_X - 2, LEGEND_Y - 2, LEGEND_WIDTH, LEGEND_HEIGHT,
+              0x0000, 100);
+  drawMapText(buffer, LEGEND_X, LEGEND_Y, "DBZ / MM/H", unitColor, 100);
+  for (int level = 0; level < 6; ++level) {
+    const int rowY = LEGEND_Y + 12 + level * 13;
+    fillMapRect(buffer, LEGEND_X, rowY, 9, 9, levelColors[level], 100);
+    for (int offset = 0; offset < 9; ++offset) {
+      setMapPixel(buffer, LEGEND_X + offset, rowY, swatchEdge, 100);
+      setMapPixel(buffer, LEGEND_X + offset, rowY + 8, swatchEdge, 100);
+      setMapPixel(buffer, LEGEND_X, rowY + offset, swatchEdge, 100);
+      setMapPixel(buffer, LEGEND_X + 8, rowY + offset, swatchEdge, 100);
+    }
+    drawMapText(buffer, LEGEND_X + 13, rowY + 1, levelLabels[level],
+                labelColor, 100);
+  }
+}
+
+// Popisky se rozmisťují tak, aby na sebe nelezly: kdo si místo zabere první,
+// ten si ho nechá. Města se proto procházejí po úrovních od největších.
+// Evropská data mají přes tisíc měst, ale na kruh se jich vejde jen hrstka,
+// takže seznam obsazených míst stačí pevný.
+constexpr size_t MAP_LABEL_CAPACITY = 64;
+
+struct MapLabelPlacer {
+  MapLabelBox occupied[MAP_LABEL_CAPACITY] = {};
+  size_t count = 0;
+
+  bool claim(const MapLabelBox &box) {
+    if (count >= MAP_LABEL_CAPACITY) return false;
+    for (size_t index = 0; index < count; ++index)
+      if (mapBoxesOverlap(box, occupied[index])) return false;
+    occupied[count++] = box;
+    return true;
+  }
+};
+
+// Jedno město: tečka a vedle ní popisek. Vrací false, když se na displej nebo
+// mezi ostatní popisky nevešlo.
+bool drawMapCity(uint16_t *buffer, const RadarProjection &projection,
+                 MapLabelPlacer &placer, float latitude, float longitude,
+                 const char *label, uint16_t cityColor, uint8_t opacity) {
+  int x = 0;
+  int y = 0;
+  projectRadarPoint(projection, latitude, longitude, x, y);
+  const int deltaX = x - CHMI_RADAR_WIDTH / 2;
+  const int deltaY = y - CHMI_RADAR_HEIGHT / 2;
+  if (deltaX * deltaX + deltaY * deltaY > 225 * 225) return false;
+
+  const int textWidth = strlen(label) * 6 - 1;
+  MapLabelBox box = {x + 6, y - 5, textWidth + 4, 11};
+  if (box.x + box.width >= CHMI_RADAR_WIDTH) box.x = x - 6 - box.width;
+  if (box.x < 0 || box.y < 54 || box.y + box.height >= CHMI_RADAR_HEIGHT)
+    return false;
+  if (!placer.claim(box)) return false;
+
+  for (int offsetY = -2; offsetY <= 2; ++offsetY)
+    for (int offsetX = -2; offsetX <= 2; ++offsetX)
+      if (offsetX * offsetX + offsetY * offsetY <= 4)
+        setMapPixel(buffer, x + offsetX, y + offsetY, 0xffff, opacity);
+  fillMapRect(buffer, box.x, box.y, box.width, box.height, 0x0000, opacity);
+  drawMapText(buffer, box.x + 2, box.y + 2, label, cityColor, opacity);
+  return true;
+}
+
+// Mapa ČR: hranice státu a krajská města. Kompozice ČHMÚ nikdy nesahá dál,
+// takže se tady nic ořezávat nemusí.
+void drawCzechMapLayer(uint16_t *buffer, const RadarProjection &projection,
+                       MapLabelPlacer &placer, uint16_t radiusKm,
+                       uint16_t borderColor, uint16_t cityColor,
+                       uint8_t opacity) {
   int previousX = 0;
   int previousY = 0;
   for (size_t index = 0;
        index < sizeof(CZECH_MAP_BORDER) / sizeof(CZECH_MAP_BORDER[0]);
        ++index) {
-    const float longitude = CZECH_MAP_LON_ORIGIN +
-                            CZECH_MAP_BORDER[index].longitude *
-                                CZECH_MAP_COORD_SCALE;
-    const float latitude = CZECH_MAP_LAT_ORIGIN +
-                           CZECH_MAP_BORDER[index].latitude *
-                               CZECH_MAP_COORD_SCALE;
+    const float longitude =
+        CZECH_MAP_LON_ORIGIN +
+        CZECH_MAP_BORDER[index].longitude * CZECH_MAP_COORD_SCALE;
+    const float latitude =
+        CZECH_MAP_LAT_ORIGIN +
+        CZECH_MAP_BORDER[index].latitude * CZECH_MAP_COORD_SCALE;
     int x = 0;
     int y = 0;
-    projectRadarPoint(latitude, longitude, cropX1, cropX2, cropY1, cropY2, x,
-                      y);
+    projectRadarPoint(projection, latitude, longitude, x, y);
     if (index > 0)
       drawMapLine(buffer, previousX, previousY, x, y, borderColor, opacity);
     previousX = x;
     previousY = y;
   }
 
-  MapLabelBox occupied[sizeof(CZECH_MAP_CITIES) /
-                       sizeof(CZECH_MAP_CITIES[0])] = {};
-  size_t occupiedCount = 0;
   const bool showFullNames = radiusKm > 0 && radiusKm <= 50;
-  for (uint8_t tier = 1; tier <= 2; ++tier) {
+  for (uint8_t tier = 1; tier <= 2; ++tier)
     for (const CzechMapCity &city : CZECH_MAP_CITIES) {
       if (city.tier != tier) continue;
+      drawMapCity(buffer, projection, placer, city.latitude, city.longitude,
+                  showFullNames ? city.name : city.label, cityColor, opacity);
+    }
+}
+
+// Leží české město ve vlastním seznamu? Porovnává se poloha, ne jméno:
+// evropská data píší některá jinak ("Usti nad Labem" proti našemu "Usti n.
+// L.") a podle jména by se nakreslila dvakrát.
+bool haveCzechCity(float latitude, float longitude) {
+  constexpr float TOLERANCE = 0.05f;  // zhruba pět kilometrů
+  for (const CzechMapCity &city : CZECH_MAP_CITIES)
+    if (fabsf(city.latitude - latitude) <= TOLERANCE &&
+        fabsf(city.longitude - longitude) <= TOLERANCE)
+      return true;
+  return false;
+}
+
+// Mapa Evropy pro RainViewer. Pokrývá celý kontinent, ale na displeji je vždy
+// jen výsek, takže se všechno nejdřív ořeže viditelným oknem; bez toho by se
+// kreslení třiceti tisíc bodů vleklo.
+void drawEuropeMapLayer(uint16_t *buffer, const RadarProjection &projection,
+                        MapLabelPlacer &placer, uint16_t radiusKm,
+                        uint16_t borderColor, uint16_t cityColor,
+                        uint8_t opacity) {
+  float southLatitude = 0.0f;
+  float northLatitude = 0.0f;
+  float westLongitude = 0.0f;
+  float eastLongitude = 0.0f;
+  rainViewerWindow(southLatitude, northLatitude, westLongitude,
+                   eastLongitude);
+
+  const auto pointLongitude = [](uint16_t value) {
+    return EU_LON_ORIGIN + value * EU_COORD_SCALE;
+  };
+  const auto pointLatitude = [](uint16_t value) {
+    return EU_LAT_ORIGIN + value * EU_COORD_SCALE;
+  };
+
+  for (int ring = 0; ring < EU_RING_COUNT; ++ring) {
+    const uint16_t first = EU_RING_OFFSETS[ring];
+    const uint16_t last = EU_RING_OFFSETS[ring + 1];
+    if (last - first < 2) continue;
+
+    // Obálka celého prstence: když mine okno, přeskočí se rovnou celý stát.
+    // Právě tohle drží kreslení levné - při rozsahu 25 km takhle odpadne
+    // skoro všechno.
+    uint16_t minX = 0xffff;
+    uint16_t maxX = 0;
+    uint16_t minY = 0xffff;
+    uint16_t maxY = 0;
+    for (uint16_t index = first; index < last; ++index) {
+      const uint16_t x = EU_BORDER_PTS[index][0];
+      const uint16_t y = EU_BORDER_PTS[index][1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (pointLongitude(maxX) < westLongitude ||
+        pointLongitude(minX) > eastLongitude)
+      continue;
+    if (pointLatitude(maxY) < southLatitude ||
+        pointLatitude(minY) > northLatitude)
+      continue;
+
+    // Úsečka se kreslí, jakmile je v okně kterýkoli z jejích konců. Kdyby se
+    // vyžadovaly oba, hranice by u kraje displeje končila utnutá.
+    int previousX = 0;
+    int previousY = 0;
+    bool previousInside = false;
+    bool firstPoint = true;
+    for (uint16_t index = first; index < last; ++index) {
+      const float longitude = pointLongitude(EU_BORDER_PTS[index][0]);
+      const float latitude = pointLatitude(EU_BORDER_PTS[index][1]);
+      const bool inside =
+          latitude >= southLatitude && latitude <= northLatitude &&
+          longitude >= westLongitude && longitude <= eastLongitude;
       int x = 0;
       int y = 0;
-      projectRadarPoint(city.latitude, city.longitude, cropX1, cropX2, cropY1,
-                        cropY2, x, y);
-      const int deltaX = x - CHMI_RADAR_WIDTH / 2;
-      const int deltaY = y - CHMI_RADAR_HEIGHT / 2;
-      if (deltaX * deltaX + deltaY * deltaY > 225 * 225) continue;
-
-      const char *label = showFullNames ? city.name : city.label;
-      const int textWidth = strlen(label) * 6 - 1;
-      MapLabelBox box = {x + 6, y - 5, textWidth + 4, 11};
-      if (box.x + box.width >= CHMI_RADAR_WIDTH)
-        box.x = x - 6 - box.width;
-      if (box.x < 0 || box.y < 54 || box.y + box.height >= CHMI_RADAR_HEIGHT)
-        continue;
-      bool overlaps = false;
-      for (size_t index = 0; index < occupiedCount; ++index)
-        if (mapBoxesOverlap(box, occupied[index])) {
-          overlaps = true;
-          break;
-        }
-      if (overlaps) continue;
-
-      for (int offsetY = -2; offsetY <= 2; ++offsetY)
-        for (int offsetX = -2; offsetX <= 2; ++offsetX)
-          if (offsetX * offsetX + offsetY * offsetY <= 4)
-            setMapPixel(buffer, x + offsetX, y + offsetY, 0xffff, opacity);
-      fillMapRect(buffer, box.x, box.y, box.width, box.height, 0x0000,
-                  opacity);
-      drawMapText(buffer, box.x + 2, box.y + 2, label, cityColor, opacity);
-      occupied[occupiedCount++] = box;
+      projectRadarPoint(projection, latitude, longitude, x, y);
+      if (!firstPoint && (inside || previousInside))
+        drawMapLine(buffer, previousX, previousY, x, y, borderColor, opacity);
+      previousX = x;
+      previousY = y;
+      previousInside = inside;
+      firstPoint = false;
     }
+  }
+
+  // Čím dál je pohled, tím méně měst se vejde, aby zůstal čitelný.
+  const uint8_t maxTier = radiusKm > 0 && radiusKm <= 50    ? 3
+                          : radiusKm > 0 && radiusKm <= 100 ? 2
+                                                            : 1;
+  const bool showFullNames = radiusKm > 0 && radiusKm <= 50;
+  for (uint8_t tier = 1; tier <= maxTier; ++tier) {
+    for (const EuCity &city : EU_CITIES) {
+      if (city.tier != tier) continue;
+      if (city.lat < southLatitude || city.lat > northLatitude ||
+          city.lon < westLongitude || city.lon > eastLongitude)
+        continue;
+      // Česká města kreslíme z vlastního seznamu - jsou to táž místa, ale se
+      // zkratkami, které lidé znají (PHA místo PRAH).
+      if (haveCzechCity(city.lat, city.lon)) continue;
+      drawMapCity(buffer, projection, placer, city.lat, city.lon,
+                  showFullNames ? city.name : city.abbr, cityColor, opacity);
+    }
+    if (tier > 2) continue;
+    for (const CzechMapCity &city : CZECH_MAP_CITIES) {
+      if (city.tier != tier) continue;
+      drawMapCity(buffer, projection, placer, city.latitude, city.longitude,
+                  showFullNames ? city.name : city.label, cityColor, opacity);
+    }
+  }
+}
+
+void drawMapOverlay(uint16_t *buffer, float markerLatitude,
+                    float markerLongitude, uint16_t radiusKm,
+                    const RadarProjection &projection, uint8_t opacity) {
+  if (opacity == 0) return;
+  constexpr uint16_t borderColor = 0xbdf7;
+  constexpr uint16_t cityColor = 0x07ff;
+
+  portENTER_CRITICAL(&stateMux);
+  const bool showLegend = legendEnabled;
+  portEXIT_CRITICAL(&stateMux);
+
+  // Stupnice zabírá kus levé strany, proto do seznamu obsazených míst vstupuje
+  // jako první; bez ní se ta plocha uvolní zpět popiskům měst.
+  MapLabelPlacer placer;
+  if (showLegend) {
+    placer.claim(MapLabelBox{LEGEND_X - 2, LEGEND_Y - 2, LEGEND_WIDTH,
+                             LEGEND_HEIGHT});
+  }
+
+  if (projection.rainViewer) {
+    drawEuropeMapLayer(buffer, projection, placer, radiusKm, borderColor,
+                       cityColor, opacity);
+  } else {
+    drawCzechMapLayer(buffer, projection, placer, radiusKm, borderColor,
+                      cityColor, opacity);
   }
 
   int markerX = 0;
   int markerY = 0;
-  projectRadarPoint(markerLatitude, markerLongitude, cropX1, cropX2, cropY1,
-                    cropY2, markerX, markerY);
+  projectRadarPoint(projection, markerLatitude, markerLongitude, markerX,
+                    markerY);
   constexpr uint16_t white = 0xffff;
   const int markerDeltaX = markerX - CHMI_RADAR_WIDTH / 2;
   const int markerDeltaY = markerY - CHMI_RADAR_HEIGHT / 2;
@@ -717,6 +952,8 @@ void drawMapOverlay(uint16_t *buffer, float markerLatitude,
       setMapPixel(buffer, markerX, markerY + offset, white, opacity);
     }
   }
+
+  if (showLegend) drawIntensityLegend(buffer, projection.rainViewer);
 }
 
 void drawDisplayRing(uint16_t *buffer) {
@@ -751,22 +988,36 @@ void radarProjectionBounds(float latitude, float longitude, uint16_t radiusKm,
   cropY2 = latitudeToY(latitude - latitudeSpan);
 }
 
+// Projekce podle právě zvoleného zdroje. RainViewer si přiblížení určuje sám,
+// takže se mu jen nastaví pohled; ČHMÚ potřebuje spočítat výřez kompozice.
+RadarProjection currentProjection(float latitude, float longitude,
+                                  uint16_t radiusKm) {
+  RadarProjection projection;
+  portENTER_CRITICAL(&stateMux);
+  projection.rainViewer = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
+  portEXIT_CRITICAL(&stateMux);
+  if (projection.rainViewer) {
+    rainViewerSetView(latitude, longitude, radiusKm);
+    return projection;
+  }
+  radarProjectionBounds(latitude, longitude, radiusKm, projection.cropX1,
+                        projection.cropX2, projection.cropY1,
+                        projection.cropY2);
+  return projection;
+}
+
 bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
                  uint8_t mapOpacityValue, uint32_t revision) {
   if (!ensureBuffers()) return false;
   imageWidth = RADAR_SOURCE_WIDTH;
   imageHeight = RADAR_SOURCE_HEIGHT;
-  int cropX1 = 0;
-  int cropX2 = 0;
-  int cropY1 = 0;
-  int cropY2 = 0;
-  radarProjectionBounds(latitude, longitude, radiusKm, cropX1, cropX2, cropY1,
-                        cropY2);
+  const RadarProjection projection =
+      currentProjection(latitude, longitude, radiusKm);
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;
   uint16_t *target = displayBuffers[targetBuffer];
   memset(target, 0, RADAR_PIXEL_COUNT * sizeof(uint16_t));
-  drawMapOverlay(target, latitude, longitude, radiusKm, cropX1, cropX2, cropY1,
-                 cropY2, mapOpacityValue);
+  drawMapOverlay(target, latitude, longitude, radiusKm, projection,
+                 mapOpacityValue);
   drawDisplayRing(target);
   portENTER_CRITICAL(&stateMux);
   const bool nightVisual = redNightMode;
@@ -850,8 +1101,13 @@ bool decodeRadar(const uint8_t *pngData, size_t pngSize, float latitude,
   // přesně celý neprokládaný obraz; částečný nebo neuspořádaný výstup dál
   // odmítáme.
   if (result != PNG_SUCCESS && !completeImage) return false;
-  drawMapOverlay(target, markerLatitude, markerLongitude, radiusKm, cropX1,
-                 cropX2, cropY1, cropY2, mapOpacityValue);
+  RadarProjection projection;
+  projection.cropX1 = cropX1;
+  projection.cropX2 = cropX2;
+  projection.cropY1 = cropY1;
+  projection.cropY2 = cropY2;
+  drawMapOverlay(target, markerLatitude, markerLongitude, radiusKm, projection,
+                 mapOpacityValue);
   drawDisplayRing(target);
   return true;
 }
@@ -1275,6 +1531,93 @@ bool loadAnimation(float latitude, float longitude, uint16_t radiusKm,
   return false;
 }
 
+// Stažení a příprava animace z RainVieweru. Proti ČHMÚ tu odpadá cache PNG:
+// jiný rozsah znamená jiné přiblížení a tedy úplně jiné dlaždice, takže se
+// výřez z ničeho přepočítat nedá a snímky se stahují znovu.
+bool loadRainViewerAnimation(float latitude, float longitude,
+                             uint16_t radiusKm, uint8_t wantedFrameCount,
+                             uint8_t mapOpacityValue, uint32_t revision) {
+  if (WiFi.status() != WL_CONNECTED) {
+    setStatus(false, "Wi-Fi neni pripojena");
+    return false;
+  }
+  if (!ensureBuffers()) {
+    setStatus(false, "Nedostatek pameti pro radar");
+    return false;
+  }
+  portENTER_CRITICAL(&stateMux);
+  fullPreparationInProgress = true;
+  ++generation;
+  portEXIT_CRITICAL(&stateMux);
+  setStatus(true, "Obnovuji radar RainViewer...");
+
+  const auto giveUp = [&](const char *message) {
+    setStatus(false, message);
+    portENTER_CRITICAL(&stateMux);
+    if (revision == requestRevision) fullPreparationInProgress = false;
+    portEXIT_CRITICAL(&stateMux);
+    return false;
+  };
+
+  static RainViewerIndex index;
+  if (!rainViewerFetchIndex(wantedFrameCount, index, revision)) {
+    return giveUp("Seznam RainVieweru se nepodarilo nacist");
+  }
+  const size_t frameCount = index.frameCount;
+
+  rainViewerSetView(latitude, longitude, radiusKm);
+  RadarProjection projection;
+  projection.rainViewer = true;
+
+  beginProgressivePreparation(frameCount);
+  portENTER_CRITICAL(&stateMux);
+  // Dlaždice se necachují, takže ani seznam stažených PNG nedává smysl.
+  cachedPngCount = 0;
+  portEXIT_CRITICAL(&stateMux);
+
+  for (size_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+    if (!rainViewerBuildFrame(index.frames[frameIndex], decodeBuffer,
+                              revision))
+      return giveUp("Snimek RainVieweru se nepodarilo stahnout");
+    drawMapOverlay(decodeBuffer, latitude, longitude, radiusKm, projection,
+                   mapOpacityValue);
+    drawDisplayRing(decodeBuffer);
+    if (!packDecodedFrame(frameIndex) || !requestMatches(revision))
+      return giveUp("Snimek RainVieweru se nepodarilo pripravit");
+
+    char label[6] = "";
+    const time_t stamp = static_cast<time_t>(index.frames[frameIndex].time);
+    struct tm frameLocalTime = {};
+    localtime_r(&stamp, &frameLocalTime);
+    snprintf(label, sizeof(label), "%02d:%02d", frameLocalTime.tm_hour,
+             frameLocalTime.tm_min);
+    portENTER_CRITICAL(&stateMux);
+    preparedFrameReady[frameIndex] = true;
+    preparedFrameRevisions[frameIndex] = revision;
+    strlcpy(preparedFrameTimes[frameIndex], label,
+            sizeof(preparedFrameTimes[frameIndex]));
+    // Jméno slouží jen k porovnání s cache ČHMÚ, kterou RainViewer nemá; cesta
+    // k dlaždicím je přesto srozumitelnější než prázdný řetězec.
+    strlcpy(preparedFrameNames[frameIndex], index.frames[frameIndex].path,
+            sizeof(preparedFrameNames[frameIndex]));
+    ready = true;
+    activeRadiusKm = radiusKm;
+    portEXIT_CRITICAL(&stateMux);
+
+    if (!showProgressivelyPreparedFrame(frameIndex, radiusKm, revision))
+      return giveUp("Snimek RainVieweru se nepodarilo zobrazit");
+  }
+
+  if (!requestMatches(revision)) {
+    setStatus(false, "");
+    return false;
+  }
+  finishProgressivePreparation(revision);
+  releaseUnusedFrames(frameCount);
+  setStatus(false, "");
+  return true;
+}
+
 void commitPendingRefresh() {
   const size_t shift = pendingRefreshCount;
   if (shift == 0 || shift > animationFrameCount ||
@@ -1594,12 +1937,23 @@ void radarTask(void *) {
     if (reloadNow || !haveFrames ||
         static_cast<long>(now - nextAttemptAt) >= 0) {
       const bool fullPreparation = reloadNow || !haveFrames;
+      portENTER_CRITICAL(&stateMux);
+      const bool rainViewer = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
+      portEXIT_CRITICAL(&stateMux);
+      // RainViewer nemá co doplňovat po jednom snímku: dlaždice se necachují a
+      // posun animace o jeden krok by stejně znamenal stáhnout celý snímek.
       const bool success =
-          fullPreparation
-              ? loadAnimation(latitude, longitude, radiusKm, wantedFrameCount,
-                              mapOpacityValue, revision)
-              : refreshLatestFrame(latitude, longitude, radiusKm,
-                                   wantedFrameCount, mapOpacityValue, revision);
+          rainViewer
+              ? loadRainViewerAnimation(latitude, longitude, radiusKm,
+                                        wantedFrameCount, mapOpacityValue,
+                                        revision)
+              : (fullPreparation
+                     ? loadAnimation(latitude, longitude, radiusKm,
+                                     wantedFrameCount, mapOpacityValue,
+                                     revision)
+                     : refreshLatestFrame(latitude, longitude, radiusKm,
+                                          wantedFrameCount, mapOpacityValue,
+                                          revision));
       portENTER_CRITICAL(&stateMux);
       const bool requestChanged = revision != requestRevision;
       if (!requestChanged) reloadRequested = false;
@@ -1616,8 +1970,20 @@ void radarTask(void *) {
 }
 }  // namespace
 
+namespace {
+void rainViewerPoll() {
+  advanceAnimation(millis());
+}
+
+bool rainViewerRevisionValid(uint32_t revision) {
+  return requestMatches(revision);
+}
+}  // namespace
+
 void chmiRadarServiceBegin() {
   if (taskHandle != nullptr) return;
+  rainViewerSetPollCallback(rainViewerPoll);
+  rainViewerSetRevisionCheck(rainViewerRevisionValid);
   xTaskCreatePinnedToCoreWithCaps(
       radarTask, "chmi-radar", 12288, nullptr, 1, &taskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1638,6 +2004,7 @@ void chmiRadarServicePrepareForFirmwareUpdate() {
     taskHandle = nullptr;
   }
   if (pngDecoder != nullptr) pngDecoder->close();
+  rainViewerRelease();
   for (uint16_t *&buffer : displayBuffers) {
     if (buffer != nullptr) heap_caps_free(buffer);
     buffer = nullptr;
@@ -1682,7 +2049,8 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
                                float latitude, float longitude,
                                uint16_t radiusKm, uint8_t frameCount,
                                uint8_t mapOpacityValue,
-                               uint8_t pauseSecondsValue) {
+                               uint8_t pauseSecondsValue, bool showLegend,
+                               uint8_t source) {
   frameCount = constrain(frameCount, static_cast<uint8_t>(1),
                          static_cast<uint8_t>(MAX_ANIMATION_FRAME_COUNT));
   mapOpacityValue = constrain(mapOpacityValue, static_cast<uint8_t>(0),
@@ -1696,9 +2064,18 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
   const bool projectionChanged =
       fabsf(centerLatitude - latitude) > 0.00001f ||
       fabsf(centerLongitude - longitude) > 0.00001f ||
-      centerRadiusKm != radiusKm || mapOpacity != mapOpacityValue;
+      centerRadiusKm != radiusKm || mapOpacity != mapOpacityValue ||
+      legendEnabled != showLegend || radarSource != source;
+  // Změna zdroje zahazuje i stažená PNG: kompozice ČHMÚ a dlaždice
+  // RainVieweru spolu nemají nic společného.
+  const bool sourceChanged = radarSource != source;
   const bool frameCountChanged = requestedFrameCount != frameCount;
-  bool completePngCache = cachedPngCount == requestedFrameCount;
+  // RainViewer si zdrojová PNG neschovává - dlaždice patří k jednomu
+  // přiblížení a při jiném rozsahu jsou stejně k ničemu. Hotovou animaci ale
+  // znovu stahovat nechceme, takže se u něj vystačí s připravenými snímky.
+  const bool rainViewer = source == CLOCK_RADAR_SOURCE_RAINVIEWER;
+  bool completePngCache =
+      !rainViewer && cachedPngCount == requestedFrameCount;
   if (completePngCache) {
     for (size_t index = 0; index < cachedPngCount; ++index)
       if (cachedPngFrames[index] == nullptr || cachedPngSizes[index] == 0 ||
@@ -1708,8 +2085,10 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
       }
   }
   bool completePreparedCache =
-      ready && completePngCache &&
-      animationFrameCount == requestedFrameCount;
+      ready && !sourceChanged &&
+      (rainViewer ? animationFrameCount > 0
+                  : completePngCache &&
+                        animationFrameCount == requestedFrameCount);
   if (completePreparedCache) {
     for (size_t index = 0; index < animationFrameCount; ++index)
       if (!preparedFrameReady[index]) {
@@ -1728,6 +2107,9 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
   requestedFrameCount = frameCount;
   mapOpacity = mapOpacityValue;
   pauseSeconds = pauseSecondsValue;
+  legendEnabled = showLegend;
+  radarSource = source;
+  if (sourceChanged) cachedPngCount = 0;
   if (!requestedEnabled && wasEnabled) {
     ++requestRevision;
     rebuildFromCacheRequested = false;
@@ -1762,6 +2144,7 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
       reloadRequested = !completePngCache;
       nextAttemptAt = 0;
     }
+
   } else if (requestedEnabled && requestedVisible && !wasVisible) {
     // Cache mohla být během zobrazení hodin doplněna. Při návratu vždy
     // začínáme od jejího nejstaršího připraveného snímku.
@@ -1803,11 +2186,16 @@ void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot) {
   snapshot.currentFrameNumber =
       displayedFrame >= 0 ? static_cast<uint8_t>(displayedFrame + 1) : 0;
   snapshot.animationFrameCount = static_cast<uint8_t>(animationFrameCount);
-  snapshot.pauseSeconds = pauseSeconds;
   snapshot.radiusKm = activeRadiusKm;
+  snapshot.rainViewerSource = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
   strlcpy(snapshot.frameTime, frameTime, sizeof(snapshot.frameTime));
   strlcpy(snapshot.message, statusMessage, sizeof(snapshot.message));
   portEXIT_CRITICAL(&stateMux);
+  // Efektivní poloměr si drží modul RainVieweru; čte se mimo kritickou sekci,
+  // protože ho zapisuje jen úloha radaru při přepočtu mřížky.
+  snapshot.effectiveRadiusKm = snapshot.rainViewerSource && snapshot.radiusKm > 0
+                                   ? rainViewerEffectiveRadiusKm()
+                                   : snapshot.radiusKm;
 }
 
 void chmiRadarServiceDiagnostics(ChmiRadarDiagnostics &diagnostics) {

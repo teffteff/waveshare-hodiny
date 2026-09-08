@@ -41,6 +41,9 @@ run_test clock_config "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 
 run_test value_slot_form "$FIRMWARE_DIR/ConfigurationForm.cpp" "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))
 run_test rss_parser "$FIRMWARE_DIR/RssParser.cpp" || failures=$((failures + 1))
 run_test http_body_reader "$FIRMWARE_DIR/HttpBodyReader.cpp" || failures=$((failures + 1))
+run_test rain_viewer_index "$FIRMWARE_DIR/RainViewerIndex.cpp" || failures=$((failures + 1))
+run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))
+run_test weather_forecast_layout || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then

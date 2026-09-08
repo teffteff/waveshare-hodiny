@@ -28,6 +28,8 @@
 #include "TmepService.h"
 #include "WifiProvisioning.h"
 #include "WeatherAnimationService.h"
+#include "WeatherForecastService.h"
+#include "WeatherIconMapping.h"
 
 // Zásobník úlohy loop musí unést LVGL render, webový server i TLS. Kopie
 // ClockConfig se do něj od schématu 29 (přes 5 kB) nevejde, proto ji úlohy
@@ -65,6 +67,7 @@ ClockAppearanceConfig pendingAppearance;
 SemaphoreHandle_t runtimeConfigMutex = nullptr;
 TaskHandle_t homeAssistantTaskHandle = nullptr;
 TaskHandle_t rssTaskHandle = nullptr;
+TaskHandle_t forecastTaskHandle = nullptr;
 String usbCommand;
 bool screenshotTransferActive = false;
 unsigned long displayResyncAt = 0;
@@ -109,6 +112,7 @@ bool radarRadiusApplyPending = false;
 unsigned long radarRadiusApplyAt = 0;
 bool automaticRotationPaused = true;
 uint32_t displayedRssGeneration = UINT32_MAX;
+uint32_t displayedForecastGeneration = UINT32_MAX;
 unsigned long displayModeStartedAt = 0;
 bool radarRotationWaitingForCycle = false;
 uint32_t radarRotationCycleAtTimeout = 0;
@@ -133,6 +137,10 @@ constexpr uint32_t RSS_RETRY_MS = 2UL * 60UL * 1000UL;
 // kolik je nastavený interval, s ní zase kratší mez znamená stahování při
 // každém průletu rotace.
 constexpr uint32_t RSS_VISIBILITY_REFRESH_MS = 5UL * 60UL * 1000UL;
+// Předpověď se mění po hodinách, takže otevření obrazovky nemá cenu
+// stahovat znovu dřív než po čtvrthodině.
+constexpr uint32_t FORECAST_VISIBILITY_REFRESH_MS = 15UL * 60UL * 1000UL;
+constexpr uint32_t FORECAST_RETRY_MS = 2UL * 60UL * 1000UL;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 
 const char *CZECH_WEEKDAYS[] = {
@@ -176,6 +184,24 @@ void copyRuntimeRssConfig(ClockRssConfig &destination) {
   xSemaphoreGive(runtimeConfigMutex);
 }
 
+// Úloha předpovědi si bere jen to, na čem stojí její stahování: souřadnice,
+// interval a přepínač kvality ovzduší. Celá ClockConfig by na jejím zásobníku
+// ležela vedle TLS relace.
+struct ForecastTaskConfig {
+  ClockForecastConfig forecast;
+  float latitude = 0.0f;
+  float longitude = 0.0f;
+};
+
+void copyRuntimeForecastConfig(ForecastTaskConfig &destination) {
+  if (runtimeConfigMutex != nullptr)
+    xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
+  destination.forecast = runtimeConfig.forecast;
+  destination.latitude = runtimeConfig.openMeteoLatitude;
+  destination.longitude = runtimeConfig.openMeteoLongitude;
+  if (runtimeConfigMutex != nullptr) xSemaphoreGive(runtimeConfigMutex);
+}
+
 // Od schématu 29 má ClockConfig přes 5 kB. Vracet ho hodnotou znamenalo kopii
 // na zásobníku v každém volajícím; jen samotné loop() si tak alokovalo 10 kB
 // ze 16 kB zásobníku úlohy a na LVGL ani na uložení nastavení už nezbývalo.
@@ -217,6 +243,7 @@ bool saveRuntimeConfig(const ClockConfig &config, bool tokenWasSubmitted) {
   // Bez tohoto by se změna adresy nebo zapnutí kanálu projevily až po
   // doběhnutí nastaveného intervalu, tedy klidně za dvě hodiny.
   if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
+  if (forecastTaskHandle != nullptr) xTaskNotifyGive(forecastTaskHandle);
   return true;
 }
 
@@ -296,7 +323,9 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarRadiusKm,
       dashboardConfigBuffer.radarFrameCount,
       dashboardConfigBuffer.radarMapOpacity,
-      dashboardConfigBuffer.radarPauseSeconds);
+      dashboardConfigBuffer.radarPauseSeconds,
+      dashboardConfigBuffer.radarLegend,
+      dashboardConfigBuffer.radarSource);
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
   // panelu. Provádíme ji až po dokončení obsluhy HTTP požadavku.
   LCD_Resync();
@@ -385,6 +414,25 @@ void handleRssVisibility(bool visible) {
   xTaskNotifyGive(rssTaskHandle);
 }
 
+// Předpověď se stahuje na pozadí i se zavřenou obrazovkou, takže otevření nic
+// nezapíná; jen zkrátí čekání, když jsou data v mezipaměti stará.
+void handleForecastVisibility(bool visible) {
+  displayModeStartedAt = millis();
+  automaticRotationPaused = false;
+  if (!visible || forecastTaskHandle == nullptr) return;
+  const ClockConfig &config = loopConfigSnapshot();
+  if (!clockConfigForecastAvailable(config)) return;
+  WeatherForecastStatus status;
+  weatherForecastServiceStatus(status);
+  if (status.loading) return;
+  if (status.lastSuccessAvailable &&
+      status.lastSuccessAgeMs < FORECAST_VISIBILITY_REFRESH_MS) {
+    return;
+  }
+  // Notifikace ve forecastTask nuluje deadline, takže se stahuje hned.
+  xTaskNotifyGive(forecastTaskHandle);
+}
+
 void handleRadarVisibility(bool visible) {
   displayModeStartedAt = millis();
   automaticRotationPaused = false;
@@ -396,7 +444,8 @@ void handleRadarVisibility(bool visible) {
                             config.openMeteoLatitude,
                             config.openMeteoLongitude, config.radarRadiusKm,
                             config.radarFrameCount, config.radarMapOpacity,
-                            config.radarPauseSeconds);
+                            config.radarPauseSeconds, config.radarLegend,
+                            config.radarSource);
 }
 
 void handleRadarRangeChange(int8_t direction) {
@@ -440,7 +489,8 @@ void maintainRadarRangeChange() {
                                 config.radarRadiusKm,
                                 config.radarFrameCount,
                                 config.radarMapOpacity,
-                                config.radarPauseSeconds);
+                                config.radarPauseSeconds,
+                                config.radarLegend, config.radarSource);
     }
   }
 }
@@ -472,25 +522,39 @@ bool previewRadarRangeFromWeb(uint16_t radiusKm) {
                               config.radarRadiusKm,
                               config.radarFrameCount,
                               config.radarMapOpacity,
-                              config.radarPauseSeconds);
+                              config.radarPauseSeconds,
+                              config.radarLegend, config.radarSource);
   }
   return true;
 }
 
-// Ciferník, radar a zprávy se střídají na jednom místě. Rotace i vodorovné
-// gesto procházejí tento cyklus; nedostupná obrazovka se přeskočí.
+// Ciferník, radar, zprávy, předpověď a nastavení se střídají na jednom místě.
+// Podržení prstu prochází celý tento cyklus, automatická rotace jen jeho
+// datovou část; nedostupná obrazovka se přeskočí. Pořadí odpovídá tečkám
+// ukazatele obrazovek v ClockDashboard.
 constexpr uint8_t ROTATION_SCREEN_CLOCK = 0;
 constexpr uint8_t ROTATION_SCREEN_RADAR = 1;
 constexpr uint8_t ROTATION_SCREEN_RSS = 2;
-constexpr uint8_t ROTATION_SCREEN_COUNT = 3;
+constexpr uint8_t ROTATION_SCREEN_FORECAST = 3;
+constexpr uint8_t ROTATION_SCREEN_SETTINGS = 4;
+constexpr uint8_t ROTATION_SCREEN_COUNT = 5;
 
 uint8_t activeRotationScreen() {
+  // Nastavení je překryv nad ostatními stránkami, takže rozhoduje první.
+  if (clockDashboardSettingsVisible()) return ROTATION_SCREEN_SETTINGS;
   if (clockDashboardRadarVisible()) return ROTATION_SCREEN_RADAR;
   if (clockDashboardRssVisible()) return ROTATION_SCREEN_RSS;
+  if (clockDashboardForecastVisible()) return ROTATION_SCREEN_FORECAST;
   return ROTATION_SCREEN_CLOCK;
 }
 
 void showRotationScreen(uint8_t screen) {
+  if (screen == ROTATION_SCREEN_SETTINGS) {
+    clockDashboardShowSettings();
+    return;
+  }
+  // Pod otevřeným nastavením se stránka přepnout nedá, nejdřív ho zavřeme.
+  clockDashboardCloseSettings();
   switch (screen) {
     case ROTATION_SCREEN_RADAR:
       clockDashboardSetRadarVisible(true);
@@ -498,30 +562,43 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_RSS:
       clockDashboardSetRssVisible(true);
       break;
+    case ROTATION_SCREEN_FORECAST:
+      clockDashboardSetForecastVisible(true);
+      break;
     default:
-      // Obě překryvné stránky se skrývají stejnou cestou zpět na ciferník.
+      // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
       clockDashboardSetRssVisible(false);
+      clockDashboardSetForecastVisible(false);
       break;
   }
 }
 
-// Obrazovka je v cyklu ručního gesta, tedy nastavená a použitelná.
+// Obrazovka je v cyklu ručního gesta, tedy nastavená a použitelná. Nastavení
+// vypnout nejde; jinak by hodiny bez radaru i zpráv neměly cestu k webu.
 bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
   switch (screen) {
     case ROTATION_SCREEN_RADAR: return clockConfigRadarAvailable(config);
     case ROTATION_SCREEN_RSS: return clockConfigRssAvailable(config);
+    case ROTATION_SCREEN_FORECAST:
+      return clockConfigForecastAvailable(config);
     default: return true;
   }
 }
 
-// Obrazovka se navíc účastní automatické rotace.
+// Obrazovka se navíc účastní automatické rotace. Nastavení do ní nepatří:
+// rozečtenou stránku nesmí čas odklikat pryč.
 bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
   switch (screen) {
     case ROTATION_SCREEN_RADAR:
       return clockConfigRadarAvailable(config) && config.automaticRadarRotation;
     case ROTATION_SCREEN_RSS:
       return clockConfigRssAvailable(config) && config.rss.automaticRotation;
+    case ROTATION_SCREEN_FORECAST:
+      return clockConfigForecastAvailable(config) &&
+             config.forecast.automaticRotation;
+    case ROTATION_SCREEN_SETTINGS:
+      return false;
     default: return true;
   }
 }
@@ -532,14 +609,23 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
   if (screen == ROTATION_SCREEN_RADAR) {
     ChmiRadarSnapshot snapshot;
     chmiRadarServiceSnapshot(snapshot);
-    return snapshot.ready && !snapshot.loading &&
-           !snapshot.fullPreparationInProgress &&
-           snapshot.animationFrameCount == config.radarFrameCount;
+    if (!snapshot.ready || snapshot.loading ||
+        snapshot.fullPreparationInProgress)
+      return false;
+    // RainViewer nabídne jen tolik snímků, kolik jich zrovna má - bývá jich
+    // kolem třinácti. Trvat na přesném počtu by radar do rotace nikdy nepustil.
+    if (snapshot.rainViewerSource) return snapshot.animationFrameCount > 0;
+    return snapshot.animationFrameCount == config.radarFrameCount;
   }
   if (screen == ROTATION_SCREEN_RSS) {
     RssStatus status;
     rssServiceStatus(status);
     return status.ready && status.count > 0;
+  }
+  if (screen == ROTATION_SCREEN_FORECAST) {
+    WeatherForecastStatus status;
+    weatherForecastServiceStatus(status);
+    return status.ready && status.hourCount > 0;
   }
   return true;
 }
@@ -550,6 +636,9 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
       return static_cast<unsigned long>(config.radarDisplaySeconds) * 1000UL;
     case ROTATION_SCREEN_RSS:
       return static_cast<unsigned long>(config.rss.displaySeconds) * 1000UL;
+    case ROTATION_SCREEN_FORECAST:
+      return static_cast<unsigned long>(config.forecast.displaySeconds) *
+             1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -559,7 +648,8 @@ void maintainAutomaticScreenRotation() {
   const ClockConfig &config = loopConfigSnapshot();
   const bool anyRotation =
       rotationScreenEnabled(config, ROTATION_SCREEN_RADAR) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_RSS);
+      rotationScreenEnabled(config, ROTATION_SCREEN_RSS) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_FORECAST);
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed();
@@ -616,14 +706,15 @@ void maintainAutomaticScreenRotation() {
 void maintainDisplayGestures() {
   const ClockConfig &config = loopConfigSnapshot();
   const bool radarAvailable = clockConfigRadarAvailable(config);
-  const bool anyOverlay =
-      radarAvailable || rotationScreenAvailable(config, ROTATION_SCREEN_RSS);
-  if (displayDriverTakeHorizontalSwipe() && anyOverlay &&
-      clockDashboardAutomaticRotationAllowed()) {
+  // Podržení prstu prochází cyklus obrazovek. Vlevo od svislé osy zpět,
+  // vpravo vpřed; nastavení je v cyklu poslední a odchází se z něj stejně.
+  const int8_t holdDirection = displayDriverTakeScreenHold();
+  if (holdDirection != 0 && clockDashboardManualScreenChangeAllowed()) {
     const uint8_t current = activeRotationScreen();
     for (uint8_t step = 1; step < ROTATION_SCREEN_COUNT; ++step) {
-      const uint8_t candidate =
-          static_cast<uint8_t>((current + step) % ROTATION_SCREEN_COUNT);
+      const uint8_t candidate = static_cast<uint8_t>(
+          (current + ROTATION_SCREEN_COUNT + holdDirection * step) %
+          ROTATION_SCREEN_COUNT);
       if (!rotationScreenAvailable(config, candidate)) continue;
       showRotationScreen(candidate);
       displayModeStartedAt = millis();
@@ -631,17 +722,34 @@ void maintainDisplayGestures() {
       break;
     }
   }
-  const int8_t verticalSwipeDirection = displayDriverTakeVerticalSwipe();
-  if (verticalSwipeDirection != 0 && radarAvailable &&
+  const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
+  if (rangeSwipeDirection != 0 && radarAvailable &&
       clockDashboardRadarVisible() &&
       clockDashboardAutomaticRotationAllowed()) {
-    handleRadarRangeChange(verticalSwipeDirection);
+    handleRadarRangeChange(rangeSwipeDirection);
   }
-  if (displayDriverTakeSingleClick()) clockDashboardHandleShortClick();
+  if (displayDriverTakeShortTap()) clockDashboardHandleShortClick();
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
   clockDashboardSetRssItem(index, item.title, item.time);
+}
+
+// Předá obrazovce novou předpověď, jakmile ji služba stáhne. Generace se mění
+// i po neúspěšném pokusu, takže se hláška o nedostupnosti dostane na displej
+// stejnou cestou jako data.
+void maintainForecastDisplay() {
+  WeatherForecastStatus status;
+  weatherForecastServiceStatus(status);
+  if (status.generation == displayedForecastGeneration) return;
+  if (status.ready) {
+    static WeatherForecastData forecast;
+    if (!weatherForecastServiceSnapshot(forecast)) return;
+    clockDashboardSetForecast(forecast);
+  } else {
+    clockDashboardSetForecastFailed(status.failed);
+  }
+  displayedForecastGeneration = status.generation;
 }
 
 void maintainRssDisplay() {
@@ -676,7 +784,7 @@ void maintainRadarDisplay() {
                                  snapshot.latestFrame,
                                  snapshot.currentFrameNumber,
                                  snapshot.animationFrameCount,
-                                 snapshot.pauseSeconds);
+                                 snapshot.effectiveRadiusKm);
 }
 
 void maintainRadarNightVisual() {
@@ -821,6 +929,55 @@ void handleUsbCommands() {
         // nalistovanou obrazovku by screenshot nikdy nezastihl.
         clockDashboardSetRssVisible(true);
         Serial.println("RSS_SHOWN");
+      } else if (usbCommand == "FORECASTOFF" && !screenshotTransferActive) {
+        // Záchranná brzda: obrazovka se dá vypnout i s nefunkčním webem.
+        ClockConfig &config = loopConfigSnapshot();
+        config.forecast.enabled = false;
+        Serial.println(saveRuntimeConfig(config, true) ? "FORECAST_OFF"
+                                                       : "FORECAST_OFF_FAILED");
+      } else if (usbCommand == "FORECASTON" && !screenshotTransferActive) {
+        ClockConfig &config = loopConfigSnapshot();
+        config.forecast.enabled = true;
+        Serial.println(saveRuntimeConfig(config, true) ? "FORECAST_ON"
+                                                       : "FORECAST_ON_FAILED");
+      } else if (usbCommand.startsWith("FORECASTAIR") &&
+                 !screenshotTransferActive) {
+        // Přepnutí kvality ovzduší bez webu, aby šly obě varianty rozvržení
+        // porovnat na jednom snímku vedle druhého.
+        ClockConfig &config = loopConfigSnapshot();
+        config.forecast.airQuality = usbCommand.endsWith("ON");
+        Serial.println(saveRuntimeConfig(config, true)
+                           ? (config.forecast.airQuality ? "FORECAST_AIR_ON"
+                                                         : "FORECAST_AIR_OFF")
+                           : "FORECAST_AIR_FAILED");
+      } else if (usbCommand == "FORECASTFETCH" && !screenshotTransferActive) {
+        // Notifikace ve forecastTask nuluje deadline, takže tohle opravdu
+        // vynutí stažení i uprostřed nastaveného intervalu.
+        if (forecastTaskHandle != nullptr) xTaskNotifyGive(forecastTaskHandle);
+        Serial.println("FORECAST_FETCH_REQUESTED");
+      } else if (usbCommand == "FORECASTSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
+        // takže ručně nalistovaná předpověď by screenshot nikdy nezastihl.
+        clockDashboardSetForecastVisible(true);
+        Serial.println("FORECAST_SHOWN");
+      } else if (usbCommand == "RADARSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
+        // takže ručně nalistovaný radar by screenshot nikdy nezastihl.
+        clockDashboardSetRadarVisible(true);
+        Serial.println("RADAR_SHOWN");
+      } else if (usbCommand.startsWith("RADARSOURCE") &&
+                 !screenshotTransferActive) {
+        // Přepnutí zdroje srážek bez webu, aby šly obě varianty porovnat.
+        const long source = strtol(usbCommand.substring(11).c_str(), nullptr, 10);
+        if (source != CLOCK_RADAR_SOURCE_CHMI &&
+            source != CLOCK_RADAR_SOURCE_RAINVIEWER) {
+          Serial.println("RADAR_SOURCE_ERROR");
+        } else {
+          ClockConfig &config = loopConfigSnapshot();
+          config.radarSource = static_cast<uint8_t>(source);
+          Serial.println(saveRuntimeConfig(config, true) ? "RADAR_SOURCE_SET"
+                                                         : "RADAR_SOURCE_FAILED");
+        }
       } else if (usbCommand.startsWith("RSSITEMS") &&
                  !screenshotTransferActive) {
         const long items = strtol(usbCommand.substring(8).c_str(), nullptr, 10);
@@ -951,7 +1108,8 @@ void maintainNetworkTime() {
         radarAvailable && config.automaticRadarRotation,
         config.openMeteoLatitude, config.openMeteoLongitude,
         config.radarRadiusKm, config.radarFrameCount,
-        config.radarMapOpacity, config.radarPauseSeconds);
+        config.radarMapOpacity, config.radarPauseSeconds,
+        config.radarLegend, config.radarSource);
 #if !FIRMWARE_RELEASE
     Serial.println("NTP synchronizovano");
 #endif
@@ -1174,25 +1332,6 @@ bool extractJsonNumberField(const String &payload, const char *key,
 bool stateAsFloat(const String &state, float &value);
 int weatherCodeForState(const String &state);
 
-int openMeteoWeatherCode(int wmoCode) {
-  if (wmoCode == 0) return 800;
-  if (wmoCode == 1 || wmoCode == 2) return 801;
-  if (wmoCode == 3) return 804;
-  if (wmoCode == 45 || wmoCode == 48) return 741;
-  if (wmoCode == 51 || wmoCode == 53 || wmoCode == 55) return 300;
-  if (wmoCode == 56 || wmoCode == 57) return 511;
-  if (wmoCode == 61 || wmoCode == 63 || wmoCode == 80 || wmoCode == 81)
-    return 500;
-  if (wmoCode == 65 || wmoCode == 82) return 502;
-  if (wmoCode == 66 || wmoCode == 67) return 511;
-  if (wmoCode == 71 || wmoCode == 73 || wmoCode == 77 || wmoCode == 85)
-    return 600;
-  if (wmoCode == 75 || wmoCode == 86) return 602;
-  if (wmoCode == 95) return 200;
-  if (wmoCode == 96 || wmoCode == 99) return 202;
-  return -1;
-}
-
 bool fetchOpenMeteo(const ClockConfig &config, ClockValues &values) {
   networkDiagnosticsBegin(NetworkDiagnosticKind::OpenMeteoRuntime);
   NetworkOperationGuard networkGuard(HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
@@ -1225,7 +1364,7 @@ bool fetchOpenMeteo(const ClockConfig &config, ClockValues &values) {
   }
   double number = 0;
   bool ok = extractJsonNumberField(payload, "weather_code", number);
-  if (ok) values.weatherCode = openMeteoWeatherCode(lround(number));
+  if (ok) values.weatherCode = weatherCodeFromWmo(lround(number));
   if (extractJsonNumberField(payload, "is_day", number)) {
     values.weatherIsDay = number >= 0.5;
     values.sunStateAvailable = true;
@@ -1246,6 +1385,12 @@ bool fetchOpenMeteo(const ClockConfig &config, ClockValues &values) {
       values.sunStateAvailable = true;
     }
   }
+  // Stavový řádek radaru chce teplotu venku bez ohledu na to, co si majitel
+  // nastavil do čtyř pozic ciferníku; odpověď ji nese vždycky.
+  values.outsideTemperatureC =
+      extractJsonNumberField(payload, "temperature_2m", number)
+          ? static_cast<float>(number)
+          : NAN;
   float *destinations[] = {&values.leftTemperatureC, &values.rightTemperatureC,
                            &values.metricAValue, &values.metricBValue};
   for (size_t index = 0; index < 4; ++index) {
@@ -1334,6 +1479,15 @@ bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
       filledSlot = true;
     }
   }
+  // Teplota pro radar se plní nezávisle na řetězci níže, stejně jako sloty:
+  // jedna entita může krmit zároveň pozici na ciferníku i stavový řádek.
+  bool filledRadarTemperature = false;
+  if (config.radarStatusTemperatureEntityId[0] != '\0' &&
+      entityId == config.radarStatusTemperatureEntityId &&
+      stateAsFloat(state, number)) {
+    values.outsideTemperatureC = number;
+    filledRadarTemperature = true;
+  }
   if (entityId == config.weatherEntityId) {
     values.weatherCode = weatherCodeForState(state);
   } else if (entityId == config.leftSide.temperatureEntityId &&
@@ -1355,7 +1509,7 @@ bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
     values.dayNightLightOn = state == "on";
     values.dayNightLightStateAvailable = true;
   } else {
-    return filledSlot;
+    return filledSlot || filledRadarTemperature;
   }
   return true;
 }
@@ -1503,9 +1657,9 @@ bool applySunState(const ClockConfig &config, const String &payload,
 bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
                               ClockValues &values) {
   networkDiagnosticsBegin(NetworkDiagnosticKind::HomeAssistantRuntime);
-  // Sedm původních entit plus entity zapnutých slotů. Duplicity se vynechají,
+  // Osm pevných entit plus entity zapnutých slotů. Duplicity se vynechají,
   // aby se stejný senzor nestahoval dvakrát.
-  const char *entityIds[7 + CLOCK_VALUE_SLOT_COUNT] = {
+  const char *entityIds[8 + CLOCK_VALUE_SLOT_COUNT] = {
       config.weatherEntityId,
       config.leftSide.temperatureEntityId,
       config.rightSide.temperatureEntityId,
@@ -1513,8 +1667,11 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
       config.metricB.entityId,
       config.sunEntityId,
       config.dayNightLightEntityId,
+      // Teplota do stavového řádku radaru. Leží až za entitou SUN, aby index
+      // 5 níže dál ukazoval na ni.
+      config.radarStatusTemperatureEntityId,
   };
-  size_t entityCount = 7;
+  size_t entityCount = 8;
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
     const ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
     if (!slot.enabled || slot.entityId[0] == '\0') continue;
@@ -1529,6 +1686,10 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
   }
   values.sunStateAvailable = false;
   values.dayNightLightStateAvailable = false;
+  // Bez vybrané entity nemá stavový řádek radaru odkud teplotu vzít; stará
+  // hodnota by tam jinak visela dál a tvářila se jako aktuální.
+  if (config.radarStatusTemperatureEntityId[0] == '\0')
+    values.outsideTemperatureC = NAN;
   uint8_t configuredCount = 0;
   uint8_t successfulCount = 0;
   int lastStatus = 0;
@@ -1714,6 +1875,73 @@ void rssTask(void *) {
   }
 }
 
+// Vrací, za jak dlouho je další pokus, nebo 0, když se předpověď nepoužívá.
+unsigned long maintainForecastFetch(const ForecastTaskConfig &config,
+                                    unsigned long &nextRefreshAt,
+                                    bool &cacheHolds) {
+  if (!config.forecast.enabled) {
+    if (cacheHolds) {
+      // Obrazovka se vypnula; stará předpověď nesmí zůstat v paměti.
+      weatherForecastServiceClear();
+      cacheHolds = false;
+    }
+    nextRefreshAt = 0;
+    return 0;
+  }
+  const unsigned long now = millis();
+  if (nextRefreshAt != 0 && static_cast<long>(now - nextRefreshAt) < 0) {
+    return nextRefreshAt - now;
+  }
+  const bool ok = weatherForecastServiceFetch(
+      config.latitude, config.longitude, config.forecast.airQuality,
+      NetworkDiagnosticKind::ForecastRuntime);
+  if (ok) cacheHolds = true;
+  const unsigned long interval =
+      ok ? static_cast<unsigned long>(config.forecast.refreshMinutes) * 60UL *
+               1000UL
+         : FORECAST_RETRY_MS;
+  nextRefreshAt = millis() + interval;
+  return interval;
+}
+
+void forecastTask(void *) {
+  unsigned long nextRefreshAt = 0;
+  bool cacheHolds = false;
+  ForecastTaskConfig config;
+  float lastLatitude = NAN;
+  float lastLongitude = NAN;
+  for (;;) {
+    copyRuntimeForecastConfig(config);
+    // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný" a
+    // předpověď by se navíc neměla podle čeho oříznout na hodiny od současné
+    // dál. Čekání na NTP je tedy levnější než pokus, který nemůže vyjít.
+    if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
+      nextRefreshAt = 0;
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
+      continue;
+    }
+    // Jiné město znamená jinou předpověď; ta stará se nesmí dokreslit vedle
+    // nové hlavičky.
+    if (config.latitude != lastLatitude || config.longitude != lastLongitude) {
+      if (cacheHolds) {
+        weatherForecastServiceClear();
+        cacheHolds = false;
+      }
+      lastLatitude = config.latitude;
+      lastLongitude = config.longitude;
+      nextRefreshAt = 0;
+    }
+    const unsigned long waitMs =
+        maintainForecastFetch(config, nextRefreshAt, cacheHolds);
+    // Vypnutá obrazovka nemá kdy pokračovat sama; probudí ji až uložení
+    // nastavení.
+    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
+                                             : pdMS_TO_TICKS(waitMs)) > 0) {
+      nextRefreshAt = 0;
+    }
+  }
+}
+
 void homeAssistantTask(void *) {
   ClockValues lastAvailableValues;
   unsigned long nextOpenMeteoRefreshAt = 0;
@@ -1886,6 +2114,7 @@ void setup() {
   networkCoordinatorBegin();
   tmepServiceBegin();
   rssServiceBegin();
+  weatherForecastServiceBegin();
   LCD_Init();
   currentDisplayBrightness = runtimeConfig.dayBrightness;
   Set_Backlight(currentDisplayBrightness);
@@ -1897,14 +2126,16 @@ void setup() {
                        handleBrightnessPreview, handleSettingsOpen,
                        handleSettingsSave, handleSettingsFirmwareCheck,
                        handleSettingsFirmwareInstall, handleRadarVisibility,
-                       handleRadarRangeChange, handleRssVisibility);
+                       handleRadarRangeChange, handleRssVisibility,
+                       handleForecastVisibility);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
       runtimeConfig.radarRadiusKm, runtimeConfig.radarFrameCount,
-      runtimeConfig.radarMapOpacity, runtimeConfig.radarPauseSeconds);
+      runtimeConfig.radarMapOpacity, runtimeConfig.radarPauseSeconds,
+      runtimeConfig.radarLegend, runtimeConfig.radarSource);
   clockDashboardSetSecond(60);
   displayResyncAt = millis() + 2000;
 #if FIRMWARE_RELEASE
@@ -1926,6 +2157,11 @@ void setup() {
       rssTask, "rss", 20480, nullptr, 1, &rssTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetRssTask(rssTaskHandle);
+  // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
+  // stojí stejně zásobníku jako u kanálu zpráv.
+  xTaskCreatePinnedToCoreWithCaps(
+      forecastTask, "forecast", 20480, nullptr, 1, &forecastTaskHandle, 0,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   firmwareUpdateServiceBegin(handleFirmwareUpdateLifecycle);
   maintainFirmwareDisplayStatus();
   configurationWebBegin(loadRuntimeConfigForWeb, saveRuntimeConfig,
@@ -1983,6 +2219,7 @@ void loop() {
   maintainRadarRangeChange();
   maintainRadarDisplay();
   maintainRssDisplay();
+  maintainForecastDisplay();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
   // pozastavení LVGL timerů zabrání tomu, aby GIF dekodér soupeřil s USB CDC;

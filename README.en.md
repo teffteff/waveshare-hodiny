@@ -57,8 +57,10 @@ changes the system text and verbal date shown on the display.
 - static and animated weather icons based on Meteocons,
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
-- optional automatic rotation between the clock, radar and news,
+- optional automatic rotation between the clock, radar, news and forecast,
 - a news screen fed by any RSS or Atom feed,
+- a forecast screen with hourly and daily Open-Meteo data, optionally with air
+  quality, PM2.5 and grass pollen — and nine hours instead of six without it,
 - two additional values such as CO₂, VOC, particulate matter, humidity,
   pressure or battery level,
 - eight independent values on the VALUES face, each with its own name, Home
@@ -223,18 +225,79 @@ Hydrometeorological Institute. Views cover 25, 50, 100 or 200 km around the
 saved coordinates, or the whole Czech Republic. The map includes the national
 outline and a range-specific selection of cities.
 
-The radar is available only when Open-Meteo location search identifies the
-saved country as `CZ`. For locations outside Czechia, the firmware does not
-start the radar, download its data in the background or respond to radar
-gestures, and automatic screen rotation is disabled. Open-Meteo weather and
-Home Assistant remain available without this restriction.
+### Precipitation source
+
+The radar has two sources, switched in the web settings.
+
+The **CHMI** composite is sharper over Czechia and stays the default, but it
+has nothing to show beyond the border. It is therefore available only when
+Open-Meteo location search identifies the saved country as `CZ`. For locations
+outside Czechia the firmware does not start the CHMI radar, download its data
+in the background or respond to radar gestures, and automatic screen rotation
+is disabled. Open-Meteo weather and Home Assistant remain available without
+this restriction.
+
+**RainViewer** covers Europe and the world, is free and needs no key, it is
+just coarser. With it selected the radar works outside Czechia too, and the
+map underlay switches to European country outlines and European cities; Czech
+cities keep the abbreviations you are used to. RainViewer serves Web Mercator
+tiles and its zoom goes in powers of two, so you get the nearest available
+range rather than exactly the number you set - the caption therefore shows the
+radius actually reached. Tiles are not cached, so changing the range downloads
+the animation again.
+
+### Intensity scale
+
+An optional scale along the left edge shows six shades with reflectivity in
+dBZ and the matching rainfall in mm/h, converted with the Marshall-Palmer
+relation (Z = 200 R^1.6). Both palette and labels follow the selected source,
+because the same yellow means 40 dBZ on one scale and 35 on the other; its own
+numbers say which one you are reading. It covers part of the map and can be
+switched off, which gives the space back to the city labels.
+
+### Radar screen layout
+
+The screen keeps fixed bands above and below the map, so the same kind of
+information always sits on the same line:
+
+1. the **screen indicator** at the very top (shared by every screen, see below),
+2. the **clock and outside temperature** — you can check the time without
+   switching back to the clock screen,
+3. the **frame dots**, one per animation frame,
+4. the **frame time** — the newest frame is labelled `NOW` and is bright green
+   in day mode, older ones carry their age as `-25 min 14:10`,
+5. at the bottom the **range** (`50 km`, or `ALL OF CZECHIA`) and below it the
+   **range dots**. The data source is not named on screen, neither next to the
+   range nor in the scale header. It is picked in the settings and changes at
+   most once in the clock's life, so it would only take up room on every frame;
+   the Radar tab and the diagnostics page both show which source is active.
+
+The clock and temperature line can be switched off. The temperature comes from
+whichever source is configured: with Open-Meteo from the forecast for the saved
+city, with Home Assistant from the entity picked in **Outside temperature
+entity** on the Radar tab. Without an entity the line shows only the time. The
+temperature is rounded to whole degrees — a tenth of a degree is noise for an
+outdoor reading and the two extra characters decide whether the line fits
+inside the circle.
+
+Until the first frame is ready, a status message stays in the middle of the
+empty screen and the other labels are hidden.
 
 One frame creates a static view; 2–15 frames create an animation from oldest to
 newest. The pause after the newest frame is configurable from 0 to 30 seconds
-and defaults to 5 seconds. In day mode the newest timestamp is bright green. A
-thin bar below the caption shows animation progress and turns red while an
-empty cache is being fully prepared. New imagery is checked in fixed
-five-minute slots, approximately one minute after the CHMI publication time.
+and defaults to 5 seconds. The lit frame dot marks where in the animation you
+are, and turns red while an empty cache is being fully prepared. New imagery is
+checked in fixed five-minute slots, approximately one minute after the CHMI
+publication time.
+
+### Screen indicator
+
+A row of dots sits at the top of **every** screen, one per screen taking part
+in the rotation — clock, radar, news and forecast. The filled dot is the one you are
+looking at. A disabled screen has no dot, so the row always matches what the
+gesture can actually reach. With a single available screen the indicator is not
+drawn at all, because one dot says nothing; it is also hidden in the settings
+and during a firmware update.
 
 The red night appearance converts the map, cities, location marker, labels and
 precipitation intensity levels to shades of red. The newest timestamp then uses
@@ -247,7 +310,7 @@ persistent only after saving the configuration. A range selected on the device
 is temporary and the saved web value is restored after a restart.
 
 Automatic rotation is disabled by default and provides separate clock, radar
-and news durations; only the screens you enable take part in it, and a screen
+news and forecast durations; only the screens you enable take part in it, and a screen
 opened by hand stays until the next gesture. The radar duration is a minimum:
 an animation already in progress, including its final pause, always completes
 before the clock returns. After a
@@ -288,6 +351,49 @@ successfully loaded items on screen; an error message appears only when the feed
 has never loaded. A disabled screen is not downloaded at all and is not reachable
 by the gesture.
 
+### Weather forecast
+
+A separate screen shows the Open-Meteo forecast for the city saved on the
+**General** tab. It does not matter where the clock face reads its values from:
+the configuration holds the coordinates even with Home Assistant selected, so
+the screen works in both modes. Enable it on the **Weather** tab; it starts
+disabled, so a firmware upgrade never adds it on its own.
+
+The header carries the time and the outside temperature, just like the radar
+status line — the forecast fills the whole display and the clock face below is
+not visible. Under it come the hourly rows (hour, icon, temperature,
+precipitation, wind) and, below a divider, the daily rows with a weekday
+abbreviation and the high/low pair. Precipitation under a tenth of a millimetre
+is left blank so the column is not a forest of zeros.
+
+<p align="center">
+  <img src="screenshots/forecast-air-quality.png" alt="Forecast screen with the air quality section" width="46%">
+  <img src="screenshots/forecast-nine-hours.png" alt="Forecast screen without air quality, showing nine hours" width="46%">
+</p>
+
+At the bottom sits an optional section with the European air quality index, the
+PM2.5 concentration and grass pollen; the values are colored by the European
+Environment Agency bands. Pollen is only modelled by the European CAMS domain,
+so outside Europe the row shows a dash.
+
+**The hour count is not a setting, it is derived.** The circular display has a
+fixed number of rows and everything else that takes a row takes it from the
+hours. The air quality section occupies the bottom three rows: with it the
+screen fits **six hours**, without it **nine**. Every day removed (0 to 4, 3 by
+default) is likewise one more hour. The web hint next to the air quality switch
+states how many hours the current combination yields and how many the other one
+would; the numbers come from the firmware so they cannot drift from what the
+screen actually draws.
+
+The forecast is downloaded every 10 to 180 minutes, 30 by default, even while
+the screen is closed. Opening the screen — by gesture or by the automatic
+rotation — also triggers an immediate download when the cached data is older
+than fifteen minutes. After a failure the firmware retries in two minutes and
+keeps the last successfully loaded forecast on screen; an error message appears
+only when the forecast has never loaded. Air quality is an extra: if it fails,
+the forecast still appears, just without the bottom section. A disabled screen
+is not downloaded at all and is not reachable by the gesture.
+
 ### Color scales
 
 Each additional value supports up to ten `value → color` points. The firmware
@@ -322,16 +428,25 @@ token, TMEP.cz export URL, web password and control API secret.
 
 ## Touchscreen settings
 
-Long-press anywhere on the clock, radar or news screen to open the settings
-pages. A horizontal swipe moves through the clock, radar and news in that order
-and back to the clock; unavailable screens are skipped, so with a single extra
-screen enabled both directions simply alternate between two screens.
-On the radar, swiping up zooms in and swiping down zooms out; this range change
-remains temporary until restart. With automatic day/night mode disabled, a
-short tap on any of these screens switches the appearance. Arrow buttons move
-between the three settings pages; swipes are not used inside the settings menu.
-Available controls include day/night brightness, automatic mode, weather icons,
-seconds effects, web-server mode and OTA checks.
+Screens are changed by holding a finger still for about half a second. Where
+the finger rests decides the direction: the left half of the display goes one
+screen back, the right half one forward. The order is clock, radar, news,
+forecast, settings and back to the clock, so the settings are one hold in the
+left half away from the clock. Unavailable screens are skipped; the settings
+screen can never be switched off, so a clock with no radar, news or forecast
+still has a way to the web address. The same hold leaves the settings again, discarding
+anything not yet stored by the Save button.
+
+On the radar, dragging up or right zooms in and dragging down or left zooms
+out; this range change remains temporary until restart. With automatic
+day/night mode disabled, a short tap on any of these screens switches the
+appearance. Gestures are recognised in software from the raw touch
+coordinates rather than from the CST820 gesture register, and only once the
+finger lifts, so short drags across the round display are not lost and a single
+gesture never fires twice. Arrow buttons move between the three settings pages;
+drags are not used inside the settings menu. Available controls include
+day/night brightness, automatic mode, weather icons, seconds effects,
+web-server mode and OTA checks.
 
 ## Animated Meteocons
 
