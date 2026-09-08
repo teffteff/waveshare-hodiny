@@ -49,6 +49,7 @@ changes the system text and verbal date shown on the display.
   analog dial with a configurable tone and optional cardinal accents, or the
   VALUES face with a grid of up to eight values and a ninth below them,
 - multiple date formats and an optional seconds ring,
+- today's Czech name day below the date, computed on the device without network access,
 - NTP time synchronization and the Czech time zone with daylight saving time,
 - Open-Meteo support without an account or token,
 - Home Assistant entities read through its REST API,
@@ -320,6 +321,20 @@ the complete animation, so playback starts immediately from the oldest frame.
 With automatic rotation disabled, radar data is not downloaded in the
 background and loading starts when the radar is opened manually.
 
+### Czech name days
+
+With the device language set to Czech, the name day for the current date is
+shown below the date, for example `ADAM, EVA`. The table is built into the
+firmware, so nothing is fetched: name days work without network access and
+without Home Assistant. They are drawn on all three clock faces - digital,
+analog and VALUES.
+
+Names are uppercase because the `clock_czech` font carries only the uppercase
+Czech accented characters. Days without a name day (1 January, 24 December and
+a few others) stay blank. The English date shows no name day, since it is a
+Czech custom, and hiding the date hides the name day with it - a bare name
+with no date would sit on the face without context.
+
 ### RSS news
 
 A separate screen shows the latest items from any RSS 2.0 or Atom feed. Enter
@@ -330,9 +345,9 @@ Server certificates are validated against the Mozilla roots built into the
 firmware, so any `https://` address works.
 
 The screen shows 3 to 6 items, 5 by default. With three to five items each
-headline gets two lines, which fits roughly ninety percent of a typical news
-headline. A sixth item fits only at the cost of a single headline line, so
-longer headlines are cut with an ellipsis. The publication time is shown to the
+headline gets three lines, which fits a typical news headline whole. A sixth
+item fits only at the cost of dropping to two headline lines, so longer
+headlines are cut with an ellipsis. The publication time is shown to the
 left of each headline in local time; a feed without dates is shown without
 times and sorts after dated items.
 

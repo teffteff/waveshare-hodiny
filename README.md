@@ -51,6 +51,7 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   analogový ciferník s nastavitelným tónem a volitelnými hlavními akcenty,
   nebo ciferník HODNOTY s mřížkou až osmi hodnot a devátou pod nimi,
 - české nebo anglické datum v několika formátech a volitelný vteřinový prstenec,
+- jmeniny pro dnešní den pod datem, počítané přímo na zařízení bez sítě,
 - synchronizaci času přes NTP a české časové pásmo včetně letního času,
 - dvě univerzální horní hodnoty s vlastním názvem, jednotkou, přesností,
   ikonou a plynulou barevnou škálou,
@@ -340,6 +341,19 @@ ji proto zobrazí okamžitě od nejstaršího snímku. Je-li automatické stří
 vypnuté, firmware radar na pozadí nestahuje a načítání začne až při ručním
 otevření.
 
+### Jmeniny
+
+Pod datem se u českého jazyka ukazují jmeniny pro dnešní den, například
+`ADAM, EVA`. Tabulka je součástí firmwaru, takže se nikam nechodí pro data:
+jmeniny fungují i bez sítě a bez Home Assistanta. Kreslí se na všech třech
+cifernících — digitálním, analogovém i HODNOTY.
+
+Jména jsou psaná velkými písmeny, protože font `clock_czech` obsahuje z české
+diakritiky jen velké znaky. Dny bez jmenin (1. ledna, 24. prosince a několik
+dalších) zůstanou prázdné. Anglické datum jmeniny neukazuje, protože jde
+o český zvyk, a se skrytým datem mizí i ony — samotné jméno bez data by na
+ciferníku viselo bez souvislosti.
+
 ### Zprávy z RSS
 
 Samostatná obrazovka umí zobrazit poslední zprávy z libovolného kanálu RSS 2.0
@@ -349,10 +363,10 @@ adresu stáhne ještě před uložením a rovnou ukáže, jak budou zprávy vypa
 displeji. Certifikát serveru se ověřuje proti kořenům Mozilly zabudovaným ve
 firmwaru, takže funguje libovolná adresa `https://`.
 
-Zobrazit lze 3 až 6 zpráv; výchozí je 5. U tří až pěti zpráv má titulek dva
-řádky, což u běžné české zpravodajské věty stačí přibližně na devadesát
-procent celého titulku. Šestá zpráva se vejde jen za cenu jediného řádku na
-titulek, takže se delší titulky utnou třemi tečkami. Vlevo od titulku je čas
+Zobrazit lze 3 až 6 zpráv; výchozí je 5. U tří až pěti zpráv má titulek tři
+řádky, což u běžné české zpravodajské věty stačí na celý titulek. Šestá zpráva
+se vejde jen za cenu dvou řádků na titulek, takže se delší titulky utnou třemi
+tečkami. Vlevo od titulku je čas
 vydání převedený do místního času; kanál bez data se zobrazí bez času a řadí
 se za zprávy s datem.
 
