@@ -108,6 +108,8 @@ void clockDashboardApplyConfiguration(const ClockConfig &config);
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance);
 void clockDashboardUpdate(const ClockValues &values);
 void clockDashboardSetDate(const char *dateText);
+// Jmeniny pro dnešek VELKÝMI písmeny, nebo nullptr/"" když se nemají zobrazit.
+void clockDashboardSetNameday(const char *nameday);
 void clockDashboardSetSecond(uint8_t second);
 void clockDashboardSetTime(const char *timeText);
 void clockDashboardSetWeatherAnimation(const uint8_t *gifData, size_t size,

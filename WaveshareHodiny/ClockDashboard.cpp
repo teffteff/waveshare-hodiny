@@ -66,6 +66,7 @@ bool valuesLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_VALUES; }
 
 lv_obj_t *timeLabel = nullptr;
 lv_obj_t *dateLabel = nullptr;
+lv_obj_t *namedayLabel = nullptr;
 lv_obj_t *outsideTitleLabel = nullptr;
 lv_obj_t *outsideIntegerLabel = nullptr;
 lv_obj_t *outsideDecimalLabel = nullptr;
@@ -93,6 +94,7 @@ lv_obj_t *dashboardContent = nullptr;
 lv_obj_t *valuesPage = nullptr;
 lv_obj_t *valuesTimeLabel = nullptr;
 lv_obj_t *valuesDateLabel = nullptr;
+lv_obj_t *valuesNamedayLabel = nullptr;
 lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_SLOT_COUNT] = {};
 lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_SLOT_COUNT] = {};
 // Kořen obrazovky se drží kvůli stránce předpovědi, která se zakládá až při
@@ -867,19 +869,6 @@ void renderAnalogDial(const AnalogDrawTarget &target,
       drawAnalogLine(target, from, to, amber, 7);
     }
   }
-
-  drawAnalogLine(target,
-                 {static_cast<lv_coord_t>(center.x - 38),
-                  static_cast<lv_coord_t>(center.y - 151)},
-                 {static_cast<lv_coord_t>(center.x + 38),
-                  static_cast<lv_coord_t>(center.y - 151)},
-                 cyan, 2, LV_OPA_80);
-  drawAnalogLine(target,
-                 {static_cast<lv_coord_t>(center.x - 38),
-                  static_cast<lv_coord_t>(center.y - 112)},
-                 {static_cast<lv_coord_t>(center.x + 38),
-                  static_cast<lv_coord_t>(center.y - 112)},
-                 cyan, 2, LV_OPA_80);
 }
 
 void drawCachedAnalogDial(lv_draw_ctx_t *drawContext,
@@ -1194,6 +1183,7 @@ void updateAnalogValueLayerOrder() {
 
   lv_obj_t *labels[] = {
       dateLabel,
+      namedayLabel,
       analogOutsideTitleLabel,
       analogOutsideValueLabel,
       analogOutsideDecimalLabel,
@@ -1233,7 +1223,7 @@ void createAnalogLayout(lv_obj_t *content) {
 
   lv_obj_set_style_text_font(dateLabel, &clock_czech_20, 0);
   lv_obj_set_style_text_letter_space(dateLabel, 3, 0);
-  alignCenter(dateLabel, 0, -132);
+  alignCenter(dateLabel, 0, -142);
 
   analogOutsideTitleLabel = makeLabel(content, &clock_czech_20, COLOR_OUTSIDE);
   lv_obj_set_style_text_letter_space(analogOutsideTitleLabel, 1, 0);
@@ -1283,6 +1273,7 @@ void createAnalogLayout(lv_obj_t *content) {
   lv_obj_move_foreground(analogHandsLayer);
   lv_obj_t *outlinedLabels[] = {
       dateLabel,
+      namedayLabel,
       analogOutsideTitleLabel,
       analogOutsideValueLabel,
       analogOutsideDecimalLabel,
@@ -1550,6 +1541,11 @@ void applyAnalogColors() {
                                   : analogMonochromeValuesEnabled
                                         ? unifiedColor
                                         : configuredColor(analogDateColor));
+  if (namedayLabel != nullptr)
+    setTextColor(namedayLabel, redNight ? COLOR_ERROR
+                                        : analogMonochromeValuesEnabled
+                                              ? unifiedColor
+                                              : configuredColor(analogDateColor));
   const lv_color_t weather =
       redNight ? COLOR_ERROR
                : analogMonochromeValuesEnabled
@@ -2121,7 +2117,8 @@ void applyDashboardColors() {
       strncmp(weatherAnimationKey, "monochrome-", 11) == 0;
   if (redNightVisualEnabled()) {
     lv_obj_t *coloredLabels[] = {
-        timeLabel,          dateLabel,          outsideTitleLabel,
+        timeLabel,          dateLabel,          namedayLabel,
+        outsideTitleLabel,
         outsideIntegerLabel, outsideDecimalLabel, outsideUnitLabel,
         roomTitleLabel, roomIntegerLabel, roomDecimalLabel,
         roomUnitLabel,  outsideIconLabel,     roomIconLabel,
@@ -2157,6 +2154,10 @@ void applyDashboardColors() {
     setTextColor(dateLabel,
                  configuredColor(analogLayoutEnabled() ? analogDateColor
                                                        : dateColor));
+    if (namedayLabel != nullptr)
+      setTextColor(namedayLabel,
+                   configuredColor(analogLayoutEnabled() ? analogDateColor
+                                                         : dateColor));
     setTextColor(outsideTitleLabel, configuredOutsideColor);
     setTextColor(outsideIntegerLabel, configuredOutsideColor);
     setTextColor(outsideDecimalLabel, configuredOutsideColor);
@@ -3815,6 +3816,9 @@ void applyValuesPageColors() {
                redNight ? COLOR_ERROR : configuredColor(timeColor));
   setTextColor(valuesDateLabel,
                redNight ? COLOR_ERROR : configuredColor(dateColor));
+  if (valuesNamedayLabel != nullptr)
+    setTextColor(valuesNamedayLabel,
+                 redNight ? COLOR_ERROR : configuredColor(dateColor));
 }
 
 }  // namespace
@@ -3879,6 +3883,9 @@ void makeValuesPage(lv_obj_t *screen) {
   valuesDateLabel = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
   lv_label_set_text(valuesDateLabel, "");
   alignCenter(valuesDateLabel, 0, -130);
+  valuesNamedayLabel = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
+  lv_label_set_text(valuesNamedayLabel, "");
+  alignCenter(valuesNamedayLabel, 0, -108);
 
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
     const ValueSlotPosition position = valueSlotPosition(index);
@@ -4046,6 +4053,13 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lv_obj_set_style_text_letter_space(dateLabel, 4, 0);
   lv_label_set_text(dateLabel, "");
   alignCenter(dateLabel, 0, -43);
+
+  // Jmeniny pod datem. Font clock_czech má jen velká písmena s diakritikou,
+  // proto jsou jména v tabulce už velkými písmeny.
+  namedayLabel = makeLabel(content, &clock_czech_16, COLOR_MUTED);
+  lv_obj_set_style_text_letter_space(namedayLabel, 2, 0);
+  lv_label_set_text(namedayLabel, "");
+  alignCenter(namedayLabel, 0, -20);
 
   outsideTitleLabel = makeLabel(content, &clock_czech_20, COLOR_OUTSIDE);
   lv_obj_set_style_text_letter_space(outsideTitleLabel, 2, 0);
@@ -4453,7 +4467,8 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
     for (lv_obj_t *object : digitalOnly)
       lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_font(dateLabel, &clock_czech_20, 0);
-    alignCenter(dateLabel, 0, -132);
+    alignCenter(dateLabel, 0, -142);
+    alignCenter(namedayLabel, 0, -123);
     alignCenter(weatherImage, 0, -70);
     alignCenter(weatherAnimation, 0, -70);
   } else {
@@ -4480,6 +4495,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
     lv_obj_set_style_text_font(dateLabel, &clock_czech_18, 0);
     lv_obj_set_style_text_letter_space(dateLabel, 4, 0);
     alignCenter(dateLabel, 0, -43);
+    alignCenter(namedayLabel, 0, -20);
     alignCenter(weatherImage, -142, 107);
     alignCenter(weatherAnimation, -142, 107);
     alignCenter(roomWeatherImage, 142, 107);
@@ -5244,7 +5260,20 @@ void clockDashboardSetDate(const char *dateText) {
   if (valuesDateLabel != nullptr) lv_label_set_text(valuesDateLabel, dateText);
   if (strcmp(lv_label_get_text(dateLabel), dateText) == 0) return;
   lv_label_set_text(dateLabel, dateText);
-  alignCenter(dateLabel, 0, analogLayoutEnabled() ? -132 : -43);
+  alignCenter(dateLabel, 0, analogLayoutEnabled() ? -142 : -43);
+}
+
+void clockDashboardSetNameday(const char *nameday) {
+  if (firmwareUpdateActive) return;
+  const char *value = nameday != nullptr ? nameday : "";
+  if (valuesNamedayLabel != nullptr) {
+    lv_label_set_text(valuesNamedayLabel, value);
+    alignCenter(valuesNamedayLabel, 0, -108);
+  }
+  if (namedayLabel == nullptr) return;
+  if (strcmp(lv_label_get_text(namedayLabel), value) == 0) return;
+  lv_label_set_text(namedayLabel, value);
+  alignCenter(namedayLabel, 0, analogLayoutEnabled() ? -123 : -20);
 }
 
 void clockDashboardSetSecond(uint8_t second) {

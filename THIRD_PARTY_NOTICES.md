@@ -77,6 +77,15 @@ Zdroje: https://www.naturalearthdata.com/ · https://www.geonames.org/ ·
 https://github.com/topojson/world-atlas ·
 https://github.com/petus/MeteoPlaneRadar
 
+## Kalendář jmenin
+
+Tabulka českých jmenin v `WaveshareHodiny/ClockNamedays.cpp` je vygenerovaná
+z `lib/names.json` projektu OzzyCzech/namedays-cs. Jména jsou převedená na
+velká písmena, protože font `clock_czech` obsahuje z české diakritiky jen
+velké znaky; obsah kalendáře se jinak nemění.
+
+Zdroj: https://github.com/OzzyCzech/namedays-cs
+
 ## Písma a ikony
 
 | Podklad | Licence | Zdroj |
