@@ -35,15 +35,36 @@ struct RssStatus {
   char message[RSS_MESSAGE_LENGTH] = "";
 };
 
+// Přehled poslední zkoušky kanálu z webu. Odděleně od RssStatus, protože
+// zkouška se schválně nedotýká toho, co je právě na displeji.
+struct RssProbeStatus {
+  bool ready = false;
+  size_t count = 0;
+  char channelTitle[RSS_CHANNEL_TITLE_LENGTH] = "";
+};
+
 void rssServiceBegin();
-void rssServiceStatus(RssStatus &status);
+// Vrací false, když zámek nebyl volný; status pak zůstává prázdný a volající
+// nesmí prázdnotu vydávat za "kanál nemá zprávy". Zkusí to při dalším
+// průchodu smyčkou.
+bool rssServiceStatus(RssStatus &status);
 // Projde uložené zprávy pod zámkem. Vrací false, když zámek nebyl volný;
 // volající to zkusí při dalším průchodu smyčkou.
 bool rssServiceVisitItems(RssItemVisitor visitor, void *context);
-// Stáhne a rozebere kanál. Volá se z datové úlohy, nikdy ze smyčky displeje.
+// Stáhne a rozebere kanál do mezipaměti obrazovky. Ověření proti svazku
+// kořenů Mozilly stojí přes 16 kB zásobníku, takže se volá výhradně z úlohy
+// kanálu, nikdy ze smyčky displeje ani z web serveru.
 bool rssServiceFetch(const ClockRssConfig &config,
                      NetworkDiagnosticKind diagnosticKind, int &httpStatus,
                      String &error);
+// Zkouška kanálu pro web. Stahuje a rozebírá stejně jako rssServiceFetch, ale
+// výsledek ukládá stranou: zkoušená adresa nesmí přepsat zprávy, které hodiny
+// právě ukazují. Platí pro ni stejný nárok na zásobník, takže i ona patří do
+// úlohy kanálu.
+bool rssServiceProbe(const ClockRssConfig &config, int &httpStatus,
+                     String &error);
+bool rssServiceProbeStatus(RssProbeStatus &status);
+bool rssServiceVisitProbeItems(RssItemVisitor visitor, void *context);
 // Zahodí mezipaměť i stahovací buffer. Volá se, když se kanál vypne nebo
 // změní adresa, aby na obrazovce nezůstaly zprávy z jiného zdroje.
 void rssServiceClear();

@@ -47,6 +47,12 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
 // handle, který zná jen skeč.
 void configurationWebSetHomeAssistantTask(TaskHandle_t task);
 void configurationWebSetRssTask(TaskHandle_t task);
+// Zkouška kanálu zpráv. Web server běží ve smyčce, jejíž zásobník na ověření
+// proti svazku kořenů Mozilly nestačí, takže samotné stažení obstará úloha
+// kanálu; skeč do téhle funkce schová předání žádosti i čekání na výsledek.
+using RssProbeCallback = bool (*)(const ClockRssConfig &config,
+                                  int &httpStatus, String &error);
+void configurationWebSetRssProbe(RssProbeCallback callback);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();

@@ -40,6 +40,12 @@ struct RssCache {
   uint32_t generation;
   bool ready;
   char message[RSS_MESSAGE_LENGTH];
+  // Výsledek poslední zkoušky kanálu z webu. Leží mimo feed, aby zkoušená
+  // adresa nepřepsala zprávy, které hodiny právě ukazují; celá struktura je
+  // v PSRAM, takže těch pár set bajtů navíc nic nestojí.
+  RssFeed probe;
+  char probeTimes[RSS_MAX_ITEMS][RSS_TIME_LENGTH];
+  bool probeReady;
 };
 
 RssCache *rssCache = nullptr;
@@ -146,11 +152,11 @@ void rssServiceBegin() {
   if (rssMutex == nullptr) rssMutex = xSemaphoreCreateMutexStatic(&rssMutexStorage);
 }
 
-void rssServiceStatus(RssStatus &status) {
+bool rssServiceStatus(RssStatus &status) {
   status = RssStatus{};
   if (rssMutex == nullptr ||
       xSemaphoreTake(rssMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
-    return;
+    return false;
   }
   status.loading = rssLoading;
   if (rssLastSuccessAt != 0) {
@@ -167,6 +173,23 @@ void rssServiceStatus(RssStatus &status) {
     strlcpy(status.message, rssCache->message, sizeof(status.message));
   }
   xSemaphoreGive(rssMutex);
+  return true;
+}
+
+bool rssServiceProbeStatus(RssProbeStatus &status) {
+  status = RssProbeStatus{};
+  if (rssMutex == nullptr ||
+      xSemaphoreTake(rssMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+    return false;
+  }
+  if (rssCache != nullptr && rssCache->probeReady) {
+    status.ready = true;
+    status.count = rssCache->probe.count;
+    strlcpy(status.channelTitle, rssCache->probe.channelTitle,
+            sizeof(status.channelTitle));
+  }
+  xSemaphoreGive(rssMutex);
+  return true;
 }
 
 bool rssServiceVisitItems(RssItemVisitor visitor, void *context) {
@@ -186,9 +209,30 @@ bool rssServiceVisitItems(RssItemVisitor visitor, void *context) {
   return true;
 }
 
-bool rssServiceFetch(const ClockRssConfig &config,
-                     NetworkDiagnosticKind diagnosticKind, int &httpStatus,
-                     String &error) {
+bool rssServiceVisitProbeItems(RssItemVisitor visitor, void *context) {
+  if (visitor == nullptr) return false;
+  if (rssMutex == nullptr ||
+      xSemaphoreTake(rssMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+    return false;
+  }
+  if (rssCache != nullptr && rssCache->probeReady) {
+    for (size_t index = 0; index < rssCache->probe.count; ++index) {
+      const RssDisplayItem item{rssCache->probe.items[index].title,
+                                rssCache->probeTimes[index]};
+      visitor(index, item, context);
+    }
+  }
+  xSemaphoreGive(rssMutex);
+  return true;
+}
+
+// Společné tělo běžného stažení i zkoušky z webu. Liší se jen tím, kam se
+// rozebraný kanál uloží: běžné stažení převezme obrazovka, zkouška zůstane
+// stranou v probe, aby zkoušená adresa nepřepsala zobrazené zprávy.
+static bool rssServiceDownload(const ClockRssConfig &config,
+                               NetworkDiagnosticKind diagnosticKind,
+                               bool probeOnly, int &httpStatus,
+                               String &error) {
   httpStatus = HTTPC_ERROR_CONNECTION_REFUSED;
   error = "";
   if (config.url[0] == '\0') {
@@ -337,7 +381,28 @@ bool rssServiceFetch(const ClockRssConfig &config,
     return false;
   }
   const bool ok = error.isEmpty();
-  if (ok) {
+  if (probeOnly) {
+    // Zkouška se drží stranou: ani při úspěchu se nemění feed, generation ani
+    // rssLastSuccessAt, takže obrazovka dál ukazuje uložený kanál a úloha
+    // kanálu si nemyslí, že právě proběhlo plánované stažení.
+    cache->probeReady = ok;
+    if (ok) {
+      cache->probe = parsed;
+      for (size_t index = 0; index < parsed.count; ++index) {
+        formatLocalTime(parsed.items[index].publishedAt,
+                        parsed.items[index].timeAvailable,
+                        cache->probeTimes[index]);
+      }
+      String detail = F("Zkouška načetla zpráv: ");
+      detail += parsed.count;
+      networkDiagnosticsSetDetail(diagnosticKind, detail);
+    } else {
+      // Ne `cache->probe = RssFeed{}`: dočasná kopie stojí přes 1,4 kB
+      // zásobníku úloze, která právě dokončila TLS relaci. Číst se stejně
+      // nesmí, protože probeReady je false.
+      networkDiagnosticsSetDetail(diagnosticKind, error);
+    }
+  } else if (ok) {
     cache->feed = parsed;
     for (size_t index = 0; index < parsed.count; ++index) {
       formatLocalTime(parsed.items[index].publishedAt,
@@ -362,11 +427,24 @@ bool rssServiceFetch(const ClockRssConfig &config,
   return ok;
 }
 
+bool rssServiceFetch(const ClockRssConfig &config,
+                     NetworkDiagnosticKind diagnosticKind, int &httpStatus,
+                     String &error) {
+  return rssServiceDownload(config, diagnosticKind, false, httpStatus, error);
+}
+
+bool rssServiceProbe(const ClockRssConfig &config, int &httpStatus,
+                     String &error) {
+  return rssServiceDownload(config, NetworkDiagnosticKind::RssTest, true,
+                            httpStatus, error);
+}
+
 void rssServiceClear() {
-  // Volá se z úlohy kanálu, zatímco stahovat může souběžně i webová zkouška
-  // kanálu ve smyčce. Zámek se drží vždy jen po dobu kopírování, nikdy přes
-  // síťové čtení, takže se na něj dá počkat. Samotné stahování ale zámek
-  // nedrží, takže úklid v takovém případě převezme ono.
+  // Volá se z úlohy kanálu mezi stahováními, ale sáhnout si sem může i
+  // rssServiceProbe, která běží ve stejné úloze. Zámek se drží vždy jen po
+  // dobu kopírování, nikdy přes síťové čtení, takže se na něj dá počkat.
+  // Samotné stahování ale zámek nedrží, takže úklid v takovém případě
+  // převezme ono.
   if (rssMutex == nullptr ||
       xSemaphoreTake(rssMutex, portMAX_DELAY) != pdTRUE) {
     rssClearPending = true;

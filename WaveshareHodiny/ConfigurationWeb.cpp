@@ -176,6 +176,7 @@ ClockAppearanceChangeCallback currentAppearanceSaveCallback = nullptr;
 ClockConfig configBuffer;
 TaskHandle_t homeAssistantTaskForDiagnostics = nullptr;
 TaskHandle_t rssTaskForDiagnostics = nullptr;
+RssProbeCallback rssProbeCallback = nullptr;
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
 bool webActive = false;
 unsigned long webAvailableUntil = 0;
@@ -1996,7 +1997,10 @@ void handleSaveConfig() {
 }
 
 // Zkouška kanálu zpráv z prohlížeče. Stahuje adresu z formuláře, ne uloženou,
-// takže se dá ověřit ještě před uložením.
+// takže se dá ověřit ještě před uložením. Samotné stažení dělá úloha kanálu:
+// ověření proti svazku kořenů Mozilly potřebuje víc zásobníku, než má smyčka,
+// ve které běží tenhle web server. Výsledek se ukládá stranou od mezipaměti
+// obrazovky, takže zkoušená adresa nepřepíše zprávy, které hodiny ukazují.
 void handleRssTest() {
   ClockRssConfig probe;
   String url = server.arg("rssUrl");
@@ -2010,6 +2014,10 @@ void handleRssTest() {
     sendError(400, F("Adresa kanálu zpráv je příliš dlouhá."));
     return;
   }
+  if (rssProbeCallback == nullptr) {
+    sendError(503, F("Zkouška kanálu zpráv nyní není dostupná."));
+    return;
+  }
   clockConfigCopy(probe.url, sizeof(probe.url), url);
   const int requestedCount = server.arg("rssItemCount").toInt();
   probe.itemCount = static_cast<uint8_t>(
@@ -2018,14 +2026,13 @@ void handleRssTest() {
           : 5);
   int httpStatus = 0;
   String error;
-  if (!rssServiceFetch(probe, NetworkDiagnosticKind::RssTest, httpStatus,
-                       error)) {
+  if (!rssProbeCallback(probe, httpStatus, error)) {
     sendError(502, error.isEmpty() ? String(F("Kanál se nepodařilo načíst."))
                                    : error);
     return;
   }
-  RssStatus status;
-  rssServiceStatus(status);
+  RssProbeStatus status;
+  rssServiceProbeStatus(status);
   String result;
   result.reserve(1024);
   result = F("{\"ok\":true,\"channel\":\"");
@@ -2035,7 +2042,7 @@ void handleRssTest() {
     String *result;
     bool first;
   } context{&result, true};
-  rssServiceVisitItems(
+  rssServiceVisitProbeItems(
       [](size_t, const RssDisplayItem &item, void *rawContext) {
         ItemContext &target = *static_cast<ItemContext *>(rawContext);
         if (!target.first) *target.result += ',';
@@ -3057,6 +3064,10 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
 
 void configurationWebSetHomeAssistantTask(TaskHandle_t task) {
   homeAssistantTaskForDiagnostics = task;
+}
+
+void configurationWebSetRssProbe(RssProbeCallback callback) {
+  rssProbeCallback = callback;
 }
 
 void configurationWebSetRssTask(TaskHandle_t task) {
