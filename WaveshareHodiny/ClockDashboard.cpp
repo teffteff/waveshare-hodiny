@@ -3201,11 +3201,11 @@ constexpr int PLANES_DETAIL_WIDTH = 330;
 // signálu. Rohy panelu musí zůstat uvnitř kruhu displeje: 330x310 dává
 // polovinu úhlopříčky 227 px proti poloměru 240 px.
 constexpr int PLANES_DETAIL_HEIGHT = 310;
-// První řádek a rozestup mezi řádky. Název typu je menším písmem, takže si
-// bere méně místa než celý řádek.
+// První řádek a rozestup mezi řádky. Název typu stojí na vlastní řádce stejným
+// písmem jako ostatní údaje, takže si bere výšku písma plus mezeru.
 constexpr int PLANES_DETAIL_ROWS_TOP = 48;
 constexpr int PLANES_DETAIL_ROW_STEP = 24;
-constexpr int PLANES_DETAIL_TYPE_NAME_HEIGHT = 20;
+constexpr int PLANES_DETAIL_TYPE_NAME_HEIGHT = 22;
 
 // Kam padne který řádek. Řádky pod typem draku uhýbají názvu typu.
 int planesDetailRowY(uint8_t row) {
@@ -3298,12 +3298,13 @@ void createPlanesPage(lv_obj_t *screen) {
     planesDetailRows[row] = label;
   }
 
-  // Název typu slovy pod zkratkou draku. Menším písmem a potichu, protože je
-  // to vysvětlivka k řádku nad ním, ne další údaj. Nejdelší jména z databáze
-  // letadel jsou přes čtyřicet znaků, takže má pevnou šířku a přeteklý zbytek
-  // uzavřou tři tečky - jinak by text vylezl z panelu ven.
+  // Název typu slovy pod zkratkou draku. Stejné písmo i barva jako řádek nad
+  // ním: je to plnohodnotný údaj, ne poznámka pod čarou, a menším šedým písmem
+  // se špatně četl. Nejdelší jména z databáze letadel jsou přes čtyřicet znaků,
+  // takže má pevnou šířku a přeteklý zbytek uzavřou tři tečky - jinak by text
+  // vylezl z panelu ven.
   planesDetailTypeName =
-      makeLabel(planesDetailPanel, &clock_czech_14, COLOR_MUTED);
+      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
   lv_label_set_text(planesDetailTypeName, "");
   lv_obj_set_width(planesDetailTypeName, PLANES_DETAIL_WIDTH - 36);
   lv_label_set_long_mode(planesDetailTypeName, LV_LABEL_LONG_DOT);
@@ -3313,14 +3314,15 @@ void createPlanesPage(lv_obj_t *screen) {
 
   // Trasa na DVĚ řádky. Jedna řádka se šipkou mezi městy se musela zmenšit,
   // aby se vedle sebe vešla dvě jména, a byla pak nečitelná; na půl má každá
-  // celou šířku panelu.
+  // celou šířku panelu. Barvu má stejnou jako údaje nad sebou, aby trasa
+  // nevypadala jako méně důležitý dovětek.
   planesDetailRouteFrom =
-      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_MUTED);
+      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
   lv_label_set_text(planesDetailRouteFrom, "");
   lv_obj_align(planesDetailRouteFrom, LV_ALIGN_TOP_LEFT, 18,
                planesDetailRowY(PLANES_DETAIL_ROW_COUNT) + 6);
   planesDetailRouteTo =
-      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_MUTED);
+      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
   lv_label_set_text(planesDetailRouteTo, "");
   lv_obj_align(planesDetailRouteTo, LV_ALIGN_TOP_LEFT, 18,
                planesDetailRowY(PLANES_DETAIL_ROW_COUNT) + 28);
