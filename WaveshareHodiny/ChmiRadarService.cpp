@@ -17,6 +17,7 @@
 #include "ClockConfig.h"
 #include "CzechMapData.h"
 #include "EuropeMapData.h"
+#include "MapCanvas.h"
 #include "RainViewerSource.h"
 #include "NetworkCoordinator.h"
 
@@ -492,152 +493,6 @@ void drawDecodedLine(PNGDRAW *draw) {
   }
 }
 
-uint16_t blendRgb565(uint16_t background, uint16_t foreground,
-                     uint8_t opacity) {
-  if (opacity == 0) return background;
-  if (opacity >= 100) return foreground;
-  const uint16_t inverse = 100 - opacity;
-  const uint16_t red =
-      (((background >> 11) & 0x1f) * inverse +
-       ((foreground >> 11) & 0x1f) * opacity + 50) /
-      100;
-  const uint16_t green =
-      (((background >> 5) & 0x3f) * inverse +
-       ((foreground >> 5) & 0x3f) * opacity + 50) /
-      100;
-  const uint16_t blue =
-      ((background & 0x1f) * inverse + (foreground & 0x1f) * opacity + 50) /
-      100;
-  return static_cast<uint16_t>((red << 11) | (green << 5) | blue);
-}
-
-void setMapPixel(uint16_t *buffer, int x, int y, uint16_t color,
-                 uint8_t opacity) {
-  if (x >= 0 && x < CHMI_RADAR_WIDTH && y >= 0 && y < CHMI_RADAR_HEIGHT) {
-    uint16_t &pixel = buffer[y * CHMI_RADAR_WIDTH + x];
-    pixel = blendRgb565(pixel, color, opacity);
-  }
-}
-
-uint8_t lineOutCode(int x, int y) {
-  return (x < 0 ? 1 : 0) | (x >= CHMI_RADAR_WIDTH ? 2 : 0) |
-         (y < 0 ? 4 : 0) | (y >= CHMI_RADAR_HEIGHT ? 8 : 0);
-}
-
-void drawMapLine(uint16_t *buffer, int x0, int y0, int x1, int y1,
-                 uint16_t color, uint8_t opacity) {
-  uint8_t code0 = lineOutCode(x0, y0);
-  uint8_t code1 = lineOutCode(x1, y1);
-  while (code0 || code1) {
-    if (code0 & code1) return;
-    const uint8_t code = code0 ? code0 : code1;
-    int x = 0;
-    int y = 0;
-    if (code & 8) {
-      y = CHMI_RADAR_HEIGHT - 1;
-      x = x0 + static_cast<int64_t>(x1 - x0) * (y - y0) / (y1 - y0);
-    } else if (code & 4) {
-      y = 0;
-      x = x0 + static_cast<int64_t>(x1 - x0) * (y - y0) / (y1 - y0);
-    } else if (code & 2) {
-      x = CHMI_RADAR_WIDTH - 1;
-      y = y0 + static_cast<int64_t>(y1 - y0) * (x - x0) / (x1 - x0);
-    } else {
-      x = 0;
-      y = y0 + static_cast<int64_t>(y1 - y0) * (x - x0) / (x1 - x0);
-    }
-    if (code == code0) {
-      x0 = x;
-      y0 = y;
-      code0 = lineOutCode(x0, y0);
-    } else {
-      x1 = x;
-      y1 = y;
-      code1 = lineOutCode(x1, y1);
-    }
-  }
-  const int deltaX = abs(x1 - x0);
-  const int stepX = x0 < x1 ? 1 : -1;
-  const int deltaY = -abs(y1 - y0);
-  const int stepY = y0 < y1 ? 1 : -1;
-  int error = deltaX + deltaY;
-  for (;;) {
-    setMapPixel(buffer, x0, y0, color, opacity);
-    if (x0 == x1 && y0 == y1) break;
-    const int doubled = 2 * error;
-    if (doubled >= deltaY) {
-      error += deltaY;
-      x0 += stepX;
-    }
-    if (doubled <= deltaX) {
-      error += deltaX;
-      y0 += stepY;
-    }
-  }
-}
-
-const uint8_t *mapGlyph(char character) {
-  static const uint8_t glyphs[26][5] = {
-      {0x7e, 0x11, 0x11, 0x11, 0x7e}, {0x7f, 0x49, 0x49, 0x49, 0x36},
-      {0x3e, 0x41, 0x41, 0x41, 0x22}, {0x7f, 0x41, 0x41, 0x22, 0x1c},
-      {0x7f, 0x49, 0x49, 0x49, 0x41}, {0x7f, 0x09, 0x09, 0x09, 0x01},
-      {0x3e, 0x41, 0x49, 0x49, 0x7a}, {0x7f, 0x08, 0x08, 0x08, 0x7f},
-      {0x00, 0x41, 0x7f, 0x41, 0x00}, {0x20, 0x40, 0x41, 0x3f, 0x01},
-      {0x7f, 0x08, 0x14, 0x22, 0x41}, {0x7f, 0x40, 0x40, 0x40, 0x40},
-      {0x7f, 0x02, 0x0c, 0x02, 0x7f}, {0x7f, 0x04, 0x08, 0x10, 0x7f},
-      {0x3e, 0x41, 0x41, 0x41, 0x3e}, {0x7f, 0x09, 0x09, 0x09, 0x06},
-      {0x3e, 0x41, 0x51, 0x21, 0x5e}, {0x7f, 0x09, 0x19, 0x29, 0x46},
-      {0x46, 0x49, 0x49, 0x49, 0x31}, {0x01, 0x01, 0x7f, 0x01, 0x01},
-      {0x3f, 0x40, 0x40, 0x40, 0x3f}, {0x1f, 0x20, 0x40, 0x20, 0x1f},
-      {0x3f, 0x40, 0x38, 0x40, 0x3f}, {0x63, 0x14, 0x08, 0x14, 0x63},
-      {0x07, 0x08, 0x70, 0x08, 0x07}, {0x61, 0x51, 0x49, 0x45, 0x43},
-  };
-  static const uint8_t digits[10][5] = {
-      {0x3e, 0x51, 0x49, 0x45, 0x3e}, {0x00, 0x42, 0x7f, 0x40, 0x00},
-      {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4b, 0x31},
-      {0x18, 0x14, 0x12, 0x7f, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39},
-      {0x3c, 0x4a, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03},
-      {0x36, 0x49, 0x49, 0x49, 0x36}, {0x06, 0x49, 0x49, 0x29, 0x1e},
-  };
-  static const uint8_t slash[5] = {0x20, 0x10, 0x08, 0x04, 0x02};
-  static const uint8_t greater[5] = {0x00, 0x41, 0x22, 0x14, 0x08};
-  static const uint8_t less[5] = {0x00, 0x08, 0x14, 0x22, 0x41};
-  if (character >= 'A' && character <= 'Z') return glyphs[character - 'A'];
-  if (character >= '0' && character <= '9') return digits[character - '0'];
-  if (character == '/') return slash;
-  if (character == '>') return greater;
-  if (character == '<') return less;
-  return nullptr;
-}
-
-void fillMapRect(uint16_t *buffer, int x, int y, int width, int height,
-                 uint16_t color, uint8_t opacity) {
-  for (int row = y; row < y + height; ++row)
-    for (int column = x; column < x + width; ++column)
-      setMapPixel(buffer, column, row, color, opacity);
-}
-
-void drawMapText(uint16_t *buffer, int x, int y, const char *text,
-                 uint16_t color, uint8_t opacity) {
-  for (size_t index = 0; text[index] != '\0'; ++index) {
-    const char character = static_cast<char>(
-        toupper(static_cast<unsigned char>(text[index])));
-    const uint8_t *glyph = mapGlyph(character);
-    if (glyph != nullptr) {
-      for (int column = 0; column < 5; ++column)
-        for (int row = 0; row < 7; ++row)
-          if (glyph[column] & (1U << row))
-            setMapPixel(buffer, x + index * 6 + column, y + row, color,
-                        opacity);
-    } else if (character == '-') {
-      for (int column = 1; column < 5; ++column)
-        setMapPixel(buffer, x + index * 6 + column, y + 3, color, opacity);
-    } else if (character == '.') {
-      setMapPixel(buffer, x + index * 6 + 2, y + 6, color, opacity);
-    }
-  }
-}
-
 // Oba zdroje kreslí stejnou mapovou vrstvu, jen do jiné projekce. ČHMÚ ji
 // odvozuje z výřezu své kompozice, RainViewer si ji drží sám podle přiblížení,
 // které vybral pro dlaždice.
@@ -659,18 +514,6 @@ void projectRadarPoint(const RadarProjection &projection, float latitude,
       CHMI_RADAR_WIDTH / (projection.cropX2 - projection.cropX1 + 1);
   y = static_cast<int64_t>(latitudeToY(latitude) - projection.cropY1) *
       CHMI_RADAR_HEIGHT / (projection.cropY2 - projection.cropY1 + 1);
-}
-
-struct MapLabelBox {
-  int x;
-  int y;
-  int width;
-  int height;
-};
-
-bool mapBoxesOverlap(const MapLabelBox &left, const MapLabelBox &right) {
-  return left.x < right.x + right.width && left.x + left.width > right.x &&
-         left.y < right.y + right.height && left.y + left.height > right.y;
 }
 
 // Stupnice intenzity srážek. Šest odstínů palety ČHMÚ od nejsilnějšího po
@@ -719,25 +562,6 @@ void drawIntensityLegend(uint16_t *buffer, bool rainViewerSource) {
                 labelColor, 100);
   }
 }
-
-// Popisky se rozmisťují tak, aby na sebe nelezly: kdo si místo zabere první,
-// ten si ho nechá. Města se proto procházejí po úrovních od největších.
-// Evropská data mají přes tisíc měst, ale na kruh se jich vejde jen hrstka,
-// takže seznam obsazených míst stačí pevný.
-constexpr size_t MAP_LABEL_CAPACITY = 64;
-
-struct MapLabelPlacer {
-  MapLabelBox occupied[MAP_LABEL_CAPACITY] = {};
-  size_t count = 0;
-
-  bool claim(const MapLabelBox &box) {
-    if (count >= MAP_LABEL_CAPACITY) return false;
-    for (size_t index = 0; index < count; ++index)
-      if (mapBoxesOverlap(box, occupied[index])) return false;
-    occupied[count++] = box;
-    return true;
-  }
-};
 
 // Jedno město: tečka a vedle ní popisek. Vrací false, když se na displej nebo
 // mezi ostatní popisky nevešlo.

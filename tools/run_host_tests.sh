@@ -45,6 +45,7 @@ run_test http_body_reader "$FIRMWARE_DIR/HttpBodyReader.cpp" || failures=$((fail
 run_test rain_viewer_index "$FIRMWARE_DIR/RainViewerIndex.cpp" || failures=$((failures + 1))
 run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))
 run_test weather_forecast_layout || failures=$((failures + 1))
+run_test map_canvas "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then
