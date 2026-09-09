@@ -61,12 +61,12 @@ schválně přeskakuje.
 `trusted_proxies`, `http:` blok je z YAML pryč, obě řádky `header_up` jsou
 z Caddyfile pryč a HA v logu ukazuje skutečnou IP klienta, ne `127.0.0.1`.
 
-**Zbývá ale doladit prahovou hodnotu.** `login_attempts_threshold` je `-1`,
-což je výchozí hodnota HA a znamená, že se **automaticky nebanuje** ani po
-libovolném počtu neúspěšných přihlášení; `ip_ban_enabled: true` samo o sobě
-pokrývá jen ruční zápisy v `ip_bans.yaml`. Teď, když HA konečně zná pravou
-IP, dává smysl práh nastavit (Nastavení → Systém → Síť, např. 5 pokusů) —
-teprve tím se z opravy stane skutečná ochrana proti hádání hesla.
+**Práh je nastavený.** `login_attempts_threshold` je `6` a `ip_ban_enabled`
+`true`, takže se po šesti neúspěšných pokusech banuje automaticky — a protože
+HA zná pravou IP klienta, chytne se útočník, ne `127.0.0.1`. Bany se zapisují
+do `ip_bans.yaml` vedle `configuration.yaml`; dokud ten soubor neexistuje,
+není zabanovaný nikdo. Odbanování = smazat řádek a restartovat HA. Práh se
+mění v Nastavení → Systém → Síť.
 
 ## Adresy, které používají hodiny
 
@@ -101,15 +101,19 @@ opakování nemá smysl** — sám si počká.
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
-V `caddy/Caddyfile` u Home Assistanta stojí:
+U Home Assistanta v `caddy/Caddyfile` kdysi stály tyhle dvě řádky:
 
 ```
 header_up -X-Forwarded-For
 header_up -X-Forwarded-Host
 ```
 
-Vypadá to jako chyba, ale je to obcházení jiné chyby. Home Assistant v tomhle
-kontejneru načítá `configuration.yaml` **nespolehlivě** — při jednom restartu
+Od 8. 9. 2026 tam **nejsou** a nesmí se vrátit. Sekce zůstává kvůli tomu, aby
+je někdo nepřidal znovu ve chvíli, kdy HA začne na proxovaný požadavek vracet
+400 — to je totiž přesně ta reakce, kterou obcházely.
+
+Vypadaly jako chyba, ale obcházely jinou chybu. Home Assistant v tomhle
+kontejneru načítal `configuration.yaml` **nespolehlivě** — při jednom restartu
 zahlásil „Unable to find configuration. Creating default one in /config“, při
 jiném vzal `use_x_forwarded_for`, ale ne `trusted_proxies`. Pak považoval Caddy
 za nedůvěryhodnou proxy a na každý proxovaný požadavek vracel **400**.
@@ -122,8 +126,8 @@ proti hádání hesla (`ip_ban`, brzdění opakovaných pokusů) klíčuje práv
 IP adresy, takže na přihlašovací stránce vystavené do internetu prakticky
 nefunguje — a kdyby se ban přece jen spustil, zabanuje `127.0.0.1`, tedy
 všechny včetně hodin. Hodinám samotným, které se hlásí tokenem, to nevadí;
-riziko nese lidské přihlašování. Proto stojí za to mít na HA silné heslo
-a dvoufaktor, dokud platí obchvat níž.
+riziko neslo lidské přihlašování. Právě kvůli tomu se obchvat rušil; silné
+heslo a dvoufaktor na HA ale dávají smysl tak jako tak.
 
 **Proč to nebyl bind-mount (a proč recreate nepomůže).** Původně to tu stálo
 jako závod při startu: HA prý sáhne po konfiguraci dřív, než se připojí

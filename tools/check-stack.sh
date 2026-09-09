@@ -146,14 +146,17 @@ if [ "$MODE" = "--deep" ]; then
       bad "poslední běh news.service skončil kódem '${last_run:-neznámý}' — journalctl -u news.service"
     fi
 
-    # Obchvat s X-Forwarded-For: dokud HA na proxovanou hlavičku odpovídá 400,
-    # nenačetl trusted_proxies a hlavičky v Caddyfile se odebírat nesmí. Testuje
-    # se zevnitř, protože Caddy hlavičku zvenčí stejně utne.
+    # Reverzní proxy: HA na proxovaný požadavek vrací 400, dokud nemá zapnuté
+    # use_x_forwarded_for a mezi trusted_proxies i 127.0.0.1 — forwarded.py
+    # v obou případech rovnou raise HTTPBadRequest. 200 tedy znamená, že běžící
+    # proces nastavení má. Obchvat v Caddyfile je od 8. 9. 2026 pryč, takže 400
+    # už není očekávaný stav, ale regrese. Testuje se zevnitř, protože Caddy
+    # hlavičku zvenčí stejně utne.
     xff_code="$(ssh_run "curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'X-Forwarded-For: 203.0.113.9' http://127.0.0.1:8123/")"
     if [ "$xff_code" = "200" ]; then
-      ok "HA přijímá X-Forwarded-For — obchvat v Caddyfile už není potřeba, viz infra/README.md"
+      ok "HA přijímá X-Forwarded-For — zná skutečnou IP klienta"
     elif [ "$xff_code" = "400" ]; then
-      warn "HA na X-Forwarded-For vrací 400 — trusted_proxies není načtené, obchvat v Caddyfile musí zůstat"
+      bad "HA na X-Forwarded-For vrací 400 — use_x_forwarded_for nebo trusted_proxies chybí, viz infra/README.md"
     else
       warn "test X-Forwarded-For vrátil '${xff_code:-nic}'"
     fi
