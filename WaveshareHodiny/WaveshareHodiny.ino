@@ -1072,6 +1072,13 @@ void maintainAgendaDisplay() {
   // obrazovka by na jeden průchod zhasla a ukázala "Načítám agendu…".
   if (!agendaServiceStatus(status)) return;
   if (status.generation == displayedAgendaGeneration) return;
+  // Legenda musí stát dřív než řádky: bez jmen by se po prvním stažení
+  // nakreslila prázdná a doplnila se až při dalším.
+  const char *calendarNames[AGENDA_MAX_CALENDARS];
+  for (size_t index = 0; index < status.calendarCount; ++index) {
+    calendarNames[index] = status.calendars[index];
+  }
+  clockDashboardSetAgendaCalendars(calendarNames, status.calendarCount);
   clockDashboardSetAgendaStatus(
       status.message, static_cast<uint8_t>(status.count), status.ready);
   // Když je mezipaměť právě zamčená stahováním, generaci si nezapíšeme a
@@ -1311,6 +1318,11 @@ void handleUsbCommands() {
         // takže ručně nalistovaná předpověď by screenshot nikdy nezastihl.
         clockDashboardSetForecastVisible(true);
         Serial.println("FORECAST_SHOWN");
+      } else if (usbCommand == "AGENDASHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
+        // takže ručně nalistovaná agenda by screenshot nikdy nezastihl.
+        clockDashboardSetAgendaVisible(true);
+        Serial.println("AGENDA_SHOWN");
       } else if (usbCommand == "RADARSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
         // takže ručně nalistovaný radar by screenshot nikdy nezastihl.

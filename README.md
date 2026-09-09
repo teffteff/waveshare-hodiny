@@ -400,10 +400,17 @@ neobjeví se ani gestem.
 
 ### Agenda z kalendáře
 
-Samostatná obrazovka ukazuje, co je v kalendáři na nejbližší dny: řádek na
-událost, nad prvním řádkem každého dne popisek `DNES`, `ZÍTRA` nebo třeba
-`pá 11.9.`. Celodenní událost má místo času pomlčku a stojí na začátku svého
-dne. Barva času říká, ze kterého kalendáře událost je.
+Samostatná obrazovka ukazuje, co je v kalendáři na nejbližší dny. Časy stojí
+v jednom sloupci pod sebou a názvy událostí v druhém, takže se seznam čte jako
+tabulka, ne jako text natvarovaný do kruhu. Nad prvním řádkem každého dne je
+popisek `DNES`, `ZÍTRA` nebo třeba `PÁ 11.9.`; celodenní událost má místo času
+pomlčku a stojí na začátku svého dne.
+
+Nahoře jsou hodiny a venkovní teplota, stejná řádka jako na předpovědi
+a radaru. Dole je legenda: jméno každého kalendáře ve své barvě. Tou barvou je
+obarvený i čas u události, takže se pozná, ze kterého kalendáře je, bez popisku
+u každého řádku. V červené noční paletě se barvy slévají do jedné a rozlišuje
+jen legenda — jiná barva než červená by rozbila noční vidění.
 
 **Do Googlu chodí server, ne hodiny.** Hodiny čtou hotový seznam z adresy, kterou
 zadáš v záložce **Agenda** — typicky `https://tvuj-server.example.net/agenda.json`.

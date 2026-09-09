@@ -379,11 +379,18 @@ by the gesture.
 
 ### Calendar agenda
 
-A separate screen shows what the calendar holds for the next few days: one line
-per event, with `DNES`, `ZÍTRA` or a date such as `pá 11.9.` above the first
-line of each day. An all-day event shows a dash instead of a time and sits at
-the top of its day. The colour of the time says which calendar the event is
-from.
+A separate screen shows what the calendar holds for the next few days. Times sit
+in one column and event names in another, so the list reads as a table rather
+than as text bent to fit a circle. Above the first line of each day is `DNES`,
+`ZÍTRA` or a date such as `PÁ 11.9.`; an all-day event shows a dash instead of a
+time and sits at the top of its day.
+
+The clock and the outside temperature run along the top, the same line the
+forecast and radar screens carry. Along the bottom is a legend: each calendar's
+name in its own colour. That colour also tints the time of every event, so you
+can tell which calendar an event came from without a label on each row. In the
+red night palette the colours merge into one and only the legend distinguishes
+them, because anything but red would spoil night vision.
 
 **The server talks to Google, the clock does not.** The clock reads a finished
 list from an address you enter in the **Agenda** tab, typically

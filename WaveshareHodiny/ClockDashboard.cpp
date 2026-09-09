@@ -1,3 +1,4 @@
+#include "AgendaParser.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
 #include "WeatherIconMapping.h"
@@ -119,13 +120,23 @@ lv_obj_t *planesDetailSignalLost = nullptr;
 bool planesFeatureAvailable = false;
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *agendaPage = nullptr;
+lv_obj_t *agendaHeaderLabel = nullptr;
 lv_obj_t *agendaStatusLabel = nullptr;
+lv_obj_t *agendaLegendLabel = nullptr;
 lv_obj_t *agendaDayLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
-lv_obj_t *agendaRowLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
+// Čas a název stojí ve dvou sloupcích, ne v jednom štítku s recolor značkou:
+// jeden štítek se nedá zarovnat do mřížky, protože písmo není neproporcionální.
+lv_obj_t *agendaTimeLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
+lv_obj_t *agendaTitleLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
 // Který řádek otevírá nový den. Podle toho se rozmisťuje: řádek s hlavičkou je
 // o její výšku vyšší než ostatní.
 bool agendaRowStartsDay[CLOCK_AGENDA_MAX_ITEMS] = {};
+// Kalendář každého řádku. Drží se proto, že noční paleta časy přebarvuje a bez
+// indexu by se po návratu do dne slily do jedné barvy.
+uint8_t agendaRowCalendar[CLOCK_AGENDA_MAX_ITEMS] = {};
 uint8_t agendaVisibleItemCount = 0;
+size_t agendaCalendarCount = 0;
+char agendaCalendarNames[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 lv_obj_t *rssHeaderLabel = nullptr;
 lv_obj_t *rssStatusLabel = nullptr;
 lv_obj_t *rssTitleLabels[CLOCK_RSS_MAX_ITEMS] = {};
@@ -436,6 +447,11 @@ lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
 void applyRssColors();
 void applyAgendaColors();
 void layoutAgendaItems();
+void updateAgendaHeaderLabel();
+void updateAgendaLegendLabel();
+lv_color_t forecastTemperatureColor(float degrees);
+void forecastAppendColorTag(char *destination, size_t capacity,
+                            lv_color_t color);
 void updateForecastPage();
 void updateForecastHeaderLabel();
 
@@ -2475,45 +2491,43 @@ void createRssPage(lv_obj_t *screen) {
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
 }
 
-// Obrazovka s agendou z kalendáře. Řádek na událost, nad prvním řádkem každého
-// dne hlavička s popiskem dne. Server posílá hotové řetězce, takže se tady nic
-// nepočítá - jen se rozmisťuje do kruhu.
+// Obrazovka s agendou z kalendáře. Sloupce jako u předpovědi: čas vlevo pod
+// sebou, název události v druhém sloupci. Zarovnávat každý řádek do kruhu zvlášť
+// vypadalo jako schodiště - text má stát v mřížce, kruh jen omezuje, jak široká
+// ta mřížka smí být.
 //
-// Šířka řádku se řídí stejnou geometrií jako u zpráv: rozhoduje ten okraj pásu,
-// který je dál od středu, protože LVGL láme text na jednu pevnou šířku.
+// Nahoře stojí hodiny a venkovní teplota jako na předpovědi a radaru, dole
+// legenda: jméno každého kalendáře ve své barvě. Barva času tak nepotřebuje
+// vysvětlení jinde než na téže obrazovce.
 constexpr int AGENDA_RADIUS = 240;
-constexpr int AGENDA_INSET = 14;
+// Levý okraj mřížky. V pásu, kde leží řádky, má kruh poloviční tětivu aspoň
+// 187 px, takže 168 nechává na obou stranách rezervu i pro nejširší řádek.
+constexpr int AGENDA_LEFT = -168;
+constexpr int AGENDA_RIGHT = 168;
+constexpr int AGENDA_TIME_WIDTH = 66;
+constexpr int AGENDA_COLUMN_GAP = 8;
 constexpr int AGENDA_ROW_GAP = 4;
 // Mezera nad hlavičkou dne. Odděluje dny výrazněji než mezera mezi řádky, aby
 // se seznam četl po dnech, ne jako jeden sloupec.
 constexpr int AGENDA_DAY_GAP = 10;
-constexpr int AGENDA_MIN_ROW_WIDTH = 140;
-// Mezera mezi časem a názvem události.
-constexpr char AGENDA_TIME_SEPARATOR[] = "  ";
-// Celodenní událost nemá čas; pomlčka drží sloupec, aby názvy začínaly
-// pod sebou.
-constexpr char AGENDA_ALL_DAY_MARK[] = "—";
-// "#RRGGBB " před časem, stejně jako u zpráv.
+constexpr int AGENDA_HEADER_Y = -190;
+constexpr int AGENDA_LEGEND_Y = 178;
+// Svislý pás mezi hlavičkou a legendou. Co se do něj nevejde, se neukáže -
+// řádek přes legendu je horší než o událost méně.
+constexpr int AGENDA_BLOCK_TOP = -150;
+constexpr int AGENDA_BLOCK_HEIGHT = 300;
+// Celodenní událost nemá čas; pomlčka drží sloupec, aby názvy začínaly pod
+// sebou i pod ní.
+constexpr char AGENDA_ALL_DAY_MARK[] = "-";
 constexpr size_t AGENDA_COLOR_TAG_LENGTH = 8;
 
 int agendaLineHeight() { return lv_font_get_line_height(&clock_czech_16); }
 int agendaDayHeight() { return lv_font_get_line_height(&clock_czech_14); }
 
-int agendaRowWidth(int yTop, int yBottom) {
-  const int top = yTop < 0 ? -yTop : yTop;
-  const int bottom = yBottom < 0 ? -yBottom : yBottom;
-  int extent = top > bottom ? top : bottom;
-  if (extent >= AGENDA_RADIUS) extent = AGENDA_RADIUS - 1;
-  const float half = sqrtf(static_cast<float>(AGENDA_RADIUS) * AGENDA_RADIUS -
-                           static_cast<float>(extent) * extent);
-  const int width = static_cast<int>(2.0f * half) - 2 * AGENDA_INSET;
-  return width < AGENDA_MIN_ROW_WIDTH ? AGENDA_MIN_ROW_WIDTH : width;
-}
-
 // Barva kalendáře. Index posílá server podle pořadí v AGENDA_CALENDARS, takže
-// se jednotlivé kalendáře od sebe poznají bez popisku, který by na kruhu
-// zabral šířku. V noční červené paletě se barvy slévají do jedné, protože
-// jiná než červená by rozbila noční vidění.
+// se jednotlivé kalendáře od sebe poznají bez popisku u každé události. V noční
+// červené paletě se barvy slévají do jedné, protože jiná než červená by rozbila
+// noční vidění - legenda tam proto nese jen jména.
 lv_color_t agendaCalendarColor(uint8_t calendar) {
   if (redNightVisualEnabled()) return COLOR_ERROR;
   switch (calendar) {
@@ -2541,49 +2555,131 @@ void agendaAppendEscaped(String &target, const char *text) {
   }
 }
 
-// Rozmístí řádky podle toho, které z nich otevírají nový den. Volá se až po
-// naplnění všech řádků, protože dřív není známo, kde jsou hranice dnů.
+// Kolik řádků se do pásu vejde i s hlavičkami dnů. Vrací počet událostí, ne
+// výšku: rozvržení podle něj rovnou ví, kde přestat.
+uint8_t agendaFittingItemCount(uint8_t count) {
+  const int lineHeight = agendaLineHeight();
+  const int dayHeight = agendaDayHeight();
+  int total = 0;
+  for (uint8_t index = 0; index < count; ++index) {
+    int next = total + lineHeight + AGENDA_ROW_GAP;
+    if (agendaRowStartsDay[index]) next += dayHeight + AGENDA_DAY_GAP;
+    if (next > AGENDA_BLOCK_HEIGHT) return index;
+    total = next;
+  }
+  return count;
+}
+
+int agendaBlockHeight(uint8_t count) {
+  const int lineHeight = agendaLineHeight();
+  const int dayHeight = agendaDayHeight();
+  int total = 0;
+  for (uint8_t index = 0; index < count; ++index) {
+    total += lineHeight + AGENDA_ROW_GAP;
+    if (agendaRowStartsDay[index]) total += dayHeight + AGENDA_DAY_GAP;
+  }
+  return total;
+}
+
+// Rozmístí řádky do mřížky. Volá se až po naplnění všech řádků, protože dřív
+// není známo, kde jsou hranice dnů, a řádek s hlavičkou je o její výšku vyšší.
 void layoutAgendaItems() {
   if (agendaPage == nullptr) return;
   const int lineHeight = agendaLineHeight();
   const int dayHeight = agendaDayHeight();
-  int total = 0;
-  for (size_t index = 0; index < agendaVisibleItemCount; ++index) {
-    total += lineHeight + AGENDA_ROW_GAP;
-    if (agendaRowStartsDay[index]) total += dayHeight + AGENDA_DAY_GAP;
-  }
+  const uint8_t visible = agendaFittingItemCount(agendaVisibleItemCount);
+  const int total = agendaBlockHeight(visible);
   int cursorY = -total / 2;
+  if (cursorY < AGENDA_BLOCK_TOP) cursorY = AGENDA_BLOCK_TOP;
+  const int titleLeft = AGENDA_LEFT + AGENDA_TIME_WIDTH + AGENDA_COLUMN_GAP;
+
   for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
     lv_obj_t *day = agendaDayLabels[index];
-    lv_obj_t *row = agendaRowLabels[index];
-    if (day == nullptr || row == nullptr) continue;
-    if (index >= agendaVisibleItemCount) {
+    lv_obj_t *time = agendaTimeLabels[index];
+    lv_obj_t *title = agendaTitleLabels[index];
+    if (day == nullptr || time == nullptr || title == nullptr) continue;
+    if (index >= visible) {
       setObjectVisible(day, false);
-      setObjectVisible(row, false);
+      setObjectVisible(time, false);
+      setObjectVisible(title, false);
       continue;
     }
     if (agendaRowStartsDay[index]) {
       cursorY += AGENDA_DAY_GAP;
-      const int width = agendaRowWidth(cursorY, cursorY + dayHeight);
-      lv_obj_set_width(day, width);
-      lv_obj_align(day, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS - width / 2,
+      lv_obj_align(day, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS + AGENDA_LEFT,
                    AGENDA_RADIUS + cursorY);
       setObjectVisible(day, true);
       cursorY += dayHeight;
     } else {
       setObjectVisible(day, false);
     }
-    const int width = agendaRowWidth(cursorY, cursorY + lineHeight);
-    lv_obj_set_width(row, width);
-    lv_obj_set_height(row, lineHeight);
-    lv_obj_align(row, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS - width / 2,
+    lv_obj_align(time, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS + AGENDA_LEFT,
                  AGENDA_RADIUS + cursorY);
-    setObjectVisible(row, true);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS + titleLeft,
+                 AGENDA_RADIUS + cursorY);
+    setObjectVisible(time, true);
+    setObjectVisible(title, true);
     cursorY += lineHeight + AGENDA_ROW_GAP;
   }
 }
 
-// Stránka agendy leží v PSRAM. Bez toho by dvacet štítků ukouslo přes deset
+// Legenda: jméno každého kalendáře ve své barvě, na jednom řádku. Bez ní barva
+// času nic neříká - a odznak s tečkou nejde, písmo žádnou nemá.
+void updateAgendaLegendLabel() {
+  if (agendaLegendLabel == nullptr) return;
+  if (agendaCalendarCount == 0) {
+    setObjectVisible(agendaLegendLabel, false);
+    return;
+  }
+  String text;
+  text.reserve(AGENDA_MAX_CALENDARS *
+               (AGENDA_CALENDAR_NAME_LENGTH + AGENDA_COLOR_TAG_LENGTH + 4));
+  for (size_t index = 0; index < agendaCalendarCount; ++index) {
+    if (index > 0) text += "   ";
+    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+    agendaBuildColorTag(tag, agendaCalendarColor(static_cast<uint8_t>(index)));
+    text += tag;
+    agendaAppendEscaped(text, agendaCalendarNames[index]);
+    text += '#';
+  }
+  lv_label_set_text(agendaLegendLabel, text.c_str());
+  setObjectVisible(agendaLegendLabel, true);
+}
+
+// Hodiny a venkovní teplota, stejná řádka jako na předpovědi a radaru. Skládá
+// se tady, aby ji přepnutí jazyka i noční palety chytly spolu se zbytkem
+// obrazovky.
+void updateAgendaHeaderLabel() {
+  if (agendaHeaderLabel == nullptr) return;
+  const bool haveTime = displayedTimeText[0] != '\0' &&
+                        strcmp(displayedTimeText, "--:--") != 0;
+  char temperature[12] = "";
+  const float degrees = currentValues.outsideTemperatureC;
+  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
+    snprintf(temperature, sizeof(temperature), "%d°C",
+             static_cast<int>(std::lround(degrees)));
+  }
+  char tag[10];
+  forecastAppendColorTag(tag, sizeof(tag), forecastTemperatureColor(degrees));
+  char text[48];
+  if (haveTime && temperature[0] != '\0') {
+    snprintf(text, sizeof(text), "%s%s%s%s#", displayedTimeText,
+             STATUS_LINE_GAP, tag, temperature);
+  } else if (haveTime) {
+    snprintf(text, sizeof(text), "%s", displayedTimeText);
+  } else if (temperature[0] != '\0') {
+    snprintf(text, sizeof(text), "%s%s#", tag, temperature);
+  } else {
+    text[0] = '\0';
+  }
+  setObjectVisible(agendaHeaderLabel, text[0] != '\0');
+  if (text[0] == '\0') return;
+  setTextColor(agendaHeaderLabel,
+               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  lv_label_set_text(agendaHeaderLabel, text);
+}
+
+// Stránka agendy leží v PSRAM. Bez toho by třicet štítků ukouslo přes deset
 // kilobajtů interní RAM, kterou potřebuje TLS - a rozbilo by to i kanál se
 // zprávami, který o agendě nic neví.
 class AgendaPsramAllocations {
@@ -2607,6 +2703,11 @@ void createAgendaPage(lv_obj_t *screen) {
   lv_obj_set_style_radius(agendaPage, 0, 0);
   lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_SCROLLABLE);
 
+  agendaHeaderLabel = makeLabel(agendaPage, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_recolor(agendaHeaderLabel, true);
+  lv_label_set_text(agendaHeaderLabel, "");
+  alignCenter(agendaHeaderLabel, 0, AGENDA_HEADER_Y);
+
   agendaStatusLabel = makeLabel(agendaPage, &clock_czech_16, COLOR_MUTED);
   lv_label_set_long_mode(agendaStatusLabel, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(agendaStatusLabel, 340);
@@ -2615,25 +2716,44 @@ void createAgendaPage(lv_obj_t *screen) {
   alignCenter(agendaStatusLabel, 0, 0);
   lv_obj_add_flag(agendaStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
+  const int titleWidth = AGENDA_RIGHT - AGENDA_LEFT - AGENDA_TIME_WIDTH -
+                         AGENDA_COLUMN_GAP;
   for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
     lv_obj_t *day = makeLabel(agendaPage, &clock_czech_14, COLOR_MUTED);
     lv_label_set_long_mode(day, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(day, AGENDA_RIGHT - AGENDA_LEFT);
     lv_obj_set_style_text_align(day, LV_TEXT_ALIGN_LEFT, 0);
     lv_label_set_text(day, "");
     lv_obj_add_flag(day, LV_OBJ_FLAG_HIDDEN);
     agendaDayLabels[index] = day;
 
-    lv_obj_t *row = makeLabel(agendaPage, &clock_czech_16, COLOR_TEXT);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
-    lv_label_set_recolor(row, true);
-    lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_LEFT, 0);
-    lv_label_set_text(row, "");
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-    agendaRowLabels[index] = row;
+    lv_obj_t *time = makeLabel(agendaPage, &clock_czech_16, COLOR_OUTSIDE);
+    lv_obj_set_width(time, AGENDA_TIME_WIDTH);
+    lv_obj_set_style_text_align(time, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(time, "");
+    lv_obj_add_flag(time, LV_OBJ_FLAG_HIDDEN);
+    agendaTimeLabels[index] = time;
+
+    lv_obj_t *title = makeLabel(agendaPage, &clock_czech_16, COLOR_TEXT);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(title, titleWidth);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(title, "");
+    lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
+    agendaTitleLabels[index] = title;
 
     agendaRowStartsDay[index] = false;
   }
   agendaVisibleItemCount = 0;
+
+  agendaLegendLabel = makeLabel(agendaPage, &clock_czech_14, COLOR_MUTED);
+  lv_label_set_recolor(agendaLegendLabel, true);
+  lv_label_set_long_mode(agendaLegendLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(agendaLegendLabel, 300);
+  lv_obj_set_style_text_align(agendaLegendLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(agendaLegendLabel, "");
+  alignCenter(agendaLegendLabel, 0, AGENDA_LEGEND_Y);
+  lv_obj_add_flag(agendaLegendLabel, LV_OBJ_FLAG_HIDDEN);
 
   makeChildrenTapThrough(agendaPage);
   lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_CLICKABLE);
@@ -2646,12 +2766,21 @@ void applyAgendaColors() {
   setTextColor(agendaStatusLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
   for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
     if (agendaDayLabels[index] != nullptr) {
-      setTextColor(agendaDayLabels[index], redNight ? COLOR_ERROR : COLOR_TEXT);
+      setTextColor(agendaDayLabels[index], redNight ? COLOR_ERROR : COLOR_MUTED);
     }
-    if (agendaRowLabels[index] != nullptr) {
-      setTextColor(agendaRowLabels[index], redNight ? COLOR_ERROR : COLOR_TEXT);
+    if (agendaTitleLabels[index] != nullptr) {
+      setTextColor(agendaTitleLabels[index],
+                   redNight ? COLOR_ERROR : COLOR_TEXT);
+    }
+    // Čas nese barvu kalendáře, takže se přebarvuje podle uloženého indexu, ne
+    // paušálně - jinak by se po návratu z noci všechny slily do jedné.
+    if (agendaTimeLabels[index] != nullptr) {
+      setTextColor(agendaTimeLabels[index],
+                   agendaCalendarColor(agendaRowCalendar[index]));
     }
   }
+  updateAgendaHeaderLabel();
+  updateAgendaLegendLabel();
 }
 
 // Obrazovka předpovědi. Svislý rozpočet - kolik hodin po denní části a
@@ -3267,6 +3396,7 @@ void updateForecastAirQuality() {
 void updateForecastPage() {
   if (forecastPage == nullptr) return;
   updateForecastHeaderLabel();
+  updateAgendaHeaderLabel();
 
   // Dokud předpověď nedorazila, drží obrazovku jediná hláška - poloprázdné
   // řádky by tvrdily, že data jsou a jen chybí čísla.
@@ -3526,6 +3656,7 @@ void updateOverlayStatusLabels() {
   updateRadarClockLabel();
   updatePlanesClockLabel();
   updateForecastHeaderLabel();
+  updateAgendaHeaderLabel();
 }
 
 // Stáří snímku v minutách podle jeho času "HH:MM" v místním čase. Vrací -1,
@@ -5752,32 +5883,35 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
                                  uint8_t calendar) {
   if (agendaPage == nullptr || index >= agendaVisibleItemCount) return;
   lv_obj_t *dayLabel = agendaDayLabels[index];
-  lv_obj_t *rowLabel = agendaRowLabels[index];
-  if (dayLabel == nullptr || rowLabel == nullptr) return;
+  lv_obj_t *timeLabel = agendaTimeLabels[index];
+  lv_obj_t *titleLabel = agendaTitleLabels[index];
+  if (dayLabel == nullptr || timeLabel == nullptr || titleLabel == nullptr) {
+    return;
+  }
 
   const bool startsDay = day != nullptr && day[0] != '\0';
   agendaRowStartsDay[index] = startsDay;
   if (startsDay) lv_label_set_text(dayLabel, day);
 
   const bool hasTime = time != nullptr && time[0] != '\0';
-  const char *stamp = hasTime ? time : AGENDA_ALL_DAY_MARK;
-  String text;
-  // Arduino String roste na přesnou délku, takže bez rezervace by každý
-  // připsaný znak znamenal realloc. Zdvojené '#' se do odhadu vejdou.
-  text.reserve(2 * (title != nullptr ? strlen(title) : 0) + 2 * strlen(stamp) +
-               AGENDA_COLOR_TAG_LENGTH + sizeof(AGENDA_TIME_SEPARATOR) + 2);
-  char tag[AGENDA_COLOR_TAG_LENGTH + 1];
-  agendaBuildColorTag(tag, agendaCalendarColor(calendar));
-  text += tag;
-  agendaAppendEscaped(text, stamp);
-  text += '#';
-  text += AGENDA_TIME_SEPARATOR;
-  agendaAppendEscaped(text, title != nullptr ? title : "");
-  lv_label_set_text(rowLabel, text.c_str());
+  lv_label_set_text(timeLabel, hasTime ? time : AGENDA_ALL_DAY_MARK);
+  agendaRowCalendar[index] = calendar;
+  setTextColor(timeLabel, agendaCalendarColor(calendar));
+  lv_label_set_text(titleLabel, title != nullptr ? title : "");
 
   // Rozmístit jde až po posledním řádku: dřív není známo, kde leží hranice dnů,
   // a řádek s hlavičkou je o její výšku vyšší než ostatní.
   if (index + 1 == agendaVisibleItemCount) layoutAgendaItems();
+}
+
+void clockDashboardSetAgendaCalendars(const char *const *names, size_t count) {
+  if (count > AGENDA_MAX_CALENDARS) count = AGENDA_MAX_CALENDARS;
+  agendaCalendarCount = count;
+  for (size_t index = 0; index < count; ++index) {
+    strlcpy(agendaCalendarNames[index], names[index] != nullptr ? names[index] : "",
+            AGENDA_CALENDAR_NAME_LENGTH);
+  }
+  updateAgendaLegendLabel();
 }
 
 void clockDashboardSetRadarVisible(bool visible) { setRadarVisible(visible); }

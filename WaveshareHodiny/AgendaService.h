@@ -34,6 +34,10 @@ struct AgendaStatus {
   uint32_t lastSuccessAgeMs = 0;
   bool lastSuccessAvailable = false;
   char message[AGENDA_MESSAGE_LENGTH] = "";
+  // Jména kalendářů pro legendu. Vejdou se sem, protože jich jsou jednotky;
+  // události se naopak obcházejí návštěvníkem, aby se nekopírovaly na zásobník.
+  size_t calendarCount = 0;
+  char calendars[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 };
 
 // Přehled poslední zkoušky adresy z webu. Odděleně od AgendaStatus, protože

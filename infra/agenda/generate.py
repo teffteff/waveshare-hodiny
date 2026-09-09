@@ -37,13 +37,18 @@ DAYS_AHEAD = int(os.environ.get("AGENDA_DAYS", "3"))
 MAX_ITEMS = int(os.environ.get("AGENDA_MAX_ITEMS", "12"))
 # Delsi titulek utne LVGL trema teckami; usekem uz tady se setri prenos.
 MAX_TITLE_CHARS = int(os.environ.get("AGENDA_MAX_TITLE", "48"))
+# Jmeno kalendare do legendy na displeji. Delsi se utne; na kruh se stejne vejde
+# jen par znaku vedle druheho jmena.
+MAX_CALENDAR_NAME_CHARS = int(os.environ.get("AGENDA_MAX_CALENDAR_NAME", "20"))
 # Prave probihajici udalost ma na displeji zustat. Bez tohohle okna by zmizela
 # v okamziku, kdy zacala, coz je presne ta chvile, kdy je nejzajimavejsi.
 GRACE_MINUTES = int(os.environ.get("AGENDA_GRACE_MINUTES", "60"))
 # Poradi urcuje index, ktery hodiny pouziji jako barvu kalendare.
 CALENDARS = [c.strip() for c in os.environ.get("AGENDA_CALENDARS", "").split(",") if c.strip()]
 
-WEEKDAYS = ["po", "út", "st", "čt", "pá", "so", "ne"]
+# Verzalkami, at popisek dne vypada stejne jako DNES a ZITRA. Font hodin ma
+# velka pismena s diakritikou taky, takze se PA a CT napisou spravne.
+WEEKDAYS = ["PO", "ÚT", "ST", "ČT", "PÁ", "SO", "NE"]
 
 
 def session() -> AuthorizedSession:
@@ -51,6 +56,20 @@ def session() -> AuthorizedSession:
         str(KEY_FILE), scopes=SCOPES
     )
     return AuthorizedSession(credentials)
+
+
+def calendar_name(http: AuthorizedSession, calendar_id: str) -> str:
+    """Jmeno kalendare pro legendu. Bere se z Googlu, ne z konfigurace: jinak by
+    se po prejmenovani kalendare musel editovat agenda.env."""
+    response = http.get(
+        f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id)}",
+        timeout=30,
+    )
+    if response.status_code == 404:
+        raise RuntimeError(f"kalendar {calendar_id} neni sdileny se servisnim uctem (404)")
+    response.raise_for_status()
+    summary = (response.json().get("summary") or "").strip()
+    return summary[:MAX_CALENDAR_NAME_CHARS]
 
 
 def fetch(http: AuthorizedSession, calendar_id: str, start: datetime, end: datetime) -> list[dict]:
@@ -112,7 +131,7 @@ def collect(http: AuthorizedSession) -> list[dict]:
     return rows
 
 
-def render(rows: list[dict]) -> dict:
+def render(rows: list[dict], names: list[str]) -> dict:
     now = datetime.now(TZ)
     today = now.date()
     items = []
@@ -133,7 +152,14 @@ def render(rows: list[dict]) -> dict:
             "title": row["title"][:MAX_TITLE_CHARS],
             "cal": row["cal"],
         })
-    return {"generated": now.isoformat(timespec="seconds"), "count": len(items), "items": items}
+    return {
+        "generated": now.isoformat(timespec="seconds"),
+        # Poradi odpovida indexu "cal" u udalosti, takze si podle nej displej
+        # obarvi legendu i casy.
+        "calendars": names,
+        "count": len(items),
+        "items": items,
+    }
 
 
 def main() -> None:
@@ -142,7 +168,11 @@ def main() -> None:
     if not KEY_FILE.is_file():
         sys.exit(f"Klic servisniho uctu {KEY_FILE} neexistuje.")
 
-    payload = render(collect(session()))
+    http = session()
+    # Jmena se ctou driv nez udalosti: kalendar, ke kteremu ucet ztratil pristup,
+    # tak spadne na prvni zadosti a necha lezet predchozi soubor cely.
+    names = [calendar_name(http, calendar_id) for calendar_id in CALENDARS]
+    payload = render(collect(http), names)
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     temporary = OUTPUT.with_suffix(".tmp")

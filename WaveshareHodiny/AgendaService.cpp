@@ -156,6 +156,11 @@ bool agendaServiceStatus(AgendaStatus &status) {
     status.count = agendaCache->feed.count;
     status.ready = agendaCache->ready;
     strlcpy(status.message, agendaCache->message, sizeof(status.message));
+    status.calendarCount = agendaCache->feed.calendarCount;
+    for (size_t index = 0; index < status.calendarCount; ++index) {
+      strlcpy(status.calendars[index], agendaCache->feed.calendars[index],
+              AGENDA_CALENDAR_NAME_LENGTH);
+    }
   }
   xSemaphoreGive(agendaMutex);
   return true;

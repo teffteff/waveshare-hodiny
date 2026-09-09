@@ -270,6 +270,24 @@ AgendaParseOutcome agendaParseFeed(const char *payload, size_t length,
     return outcome;
   }
 
+  // Jména kalendářů. Chybějící pole není chyba: starší server je neposílal a
+  // obrazovka pak jen vynechá legendu.
+  const JsonValue calendars = jsonFindMember(begin, end, "calendars");
+  if (calendars.isArray()) {
+    JsonArrayCursor names = jsonOpenArray(calendars);
+    while (feed.calendarCount < AGENDA_MAX_CALENDARS && jsonNextItem(names)) {
+      const char *nameBegin = names.itemBegin;
+      const char *nameEnd = names.itemEnd;
+      // Prvky pole jsou řetězce, takže se uvozovky musí odloupnout ručně -
+      // jsonFindMember tady nepomůže, jméno nemá klíč.
+      if (nameEnd - nameBegin < 2 || *nameBegin != '"') continue;
+      agendaCopyText(nameBegin + 1, static_cast<size_t>(nameEnd - nameBegin - 2),
+                     feed.calendars[feed.calendarCount],
+                     AGENDA_CALENDAR_NAME_LENGTH);
+      ++feed.calendarCount;
+    }
+  }
+
   const size_t limit =
       maximumItems < AGENDA_MAX_ITEMS ? maximumItems : AGENDA_MAX_ITEMS;
   JsonArrayCursor cursor = jsonOpenArray(items);

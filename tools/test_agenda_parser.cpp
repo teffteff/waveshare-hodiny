@@ -12,7 +12,8 @@ namespace {
 // včetně prázdného "day" u pokračování dne, prázdného "time" u celodenní
 // události a diakritiky v titulcích.
 const char *const REAL_RESPONSE =
-    "{\"generated\":\"2026-09-09T15:01:02+02:00\",\"count\":12,\"items\":["
+    "{\"generated\":\"2026-09-09T15:01:02+02:00\","
+    "\"calendars\":[\"Neumannovi\",\"Adámek\"],\"count\":12,\"items\":["
     "{\"day\":\"DNES\",\"date\":\"2026-09-09\",\"time\":\"14:00\","
     "\"title\":\"Plavání Vilem\",\"cal\":1},"
     "{\"day\":\"\",\"date\":\"\",\"time\":\"18:00\","
@@ -64,6 +65,43 @@ void testRealResponse() {
 
   assert(std::string(feed.items[4].day) == "pá 11.9.");
   assert(feed.items[4].calendar == 1);
+
+  // Jména kalendářů nesou legendu; index se shoduje s "cal" u události.
+  assert(feed.calendarCount == 2);
+  assert(std::string(feed.calendars[0]) == "Neumannovi");
+  assert(std::string(feed.calendars[1]) == "Adámek");
+}
+
+// Starší server jména neposílal. Chybějící pole nesmí být chyba - obrazovka
+// jen vynechá legendu a události kreslí dál.
+void testFeedWithoutCalendarNames() {
+  const char *const payload =
+      "{\"count\":1,\"items\":[{\"day\":\"DNES\",\"time\":\"09:00\","
+      "\"title\":\"Sokol\",\"cal\":0}]}";
+  AgendaFeed feed;
+  const AgendaParseOutcome outcome =
+      agendaParseFeed(payload, strlen(payload), AGENDA_MAX_ITEMS, feed);
+  assert(outcome.status == AgendaParseStatus::Ok);
+  assert(outcome.count == 1);
+  assert(feed.calendarCount == 0);
+}
+
+// Kalendářů může být na serveru víc, než kolik jich displej rozliší barvou.
+// Přebytek se zahodí, ale seznam událostí se tím rozbít nesmí.
+void testCalendarNamesAreCapped() {
+  const char *const payload =
+      "{\"calendars\":[\"A\",\"B\",\"C\",\"D\",\"E\",\"F\"],\"count\":1,"
+      "\"items\":[{\"day\":\"DNES\",\"time\":\"09:00\",\"title\":\"Sokol\","
+      "\"cal\":0}]}";
+  AgendaFeed feed;
+  const AgendaParseOutcome outcome =
+      agendaParseFeed(payload, strlen(payload), AGENDA_MAX_ITEMS, feed);
+  assert(outcome.status == AgendaParseStatus::Ok);
+  assert(feed.calendarCount == AGENDA_MAX_CALENDARS);
+  assert(std::string(feed.calendars[0]) == "A");
+  assert(std::string(feed.calendars[AGENDA_MAX_CALENDARS - 1]) == "D");
+  assert(outcome.count == 1);
+  assert(std::string(feed.items[0].title) == "Sokol");
 }
 
 void testItemLimit() {
@@ -176,6 +214,8 @@ void testTruncationKeepsUtf8Intact() {
 
 int main() {
   testRealResponse();
+  testFeedWithoutCalendarNames();
+  testCalendarNamesAreCapped();
   testItemLimit();
   testEmptyAgenda();
   testBrokenPayloads();

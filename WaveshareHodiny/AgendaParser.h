@@ -8,7 +8,8 @@
 // PlaneRadarService.
 //
 // Odpověď /agenda.json má tvar
-//   {"generated":"2026-09-09T14:56:39+02:00","count":12,"items":[
+//   {"generated":"2026-09-09T14:56:39+02:00","calendars":["Neumannovi","Adámek"],
+//    "count":12,"items":[
 //     {"day":"DNES","date":"2026-09-09","time":"18:00","title":"Popelnice","cal":0},
 //     {"day":"","date":"","time":"20:00","title":"Svoz","cal":1}]}
 //
@@ -30,6 +31,13 @@ constexpr size_t AGENDA_TIME_LENGTH = 6;
 // Server titulky ořezává na 48 znaků. České znaky jsou dvoubajtové, takže
 // nejhorší případ je 96 bajtů; zbytek je rezerva na server nastavený jinak.
 constexpr size_t AGENDA_TITLE_LENGTH = 104;
+// Kolik kalendářů se dá od sebe odlišit barvou. Čtyři proto, že víc barev by na
+// černém kruhu přestalo být rozeznatelné - a legenda se čtyřmi jmény by se na
+// jeden řádek stejně nevešla.
+constexpr size_t AGENDA_MAX_CALENDARS = 4;
+// Jméno kalendáře do legendy. Server posílá nejvýš dvacet znaků, ty ale mohou
+// být české a tedy dvoubajtové.
+constexpr size_t AGENDA_CALENDAR_NAME_LENGTH = 44;
 
 struct AgendaItem {
   // Popisek dne nese jen PRVNÍ událost toho dne, u ostatních je prázdný. Podle
@@ -50,6 +58,10 @@ struct AgendaItem {
 struct AgendaFeed {
   size_t count = 0;
   AgendaItem items[AGENDA_MAX_ITEMS];
+  // Jména kalendářů v pořadí, ve kterém je server čte. Index se shoduje
+  // s AgendaItem::calendar, takže legenda i časy dostanou stejnou barvu.
+  size_t calendarCount = 0;
+  char calendars[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 };
 
 enum class AgendaParseStatus : uint8_t {
