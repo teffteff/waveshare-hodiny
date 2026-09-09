@@ -38,11 +38,28 @@ CANDIDATES_PER_FEED = 15
 # takže by kanál tiše přestal být čerstvý.
 FEED_TIMEOUT_SECONDS = 20
 socket.setdefaulttimeout(FEED_TIMEOUT_SECONDS)
-WANTED = 6
+# Strop displeje: ClockConfig.h dovolí 3 až 6 zpráv (CLOCK_RSS_MIN_ITEMS až
+# CLOCK_RSS_MAX_ITEMS), výchozí je 5, a hodiny si z kanálu vezmou jen prvních
+# tolik, kolik mají nastaveno. Psát jich do kanálu víc nemá smysl — stáhly by
+# je a zahodily. Pozor na RSS_MAX_ITEMS = 8 v RssParser.h: to je jen rezerva
+# v bufferu parseru, aby nezávisel na ClockConfig, ne počet, který jde zobrazit.
+PUBLISHED_MAX = 6
+# Od modelu se jich chce víc, než se vydá. Kontrola v main() zahazuje neplatné
+# a zdvojené indexy, takže bez rezervy by jedna vadná volba stlačila výsledek
+# pod šestku. Dřív dělalo jedno číslo obojí, takže „chtít víc zpráv“ zároveň
+# znamenalo „častěji to celé vzdát“.
+REQUESTED = 8
+# Práh k vydání. Pod ním zůstane ležet předchozí soubor: jedna vadná volba nesmí
+# shodit celý běh, ale ani se nesmí vydat skoro prázdný kanál.
+MINIMUM_TO_PUBLISH = 5
+# Starší zprávy se modelu vůbec nenabídnou. Kanál ČT24 drží položky i přes
+# dvacet hodin, takže bez tohohle filtru soutěží včerejšek s tím, co vyšlo před
+# chvílí. Okno je schválně široké: ranní běh jde po noci, kdy toho vyšlo málo,
+# a užší okno by ho shodilo pod práh k vydání. Hlavní užitek je proto stáří
+# vypsané modelu (viz choose) a odstavení zdroje, který přestal vydávat.
+MAX_AGE_HOURS = float(os.environ.get("NEWS_MAX_AGE_HOURS", "24"))
 # Hodiny kreslí u tří až pěti zpráv tři řádky, u šesti dva; do dvou řádků se
-# vejde kolem sta znaků, delší titulek utne LVGL třemi tečkami. WANTED je nad
-# výchozím počtem zpráv na displeji (5), aby si hodiny měly z čeho vybrat i
-# tehdy, když je nastavené šestka.
+# vejde kolem sta znaků, delší titulek utne LVGL třemi tečkami.
 MAX_TITLE_CHARS = 90
 MODEL = os.environ.get("NEWS_MODEL", "gemini-flash-latest")
 # Když je hlavní model přetížený (503), zkusí se po řadě další. Aliasy „latest“
@@ -76,24 +93,44 @@ def published_at(entry) -> datetime:
 def collect() -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
+    now = datetime.now(timezone.utc)
     for url in FEEDS:
         for entry in feedparser.parse(url).entries[:CANDIDATES_PER_FEED]:
             title = (entry.get("title") or "").strip()
             key = title.lower()
             if not title or key in seen:
                 continue
+            published = published_at(entry)
+            # Položka bez data dostane od published_at současný čas, takže
+            # projde. Zamrzlý kanál se pozná právě podle dat a nedatovaná
+            # položka je vzácná; zahazovat ji naslepo by ubralo víc než přidalo.
+            if (now - published).total_seconds() > MAX_AGE_HOURS * 3600:
+                continue
+            # Až tady, ne dřív: kdyby se stejný titulek objevil ve dvou
+            # kanálech a ten první byl přes okno, přišlo by se i o ten čerstvý.
             seen.add(key)
             items.append({
                 "title": title,
                 "summary": (entry.get("summary") or "").strip()[:300],
-                "published": published_at(entry),
+                "published": published,
             })
     return items
 
 
+def describe_age(published: datetime, now: datetime) -> str:
+    hours = (now - published).total_seconds() / 3600
+    return "před <1 h" if hours < 1 else f"před {hours:.0f} h"
+
+
 def choose(items: list[dict]) -> list[Pick]:
+    # Stáří u každé položky, aby model poznal, co je z dneška a co doběhlo ze
+    # včerejška. Pořadí zůstává po zdrojích, ne podle času: seřazeno od
+    # nejnovějšího by nahoru vyplavaly zdroje, které publikují nejčastěji,
+    # a model by kvůli pozici sklouzl k jednomu médiu.
+    now = datetime.now(timezone.utc)
     listing = "\n".join(
-        f"[{i}] {it['title']} — {it['summary']}" for i, it in enumerate(items)
+        f"[{i}] ({describe_age(it['published'], now)}) {it['title']} — {it['summary']}"
+        for i, it in enumerate(items)
     )
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     client = genai.Client(api_key=api_key)
@@ -111,9 +148,12 @@ def choose(items: list[dict]) -> list[Pick]:
         max_output_tokens=8192,
     )
     prompt = (
-        f"Vyber {WANTED} nejdůležitějších zpráv dne a ke každé napiš vlastní "
+        f"Vyber {REQUESTED} nejdůležitějších zpráv dne a ke každé napiš vlastní "
         f"úderný titulek v češtině, nejvýše {MAX_TITLE_CHARS} znaků, bez uvozovek "
-        f"a bez názvu média. U každé vrať index zprávy ze seznamu.\n\n{listing}"
+        f"a bez názvu média. V závorce je u každé položky stáří; při srovnatelné "
+        f"důležitosti dej přednost čerstvější zprávě. Vrať je seřazené od "
+        f"nejdůležitější, hodiny ukazují jen prvních několik. U každé vrať index "
+        f"zprávy ze seznamu.\n\n{listing}"
     )
     # Model bývá občas přetížený (503). Zkusí se hlavní model dvakrát, pak
     # postupně záložní modely, takže výpadek jednoho fondu výběr nezastaví.
@@ -162,8 +202,11 @@ def render(picks: list[Pick], items: list[dict]) -> str:
 
 def main() -> None:
     items = collect()
-    if len(items) < WANTED:
-        sys.exit(f"Zdroje vratily jen {len(items)} zprav, ponechavam predchozi soubor.")
+    if len(items) < MINIMUM_TO_PUBLISH:
+        sys.exit(
+            f"Zdroje vratily jen {len(items)} zprav mladsich nez "
+            f"{MAX_AGE_HOURS:.0f} h, ponechavam predchozi soubor."
+        )
 
     # Model občas vrátí stejný index dvakrát; bez téhle kontroly by se jedna
     # zpráva objevila na displeji dvakrát pod dvěma titulky.
@@ -174,9 +217,9 @@ def main() -> None:
             continue
         seen_indexes.add(pick.index)
         picks.append(pick)
-        if len(picks) == WANTED:
+        if len(picks) == PUBLISHED_MAX:
             break
-    if len(picks) < WANTED:
+    if len(picks) < MINIMUM_TO_PUBLISH:
         sys.exit(f"Model vratil jen {len(picks)} platnych zprav, ponechavam predchozi soubor.")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
