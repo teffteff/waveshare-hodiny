@@ -1345,6 +1345,9 @@ void handleGetConfig() {
   result += F(",\"planesWatchCallsign\":\"");
   result += jsonEscape(config.planes.watchCallsign);
   result += F("\"");
+  result += F(",\"planesFeedUrl\":\"");
+  result += jsonEscape(config.planesFeedUrl);
+  result += F("\"");
   result += F(",\"planesDisplaySeconds\":");
   result += config.planes.displaySeconds;
   result += F(",\"planesAutomaticRotation\":");
@@ -1846,7 +1849,22 @@ void handleSaveConfig() {
       sendError(400, F("Doba zobrazení letadel musí být 10 až 3600 sekund."));
       return;
     }
+    String planesFeedUrl = server.arg("planesFeedUrl");
+    planesFeedUrl.trim();
+    if (planesFeedUrl.length() >= CLOCK_PLANES_FEED_URL_LENGTH) {
+      sendError(400, F("Adresa zdroje letadel je příliš dlouhá."));
+      return;
+    }
+    if (!planesFeedUrl.isEmpty() && !planesFeedUrl.startsWith("http://") &&
+        !planesFeedUrl.startsWith("https://")) {
+      sendError(400,
+                F("Adresa zdroje letadel musí začínat http:// nebo https://."));
+      return;
+    }
     config.planes.enabled = server.arg("planesEnabled") == "1";
+    // Prázdné pole není chyba: znamená "ptej se adsb.fi přímo".
+    clockConfigCopy(config.planesFeedUrl, sizeof(config.planesFeedUrl),
+                    planesFeedUrl);
     config.planes.rangeIndex = static_cast<uint8_t>(planesRange);
     config.planes.refreshSeconds = static_cast<uint8_t>(planesRefreshSeconds);
     config.planes.topBearingDeg = static_cast<uint16_t>(planesTopBearing);

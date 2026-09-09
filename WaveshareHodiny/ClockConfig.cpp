@@ -47,6 +47,7 @@ constexpr uint32_t FORECAST_PREDECESSOR_SCHEMA_VERSION = 33;
 constexpr uint32_t PLANES_PREDECESSOR_SCHEMA_VERSION = 34;
 constexpr uint32_t SCREEN_ORDER_PREDECESSOR_SCHEMA_VERSION = 35;
 constexpr uint32_t AGENDA_PREDECESSOR_SCHEMA_VERSION = 36;
+constexpr uint32_t PLANES_FEED_PREDECESSOR_SCHEMA_VERSION = 37;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -169,6 +170,15 @@ struct ConfigRecordV36 {
   uint32_t magic;
   uint32_t schemaVersion;
   uint8_t config[CLOCK_CONFIG_SCHEMA_36_SIZE];
+  uint32_t checksum;
+};
+
+// Schéma 37 končilo agendou. Velikost bere ClockConfig.h vedle statické
+// kontroly, aby se konstanta a kontrola nemohly rozejít.
+struct ConfigRecordV37 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_37_SIZE];
   uint32_t checksum;
 };
 
@@ -317,6 +327,9 @@ static_assert(SCHEMA_33_CONFIG_SIZE == 5648 &&
 static_assert(SCHEMA_34_CONFIG_SIZE == 5656 &&
                   sizeof(ConfigRecordV34) == 5668,
               "Migrační záznam schématu 34 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV37) <= sizeof(ConfigRecord),
+              "Migration records share the buffer of the current record.");
+
 static_assert(sizeof(ConfigRecordV36) <= sizeof(ConfigRecord),
               "Schéma 36 se musí vejít do společného pracovního bufferu.");
 static_assert(SCHEMA_35_CONFIG_SIZE == 5688 &&
@@ -751,6 +764,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV37) ||
                              storedSize == sizeof(ConfigRecordV36) ||
                              storedSize == sizeof(ConfigRecordV35) ||
                              storedSize == sizeof(ConfigRecordV34) ||
@@ -778,6 +792,34 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  // Schéma 37 je přesnou předponou schématu 38; adresa zdroje letadel zůstane
+  // po zkopírování bajtů prázdná, tedy taková, jaká přijde z
+  // clockConfigApplyDefaults(). Radar se proto po povýšení firmwaru dál ptá
+  // adsb.fi přímo a nezačne sám od sebe chodit na cizí server.
+  const ConfigRecordV37 &legacyV37 =
+      *reinterpret_cast<const ConfigRecordV37 *>(&record);
+  uint32_t embeddedSchemaV37 = 0;
+  if (readComplete && storedSize == sizeof(legacyV37)) {
+    memcpy(&embeddedSchemaV37, legacyV37.config, sizeof(embeddedSchemaV37));
+  }
+  const bool validSchema37Record =
+      readComplete && storedSize == sizeof(legacyV37) &&
+      legacyV37.magic == CONFIG_MAGIC &&
+      legacyV37.schemaVersion == PLANES_FEED_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV37 == PLANES_FEED_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV37.checksum ==
+          bytesChecksum(legacyV37.config, sizeof(legacyV37.config));
+  if (validSchema37Record) {
+    memcpy(&config, legacyV37.config, sizeof(legacyV37.config));
+    // Dva bajty koncové výplně schématu 37 dopadnou na začátek adresy zdroje
+    // letadel. Co v nich leželo, zaručené není, takže by se z nich mohla stát
+    // adresa o dvou znacích - a radar by se ptal někam, kam nemá.
+    config.planesFeedUrl[0] = '\0';
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   // Schéma 36 je přesnou předponou schématu 37; agenda si po zkopírování bajtů

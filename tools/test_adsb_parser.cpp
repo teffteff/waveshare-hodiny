@@ -56,6 +56,39 @@ void testRealResponse() {
   assert(std::string(adsbEmergencyCode(aircraft[1])) == "7700");
 }
 
+// Doslovná odpověď vlastního zdroje z infra/planes: tytéž klíče, jen bez těch
+// třiceti, které firmware nečte, a bez letadel na zemi. Tvar musí zůstat
+// zaměnitelný s adsb.fi, jinak by se orezaný zdroj musel parsovat zvlášť.
+const char *const TRIMMED_FEED_RESPONSE =
+    "{\"ac\":[{\"hex\":\"4d236a\",\"flight\":\"RYR7CH  \",\"t\":\"B38M\","
+    "\"desc\":\"BOEING 737 MAX 8\",\"r\":\"9H-VUT\",\"squawk\":\"1000\","
+    "\"lat\":49.075369,\"lon\":16.872759,\"alt_baro\":22150,\"gs\":444.1,"
+    "\"track\":34.26,\"true_heading\":35.8,\"baro_rate\":-3072},"
+    "{\"hex\":\"44006d\",\"flight\":\"AUA26Z  \",\"t\":\"A321\","
+    "\"desc\":\"AIRBUS A-321\",\"r\":\"OE-LBF\",\"squawk\":\"1000\","
+    "\"lat\":48.961349,\"lon\":16.41618,\"alt_baro\":20825,\"gs\":367.6,"
+    "\"track\":142.85,\"true_heading\":146.96,\"baro_rate\":-1984}],"
+    "\"msg\":\"No error\",\"now\":1788980030000,\"total\":55}";
+
+void testTrimmedFeedParsesLikeAdsb() {
+  AdsbAircraft aircraft[ADSB_MAX_AIRCRAFT];
+  const AdsbParseOutcome outcome =
+      adsbParseAircraft(TRIMMED_FEED_RESPONSE, aircraft, ADSB_MAX_AIRCRAFT);
+  assert(outcome.status == AdsbParseStatus::Ok);
+  assert(outcome.count == 2);
+  assert(std::string(outcome.message) == "No error");
+  assert(std::string(aircraft[0].callsign) == "RYR7CH");
+  assert(std::string(aircraft[0].type) == "B38M");
+  assert(std::string(aircraft[0].description) == "BOEING 737 MAX 8");
+  assert(std::string(aircraft[0].registration) == "9H-VUT");
+  assert(aircraft[0].altitudeFt == 22150.0f);
+  assert(aircraft[0].hasTrack);
+  assert(aircraft[0].verticalRateFtMin == -3072.0f);
+  // Server řadí od nejbližšího letadla, takže strop uřízne ta vzdálená.
+  assert(std::string(aircraft[1].callsign) == "AUA26Z");
+  assert(std::string(aircraft[1].description) == "AIRBUS A-321");
+}
+
 void testGroundTrafficIsDropped() {
   // Letadla na zemi se poznají podle textu místo výšky. Musí zmizet dřív, než
   // u letiště seberou místo těm ve vzduchu.
@@ -362,6 +395,7 @@ void testTruncatedPayloadIsRejectedWhole() {
 
 int main() {
   testRealResponse();
+  testTrimmedFeedParsesLikeAdsb();
   testGroundTrafficIsDropped();
   testAircraftWithoutPositionIsDropped();
   testMissingTrackIsMarked();

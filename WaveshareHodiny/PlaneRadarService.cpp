@@ -17,6 +17,7 @@
 #include "JsonScan.h"
 #include "MapCanvas.h"
 #include "NetworkCoordinator.h"
+#include "PlaneFeedUrl.h"
 
 // Kořenové certifikáty Mozilly slinkované v mbedTLS. adsb.fi ani adsb.lol
 // nejsou naše servery a jejich certifikát se může kdykoli přepnout na jiný
@@ -26,7 +27,6 @@ extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 
-constexpr char ADSB_HOST[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr char ROUTE_HOST[] = "https://api.adsb.lol/api/0/route/";
 // adsb.fi i adsb.lol prosí, ať se volající představí; adsb.lol navíc odmítá
 // User-Agent bez kontaktu. Jeden řetězec pro obojí, ať je to na jednom místě.
@@ -107,6 +107,10 @@ bool redNightMode = false;
 float requestLatitude = 49.1951f;
 float requestLongitude = 16.6068f;
 ClockPlanesConfig requestPlanes;
+// Adresa vlastního zdroje letadel, prázdná pro přímý dotaz na adsb.fi. Kopie
+// tady proto, že konfigurace přichází z jiné úlohy a smyčka radaru si ji nesmí
+// číst rovnou z ní.
+char requestFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
 // Dosah naposledy přijatý z konfigurace. Přetažení prstem mění jen běžící
 // dosah, ne uložený - a bez téhle pamatováky by ho každé předání konfigurace
 // (návrat na obrazovku, synchronizace času, uložení čehokoli na webu) srazilo
@@ -924,14 +928,16 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
   return result;
 }
 
-bool fetchAircraft(const ClockPlanesConfig &planes, float latitude,
-                   float longitude) {
+bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
+                   float latitude, float longitude) {
   const float rangeKm = rangeKmForIndex(planes.rangeIndex);
   const float distanceNm = rangeKm / KM_PER_NAUTICAL_MILE;
-  char url[128];
-  snprintf(url, sizeof(url), "%s%.5f/lon/%.5f/dist/%.1f", ADSB_HOST,
-           static_cast<double>(latitude), static_cast<double>(longitude),
-           static_cast<double>(distanceNm));
+  char url[PLANE_FEED_URL_CAPACITY];
+  if (!planeFeedBuildUrl(feedUrl, latitude, longitude, distanceNm, url,
+                         sizeof(url))) {
+    setStatusMessage("Adresa zdroje letadel je příliš dlouhá");
+    return false;
+  }
 
   int httpStatus = 0;
   long length = -1;
@@ -1059,11 +1065,12 @@ void fetchRouteIfPending(float aircraftLatitude, float aircraftLongitude) {
 }
 
 // --- Úloha ------------------------------------------------------------------
-bool currentRequest(ClockPlanesConfig &planes, float &latitude,
-                    float &longitude, bool &night, bool &wantVisible,
-                    bool &wantActive) {
+bool currentRequest(ClockPlanesConfig &planes, char *feedUrl,
+                    size_t feedUrlCapacity, float &latitude, float &longitude,
+                    bool &night, bool &wantVisible, bool &wantActive) {
   portENTER_CRITICAL(&stateMux);
   planes = requestPlanes;
+  strlcpy(feedUrl, requestFeedUrl, feedUrlCapacity);
   latitude = requestLatitude;
   longitude = requestLongitude;
   night = redNightMode;
@@ -1111,6 +1118,7 @@ void reconcileSelection() {
 
 void planeRadarTask(void *) {
   ClockPlanesConfig planes;
+  char feedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
   float latitude = 0.0f;
   float longitude = 0.0f;
   bool night = false;
@@ -1121,8 +1129,8 @@ void planeRadarTask(void *) {
 
   for (;;) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
-    if (!currentRequest(planes, latitude, longitude, night, wantVisible,
-                        wantActive)) {
+    if (!currentRequest(planes, feedUrl, sizeof(feedUrl), latitude, longitude,
+                        night, wantVisible, wantActive)) {
       continue;
     }
     // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný".
@@ -1167,7 +1175,7 @@ void planeRadarTask(void *) {
       portENTER_CRITICAL(&stateMux);
       loading = true;
       portEXIT_CRITICAL(&stateMux);
-      const bool ok = fetchAircraft(planes, latitude, longitude);
+      const bool ok = fetchAircraft(planes, feedUrl, latitude, longitude);
       const uint32_t period = fetchPeriodMs(planes, wantVisible);
       portENTER_CRITICAL(&stateMux);
       loading = false;
@@ -1249,7 +1257,9 @@ void planeRadarServicePrepareForFirmwareUpdate() {
 
 void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
                                 float latitude, float longitude,
-                                const ClockPlanesConfig &planes) {
+                                const ClockPlanesConfig &planes,
+                                const char *feedUrl) {
+  const char *wantedFeedUrl = feedUrl != nullptr ? feedUrl : "";
   bool notify = false;
   portENTER_CRITICAL(&stateMux);
   const bool wasActive = active;
@@ -1268,7 +1278,9 @@ void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
       requestPlanes.onlyWithCallsign != planes.onlyWithCallsign ||
       requestPlanes.squawkAlert != planes.squawkAlert ||
       strcmp(requestPlanes.watchCallsign, planes.watchCallsign) != 0 ||
+      strcmp(requestFeedUrl, wantedFeedUrl) != 0 ||
       requestLatitude != latitude || requestLongitude != longitude;
+  strlcpy(requestFeedUrl, wantedFeedUrl, sizeof(requestFeedUrl));
   requestPlanes = planes;
   if (!configuredRangeChanged) requestPlanes.rangeIndex = runningRangeIndex;
   requestLatitude = latitude;

@@ -48,6 +48,12 @@ constexpr size_t SCHEMA_34_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_34_CONFIG_SIZE;
 
 constexpr uint32_t SCHEMA_36 = 36;
+constexpr uint32_t SCHEMA_37 = 37;
+// Velikost bere ClockConfig.h: schéma 37 končilo agendou s polem char[192],
+// za kterou uložený záznam nese ještě dva bajty koncové výplně.
+constexpr size_t SCHEMA_37_CONFIG_SIZE = CLOCK_CONFIG_SCHEMA_37_SIZE;
+constexpr size_t SCHEMA_37_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_37_CONFIG_SIZE;
 // Schéma 36 končilo pětibajtovým pořadím obrazovek, které zarovnání dorovnalo
 // na hranici čtyř bajtů - tedy přesně tam, kde v schématu 37 začíná agenda.
 constexpr size_t SCHEMA_36_CONFIG_SIZE = offsetof(ClockConfig, agenda);
@@ -116,6 +122,10 @@ std::string schema34Record(const ClockConfig &source) {
 
 std::string schema35Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_35, SCHEMA_35_CONFIG_SIZE);
+}
+
+std::string schema37Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_37, SCHEMA_37_CONFIG_SIZE);
 }
 
 std::string schema36Record(const ClockConfig &source) {
@@ -833,6 +843,64 @@ void testSchema36MigrationAddsDisabledAgenda() {
   assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
 }
 
+void testSchema37MigrationKeepsAskingAdsbDirectly() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.planes.enabled = true;
+  source.planes.rangeIndex = 3;
+  clockConfigCopy(source.planes.watchCallsign,
+                  sizeof(source.planes.watchCallsign), "CSA1234");
+  source.agenda.enabled = true;
+  clockConfigCopy(source.agenda.url, sizeof(source.agenda.url),
+                  "https://example.test/agenda.json");
+
+  std::string record = schema37Record(source);
+  assert(record.size() == SCHEMA_37_RECORD_SIZE);
+  // Do koncové výplně schématu 37 se nasype smetí. Na skutečné desce v ní bývá
+  // nula, ale zaručené to není a padne přesně na začátek nové adresy, takže se
+  // z ní jinak stane dvouznaková adresa a radar se ptá někam, kam nemá.
+  uint8_t *bytes = reinterpret_cast<uint8_t *>(&record[0]);
+  const size_t paddingOffset =
+      sizeof(uint32_t) * 2 + offsetof(ClockConfig, planesFeedUrl);
+  bytes[paddingOffset] = 'X';
+  bytes[paddingOffset + 1] = 'Y';
+  // Kontrolní součet se počítá z payloadu, takže se po zásahu musí přepsat -
+  // jinak by záznam propadl jako poškozený a test by nic nedokazoval.
+  const uint32_t checksum = fnv1a(bytes + 8, SCHEMA_37_CONFIG_SIZE);
+  memcpy(bytes + 8 + SCHEMA_37_CONFIG_SIZE, &checksum, sizeof(checksum));
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 37 zůstal nedotčený, agendu na jeho konci nevyjímaje.
+  assert(migrated.planes.enabled);
+  assert(migrated.planes.rangeIndex == 3);
+  assert(strcmp(migrated.planes.watchCallsign, "CSA1234") == 0);
+  assert(migrated.agenda.enabled);
+  assert(strcmp(migrated.agenda.url, "https://example.test/agenda.json") == 0);
+  // Adresa vlastního zdroje zůstane prázdná: povýšení firmwaru nesmí radar
+  // přesměrovat na server, který majitel nezadal.
+  assert(migrated.planesFeedUrl[0] == '\0');
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
+void testPlanesFeedUrlRoundTrip() {
+  hostPreferencesReset();
+  ClockConfig config;
+  clockConfigApplyDefaults(config);
+  clockConfigCopy(config.planesFeedUrl, sizeof(config.planesFeedUrl),
+                  "https://example.test/planes.json");
+  assert(clockConfigSave(config));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(strcmp(loaded.planesFeedUrl, "https://example.test/planes.json") == 0);
+}
+
 void testScreenOrderRoundTripAndNormalization() {
   hostPreferencesReset();
   ClockConfig config;
@@ -898,6 +966,8 @@ int main() {
   testPlanesRoundTripAndClamping();
   testSchema35MigrationAddsDefaultScreenOrder();
   testSchema36MigrationAddsDisabledAgenda();
+  testSchema37MigrationKeepsAskingAdsbDirectly();
+  testPlanesFeedUrlRoundTrip();
   testScreenOrderRoundTripAndNormalization();
   return 0;
 }

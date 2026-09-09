@@ -1,0 +1,24 @@
+[Unit]
+Description=Prevypravec letadel z adsb.fi pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+Environment=PLANES_PORT=8090
+# Jen pro Caddy na stejnem stroji. Sluzba chodi ven na adsb.fi, takze na
+# verejne IP by z ni byl otevreny prevypravec pro kohokoli.
+Environment=PLANES_BIND=127.0.0.1
+# Zadny venv: sluzba si vystaci se standardni knihovnou, na rozdil od
+# generatoru zprav a agendy, ktere maji zavislosti.
+ExecStart=/usr/bin/python3 /opt/planes/serve.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

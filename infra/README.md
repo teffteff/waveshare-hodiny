@@ -48,6 +48,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Server se zprávami | 8088 | `/opt/news/serve.py`, `news-web.service` | `news/` |
 | Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
 | Server s agendou | 8089, jen loopback | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
+| Přepravčí letadel | 8090, jen loopback | `/opt/planes/serve.py`, `planes-web.service` | `planes/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565 | Minecraft, go2rtc — s hodinami nesouvisí | — |
 
@@ -75,6 +76,7 @@ mění v Nastavení → Systém → Síť.
 
 ```
 https://$CLOCK_HOST/top.xml      zprávy
+https://$CLOCK_HOST/planes.json  letadla (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
 ```
@@ -198,6 +200,35 @@ ohlásí.
 `tools/check-stack.sh` kontroluje obojí: že bez hesla přijde 401 (jinak by
 agendu četl kdokoli) a že s heslem z `.env` dorazí čerstvý JSON.
 
+## Letadla
+
+Radar letadel se ptá veřejného API adsb.fi a jeho odpověď je při dosahu 100 km
+přes **50 kB**, z toho ale firmware čte dvanáct klíčů ze zhruba padesáti.
+`planes/serve.py` proto stojí mezi: stáhne totéž, zahodí letadla na zemi
+i klíče, které nikdo nečte, seřadí zbytek od nejbližšího a nechá nejvýš sto
+padesát — tolik, kolik jich firmware stejně udrží. Ze stejného vzorku zbude
+kolem **13 kB**.
+
+Tvar odpovědi zůstává **schválně stejný jako u adsb.fi** (`{"ac":[…]}`), takže
+firmware nepotřebuje druhý parser a přepnutí zpátky na přímý zdroj je otázka
+vymazání adresy v nastavení. Hodiny posílají `lat`, `lon` a `dist` jako
+parametry dotazu; `dist` je v **námořních mílích**, stejně jako u adsb.fi.
+
+Na rozdíl od zpráv a agendy tu není generátor ani timer: letadla se hýbou,
+takže se nedá nic připravit dopředu. Server je přepravčí, který stahuje **jen
+když se někdo zeptá**, a odpověď pár sekund drží v paměti. Víc hodin v jedné
+domácnosti tak sdílí jedno stažení a adsb.fi dostane dotazů míň, ne víc.
+Po neúspěchu se ještě minutu půjčuje ta poslední povedená.
+
+Heslo tady nedává smysl — jsou to veřejná data — a cizí dotaz stojí jen
+odpověď z paměti. Kdyby přece jen bylo potřeba, přidá se `basic_auth` do
+`caddy/Caddyfile` úplně stejně jako u agendy a do hodin se napíše adresa
+s heslem.
+
+V hodinách je pole **Vlastní zdroj letadel** na záložce Letadla. Prázdné
+znamená ptát se adsb.fi přímo, takže obrazovka funguje i bez serveru — a po
+povýšení firmwaru zůstane prázdné, aby se radar sám od sebe nepřesměroval.
+
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
 U Home Assistanta v `caddy/Caddyfile` kdysi stály tyhle dvě řádky:
@@ -303,6 +334,19 @@ scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
 $SSH "$CLOCK_SSH" 'sudo cp /opt/news/news*.service /opt/news/news.timer \
     /etc/systemd/system/ && sudo systemctl daemon-reload \
     && sudo systemctl restart news-web.service && sudo systemctl start news.service'
+```
+
+Letadla jsou první služba bez `.venv`: vystačí si se standardní knihovnou,
+takže jede pod `/usr/bin/python3`. Poprvé je potřeba založit adresář a jednotku
+povolit:
+
+```sh
+$SSH "$CLOCK_SSH" 'sudo install -d -o opc -g opc /opt/planes'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/planes/serve.py infra/planes/planes-web.service "$CLOCK_SSH:/opt/planes/"
+$SSH "$CLOCK_SSH" 'sudo cp /opt/planes/planes-web.service /etc/systemd/system/ \
+    && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now planes-web.service'
 ```
 
 `infra/caddy/Caddyfile` drží místo domény `{{DOMAIN}}`, opět aby adresa nebyla

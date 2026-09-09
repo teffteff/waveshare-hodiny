@@ -40,6 +40,7 @@ if [ -z "$HOST" ]; then
 fi
 FEED_URL="https://${HOST}/top.xml"
 AGENDA_URL="https://${HOST}/agenda.json"
+PLANES_URL="https://${HOST}/planes.json"
 # Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
 # tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
 AGENDA_USER="${AGENDA_USER:-hodiny}"
@@ -165,6 +166,37 @@ print(f"OK {hours:.1f} {count}")
   fi
 fi
 
+# --- letadla -----------------------------------------------------------------
+# Přepravčí letadel je nepovinný: hodiny se bez něj ptají adsb.fi přímo. Když
+# adresa neodpovídá vůbec, je to jen poznámka; když odpoví něčím, co není
+# seznam letadel, je to chyba - obrazovka by zůstala prázdná.
+#
+# Dotaz jde na Brno a padesát námořních mil, tedy na to, na co se ptají hodiny.
+# Prázdná obloha je legitimní odpověď (v noci nad menším městem), takže se
+# nepočítá počet letadel, jen tvar odpovědi.
+planes_body="$(curl -fsS --max-time 25 "${PLANES_URL}?lat=49.1951&lon=16.6068&dist=50.0" 2>/dev/null)"
+if [ -z "$planes_body" ]; then
+  warn "letadla na $PLANES_URL neodpovídají (nepovinná služba, hodiny umí i adsb.fi přímo)"
+else
+  planes_report="$(printf '%s' "$planes_body" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    aircraft = data["ac"]
+except Exception:
+    print("BAD 0"); raise SystemExit
+if not isinstance(aircraft, list):
+    print("BAD 0"); raise SystemExit
+print(f"OK {len(aircraft)}")
+')"
+  read -r planes_status planes_count <<< "$planes_report"
+  if [ "${planes_status:-BAD}" = "BAD" ]; then
+    bad "letadla odpovídají, ale není to JSON s polem ac — firmware by nenačetl nic"
+  else
+    ok "letadla odpovídají, letadel v okruhu 50 NM: $planes_count, $(printf '%s' "$planes_body" | wc -c | tr -d ' ') B"
+  fi
+fi
+
 # --- Home Assistant za proxy -------------------------------------------------
 ha_code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 20 "$HA_URL" 2>/dev/null)"
 if [ "$ha_code" = "200" ]; then
@@ -195,7 +227,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer caddy.service; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service caddy.service; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -229,7 +261,7 @@ if [ "$MODE" = "--deep" ]; then
     fi
 
     head_ "Shoda infra/ se serverem"
-    remote_sums="$(ssh_run 'md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service; sudo md5sum /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
+    remote_sums="$(ssh_run 'md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service; sudo md5sum /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -239,6 +271,7 @@ if [ "$MODE" = "--deep" ]; then
         case "$path" in
           /opt/news/*)                    local_path="infra/news/$(basename "$path")" ;;
           /opt/agenda/*)                  local_path="infra/agenda/$(basename "$path")" ;;
+          /opt/planes/*)                  local_path="infra/planes/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
           *) continue ;;

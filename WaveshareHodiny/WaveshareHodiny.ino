@@ -385,7 +385,8 @@ void applyPlaneRadarState(const ClockConfig &config, bool visible) {
   planeRadarServiceSetActive(
       planesAvailable && visible,
       planesAvailable && config.planes.automaticRotation,
-      config.openMeteoLatitude, config.openMeteoLongitude, config.planes);
+      config.openMeteoLatitude, config.openMeteoLongitude, config.planes,
+      config.planesFeedUrl);
 }
 
 void applyPlaneRadarState(const ClockConfig &config) {
@@ -1325,6 +1326,11 @@ void handleUsbCommands() {
         // takže ručně nalistovaný radar by screenshot nikdy nezastihl.
         clockDashboardSetRadarVisible(true);
         Serial.println("RADAR_SHOWN");
+      } else if (usbCommand == "PLANESSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
+        // takže ručně nalistovaná letadla by screenshot nikdy nezastihl.
+        clockDashboardSetPlanesVisible(true);
+        Serial.println("PLANES_SHOWN");
       } else if (usbCommand.startsWith("RADARSOURCE") &&
                  !screenshotTransferActive) {
         // Přepnutí zdroje srážek bez webu, aby šly obě varianty porovnat.
@@ -2636,7 +2642,8 @@ void setup() {
   // synchronizaci času, kdy applyPlaneRadarState() doplní skutečný stav.
   planeRadarServiceSetActive(false, false, runtimeConfig.openMeteoLatitude,
                              runtimeConfig.openMeteoLongitude,
-                             runtimeConfig.planes);
+                             runtimeConfig.planes,
+                             runtimeConfig.planesFeedUrl);
   clockDashboardSetSecond(60);
   displayResyncAt = millis() + 2000;
 #if FIRMWARE_RELEASE

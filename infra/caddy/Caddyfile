@@ -21,6 +21,12 @@
 		}
 		reverse_proxy 127.0.0.1:8089
 	}
+	# Letadla jsou verejna data z adsb.fi, jen orezana na to, co hodiny ctou;
+	# heslo tu proto nedava smysl. Cizi dotaz stoji jen odpoved z pameti:
+	# server drzi vysledek nekolik sekund a sam od sebe nestahuje nic.
+	handle /planes.json {
+		reverse_proxy 127.0.0.1:8090
+	}
 	handle {
 		reverse_proxy 127.0.0.1:8123
 	}

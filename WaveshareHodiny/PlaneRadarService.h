@@ -104,9 +104,13 @@ void planeRadarServicePrepareForFirmwareUpdate();
 // Zapne nebo vypne obrazovku. backgroundRefresh drží stahování i tehdy, když
 // je radar zrovna schovaný, aby se po přepnutí neukazovala prázdná obloha -
 // stejně jako u meteoradaru.
+// feedUrl je nepovinná adresa vlastního zdroje letadel. Prázdná znamená ptát se
+// adsb.fi přímo, tedy chování bez serveru; vyplněná ukazuje na infra/planes,
+// které tutéž odpověď ořeže na to, co firmware opravdu čte.
 void planeRadarServiceSetActive(bool visible, bool backgroundRefresh,
                                 float latitude, float longitude,
-                                const ClockPlanesConfig &planes);
+                                const ClockPlanesConfig &planes,
+                                const char *feedUrl);
 void planeRadarServiceSetRedNightMode(bool enabled);
 void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot);
 void planeRadarServiceDiagnostics(PlaneRadarDiagnostics &diagnostics);

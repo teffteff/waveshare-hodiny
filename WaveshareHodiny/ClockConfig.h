@@ -26,6 +26,9 @@ constexpr size_t CLOCK_RSS_URL_LENGTH = 192;
 // Stejný strop jako u kanálu se zprávami: adresa míří na vlastní server, ne na
 // cizí službu s dlouhými parametry.
 constexpr size_t CLOCK_AGENDA_URL_LENGTH = 192;
+// Adresa vlastního zdroje letadel. Stejně dlouhá jako ostatní adresy, protože
+// se do ní vejde i jméno a heslo (https://uzivatel:heslo@host/planes.json).
+constexpr size_t CLOCK_PLANES_FEED_URL_LENGTH = 192;
 // Kolik zpráv smí obrazovka kanálu ukázat. Kruhový displej pobere pět zpráv
 // po dvou řádcích titulku; při šesti zbývá na titulek řádek jediný.
 constexpr uint8_t CLOCK_RSS_MIN_ITEMS = 3;
@@ -79,7 +82,11 @@ constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 12;
 // record holds land exactly where they belong and the new tail arrives zeroed,
 // which normalization then repairs. The screen starts disabled, so an upgrade
 // never puts another screen into the rotation on its own.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 37;
+// Schema 38 appends the address of the aircraft feed. The schema 37 prefix
+// stays byte-for-byte unchanged and the address starts empty, which means the
+// clock keeps asking adsb.fi directly - an upgrade never redirects the radar to
+// a server the owner has not named.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 38;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -442,6 +449,15 @@ struct ClockConfig {
   // Pole schématu 37 leží až za pořadím obrazovek, aby schéma 36 zůstalo
   // přesnou předponou.
   ClockAgendaConfig agenda;
+  // Pole schématu 38 leží až za agendou, aby schéma 37 zůstalo přesnou
+  // předponou. Patří k radaru letadel, jenže do ClockPlanesConfig se přidat
+  // nedá: ta leží uprostřed záznamu a cokoli v ní by posunulo všechno za sebou,
+  // takže by uložená konfigurace po povýšení firmwaru přestala sedět.
+  //
+  // Prázdná adresa znamená "ptej se adsb.fi přímo", tedy chování bez serveru.
+  // Vyplněná ukazuje na vlastní zdroj z infra/planes, který tutéž odpověď
+  // ořeže na to, co firmware opravdu čte.
+  char planesFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -495,6 +511,22 @@ static_assert(CLOCK_CONFIG_SCHEMA_36_SIZE == 5696 &&
                           CLOCK_SCREEN_ORDER_CAPACITY ==
                       CLOCK_CONFIG_SCHEMA_36_SIZE,
               "Schema 37 must preserve the complete schema 36 prefix.");
+
+// Schéma 37 končilo agendou a její poslední pole je char[192], tedy zarovnání
+// jedna. Uložený záznam přesto nese celou strukturu i s koncovou výplní, kterou
+// si ClockConfig vynucuje svým čtyřbajtovým zarovnáním: dva bajty za agendou.
+// Offset adresy letadel proto velikosti schématu 37 NEODPOVÍDÁ - u schématu 36
+// odpovídal jen náhodou, protože po něm následovala struktura zarovnaná na dva
+// bajty. Kdyby se tady vzal offset, uložený záznam by měl o dva bajty víc, než
+// kolik by migrace čekala, a nenačetl by se vůbec.
+constexpr size_t CLOCK_CONFIG_SCHEMA_37_SIZE =
+    (offsetof(ClockConfig, planesFeedUrl) + alignof(ClockConfig) - 1) /
+    alignof(ClockConfig) * alignof(ClockConfig);
+
+static_assert(CLOCK_CONFIG_SCHEMA_37_SIZE == 5896 &&
+                  offsetof(ClockConfig, agenda) + sizeof(ClockAgendaConfig) ==
+                      5894,
+              "Schema 38 must preserve the complete schema 37 prefix.");
 
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot

@@ -47,6 +47,7 @@ run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((fai
 run_test weather_forecast_layout || failures=$((failures + 1))
 run_test chmi_frame_names "$FIRMWARE_DIR/ChmiFrameNames.cpp" || failures=$((failures + 1))
 run_test map_canvas "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
+run_test plane_feed_url "$FIRMWARE_DIR/PlaneFeedUrl.cpp" || failures=$((failures + 1))
 run_test adsb_parser "$FIRMWARE_DIR/AdsbParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test route_parser "$FIRMWARE_DIR/RouteParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test agenda_parser "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))

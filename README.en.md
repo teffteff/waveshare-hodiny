@@ -483,6 +483,16 @@ route of the selected flight from [adsb.lol](https://api.adsb.lol/); both are
 key-free and need no registration. The location is the same city the weather
 uses, so there is nothing to configure twice.
 
+Optionally you can put **your own feed** between the clock and adsb.fi: the
+*Your own aircraft feed* field on the Aircraft tab, served by
+[`infra/planes`](infra/planes/). At the 100 km range the adsb.fi response runs
+past 50 kB, yet the firmware reads twelve keys out of roughly fifty; the server
+drops the rest along with the traffic on the ground, and the same sample comes
+down to about 13 kB. The shape of the response stays the same, so it really is
+just a shorter road to the same thing. An empty field means asking adsb.fi
+directly, and that is how it stays across a firmware upgrade, so the screen
+keeps working with no server at all.
+
 An aircraft's colour carries its altitude — red below 2 km, orange from 2 to
 6 km, yellow from 6 to 10 km and blue from 10 km up; an aircraft that reports
 no altitude is grey. A scale with the band edges is drawn under the aircraft

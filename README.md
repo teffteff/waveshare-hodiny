@@ -498,6 +498,14 @@ Polohy vozí veřejné API [adsb.fi](https://opendata.adsb.fi/), trasu vybranéh
 letu [adsb.lol](https://api.adsb.lol/); obojí je bez klíče a bez registrace.
 Poloha se bere ze stejného města jako počasí, takže se nikde nenastavuje znovu.
 
+Volitelně se dá mezi hodiny a adsb.fi postavit **vlastní zdroj** — pole *Vlastní
+zdroj letadel* na záložce Letadla, server z [`infra/planes`](infra/planes/).
+Odpověď adsb.fi má při dosahu 100 km přes 50 kB, z toho ale firmware čte dvanáct
+klíčů ze zhruba padesáti; server zahodí zbytek i letadla na zemi a ze stejného
+vzorku zbude kolem 13 kB. Tvar odpovědi zůstává stejný, takže je to opravdu jen
+kratší cesta k témuž. Prázdné pole znamená ptát se adsb.fi přímo, a přesně tak
+to zůstane i po povýšení firmwaru — obrazovka funguje bez serveru dál.
+
 Barva letadla nese jeho výšku — pod 2 km červená, 2 až 6 km oranžová, 6 až
 10 km žlutá a od 10 km modrá; letadlo, které výšku nehlásí, je šedé. Stupnice
 s hranicemi pásem je nakreslená pod počtem letadel, takže barvu není třeba si
