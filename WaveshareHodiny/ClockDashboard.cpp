@@ -458,6 +458,36 @@ void forecastAppendColorTag(char *destination, size_t capacity,
                             lv_color_t color);
 void updateForecastPage();
 void updateForecastHeaderLabel();
+void updateRssHeaderLabel();
+
+// Hlavička celoobrazovkových stránek: čas a venkovní teplota v jednom
+// řádku, teplota obarvená recolor značkou. Ukáže jen tu polovinu, kterou
+// zařízení už zná - půl řádku je pořád lepší než prázdné místo. Skládá ji
+// jedno místo, aby předpověď, agenda i zprávy měly tentýž řádek.
+bool composeHeaderStatusText(char *text, size_t capacity) {
+  // "--:--" drží místo, dokud se čas nesynchronizuje; jako údaj nemá cenu.
+  const bool haveTime = displayedTimeText[0] != '\0' &&
+                        strcmp(displayedTimeText, "--:--") != 0;
+  char temperature[12] = "";
+  const float degrees = currentValues.outsideTemperatureC;
+  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
+    snprintf(temperature, sizeof(temperature), "%d°C",
+             static_cast<int>(std::lround(degrees)));
+  }
+  char tag[10];
+  forecastAppendColorTag(tag, sizeof(tag), forecastTemperatureColor(degrees));
+  if (haveTime && temperature[0] != '\0') {
+    snprintf(text, capacity, "%s%s%s%s#", displayedTimeText,
+             STATUS_LINE_GAP, tag, temperature);
+  } else if (haveTime) {
+    snprintf(text, capacity, "%s", displayedTimeText);
+  } else if (temperature[0] != '\0') {
+    snprintf(text, capacity, "%s%s#", tag, temperature);
+  } else {
+    text[0] = '\0';
+  }
+  return text[0] != '\0';
+}
 
 bool englishLanguage() { return language == CLOCK_LANGUAGE_ENGLISH; }
 
@@ -2344,6 +2374,8 @@ constexpr int RSS_BLOCK_CENTER_Y = 0;
 // Posunuto o 6 px dolů, aby se hlavička nedotýkala podkladu pod ukazatelem
 // obrazovek, který sahá k y=34.
 constexpr int RSS_HEADER_Y = -190;
+// Kam nejvýš smí sahat první zpráva, aby se nedotkla hlavičky.
+constexpr int RSS_BLOCK_TOP_LIMIT_Y = RSS_HEADER_Y + 16;
 constexpr int RSS_MIN_ROW_WIDTH = 140;
 // Mezera mezi časem a titulkem na prvním řádku.
 constexpr char RSS_TIME_SEPARATOR[] = "  ";
@@ -2397,10 +2429,26 @@ void rssAppendEscaped(String &target, const char *text) {
   }
 }
 
+// Hlavička zpráv: čas a venkovní teplota, tentýž řádek jako na předpovědi a
+// agendě. Titulek kanálu tu stával, ale u jediného zdroje opakoval pořád totéž
+// a obrazovka zprávy pod sebou nemá čím doplnit čas.
+void updateRssHeaderLabel() {
+  if (rssHeaderLabel == nullptr) return;
+  char text[48];
+  if (!composeHeaderStatusText(text, sizeof(text))) {
+    setObjectVisible(rssHeaderLabel, false);
+    return;
+  }
+  setTextColor(rssHeaderLabel,
+               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  lv_label_set_text(rssHeaderLabel, text);
+  setObjectVisible(rssHeaderLabel, true);
+}
+
 void applyRssColors() {
   if (rssPage == nullptr) return;
   const bool redNight = redNightVisualEnabled();
-  setTextColor(rssHeaderLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
+  updateRssHeaderLabel();
   setTextColor(rssStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   char tag[RSS_COLOR_TAG_LENGTH + 1];
   rssBuildColorTag(tag, rssTimeColor());
@@ -2428,11 +2476,10 @@ void layoutRssItems(uint8_t count) {
   const int titleLines = rssTitleLines(count);
   const int rowHeight = titleLines * lineHeight + RSS_ROW_GAP;
   const int total = rowHeight * count;
-  const int top = RSS_BLOCK_CENTER_Y - total / 2;
-  // Hlavička se vejde jen tehdy, když blok nezasahuje až k hornímu okraji.
-  // Mez zůstává na -174 i po posunu hlavičky, aby se počet zpráv, při kterém
-  // hlavička mizí, nezměnil.
-  setObjectVisible(rssHeaderLabel, count > 0 && top > RSS_HEADER_Y + 16);
+  int top = RSS_BLOCK_CENTER_Y - total / 2;
+  // Pět třířádkových zpráv na střed by dosáhlo až pod hlavičku. Blok se proto
+  // o těch pár pixelů posune dolů; hlavička nese čas, takže ji schovat nejde.
+  if (top < RSS_BLOCK_TOP_LIMIT_Y) top = RSS_BLOCK_TOP_LIMIT_Y;
 
   for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
     lv_obj_t *title = rssTitleLabels[index];
@@ -2462,10 +2509,8 @@ void createRssPage(lv_obj_t *screen) {
   lv_obj_set_style_radius(rssPage, 0, 0);
   lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_SCROLLABLE);
 
-  rssHeaderLabel = makeLabel(rssPage, &clock_czech_16, COLOR_MUTED);
-  lv_obj_set_width(rssHeaderLabel, 300);
-  lv_label_set_long_mode(rssHeaderLabel, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(rssHeaderLabel, LV_TEXT_ALIGN_CENTER, 0);
+  rssHeaderLabel = makeLabel(rssPage, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_recolor(rssHeaderLabel, true);
   lv_label_set_text(rssHeaderLabel, "");
   alignCenter(rssHeaderLabel, 0, RSS_HEADER_Y);
 
@@ -2655,29 +2700,10 @@ void updateAgendaLegendLabel() {
 // obrazovky.
 void updateAgendaHeaderLabel() {
   if (agendaHeaderLabel == nullptr) return;
-  const bool haveTime = displayedTimeText[0] != '\0' &&
-                        strcmp(displayedTimeText, "--:--") != 0;
-  char temperature[12] = "";
-  const float degrees = currentValues.outsideTemperatureC;
-  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
-    snprintf(temperature, sizeof(temperature), "%d°C",
-             static_cast<int>(std::lround(degrees)));
-  }
-  char tag[10];
-  forecastAppendColorTag(tag, sizeof(tag), forecastTemperatureColor(degrees));
   char text[48];
-  if (haveTime && temperature[0] != '\0') {
-    snprintf(text, sizeof(text), "%s%s%s%s#", displayedTimeText,
-             STATUS_LINE_GAP, tag, temperature);
-  } else if (haveTime) {
-    snprintf(text, sizeof(text), "%s", displayedTimeText);
-  } else if (temperature[0] != '\0') {
-    snprintf(text, sizeof(text), "%s%s#", tag, temperature);
-  } else {
-    text[0] = '\0';
-  }
-  setObjectVisible(agendaHeaderLabel, text[0] != '\0');
-  if (text[0] == '\0') return;
+  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  setObjectVisible(agendaHeaderLabel, haveText);
+  if (!haveText) return;
   setTextColor(agendaHeaderLabel,
                redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
   lv_label_set_text(agendaHeaderLabel, text);
@@ -3314,30 +3340,10 @@ void createPlanesPage(lv_obj_t *screen) {
 // radaru. Předpověď totiž zabírá celý displej a ciferník pod ní není vidět.
 void updateForecastHeaderLabel() {
   if (forecastHeaderLabel == nullptr) return;
-  const bool haveTime = displayedTimeText[0] != '\0' &&
-                        strcmp(displayedTimeText, "--:--") != 0;
-  char temperature[12] = "";
-  const float degrees = currentValues.outsideTemperatureC;
-  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
-    snprintf(temperature, sizeof(temperature), "%d°C",
-             static_cast<int>(std::lround(degrees)));
-  }
-  char tag[10];
-  forecastAppendColorTag(tag, sizeof(tag),
-                         forecastTemperatureColor(degrees));
   char text[48];
-  if (haveTime && temperature[0] != '\0') {
-    snprintf(text, sizeof(text), "%s%s%s%s#", displayedTimeText,
-             STATUS_LINE_GAP, tag, temperature);
-  } else if (haveTime) {
-    snprintf(text, sizeof(text), "%s", displayedTimeText);
-  } else if (temperature[0] != '\0') {
-    snprintf(text, sizeof(text), "%s%s#", tag, temperature);
-  } else {
-    text[0] = '\0';
-  }
-  setObjectVisible(forecastHeaderLabel, text[0] != '\0');
-  if (text[0] == '\0') return;
+  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  setObjectVisible(forecastHeaderLabel, haveText);
+  if (!haveText) return;
   setTextColor(forecastHeaderLabel,
                redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
   lv_label_set_text(forecastHeaderLabel, text);
@@ -3679,13 +3685,14 @@ void updatePlanesClockLabel() {
   lv_obj_clear_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
-// Čas a venkovní teplota se ukazují ve stavovém řádku radaru i v hlavičce
-// předpovědi, takže je obě obnovuje jedno volání.
+// Čas a venkovní teplota stojí ve stavovém řádku radaru i v hlavičce
+// předpovědi, agendy a zpráv, takže je všechny obnovuje jedno volání.
 void updateOverlayStatusLabels() {
   updateRadarClockLabel();
   updatePlanesClockLabel();
   updateForecastHeaderLabel();
   updateAgendaHeaderLabel();
+  updateRssHeaderLabel();
 }
 
 // Stáří snímku v minutách podle jeho času "HH:MM" v místním čase. Vrací -1,
@@ -5808,11 +5815,8 @@ void clockDashboardSetForecastFailed(bool failed) {
   if (!forecastDisplayedAvailable) updateForecastPage();
 }
 
-void clockDashboardSetRssStatus(const char *channelTitle, const char *message,
-                                uint8_t count) {
+void clockDashboardSetRssStatus(const char *message, uint8_t count) {
   if (rssPage == nullptr) return;
-  lv_label_set_text(rssHeaderLabel,
-                    channelTitle != nullptr ? channelTitle : "");
   if (count != rssVisibleItemCount) layoutRssItems(count);
   const bool showMessage = count == 0;
   setObjectVisible(rssStatusLabel, showMessage);

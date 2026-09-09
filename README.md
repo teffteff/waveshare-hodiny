@@ -389,6 +389,11 @@ adresu stáhne ještě před uložením a rovnou ukáže, jak budou zprávy vypa
 displeji. Certifikát serveru se ověřuje proti kořenům Mozilly zabudovaným ve
 firmwaru, takže funguje libovolná adresa `https://`.
 
+Nahoře je čas a venkovní teplota, stejně jako na předpovědi a v agendě — celý
+displej totiž zabírá seznam zpráv a ciferník pod ním vidět není. Seznam stojí
+na středu obrazovky; jen když by při plném počtu sahal až pod hlavičku, posune
+se o pár pixelů dolů.
+
 Zobrazit lze 3 až 6 zpráv; výchozí je 5. U tří až pěti zpráv má titulek tři
 řádky, což u běžné české zpravodajské věty stačí na celý titulek. Šestá zpráva
 se vejde jen za cenu dvou řádků na titulek, takže se delší titulky utnou třemi

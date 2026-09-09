@@ -1055,7 +1055,7 @@ void maintainRssDisplay() {
   // obrazovka by na jeden průchod zhasla a ukázala "Načítám zprávy…".
   if (!rssServiceStatus(status)) return;
   if (status.generation == displayedRssGeneration) return;
-  clockDashboardSetRssStatus(status.channelTitle, status.message,
+  clockDashboardSetRssStatus(status.message,
                              static_cast<uint8_t>(status.count));
   // Když je mezipaměť právě zamčená stahováním, generaci si nezapíšeme a
   // řádky doplníme při dalším průchodu.
