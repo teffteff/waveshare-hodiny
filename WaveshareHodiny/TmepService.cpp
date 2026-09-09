@@ -139,6 +139,7 @@ bool tmepFetchCatalog(const char *exportId, const char *exportKey,
   url += urlEncode(exportKey);
   WiFiClientSecure client;
   client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.setConnectTimeout(TMEP_CONNECT_TIMEOUT_MS);
   http.setTimeout(TMEP_RESPONSE_TIMEOUT_MS);

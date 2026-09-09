@@ -151,6 +151,7 @@ bool installFirmware(const String &url, uint32_t expectedSize,
   WiFiClientSecure client;
   client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
   client.setTimeout(NETWORK_TIMEOUT_MS);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.setConnectTimeout(NETWORK_TIMEOUT_MS);
   http.setTimeout(NETWORK_TIMEOUT_MS);
@@ -292,6 +293,7 @@ bool checkFirmware(bool installWhenAvailable) {
     WiFiClientSecure client;
     client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
     client.setTimeout(NETWORK_TIMEOUT_MS);
+    client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http;
     http.setConnectTimeout(NETWORK_TIMEOUT_MS);
     http.setTimeout(NETWORK_TIMEOUT_MS);

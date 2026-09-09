@@ -294,6 +294,7 @@ static bool rssServiceDownload(const ClockRssConfig &config,
       secureClient.setCACertBundle(
           rootca_crt_bundle_start,
           static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+      secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     }
     HTTPClient http;
     http.setConnectTimeout(RSS_CONNECT_TIMEOUT_MS);

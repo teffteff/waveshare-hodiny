@@ -885,6 +885,7 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
     client.setCACertBundle(
         rootca_crt_bundle_start,
         static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+    client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http;
     http.setConnectTimeout(CONNECT_TIMEOUT_MS);
     http.setTimeout(RESPONSE_TIMEOUT_MS);

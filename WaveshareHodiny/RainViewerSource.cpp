@@ -403,6 +403,7 @@ bool rainViewerFetchIndex(size_t wantedFrameCount, RainViewerIndex &index,
   if (!networkGuard) return false;
   WiFiClientSecure client;
   client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.useHTTP10(true);
   http.setConnectTimeout(6000);
@@ -460,6 +461,7 @@ bool rainViewerBuildFrame(const RainViewerFrame &frame, uint16_t *target,
   NetworkOperationGuard networkGuard(15000);
   if (!networkGuard) return false;
   tileClient.setCACert(FIRMWARE_RELEASE_ROOT_CA);
+  tileClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   // Záměrně bez useHTTP10(): ta v jádře ESP32 vypíná i keep-alive, a devět
   // dlaždic po vlastním handshake je rozdíl mezi vteřinami a minutami.

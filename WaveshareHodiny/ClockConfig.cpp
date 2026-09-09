@@ -1,9 +1,11 @@
 #include "ClockConfig.h"
 
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 #include <nvs_flash.h>
 
 #include <cmath>
+#include <new>
 
 namespace {
 constexpr uint32_t CONFIG_MAGIC = 0x57484346;
@@ -642,6 +644,15 @@ void clockConfigApplyDefaults(ClockConfig &config) {
   config.metricBColorScale = ClockMetricColorScale{};
   config.metricBColorScale.points[0] = {0.0f, 0xFFB843};
   applyLegacySideValueDefaults(config);
+}
+
+ClockConfig &clockConfigAllocate() {
+  void *memory = heap_caps_malloc(sizeof(ClockConfig),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  // Bez osazené PSRAM je interní RAM jediná možnost. Kopie v interní RAM je
+  // pořád lepší než pád při startu, jen se tím vrací původní tlak na paměť.
+  if (memory == nullptr) memory = malloc(sizeof(ClockConfig));
+  return *new (memory) ClockConfig();
 }
 
 bool clockConfigBegin() {

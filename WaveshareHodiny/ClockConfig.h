@@ -417,6 +417,12 @@ inline const ClockValueSlotConfig &clockConfigValueSlot(
                                              : config.bottomSlot;
 }
 
+// Jedna ClockConfig má 5,7 kB. Statické kopie po modulech dohromady ukrajovaly
+// přes 50 kB interní RAM, takže na TLS handshake (dva 16kB záznamové buffery)
+// už nezbylo a HTTPS padalo napříč službami. Kopie proto leží v PSRAM a moduly
+// si drží jen referenci; PSRAM je připravená dřív než globální konstruktory.
+ClockConfig &clockConfigAllocate();
+
 bool clockConfigBegin();
 bool clockConfigLoad(ClockConfig &config);
 bool clockConfigSave(const ClockConfig &config);

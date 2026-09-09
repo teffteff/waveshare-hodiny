@@ -329,6 +329,7 @@ bool latestFileNames(char output[][FILE_NAME_CAPACITY], size_t &count,
   if (!networkGuard) return false;
   WiFiClientSecure client;
   client.setCACert(CHMI_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.useHTTP10(true);
   http.setConnectTimeout(6000);
@@ -394,6 +395,7 @@ bool downloadPng(const char *fileName, size_t &outputSize,
   if (!networkGuard) return false;
   WiFiClientSecure client;
   client.setCACert(CHMI_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.useHTTP10(true);
   http.setConnectTimeout(6000);

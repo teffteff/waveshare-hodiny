@@ -65,12 +65,13 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 namespace {
 ClockValues sampleValues;
-ClockConfig runtimeConfig;
-ClockConfig persistedConfig;
-ClockConfig configSaveBuffer;
-ClockConfig dashboardConfigBuffer;
-ClockConfig loopConfigBuffer;
-ClockConfig homeAssistantConfigBuffer;
+// Šest kopií po 5,7 kB, viz clockConfigAllocate().
+ClockConfig &runtimeConfig = clockConfigAllocate();
+ClockConfig &persistedConfig = clockConfigAllocate();
+ClockConfig &configSaveBuffer = clockConfigAllocate();
+ClockConfig &dashboardConfigBuffer = clockConfigAllocate();
+ClockConfig &loopConfigBuffer = clockConfigAllocate();
+ClockConfig &homeAssistantConfigBuffer = clockConfigAllocate();
 ClockAppearanceConfig persistedAppearance;
 ClockAppearanceConfig activeAppearance;
 ClockAppearanceConfig pendingAppearance;
@@ -150,6 +151,8 @@ constexpr uint32_t HOME_ASSISTANT_CONNECT_TIMEOUT_MS = 5000;
 constexpr uint32_t HOME_ASSISTANT_RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint8_t HOME_ASSISTANT_REQUEST_ATTEMPTS = 2;
 constexpr uint32_t HOME_ASSISTANT_REQUEST_RETRY_DELAY_MS = 250;
+// Pauza mezi entitami, ve které smyčka nedrží zámek sítě.
+constexpr uint32_t HOME_ASSISTANT_ENTITY_YIELD_MS = 20;
 constexpr uint32_t OPEN_METEO_REFRESH_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t TMEP_REFRESH_MS = 60UL * 1000UL;
 constexpr uint32_t EXTERNAL_DATA_RETRY_MS = 60UL * 1000UL;
@@ -1566,6 +1569,7 @@ bool fetchOpenMeteo(const ClockConfig &config, ClockValues &values) {
   url += F("&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index&daily=sunrise,sunset&timeformat=unixtime&timezone=auto&forecast_days=1");
   WiFiClientSecure client;
   client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.setConnectTimeout(HOME_ASSISTANT_CONNECT_TIMEOUT_MS);
   http.setTimeout(HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
@@ -1915,6 +1919,11 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
   for (size_t index = 0; index < entityCount; ++index) {
     if (entityIds[index][0] == '\0') continue;
     ++configuredCount;
+    // Zámek sítě se bere zvlášť pro každou entitu. Bez pauzy po jeho uvolnění
+    // si ho tahle smyčka vezme zpátky dřív, než se probuzený čekatel vůbec
+    // dostane ke slovu, a kontrola firmware nebo zprávy vyprší i po deseti
+    // pokusech. Krátký spánek dá frontu čekatelů dopředu.
+    if (configuredCount > 1) delay(HOME_ASSISTANT_ENTITY_YIELD_MS);
     String payload;
     if (!requestHomeAssistantState(client, config, entityIds[index], payload,
                                    lastStatus)) {
@@ -1953,6 +1962,7 @@ bool fetchHomeAssistantStates(const ClockConfig &config, ClockValues &values) {
   if (String(config.homeAssistantUrl).startsWith("https://")) {
     WiFiClientSecure client;
     client.setInsecure();
+    client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     return fetchHomeAssistantStates(client, config, values);
   }
   WiFiClient client;
@@ -1995,6 +2005,7 @@ bool fetchDayNightStates(const ClockConfig &config, ClockValues &values) {
   if (String(config.homeAssistantUrl).startsWith("https://")) {
     WiFiClientSecure client;
     client.setInsecure();
+    client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     return fetchDayNightStates(client, config, values);
   }
   WiFiClient client;
@@ -2288,7 +2299,7 @@ void homeAssistantTask(void *) {
       if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(remaining)) == 0) break;
       if (!consumeDayNightLightRefreshRequest()) break;
 
-      static ClockConfig lightConfig;
+      static ClockConfig &lightConfig = clockConfigAllocate();
       static ClockValues lightValues;
       copyRuntimeConfig(lightConfig);
       lightValues = lastAvailableValues;

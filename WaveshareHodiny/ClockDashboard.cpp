@@ -57,7 +57,7 @@ bool analogMonochromeValuesEnabled = false;
 bool analogValuesAboveHandsEnabled = false;
 uint32_t analogDateColor = 0xB5B5B5;
 uint32_t monochromeWeatherIconColor = 0xFFFFFF;
-ClockConfig dashboardRuntimeConfig;
+ClockConfig &dashboardRuntimeConfig = clockConfigAllocate();
 bool dashboardRuntimeConfigAvailable = false;
 
 bool analogLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_ANALOG; }

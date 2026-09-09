@@ -92,6 +92,7 @@ int downloadJson(const char *url, char *buffer, size_t capacity,
   httpStatus = HTTPC_ERROR_CONNECTION_REFUSED;
   WiFiClientSecure client;
   client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.useHTTP10(true);
   http.setConnectTimeout(FORECAST_CONNECT_TIMEOUT_MS);

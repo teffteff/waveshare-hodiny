@@ -174,7 +174,7 @@ RadarRangePreviewCallback currentRadarRangePreviewCallback = nullptr;
 ClockAppearanceStateCallback currentAppearanceStateCallback = nullptr;
 ClockAppearanceChangeCallback currentAppearancePreviewCallback = nullptr;
 ClockAppearanceChangeCallback currentAppearanceSaveCallback = nullptr;
-ClockConfig configBuffer;
+ClockConfig &configBuffer = clockConfigAllocate();
 TaskHandle_t homeAssistantTaskForDiagnostics = nullptr;
 TaskHandle_t rssTaskForDiagnostics = nullptr;
 RssProbeCallback rssProbeCallback = nullptr;
@@ -2407,6 +2407,7 @@ void handleOpenMeteoLocation() {
   }
   WiFiClientSecure client;
   client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
+  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
   http.setConnectTimeout(5000);
   http.setTimeout(8000);
@@ -2457,6 +2458,7 @@ void handleTestConnection() {
   if (url.startsWith("https://")) {
     WiFiClientSecure client;
     client.setInsecure();
+    client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     status = testHomeAssistant(client, url, token, entityId);
   } else {
     WiFiClient client;
@@ -2596,6 +2598,7 @@ void handleHomeAssistantEntities() {
     if (url.startsWith("https://")) {
       WiFiClientSecure client;
       client.setInsecure();
+      client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
       status = requestHomeAssistantEntities(client, url, token, sink);
       // Uvolnění TLS kontextů se nesmí spoléhat na destruktor, který ho nedělá.
       client.stop();
