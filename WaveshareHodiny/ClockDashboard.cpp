@@ -5712,6 +5712,7 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
                                      bool watchedVisible,
                                      const char *emergency, uint16_t rangeKm,
                                      const char *message, bool loading,
+                                     bool haveAircraftData,
                                      const PlaneRadarDetail &detail) {
   if (planesCanvas == nullptr || planesStatusLabel == nullptr ||
       planesRangeLabel == nullptr) {
@@ -5736,7 +5737,10 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
              planesEmergencyText(emergency));
   } else if (message != nullptr && message[0] != '\0') {
     snprintf(text, sizeof(text), "#FFB843 %s#", message);
-  } else if (pixels == nullptr) {
+  } else if (pixels == nullptr || !haveAircraftData) {
+    // Kruhy, mapa a stupnice stojí na displeji od otevření obrazovky; než
+    // dorazí první letadla, píše se na místo jejich počtu, že se stahují.
+    // Počet by tu lhal: "0 letadel" vypadá jako prázdná obloha.
     snprintf(text, sizeof(text), "#B5B5B5 %s#",
              loading ? (english ? "Loading aircraft..." : "Načítám letadla...")
                      : (english ? "Waiting for data" : "Čekám na data"));

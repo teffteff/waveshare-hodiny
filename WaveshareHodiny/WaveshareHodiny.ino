@@ -140,6 +140,10 @@ char displayedPlanesMessage[64] = "";
 // Nový snímek přijde až po stažení, které na pomalé síti trvá i vteřiny, a do
 // té doby by pod prstem svítil starý údaj.
 uint16_t displayedPlanesRangeKm = 0;
+// Stejně tak stahování: první snímek s kruhy je na displeji dřív, než začne
+// první stažení, a řádek nad ním se musí přepnout na "Načítám letadla..."
+// i bez nového snímku.
+bool displayedPlanesLoading = false;
 unsigned long displayModeStartedAt = 0;
 bool radarRotationWaitingForCycle = false;
 uint32_t radarRotationCycleAtTimeout = 0;
@@ -1105,13 +1109,15 @@ void maintainPlanesDisplay() {
       snapshot.detail.routeState == displayedPlanesRouteState &&
       strcmp(snapshot.detail.hex, displayedPlanesDetailHex) == 0 &&
       snapshot.rangeKm == displayedPlanesRangeKm &&
+      snapshot.loading == displayedPlanesLoading &&
       strcmp(snapshot.message, displayedPlanesMessage) == 0) {
     return;
   }
   clockDashboardSetPlanesSnapshot(snapshot.pixels, snapshot.shownCount,
                                   snapshot.watchedVisible, snapshot.emergency,
                                   snapshot.rangeKm, snapshot.message,
-                                  snapshot.loading, snapshot.detail);
+                                  snapshot.loading, snapshot.haveAircraftData,
+                                  snapshot.detail);
   displayedPlanesGeneration = snapshot.generation;
   displayedPlanesDetailOpen = snapshot.detail.open;
   displayedPlanesRouteState = snapshot.detail.routeState;
@@ -1120,6 +1126,7 @@ void maintainPlanesDisplay() {
   strlcpy(displayedPlanesMessage, snapshot.message,
           sizeof(displayedPlanesMessage));
   displayedPlanesRangeKm = snapshot.rangeKm;
+  displayedPlanesLoading = snapshot.loading;
 }
 
 void maintainRadarDisplay() {

@@ -121,6 +121,14 @@ uint32_t requestRevision = 0;
 // Data.
 uint8_t aircraftCount = 0;
 bool ready = false;
+// Dorazila už aspoň jednou data o letadlech? Prázdná obloha a obloha, o které
+// zatím nic nevíme, vypadají na snímku stejně, a řádek s počtem letadel musí
+// umět rozlišit "žádné letadlo" od "ještě nevím".
+bool haveAircraftData = false;
+// Je zveřejněný snímek kreslený z dat? Samotné kruhy a mapa se kreslí ještě
+// před prvním stažením, takže "něco je na obrazovce" už nestačí ani rotaci,
+// ani diagnostice.
+bool dataFrameReady = false;
 bool loading = false;
 uint32_t generation = 0;
 unsigned long lastSuccessAt = 0;
@@ -880,6 +888,7 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   displayedBuffer = target;
   ++generation;
   ready = true;
+  if (haveAircraftData) dataFrameReady = true;
   portEXIT_CRITICAL(&stateMux);
 }
 
@@ -988,6 +997,7 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
   scratchList = liveList;
   liveList = parsed;
   aircraftCount = static_cast<uint8_t>(outcome.count);
+  haveAircraftData = true;
   strlcpy(serverMessage, outcome.message, sizeof(serverMessage));
   lastSuccessAt = millis();
   portEXIT_CRITICAL(&stateMux);
@@ -1152,16 +1162,28 @@ void planeRadarTask(void *) {
                         night, wantVisible, wantActive)) {
       continue;
     }
+    if (!ensureStorage()) {
+      setStatusMessage("Pro radar letadel není dostatek PSRAM");
+      continue;
+    }
+
+    // Mapa, kruhy, kompas a stupnice na datech nezávisí, tak na ně nečekají:
+    // první snímek se nakreslí hned po otevření obrazovky, ještě před prvním
+    // stažením, a letadla do něj přibudou tím dalším. Dřív zůstal displej
+    // černý s jedinou hláškou, dokud server neodpověděl - a to jsou vteřiny.
+    // Kreslí se ještě před čekáním na síť, aby obrazovka nebyla prázdná ani
+    // tehdy, když se Wi-Fi teprve připojuje.
+    portENTER_CRITICAL(&stateMux);
+    const bool haveAnyFrame = ready;
+    portEXIT_CRITICAL(&stateMux);
+    if (!haveAnyFrame) renderFrame(planes, latitude, longitude, night);
+
     // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný".
     if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
       portENTER_CRITICAL(&stateMux);
       nextFetchAt = millis() + RETRY_INTERVAL_MS;
       portEXIT_CRITICAL(&stateMux);
       setStatusMessage("Čekám na síť");
-      continue;
-    }
-    if (!ensureStorage()) {
-      setStatusMessage("Pro radar letadel není dostatek PSRAM");
       continue;
     }
 
@@ -1222,14 +1244,16 @@ void planeRadarTask(void *) {
     // Schovaná obrazovka si data drží, ale 230 tisíc pixelů kvůli nim
     // přepisovat nemusí - kreslí se tedy hlavně když je vidět.
     //
-    // Jednu výjimku má: dokud není hotový vůbec první snímek, kreslí se i
+    // Jednu výjimku má: dokud není hotový první snímek S LETADLY, kreslí se i
     // schovaná. Automatická rotace obrazovku otevře teprve tehdy, když má co
     // ukázat, a bez tohohle by čekala na snímek, který by se bez otevření nikdy
-    // nevykreslil - obrazovka by se do střídání nedostala nikdy.
+    // nevykreslil - obrazovka by se do střídání nedostala nikdy. Samotné kruhy
+    // nakreslené před stažením se sem nepočítají: rotace by pak přepnula na
+    // radar, který o letadlech ještě nic neví.
     portENTER_CRITICAL(&stateMux);
     const bool redrawPending = redrawRequested;
     redrawRequested = false;
-    const bool haveFirstFrame = ready;
+    const bool haveFirstFrame = dataFrameReady;
     portEXIT_CRITICAL(&stateMux);
     const bool wantRedraw = fetched || settingsChanged || nightChanged ||
                             forceRedraw || redrawPending;
@@ -1268,6 +1292,8 @@ void planeRadarServicePrepareForFirmwareUpdate() {
   displayedBuffer = -1;
   handedOutBuffer = -1;
   ready = false;
+  dataFrameReady = false;
+  haveAircraftData = false;
   loading = false;
   aircraftCount = 0;
   ++generation;
@@ -1345,7 +1371,8 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
   handedOutBuffer = displayedBuffer;
   snapshot.generation = generation;
   snapshot.loading = loading;
-  snapshot.ready = ready;
+  snapshot.ready = dataFrameReady;
+  snapshot.haveAircraftData = haveAircraftData;
   snapshot.shownCount = shownCount;
   snapshot.watchedVisible = watchedVisible;
   strlcpy(snapshot.emergency, frameEmergency, sizeof(snapshot.emergency));
@@ -1391,7 +1418,7 @@ void planeRadarServiceDiagnostics(PlaneRadarDiagnostics &diagnostics) {
   diagnostics.active = active;
   diagnostics.visible = visible;
   diagnostics.loading = loading;
-  diagnostics.ready = ready;
+  diagnostics.ready = dataFrameReady;
   diagnostics.aircraftCount = aircraftCount;
   diagnostics.rangeKm =
       CLOCK_PLANE_RANGES_KM[requestPlanes.rangeIndex < CLOCK_PLANE_RANGE_COUNT

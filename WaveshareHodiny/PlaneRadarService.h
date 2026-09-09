@@ -52,7 +52,12 @@ struct PlaneRadarSnapshot {
   const uint16_t *pixels = nullptr;
   uint32_t generation = 0;
   bool loading = false;
+  // Je hotový snímek kreslený z dat? Kruhy a mapa se objeví dřív, ještě než
+  // server odpoví, takže platný ukazatel na pixely sám o sobě nic neříká.
   bool ready = false;
+  // Dorazila už aspoň jednou letadla? Bez toho by "0 letadel" znamenalo jak
+  // prázdnou oblohu, tak čekání na první odpověď.
+  bool haveAircraftData = false;
   // Kolik letadel prošlo filtrem a je vidět v kruhu.
   uint8_t shownCount = 0;
   // Je mezi nimi hlídaný let?

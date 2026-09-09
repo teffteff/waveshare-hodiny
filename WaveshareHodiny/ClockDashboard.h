@@ -135,6 +135,7 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
                                      bool watchedVisible,
                                      const char *emergency, uint16_t rangeKm,
                                      const char *message, bool loading,
+                                     bool haveAircraftData,
                                      const PlaneRadarDetail &detail);
 
 bool clockDashboardAutomaticRotationAllowed();
