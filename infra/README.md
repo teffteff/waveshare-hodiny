@@ -214,6 +214,14 @@ firmware nepotřebuje druhý parser a přepnutí zpátky na přímý zdroj je ot
 vymazání adresy v nastavení. Hodiny posílají `lat`, `lon` a `dist` jako
 parametry dotazu; `dist` je v **námořních mílích**, stejně jako u adsb.fi.
 
+Táž adresa obstará i **trasu** vybraného letu: s parametrem `route=CSA1234`
+místo `dist` se místo seznamu letadel vrátí trasa z api.adsb.lol, zase jen
+s klíči, které firmware čte (548 B se scvrkne na 197 B). Hodiny tak mluví
+s jediným jménem a jediným certifikátem místo dvou. Trasa se během letu nemění,
+takže se drží deset minut a druhé klepnutí na totéž letadlo se k api.adsb.lol
+vůbec nedostane. Pamatuje se i neúspěch, na dvě minuty: to API na některé
+volací značky odpovídá chybou 500 opakovaně a hodiny to zkoušejí třikrát.
+
 Na rozdíl od zpráv a agendy tu není generátor ani timer: letadla se hýbou,
 takže se nedá nic připravit dopředu. Server je přepravčí, který stahuje **jen
 když se někdo zeptá**, a odpověď pár sekund drží v paměti. Víc hodin v jedné

@@ -27,7 +27,6 @@ extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 
-constexpr char ROUTE_HOST[] = "https://api.adsb.lol/api/0/route/";
 // adsb.fi i adsb.lol prosí, ať se volající představí; adsb.lol navíc odmítá
 // User-Agent bez kontaktu. Jeden řetězec pro obojí, ať je to na jednom místě.
 constexpr char USER_AGENT[] =
@@ -998,7 +997,8 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
 
 // Trasa vybraného letu. Ptá se jen na jedno letadlo, nikdy na celý seznam, a
 // odpověď se drží, takže přepínání mezi dvěma letadly už API nezatěžuje.
-void fetchRouteIfPending(float aircraftLatitude, float aircraftLongitude) {
+void fetchRouteIfPending(const char *feedUrl, float aircraftLatitude,
+                        float aircraftLongitude) {
   char callsign[10];
   portENTER_CRITICAL(&stateMux);
   const bool pending = routeFetchQueued;
@@ -1025,10 +1025,19 @@ void fetchRouteIfPending(float aircraftLatitude, float aircraftLongitude) {
     return;
   }
 
-  char url[160];
-  snprintf(url, sizeof(url), "%s%s/%.4f/%.4f", ROUTE_HOST, callsign,
-           static_cast<double>(aircraftLatitude),
-           static_cast<double>(aircraftLongitude));
+  char url[PLANE_FEED_URL_CAPACITY];
+  if (!planeFeedBuildRouteUrl(feedUrl, callsign, aircraftLatitude,
+                              aircraftLongitude, url, sizeof(url))) {
+    portENTER_CRITICAL(&stateMux);
+    if (routeFetchQueued && strcmp(routeCallsign, callsign) == 0) {
+      routeFetchQueued = false;
+      // Adresa se nesložila, opakování ji nezkrátí.
+      routeState = PlaneRouteState::Unknown;
+      redrawRequested = true;
+    }
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
 
   int httpStatus = 0;
   long length = -1;
@@ -1207,7 +1216,8 @@ void planeRadarTask(void *) {
       wantRoute = true;
     }
     portEXIT_CRITICAL(&stateMux);
-    if (wantRoute) fetchRouteIfPending(selectedLatitude, selectedLongitude);
+    if (wantRoute)
+      fetchRouteIfPending(feedUrl, selectedLatitude, selectedLongitude);
 
     // Schovaná obrazovka si data drží, ale 230 tisíc pixelů kvůli nim
     // přepisovat nemusí - kreslí se tedy hlavně když je vidět.

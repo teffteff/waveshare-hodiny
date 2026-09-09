@@ -31,6 +31,11 @@ from urllib.parse import parse_qs, urlparse
 PORT = int(os.environ.get("PLANES_PORT", "8090"))
 BIND = os.environ.get("PLANES_BIND", "127.0.0.1")
 UPSTREAM = os.environ.get("PLANES_UPSTREAM", "https://opendata.adsb.fi/api/v3")
+# Trasu vybraneho letu vozi jiny server nez polohy. Hodiny ho takhle nemusi
+# znat vubec: mluvi jen s timhle strojem, tedy jedno jmeno a jeden certifikat
+# misto dvou.
+ROUTE_UPSTREAM = os.environ.get("PLANES_ROUTE_UPSTREAM",
+                                "https://api.adsb.lol/api/0/route")
 # adsb.fi i adsb.lol prosi, at se volajici predstavi.
 USER_AGENT = os.environ.get(
     "PLANES_USER_AGENT",
@@ -46,6 +51,17 @@ CACHE_SECONDS = 4
 STALE_SECONDS = 60
 # Strop firmwaru; vic letadel by stejne zahodil, jen by je nejdriv stahl.
 MAX_AIRCRAFT = 150
+# Trasa se behem letu nemeni, takze se drzi mnohem dele nez polohy. Klepnuti na
+# totez letadlo pak odpovi z pameti a api.adsb.lol o tom ani nevi.
+ROUTE_CACHE_SECONDS = 600
+# Neuspech se pamatuje taky, jen kratce: api.adsb.lol na nektere volaci znacky
+# odpovida chybou 500 pokazde a hodiny to zkousi trikrat. Bez tohohle by kazdy
+# ten pokus prosel az k nemu.
+ROUTE_FAILURE_CACHE_SECONDS = 120
+# Klice, ktere z odpovedi cte RouteParser.cpp. Zbytek jsou nadmorske vysky,
+# jmena zemi a ICAO kody, ktere se na displej nikdy nedostanou.
+KEPT_ROUTE_KEYS = ("airport_codes", "plausible")
+KEPT_AIRPORT_KEYS = ("iata", "location", "lat", "lon")
 # Dosah se udava v namornich milich, stejne jako u adsb.fi: hodiny si kilometry
 # z nastaveni prepoctou uz u sebe a "dist" tudy jen prochazi. Sto namornich mil
 # je 185 km, tedy s rezervou nad nejvetsi dosah, ktery umi nastaveni hodin.
@@ -68,8 +84,10 @@ KEPT_KEYS = (
     "baro_rate",
 )
 
-_cache: dict[tuple[float, float, int], tuple[float, bytes]] = {}
+_cache: dict[tuple[float, float, float], tuple[float, bytes]] = {}
 _cache_lock = Lock()
+_route_cache: dict[tuple[str, float, float], tuple[float, bytes | None]] = {}
+_route_lock = Lock()
 
 
 def _trim(payload: dict) -> bytes:
@@ -134,6 +152,56 @@ def _cached(latitude: float, longitude: float, distance: float) -> tuple[bytes |
     return body, "fresh"
 
 
+def _trim_route(payload: dict) -> bytes:
+    body = {key: payload[key] for key in KEPT_ROUTE_KEYS if key in payload}
+    airports = payload.get("_airports")
+    if isinstance(airports, list):
+        body["_airports"] = [
+            {key: airport[key] for key in KEPT_AIRPORT_KEYS if key in airport}
+            for airport in airports
+            if isinstance(airport, dict)
+        ]
+    return json.dumps(body, separators=(",", ":")).encode("utf-8")
+
+
+def _route(callsign: str, latitude: float, longitude: float) -> bytes | None:
+    # Poloha jde do dotazu spolu se znackou: server podle ni posoudi, jestli
+    # trasa k letadlu vubec sedi. Do klice cache proto patri taky, jen hrubeji -
+    # desetina stupne je zhruba jedenact kilometru a na posouzeni to nic nemeni.
+    key = (callsign.upper(), round(latitude, 1), round(longitude, 1))
+    now = time.monotonic()
+    with _route_lock:
+        entry = _route_cache.get(key)
+    if entry is not None:
+        age = now - entry[0]
+        if entry[1] is not None and age < ROUTE_CACHE_SECONDS:
+            return entry[1]
+        if entry[1] is None and age < ROUTE_FAILURE_CACHE_SECONDS:
+            return None
+    url = f"{ROUTE_UPSTREAM}/{callsign}/{latitude:.4f}/{longitude:.4f}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    body: bytes | None = None
+    try:
+        with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT_SECONDS) as response:
+            body = _trim_route(json.loads(response.read()))
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        body = None
+    with _route_lock:
+        _route_cache[key] = (now, body)
+        if len(_route_cache) > 256:
+            oldest = sorted(_route_cache.items(), key=lambda item: item[1][0])
+            for stale_key, _ in oldest[: len(_route_cache) - 256]:
+                _route_cache.pop(stale_key, None)
+    return body
+
+
+def _valid_callsign(callsign: str) -> bool:
+    # Znacka jde do adresy dotazu, takze se pousti jen to, co znacka opravdu je.
+    # Firmware ma tutez podminku; tady je znovu, protoze se sem da klepnout
+    # i odjinud.
+    return 1 <= len(callsign) <= 8 and callsign.isalnum() and callsign.isascii()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "planes-web/1.0"
     # ThreadingHTTPServer zaklada vlakno na spojeni. Bez timeoutu staci pomale
@@ -155,6 +223,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found\n")
             return
         query = parse_qs(parsed.query)
+        route_callsign = query.get("route", [""])[0]
+        if route_callsign:
+            try:
+                latitude = float(query.get("lat", [""])[0])
+                longitude = float(query.get("lon", [""])[0])
+            except (TypeError, ValueError):
+                self._send(400, b"expected lat and lon\n")
+                return
+            if not _valid_callsign(route_callsign):
+                self._send(400, b"callsign must be 1-8 letters or digits\n")
+                return
+            body = _route(route_callsign, latitude, longitude)
+            if body is None:
+                self._send(502, b"route unavailable\n")
+                return
+            self._send(200, body, "application/json; charset=utf-8")
+            return
         try:
             latitude = float(query.get("lat", [""])[0])
             longitude = float(query.get("lon", [""])[0])

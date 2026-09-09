@@ -503,8 +503,11 @@ zdroj letadel* na záložce Letadla, server z [`infra/planes`](infra/planes/).
 Odpověď adsb.fi má při dosahu 100 km přes 50 kB, z toho ale firmware čte dvanáct
 klíčů ze zhruba padesáti; server zahodí zbytek i letadla na zemi a ze stejného
 vzorku zbude kolem 13 kB. Tvar odpovědi zůstává stejný, takže je to opravdu jen
-kratší cesta k témuž. Prázdné pole znamená ptát se adsb.fi přímo, a přesně tak
-to zůstane i po povýšení firmwaru — obrazovka funguje bez serveru dál.
+kratší cesta k témuž. Táž adresa obstará i trasu vybraného letu, takže hodiny
+mluví s jediným serverem místo se dvěma; server si trasu navíc na deset minut
+pamatuje, takže druhé klepnutí na totéž letadlo je okamžité. Prázdné pole
+znamená ptát se adsb.fi a adsb.lol přímo, a přesně tak to zůstane i po povýšení
+firmwaru — obrazovka funguje bez serveru dál.
 
 Barva letadla nese jeho výšku — pod 2 km červená, 2 až 6 km oranžová, 6 až
 10 km žlutá a od 10 km modrá; letadlo, které výšku nehlásí, je šedé. Stupnice

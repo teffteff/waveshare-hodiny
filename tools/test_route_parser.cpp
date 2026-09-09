@@ -228,7 +228,27 @@ void testFailureCounterDoesNotWrap() {
   assert(outcome.failures == 0xFF);
 }
 
+void testTrimmedRouteFromOwnFeedParses() {
+  // Doslovná odpověď vlastního zdroje z infra/planes: tytéž klíče, jen bez
+  // nadmořských výšek, ICAO kódů a jmen zemí, které se na displej nedostanou.
+  // Tvar musí zůstat zaměnitelný s adsb.lol, jinak by byl potřeba druhý parser.
+  const char *const payload =
+      "{\"airport_codes\":\"LEMG-LKMT\",\"plausible\":true,\"_airports\":["
+      "{\"iata\":\"AGP\",\"location\":\"M\\u00e1laga\",\"lat\":36.6749,"
+      "\"lon\":-4.49911},"
+      "{\"iata\":\"OSR\",\"location\":\"Ostrava\",\"lat\":49.696301,"
+      "\"lon\":18.111099}]}";
+  RouteInfo info;
+  const RouteParseStatus status =
+      routeParse(payload, 49.1951f, 16.6068f, info);
+  assert(status == RouteParseStatus::Ok);
+  // Diakritika padá na ASCII, protože písmo displeje nic jiného neumí.
+  assert(std::string(info.from) == "Malaga");
+  assert(std::string(info.to) == "Ostrava");
+}
+
 int main() {
+  testTrimmedRouteFromOwnFeedParses();
   testGoodAnswerSettlesImmediately();
   testNoRouteIsAnAnswerNotAFailure();
   testFirstFailuresKeepLooking();

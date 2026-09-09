@@ -71,9 +71,42 @@ void testShortestRangeKeepsOneDecimal() {
   assert(std::string(url).find("/dist/5.4") != std::string::npos);
 }
 
+void testRouteWithoutOwnFeedGoesToAdsbLol() {
+  char url[PLANE_FEED_URL_CAPACITY] = "";
+  assert(planeFeedBuildRouteUrl("", "CSA1234", LATITUDE, LONGITUDE, url,
+                                sizeof(url)));
+  assert(std::string(url) ==
+         "https://api.adsb.lol/api/0/route/CSA1234/49.1951/16.6068");
+}
+
+void testRouteThroughOwnFeedUsesTheSameAddress() {
+  // Jedna adresa v nastavení obstará polohy i trasy; liší se jen parametry.
+  char url[PLANE_FEED_URL_CAPACITY] = "";
+  assert(planeFeedBuildRouteUrl("https://server.test/planes.json", "CSA1234",
+                                LATITUDE, LONGITUDE, url, sizeof(url)));
+  assert(std::string(url) ==
+         "https://server.test/planes.json?lat=49.1951&lon=16.6068"
+         "&route=CSA1234");
+}
+
+void testRouteWithoutCallsignIsRefused() {
+  // Bez volací značky se na trasu ptát nedá: to API čte hexadecimální adresu
+  // jako číslo letu a odpovědělo by trasou cizího letadla.
+  char url[PLANE_FEED_URL_CAPACITY] = "";
+  assert(!planeFeedBuildRouteUrl("", "", LATITUDE, LONGITUDE, url,
+                                 sizeof(url)));
+  assert(url[0] == '\0');
+  assert(!planeFeedBuildRouteUrl("https://server.test/planes.json", nullptr,
+                                 LATITUDE, LONGITUDE, url, sizeof(url)));
+  assert(url[0] == '\0');
+}
+
 }  // namespace
 
 int main() {
+  testRouteWithoutOwnFeedGoesToAdsbLol();
+  testRouteThroughOwnFeedUsesTheSameAddress();
+  testRouteWithoutCallsignIsRefused();
   testEmptyAddressAsksAdsbDirectly();
   testOwnFeedGetsQueryParameters();
   testExistingQueryIsKept();

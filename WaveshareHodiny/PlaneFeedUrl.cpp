@@ -30,3 +30,28 @@ bool planeFeedBuildUrl(const char *feedUrl, float latitude, float longitude,
   }
   return true;
 }
+
+bool planeFeedBuildRouteUrl(const char *feedUrl, const char *callsign,
+                            float latitude, float longitude, char *output,
+                            size_t capacity) {
+  if (output == nullptr || capacity == 0) return false;
+  output[0] = '\0';
+  if (callsign == nullptr || callsign[0] == '\0') return false;
+  int written = 0;
+  if (feedUrl != nullptr && feedUrl[0] != '\0') {
+    const char separator = strchr(feedUrl, '?') != nullptr ? '&' : '?';
+    written = snprintf(output, capacity, "%s%clat=%.4f&lon=%.4f&route=%s",
+                       feedUrl, separator, static_cast<double>(latitude),
+                       static_cast<double>(longitude), callsign);
+  } else {
+    written = snprintf(output, capacity, "%s%s/%.4f/%.4f",
+                       PLANE_FEED_ROUTE_HOST, callsign,
+                       static_cast<double>(latitude),
+                       static_cast<double>(longitude));
+  }
+  if (written < 0 || static_cast<size_t>(written) >= capacity) {
+    output[0] = '\0';
+    return false;
+  }
+  return true;
+}
