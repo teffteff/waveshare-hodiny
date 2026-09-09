@@ -9,6 +9,12 @@ Type=notify
 User=caddy
 Group=caddy
 Environment=HOME=/var/lib/caddy
+# Hash hesla k agende. V Caddyfile stoji jen {env.AGENDA_HASH}, aby se
+# tajemstvi nedostalo do verejneho repozitare. Soubor je povinny: kdyz
+# chybi, Caddy se neda spustit misto toho, aby tise servirovala agendu
+# bez hesla. Reload proto vzdy pres `systemctl reload caddy`, aby mel
+# proces promennou k dispozici.
+EnvironmentFile=/etc/caddy/caddy.env
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
 TimeoutStopSec=5s

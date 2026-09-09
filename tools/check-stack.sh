@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -40,6 +40,9 @@ if [ -z "$HOST" ]; then
 fi
 FEED_URL="https://${HOST}/top.xml"
 AGENDA_URL="https://${HOST}/agenda.json"
+# Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
+# tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
+AGENDA_USER="${AGENDA_USER:-hodiny}"
 HA_URL="https://${HOST}/"
 # Kanál se generuje 8x denně mezi 06:05 a 20:05, takže po noci je legitimně
 # starý přes deset hodin. Práh je nad tím, ale pod celým dnem.
@@ -105,10 +108,33 @@ print(f"OK {hours:.1f}")
 fi
 
 # --- agenda z kalendáře ------------------------------------------------------
-agenda_body="$(curl -fsS --max-time 20 "$AGENDA_URL" 2>/dev/null)"
-if [ -z "$agenda_body" ]; then
-  bad "agenda $AGENDA_URL neodpovídá (curl selhal)"
+# Agenda je od 9. 9. 2026 za heslem (basic_auth v Caddyfile), protože nese
+# titulky událostí z rodinného kalendáře. Kontroluje se proto dvakrát: bez
+# hesla musí přijít 401, teprve s heslem se kouká na obsah. První kontrola je
+# tu proto, aby se odkryté agendy všiml skript, ne až cizí čtenář.
+agenda_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$AGENDA_URL")"
+if [ "$agenda_public_code" = "401" ]; then
+  ok "agenda je bez hesla nedostupná (401)"
 else
+  bad "agenda bez hesla vrací '${agenda_public_code:-nic}' místo 401 — v /etc/caddy/Caddyfile chybí basic_auth"
+fi
+
+agenda_body=""
+if [ -z "${AGENDA_PASSWORD:-}" ]; then
+  warn "v .env chybí AGENDA_PASSWORD, čerstvost agendy se nekontroluje"
+else
+  # Heslo se curlu předává souborem, ne přepínačem -u: příkazovou řádku
+  # běžícího procesu si přečte kdokoli přes ps.
+  agenda_curl_config="$(mktemp)"
+  chmod 600 "$agenda_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$AGENDA_PASSWORD" > "$agenda_curl_config"
+  agenda_body="$(curl -fsS --max-time 20 -K "$agenda_curl_config" "$AGENDA_URL" 2>/dev/null)"
+  rm -f "$agenda_curl_config"
+  if [ -z "$agenda_body" ]; then
+    bad "agenda $AGENDA_URL neodpovídá, nebo neplatí heslo z .env (curl selhal)"
+  fi
+fi
+if [ -n "$agenda_body" ]; then
   agenda_report="$(printf '%s' "$agenda_body" | python3 -c '
 import json, sys
 from datetime import datetime, timezone

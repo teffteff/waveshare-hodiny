@@ -8,10 +8,13 @@ Type=simple
 User=opc
 Environment=AGENDA_WWW=/opt/agenda/www
 Environment=AGENDA_PORT=8089
+# Jen pro Caddy na stejnem stroji. Kdyby server visel na verejne IP, dal by
+# se basic_auth z Caddyfile obejit primym dotazem na port 8089.
+Environment=AGENDA_BIND=127.0.0.1
 ExecStart=/opt/agenda/.venv/bin/python /opt/agenda/serve.py
 Restart=on-failure
 RestartSec=5
-# Sluzba posloucha na verejne IP, takze dostane stejne mantinely jako Caddy.
+# Sluzba je sice jen na loopbacku, ale mantinely dostane stejne jako Caddy.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

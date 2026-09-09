@@ -2,7 +2,23 @@
 	handle /top.xml {
 		reverse_proxy 127.0.0.1:8088
 	}
+	# Agenda nese titulky udalosti z rodinneho kalendare, takze na rozdil od
+	# zprav nepatri komukoli. Jmeno serveru se da vycist z Certificate
+	# Transparency, kam Let's Encrypt kazdy vydany certifikat zapisuje, takze
+	# "adresu nikdo nezna" ochrana neni.
+	#
+	# Heslo posilaji hodiny samy a firmware kvuli tomu menit netreba:
+	# HTTPClient si uzivatele a heslo vytahne z adresy tvaru
+	# https://uzivatel:heslo@host/agenda.json a prilozi je hned k prvnimu
+	# pozadavku jako hlavicku Authorization. Adresa proto musi byt https://,
+	# na http:// by heslo slo po drate otevrene.
+	#
+	# Hash hesla je v /etc/caddy/caddy.env (prava 600), ne tady: tenhle soubor
+	# lezi ve verejnem repozitari a bcrypt hash by z nej sel lamat offline.
 	handle /agenda.json {
+		basic_auth {
+			hodiny {env.AGENDA_HASH}
+		}
 		reverse_proxy 127.0.0.1:8089
 	}
 	handle {

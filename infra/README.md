@@ -43,11 +43,11 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 
 | Služba | Port | Soubory | Kopie v repu |
 |---|---|---|---|
-| Caddy (HTTPS proxy) | 80, 443 | `/etc/caddy/Caddyfile`, `/etc/systemd/system/caddy.service` | `caddy/` |
+| Caddy (HTTPS proxy) | 80, 443 | `/etc/caddy/Caddyfile`, `/etc/caddy/caddy.env`, `/etc/systemd/system/caddy.service` | `caddy/` |
 | Generátor zpráv | — | `/opt/news/generate.py`, `news.service` + `news.timer` | `news/` |
 | Server se zprávami | 8088 | `/opt/news/serve.py`, `news-web.service` | `news/` |
 | Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
-| Server s agendou | 8089 | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
+| Server s agendou | 8089, jen loopback | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565 | Minecraft, go2rtc — s hodinami nesouvisí | — |
 
@@ -75,16 +75,22 @@ mění v Nastavení → Systém → Síť.
 
 ```
 https://$CLOCK_HOST/top.xml      zprávy
-https://$CLOCK_HOST/agenda.json  agenda z kalendáře
+https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
 ```
 
-Do hodin se nezadávají ručně: obě adresy jsou v kořenovém `.env`
-(`NEWS_URL`, `HOME_ASSISTANT_URL`), `tools/generate_secrets.py` z nich udělá
-`WaveshareHodiny/local/secrets.h` a vývojový build je předvyplní do prázdné
-konfigurace. Přepisuje se **jen prázdné pole**, takže ručně zadanou adresu
-build nepřemaže — na zařízení, které má v NVS ještě starou `http://` adresu,
-je proto potřeba ji jednou přepsat ve webovém rozhraní.
+Adresa zpráv a Home Assistanta se do hodin nezadává ručně: obě jsou
+v kořenovém `.env` (`NEWS_URL`, `HOME_ASSISTANT_URL`),
+`tools/generate_secrets.py` z nich udělá `WaveshareHodiny/local/secrets.h`
+a vývojový build je předvyplní do prázdné konfigurace. Přepisuje se **jen
+prázdné pole**, takže ručně zadanou adresu build nepřemaže — na zařízení,
+které má v NVS ještě starou `http://` adresu, je proto potřeba ji jednou
+přepsat ve webovém rozhraní.
+
+**Agenda mezi ně schválně nepatří.** Její adresa nese heslo, a to nemá co
+dělat ve zdrojáku, ze kterého se sype build. Do hodin se opíše jednou ručně
+v záložce **Agenda**; v `.env` leží jako `AGENDA_URL` jen proto, aby se
+nemuselo pamatovat, a `AGENDA_PASSWORD` z něj čte `tools/check-stack.sh`.
 
 Firmware kvůli HTTPS měnit netřeba: RSS používá celý CA bundle, Home Assistant
 připnutý ISRG Root X1 a Let's Encrypt se do něj řetězí.
@@ -97,8 +103,11 @@ problem)“, jedno z těch dvou je zavřené.
 
 - 80, 443 — Caddy a obnova certifikátu. **Bez nich certifikát tiše vyprší.**
 - 8088 — přímý přístup ke kanálu, dnes už jen záloha
-- 8089 — přímý přístup k agendě, taky jen záloha
 - 8123 — přímý přístup k HA, taky jen záloha
+
+Port **8089 mezi ně nepatří**: server s agendou od 9. 9. 2026 poslouchá jen na
+`127.0.0.1`, protože jinak by šlo heslo z Caddyfile obejít dotazem přímo na
+něj. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 
 Certifikát vydává Let's Encrypt přes tls-alpn-01, obnovuje ho Caddy sám.
 Neúspěšné pokusy jsou limitované (~5/h), takže **restartovat Caddy kvůli
@@ -143,6 +152,51 @@ sdílejí jeden projekt.
 Prázdná agenda je **legitimní stav** — kalendář prostě nemusí nic mít. Proto ji
 `check-stack.sh` hlásí jako `warn`, ne jako `FAIL`, na rozdíl od prázdného
 kanálu se zprávami, kde prázdno vždycky znamená rozbitý běh.
+
+## Heslo k agendě
+
+Kanál se zprávami může číst kdokoli, agenda ne: nese titulky událostí
+z rodinného kalendáře. Adresa serveru přitom tajná není — Let's Encrypt každý
+vydaný certifikát zapisuje do Certificate Transparency, takže se jméno stroje
+dá vyčíst i bez toho, aby ho někdo někde zveřejnil. Proto je `/agenda.json`
+od 9. 9. 2026 za HTTP basic auth.
+
+**Firmware se kvůli tomu neměnil.** `HTTPClient` v jádru ESP32 si uživatele
+a heslo vytáhne z adresy tvaru `https://uzivatel:heslo@host/agenda.json`
+a přiloží je hned k prvnímu požadavku jako hlavičku `Authorization`. Do hodin
+se tedy zadává jen delší adresa. Musí být `https://` — na `http://` by heslo
+šlo po drátě otevřeně, protože se posílá bez čekání na výzvu.
+
+Kde co leží:
+
+| | |
+|---|---|
+| Uživatel | `hodiny`, natvrdo v `caddy/Caddyfile` — tajemstvím je jen heslo |
+| Hash hesla | `/etc/caddy/caddy.env`, práva 600, čte ho `EnvironmentFile=` v `caddy.service` |
+| Heslo | kořenový `.env` jako `AGENDA_PASSWORD` a celá adresa jako `AGENDA_URL` |
+| Hodiny | webové rozhraní, záložka **Agenda**, pole s adresou |
+
+V `Caddyfile` stojí jen `{env.AGENDA_HASH}`, protože repozitář je veřejný
+a bcrypt hash by z něj šel lámat offline. Kopie v repu je proto pořád byte na
+byte stejná jako soubor na serveru a `tools/check-stack.sh --deep` ji umí
+porovnat beze změny.
+
+Výměna hesla:
+
+```sh
+NEW="$(openssl rand -hex 24)"   # hex schválně: bez : a @ kvůli adrese, bez $ kvůli .env
+ssh … "caddy hash-password --plaintext '$NEW'"
+ssh … "printf 'AGENDA_HASH=%s\n' '<hash>' | sudo install -m 600 /dev/stdin /etc/caddy/caddy.env"
+ssh … "sudo systemctl reload caddy"
+```
+
+Reload vždy přes `systemctl`, ne přímo `caddy reload`: proměnnou má jen
+prostředí služby. Nakonec se nové heslo opíše do `.env` a do hodin — dokud
+se nezmění tam, obrazovka s agendou zůstane prázdná a `check-stack.sh` to
+ohlásí.
+
+`tools/check-stack.sh` kontroluje obojí: že bez hesla přijde 401 (jinak by
+agendu četl kdokoli) a že s heslem z `.env` dorazí čerstvý JSON.
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
@@ -249,6 +303,7 @@ scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
 $SSH "$CLOCK_SSH" 'sudo cp /opt/news/news*.service /opt/news/news.timer \
     /etc/systemd/system/ && sudo systemctl daemon-reload \
     && sudo systemctl restart news-web.service && sudo systemctl start news.service'
+```
 
 `infra/caddy/Caddyfile` drží místo domény `{{DOMAIN}}`, opět aby adresa nebyla
 ve veřejném repozitáři. Před nasazením se dosadí a `check-stack.sh` ho po
@@ -259,10 +314,13 @@ sed "s/{{DOMAIN}}/$CLOCK_HOST/g" infra/caddy/Caddyfile > /tmp/Caddyfile
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     /tmp/Caddyfile "$CLOCK_SSH:/home/${CLOCK_SSH%%@*}/Caddyfile.new"
 $SSH "$CLOCK_SSH" 'sudo cp ~/Caddyfile.new /etc/caddy/Caddyfile \
-    && sudo caddy validate --config /etc/caddy/Caddyfile \
     && sudo systemctl reload caddy'
 ```
-```
+
+Samostatné `caddy validate` tu schválně není: Caddyfile od zaheslování agendy
+obsahuje `{env.AGENDA_HASH}` a v obyčejném shellu ta proměnná není, takže by
+validace spadla na prázdném hesle. `systemctl reload` konfiguraci ověří sám
+a při chybě skončí nenulově — běžet přitom dál zůstane ta stará.
 
 Jednotky (`news.service`, `news.timer`, `news-web.service`) leží na serveru
 ve dvou místech: kopie v `/opt/news/` je ta, kterou porovnává `--deep`, běhová
@@ -282,9 +340,11 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
 ## Obnova serveru
 
 1. Nový stroj, otevřít 80/443 v OCI i ve `firewalld`.
-2. Caddy: binárku do `/usr/bin/caddy`, `caddy/Caddyfile` do `/etc/caddy/`,
-   `caddy/caddy.service` do `/etc/systemd/system/`, uživatel `caddy`,
-   `HOME=/var/lib/caddy`.
+2. Caddy: binárku do `/usr/bin/caddy`, `caddy/Caddyfile` do `/etc/caddy/`
+   (s dosazenou doménou), `caddy/caddy.service` do `/etc/systemd/system/`,
+   uživatel `caddy`, `HOME=/var/lib/caddy`. `caddy.env.example` →
+   `/etc/caddy/caddy.env` s hashem hesla k agendě (práva 600) — bez něj se
+   Caddy nespustí, viz „Heslo k agendě".
 3. Zprávy: `news/*.py` do `/opt/news/`, `.venv` s `google-genai`, `feedparser`
    a `pydantic`, `news.env.example` → `news.env` s klíčem (práva 600),
    jednotky do `/etc/systemd/system/`, `systemctl enable --now news-web.service
