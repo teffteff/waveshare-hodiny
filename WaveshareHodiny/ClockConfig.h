@@ -23,6 +23,9 @@ constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
 constexpr size_t CLOCK_VALUE_GRID_SLOT_COUNT = 8;
 constexpr size_t CLOCK_VALUE_SLOT_COUNT = CLOCK_VALUE_GRID_SLOT_COUNT + 1;
 constexpr size_t CLOCK_RSS_URL_LENGTH = 192;
+// Stejný strop jako u kanálu se zprávami: adresa míří na vlastní server, ne na
+// cizí službu s dlouhými parametry.
+constexpr size_t CLOCK_AGENDA_URL_LENGTH = 192;
 // Kolik zpráv smí obrazovka kanálu ukázat. Kruhový displej pobere pět zpráv
 // po dvou řádcích titulku; při šesti zbývá na titulek řádek jediný.
 constexpr uint8_t CLOCK_RSS_MIN_ITEMS = 3;
@@ -62,11 +65,27 @@ constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // Schema 36 appends the order the screens rotate in. The schema 35 prefix stays
 // byte-for-byte unchanged and the order starts at the built-in one, so an
 // upgrade keeps showing the screens exactly where they were.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 36;
+// Schema 37 appends the calendar agenda screen and widens the screen order from
+// five entries to a fixed eight. The schema 36 prefix stays byte-for-byte
+// unchanged: the order array only grows at its tail, so the five bytes an older
+// record holds land exactly where they belong and the new tail arrives zeroed,
+// which normalization then repairs. The screen starts disabled, so an upgrade
+// never puts another screen into the rotation on its own.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 37;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
-constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 5;
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 6;
+
+// Kolik bajtů pořadí zabírá v konfiguraci. Schválně víc, než kolik je dnes
+// obrazovek: pole leží na konci schématu 37, takže dokud se do rezervy vejde
+// další obrazovka, stačí povýšit COUNT a migrace zůstane pouhým zkopírováním
+// bajtů. Bez rezervy by každá další obrazovka posouvala všechno za polem.
+constexpr size_t CLOCK_SCREEN_ORDER_CAPACITY = 8;
+
+// Výplň v nevyužitých slotech pořadí. Nula by byla platná obrazovka (hodiny),
+// takže by po migraci vypadala jako druhý záznam ciferníku.
+constexpr uint8_t CLOCK_SCREEN_ORDER_UNUSED = 0xFF;
 
 enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_CLOCK = 0,
@@ -74,6 +93,7 @@ enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_RSS = 2,
   CLOCK_SCREEN_FORECAST = 3,
   CLOCK_SCREEN_PLANES = 4,
+  CLOCK_SCREEN_AGENDA = 5,
 };
 
 enum ClockLanguage : uint8_t {
@@ -270,6 +290,23 @@ constexpr size_t CLOCK_PLANE_CALLSIGN_LENGTH = 16;
 // Nad tuhle výšku už nic nelétá, takže horní mez filtru znamená "vypnuto".
 constexpr uint16_t CLOCK_PLANE_ALTITUDE_CEILING_FT = 60000;
 
+// Obrazovka s agendou z kalendáře. Hodiny do Googlu nechodí: čtou malý JSON
+// z vlastního serveru, který kalendáře přečte, sloučí a předžvýká - viz
+// infra/agenda/. Proto tu není ani token, ani ID kalendáře, jen adresa.
+struct ClockAgendaConfig {
+  bool enabled = false;
+  // Zapojení do automatické rotace, stejně jako u radaru, zpráv a předpovědi.
+  bool automaticRotation = false;
+  // Kolik událostí se vejde na displej. Server jich posílá víc, obrazovka si
+  // vezme prvních tolik, kolik jich má nastaveno.
+  uint8_t itemCount = 8;
+  // Server agendu přepočítává po čtvrthodině, takže častější dotaz jen zbytečně
+  // budí Wi-Fi a nic nového nepřinese.
+  uint8_t refreshMinutes = 15;
+  uint16_t displaySeconds = 20;
+  char url[CLOCK_AGENDA_URL_LENGTH] = "";
+};
+
 struct ClockPlanesConfig {
   bool enabled = false;
   // Zapojení do automatické rotace, stejně jako u radaru, zpráv a předpovědi.
@@ -384,11 +421,19 @@ struct ClockConfig {
   ClockPlanesConfig planes;
   // Pole schématu 36 leží až za radarem letadel, aby schéma 35 zůstalo přesnou
   // předponou a migrace byla opět jen zkopírováním bajtů. Drží pořadí, ve
-  // kterém se obrazovky střídají - hodnoty jsou ClockOrderedScreen, každá
-  // právě jednou.
-  uint8_t screenOrder[CLOCK_SCREEN_ORDER_COUNT] = {
-      CLOCK_SCREEN_CLOCK, CLOCK_SCREEN_RADAR, CLOCK_SCREEN_RSS,
-      CLOCK_SCREEN_FORECAST, CLOCK_SCREEN_PLANES};
+  // kterém se obrazovky střídají - prvních CLOCK_SCREEN_ORDER_COUNT hodnot jsou
+  // ClockOrderedScreen, každá právě jednou, zbytek je CLOCK_SCREEN_ORDER_UNUSED.
+  //
+  // Schéma 37 pole rozšířilo z pěti bajtů na osm. Roste jen na konci, takže
+  // prvních pět bajtů staršího záznamu dopadne přesně tam, kam patří.
+  uint8_t screenOrder[CLOCK_SCREEN_ORDER_CAPACITY] = {
+      CLOCK_SCREEN_CLOCK,  CLOCK_SCREEN_RADAR,
+      CLOCK_SCREEN_RSS,    CLOCK_SCREEN_FORECAST,
+      CLOCK_SCREEN_PLANES, CLOCK_SCREEN_AGENDA,
+      CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED};
+  // Pole schématu 37 leží až za pořadím obrazovek, aby schéma 36 zůstalo
+  // přesnou předponou.
+  ClockAgendaConfig agenda;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -427,6 +472,22 @@ static_assert(offsetof(ClockConfig, planes) == 5656 &&
 static_assert(offsetof(ClockConfig, screenOrder) == 5688,
               "Schema 36 must preserve the complete schema 35 prefix.");
 
+// Uložený záznam nese ClockConfig i s koncovým zarovnáním, ne jen po poslední
+// pole. Schéma 36 končilo pěti bajty pořadí na offsetu 5688, tedy 5693 bajty
+// dat, které zarovnání dorovnalo na 5696 - přesně tam, kde v schématu 37 začíná
+// agenda. Migrace je proto pořád jen zkopírování bajtů.
+//
+// Ty tři bajty výplně dopadnou na screenOrder[5..7]. Co v nich leželo, není
+// zaručené, ale nevadí to: normalizace zahodí hodnoty mimo rozsah i zdvojené,
+// takže agenda skončí na konci cyklu, ne uprostřed něj.
+constexpr size_t CLOCK_CONFIG_SCHEMA_36_SIZE = offsetof(ClockConfig, agenda);
+
+static_assert(CLOCK_CONFIG_SCHEMA_36_SIZE == 5696 &&
+                  offsetof(ClockConfig, screenOrder) +
+                          CLOCK_SCREEN_ORDER_CAPACITY ==
+                      CLOCK_CONFIG_SCHEMA_36_SIZE,
+              "Schema 37 must preserve the complete schema 36 prefix.");
+
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
 // je kvůli migraci uložený zvlášť.
@@ -462,6 +523,9 @@ bool clockConfigForecastAvailable(const ClockConfig &config);
 // Radar letadel stojí na veřejném API adsb.fi, takže stačí zapnutá obrazovka -
 // souřadnice bere ze stejného místa jako meteoradar a předpověď.
 bool clockConfigPlanesAvailable(const ClockConfig &config);
+// Agenda se kreslí jen se zapnutou obrazovkou a vyplněnou adresou, stejně jako
+// zprávy. Kalendáře vybírá server, hodiny o nich nevědí.
+bool clockConfigAgendaAvailable(const ClockConfig &config);
 // Obrazovka na dané pozici v pořadí střídání. Mimo rozsah vrací ciferník,
 // který je jediná obrazovka, kterou vypnout nejde.
 uint8_t clockConfigScreenAt(const ClockConfig &config, uint8_t position);
@@ -470,6 +534,8 @@ uint8_t clockConfigScreenPosition(const ClockConfig &config, uint8_t screen);
 // Srovná pořadí zpátky na permutaci všech obrazovek. Neznámé i zdvojené
 // hodnoty se zahodí a chybějící obrazovky se doplní ve výchozím pořadí, takže
 // z poškozeného pole nikdy nezmizí obrazovka, na kterou se dá přepnout.
+// Nevyužitá část pole se dorovná na CLOCK_SCREEN_ORDER_UNUSED. Pole musí mít
+// CLOCK_SCREEN_ORDER_CAPACITY bajtů.
 void clockConfigNormalizeScreenOrder(uint8_t *order);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,

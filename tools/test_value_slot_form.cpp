@@ -197,22 +197,30 @@ void testSlotIndexSelectsItsOwnFields() {
 // Pořadí obrazovek chodí z webu jako jeden řetězec. Přijmout se smí jen úplná
 // permutace, jinak by z cyklu zmizela obrazovka.
 void testScreenOrderIsParsed() {
-  uint8_t order[CLOCK_SCREEN_ORDER_COUNT] = {};
-  assert(parseScreenOrder("planes,clock,forecast,rss,radar", order));
+  uint8_t order[CLOCK_SCREEN_ORDER_CAPACITY] = {};
+  assert(parseScreenOrder("planes,clock,agenda,forecast,rss,radar", order));
   assert(order[0] == CLOCK_SCREEN_PLANES);
   assert(order[1] == CLOCK_SCREEN_CLOCK);
-  assert(order[2] == CLOCK_SCREEN_FORECAST);
-  assert(order[3] == CLOCK_SCREEN_RSS);
-  assert(order[4] == CLOCK_SCREEN_RADAR);
+  assert(order[2] == CLOCK_SCREEN_AGENDA);
+  assert(order[3] == CLOCK_SCREEN_FORECAST);
+  assert(order[4] == CLOCK_SCREEN_RSS);
+  assert(order[5] == CLOCK_SCREEN_RADAR);
+  // Rezerva za posledním jménem nesmí zůstat nulová: nula je ciferník.
+  for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
+       index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
+    assert(order[index] == CLOCK_SCREEN_ORDER_UNUSED);
+  }
 }
 
 void testIncompleteOrDuplicateScreenOrderIsRejected() {
-  uint8_t order[CLOCK_SCREEN_ORDER_COUNT] = {};
+  uint8_t order[CLOCK_SCREEN_ORDER_CAPACITY] = {};
   assert(!parseScreenOrder("", order));
   assert(!parseScreenOrder("clock,radar,rss,forecast", order));
-  assert(!parseScreenOrder("clock,radar,rss,forecast,forecast", order));
+  // Pět jmen bylo úplné pořadí do schématu 36; s agendou už chybí jedno.
+  assert(!parseScreenOrder("clock,radar,rss,forecast,planes", order));
+  assert(!parseScreenOrder("clock,radar,rss,forecast,forecast,agenda", order));
   assert(!parseScreenOrder("clock,radar,rss,forecast,planes,clock", order));
-  assert(!parseScreenOrder("clock,radar,rss,forecast,settings", order));
+  assert(!parseScreenOrder("clock,radar,rss,forecast,planes,settings", order));
 }
 
 }  // namespace

@@ -32,6 +32,8 @@ const char *clockScreenName(uint8_t screen);
 // Pořadí obrazovek z formuláře: jména oddělená čárkou, například
 // "clock,rss,radar,forecast,planes". Přijme jen úplnou permutaci všech
 // obrazovek; cokoliv jiného je chyba, protože by z cyklu ubrala obrazovku.
+// Přijme jen úplnou permutaci všech obrazovek. Zapisuje přes celou
+// CLOCK_SCREEN_ORDER_CAPACITY, takže cílové pole musí být tak velké.
 bool parseScreenOrder(const String &text, uint8_t *order);
 
 enum class ValueSlotFormResult : uint8_t {

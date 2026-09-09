@@ -46,6 +46,7 @@ constexpr uint32_t RADAR_STATUS_LINE_PREDECESSOR_SCHEMA_VERSION = 32;
 constexpr uint32_t FORECAST_PREDECESSOR_SCHEMA_VERSION = 33;
 constexpr uint32_t PLANES_PREDECESSOR_SCHEMA_VERSION = 34;
 constexpr uint32_t SCREEN_ORDER_PREDECESSOR_SCHEMA_VERSION = 35;
+constexpr uint32_t AGENDA_PREDECESSOR_SCHEMA_VERSION = 36;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -158,6 +159,16 @@ struct ConfigRecordV35 {
   uint32_t magic;
   uint32_t schemaVersion;
   uint8_t config[SCHEMA_35_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
+// Schéma 36 končilo pořadím obrazovek, které tehdy mělo pět bajtů. Velikost
+// proto nejde vzít z offsetof toho, co následuje dnes - pole samo mezitím
+// povyrostlo. Konstanta žije v ClockConfig.h vedle statické kontroly.
+struct ConfigRecordV36 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_36_SIZE];
   uint32_t checksum;
 };
 
@@ -306,6 +317,8 @@ static_assert(SCHEMA_33_CONFIG_SIZE == 5648 &&
 static_assert(SCHEMA_34_CONFIG_SIZE == 5656 &&
                   sizeof(ConfigRecordV34) == 5668,
               "Migrační záznam schématu 34 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV36) <= sizeof(ConfigRecord),
+              "Schéma 36 se musí vejít do společného pracovního bufferu.");
 static_assert(SCHEMA_35_CONFIG_SIZE == 5688 &&
                   sizeof(ConfigRecordV35) == 5700,
               "Migrační záznam schématu 35 musí zachovat přesnou velikost.");
@@ -513,6 +526,10 @@ bool clockConfigForecastAvailable(const ClockConfig &config) {
   return config.forecast.enabled;
 }
 
+bool clockConfigAgendaAvailable(const ClockConfig &config) {
+  return config.agenda.enabled && config.agenda.url[0] != '\0';
+}
+
 bool clockConfigPlanesAvailable(const ClockConfig &config) {
   // adsb.fi pokrývá celý svět, takže na rozdíl od kompozice ČHMÚ nemá obrazovka
   // žádnou zeměpisnou podmínku - stačí, že ji majitel zapnul.
@@ -534,9 +551,11 @@ uint8_t clockConfigScreenPosition(const ClockConfig &config, uint8_t screen) {
 
 void clockConfigNormalizeScreenOrder(uint8_t *order) {
   bool seen[CLOCK_SCREEN_ORDER_COUNT] = {};
-  uint8_t normalized[CLOCK_SCREEN_ORDER_COUNT];
+  uint8_t normalized[CLOCK_SCREEN_ORDER_CAPACITY];
   uint8_t count = 0;
-  for (size_t index = 0; index < CLOCK_SCREEN_ORDER_COUNT; ++index) {
+  // Čte se přes celou kapacitu, ne jen přes počet obrazovek: záznam ze staršího
+  // schématu má v rezervě nuly a ty by se jinak tvářily jako platný ciferník.
+  for (size_t index = 0; index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
     const uint8_t screen = order[index];
     if (screen >= CLOCK_SCREEN_ORDER_COUNT || seen[screen]) continue;
     seen[screen] = true;
@@ -546,6 +565,9 @@ void clockConfigNormalizeScreenOrder(uint8_t *order) {
   // místa v cyklu by byla nedostupná i gestem.
   for (uint8_t screen = 0; screen < CLOCK_SCREEN_ORDER_COUNT; ++screen) {
     if (!seen[screen]) normalized[count++] = screen;
+  }
+  while (count < CLOCK_SCREEN_ORDER_CAPACITY) {
+    normalized[count++] = CLOCK_SCREEN_ORDER_UNUSED;
   }
   memcpy(order, normalized, sizeof(normalized));
 }
@@ -721,6 +743,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV36) ||
                              storedSize == sizeof(ConfigRecordV35) ||
                              storedSize == sizeof(ConfigRecordV34) ||
                              storedSize == sizeof(ConfigRecordV33) ||
@@ -747,6 +770,30 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  // Schéma 36 je přesnou předponou schématu 37; agenda si po zkopírování bajtů
+  // podrží výchozí hodnoty z clockConfigApplyDefaults(), tedy vypnutou
+  // obrazovku bez adresy - povýšení firmwaru samo od sebe nezačne chodit na
+  // server pro kalendář.
+  const ConfigRecordV36 &legacyV36 =
+      *reinterpret_cast<const ConfigRecordV36 *>(&record);
+  uint32_t embeddedSchemaV36 = 0;
+  if (readComplete && storedSize == sizeof(legacyV36)) {
+    memcpy(&embeddedSchemaV36, legacyV36.config, sizeof(embeddedSchemaV36));
+  }
+  const bool validSchema36Record =
+      readComplete && storedSize == sizeof(legacyV36) &&
+      legacyV36.magic == CONFIG_MAGIC &&
+      legacyV36.schemaVersion == AGENDA_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV36 == AGENDA_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV36.checksum ==
+          bytesChecksum(legacyV36.config, sizeof(legacyV36.config));
+  if (validSchema36Record) {
+    memcpy(&config, legacyV36.config, sizeof(legacyV36.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   // Schéma 35 je přesnou předponou schématu 36; pořadí obrazovek si po

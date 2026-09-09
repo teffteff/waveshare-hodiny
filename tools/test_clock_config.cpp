@@ -47,6 +47,13 @@ constexpr size_t SCHEMA_34_CONFIG_SIZE = offsetof(ClockConfig, planes);
 constexpr size_t SCHEMA_34_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_34_CONFIG_SIZE;
 
+constexpr uint32_t SCHEMA_36 = 36;
+// Schéma 36 končilo pětibajtovým pořadím obrazovek, které zarovnání dorovnalo
+// na hranici čtyř bajtů - tedy přesně tam, kde v schématu 37 začíná agenda.
+constexpr size_t SCHEMA_36_CONFIG_SIZE = offsetof(ClockConfig, agenda);
+constexpr size_t SCHEMA_36_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_36_CONFIG_SIZE;
+
 constexpr uint32_t SCHEMA_35 = 35;
 constexpr size_t SCHEMA_35_CONFIG_SIZE = offsetof(ClockConfig, screenOrder);
 constexpr size_t SCHEMA_35_RECORD_SIZE =
@@ -109,6 +116,10 @@ std::string schema34Record(const ClockConfig &source) {
 
 std::string schema35Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_35, SCHEMA_35_CONFIG_SIZE);
+}
+
+std::string schema36Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_36, SCHEMA_36_CONFIG_SIZE);
 }
 
 void seed(const std::string &record) {
@@ -772,6 +783,56 @@ void testSchema35MigrationAddsDefaultScreenOrder() {
   assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
 }
 
+// Migrace 36 → 37 nesmí sáhnout na přeskládané pořadí ani zapnout agendu:
+// bez adresy serveru není co ukazovat.
+void testSchema36MigrationAddsDisabledAgenda() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.rss.enabled = true;
+  clockConfigCopy(source.rss.url, sizeof(source.rss.url),
+                  "https://example.test/top.xml");
+  source.planes.enabled = true;
+  // Pořadí, které si majitel přeskládal ještě před agendou.
+  source.screenOrder[0] = CLOCK_SCREEN_RSS;
+  source.screenOrder[1] = CLOCK_SCREEN_CLOCK;
+  source.screenOrder[2] = CLOCK_SCREEN_RADAR;
+  source.screenOrder[3] = CLOCK_SCREEN_PLANES;
+  source.screenOrder[4] = CLOCK_SCREEN_FORECAST;
+  // Schéma 36 mělo pole dlouhé pět bajtů. Zbytek, který se do záznamu dostane,
+  // je koncové zarovnání - u uložené konfigurace nuly, ne obrazovky.
+  source.screenOrder[5] = 0;
+  source.screenOrder[6] = 0;
+  source.screenOrder[7] = 0;
+
+  const std::string record = schema36Record(source);
+  assert(record.size() == SCHEMA_36_RECORD_SIZE);
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 36 zůstal nedotčený.
+  assert(migrated.rss.enabled);
+  assert(strcmp(migrated.rss.url, "https://example.test/top.xml") == 0);
+  assert(migrated.planes.enabled);
+  // Přeskládané pořadí přežilo a agenda se přidala na konec cyklu, ne
+  // doprostřed. Nuly ze zarovnání se zahodily jako zdvojený ciferník.
+  assert(migrated.screenOrder[0] == CLOCK_SCREEN_RSS);
+  assert(migrated.screenOrder[1] == CLOCK_SCREEN_CLOCK);
+  assert(migrated.screenOrder[2] == CLOCK_SCREEN_RADAR);
+  assert(migrated.screenOrder[3] == CLOCK_SCREEN_PLANES);
+  assert(migrated.screenOrder[4] == CLOCK_SCREEN_FORECAST);
+  assert(migrated.screenOrder[5] == CLOCK_SCREEN_AGENDA);
+  // Agenda zůstává vypnutá a bez adresy, takže se do rotace nedostane.
+  assert(!migrated.agenda.enabled);
+  assert(migrated.agenda.url[0] == '\0');
+  assert(!clockConfigAgendaAvailable(migrated));
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
 void testScreenOrderRoundTripAndNormalization() {
   hostPreferencesReset();
   ClockConfig config;
@@ -806,9 +867,16 @@ void testScreenOrderRoundTripAndNormalization() {
   assert(clockConfigLoad(repaired));
   assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
   assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
-  assert(repaired.screenOrder[2] == CLOCK_SCREEN_CLOCK);
-  assert(repaired.screenOrder[3] == CLOCK_SCREEN_RADAR);
-  assert(repaired.screenOrder[4] == CLOCK_SCREEN_FORECAST);
+  // Agenda přežila z výchozího pořadí na šestém místě, takže se doplňuje až
+  // za ni; teprve pak přijdou obrazovky, které v poli vůbec nebyly.
+  assert(repaired.screenOrder[2] == CLOCK_SCREEN_AGENDA);
+  assert(repaired.screenOrder[3] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrder[4] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrder[5] == CLOCK_SCREEN_FORECAST);
+  for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
+       index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
+    assert(repaired.screenOrder[index] == CLOCK_SCREEN_ORDER_UNUSED);
+  }
 }
 
 int main() {
@@ -829,6 +897,7 @@ int main() {
   testSchema34MigrationAddsDisabledPlanes();
   testPlanesRoundTripAndClamping();
   testSchema35MigrationAddsDefaultScreenOrder();
+  testSchema36MigrationAddsDisabledAgenda();
   testScreenOrderRoundTripAndNormalization();
   return 0;
 }

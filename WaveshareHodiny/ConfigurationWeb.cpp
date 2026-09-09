@@ -1815,7 +1815,7 @@ void handleSaveConfig() {
   // Stránka uložená ze starší verze pole vůbec neposílá; uložené pořadí se
   // tím nesmí přepsat.
   if (server.hasArg("screenOrder")) {
-    uint8_t screenOrder[CLOCK_SCREEN_ORDER_COUNT];
+    uint8_t screenOrder[CLOCK_SCREEN_ORDER_CAPACITY];
     if (!parseScreenOrder(server.arg("screenOrder"), screenOrder)) {
       sendError(400, F("Pořadí obrazovek není platné."));
       return;

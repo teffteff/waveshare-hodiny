@@ -35,6 +35,7 @@ const char *clockScreenName(uint8_t screen) {
     case CLOCK_SCREEN_RSS: return "rss";
     case CLOCK_SCREEN_FORECAST: return "forecast";
     case CLOCK_SCREEN_PLANES: return "planes";
+    case CLOCK_SCREEN_AGENDA: return "agenda";
     default: return "clock";
   }
 }
@@ -66,7 +67,13 @@ bool parseScreenOrder(const String &text, uint8_t *order) {
     if (*end == '\0') break;
     cursor = end + 1;
   }
-  return count == CLOCK_SCREEN_ORDER_COUNT;
+  if (count != CLOCK_SCREEN_ORDER_COUNT) return false;
+  // Rezerva na konci pole musí nést výplň, ne nuly: nula je platná obrazovka,
+  // takže by se z ní stal druhý ciferník v cyklu.
+  while (count < CLOCK_SCREEN_ORDER_CAPACITY) {
+    order[count++] = CLOCK_SCREEN_ORDER_UNUSED;
+  }
+  return true;
 }
 
 void applyMetricPreset(ClockMetricConfig &metric, const String &preset) {
