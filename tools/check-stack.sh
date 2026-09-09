@@ -39,10 +39,14 @@ if [ -z "$HOST" ]; then
   exit 2
 fi
 FEED_URL="https://${HOST}/top.xml"
+AGENDA_URL="https://${HOST}/agenda.json"
 HA_URL="https://${HOST}/"
 # Kanál se generuje 8x denně mezi 06:05 a 20:05, takže po noci je legitimně
 # starý přes deset hodin. Práh je nad tím, ale pod celým dnem.
 FEED_MAX_AGE_HOURS="${FEED_MAX_AGE_HOURS:-14}"
+# Agenda se obnovuje každých 15 minut, takže hodina už jsou čtyři zmeškané běhy
+# za sebou. Práh je nad jedním výpadkem, ale hluboko pod celým dnem.
+AGENDA_MAX_AGE_HOURS="${AGENDA_MAX_AGE_HOURS:-1}"
 CERT_MIN_DAYS="${CERT_MIN_DAYS:-21}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -100,6 +104,41 @@ print(f"OK {hours:.1f}")
   fi
 fi
 
+# --- agenda z kalendáře ------------------------------------------------------
+agenda_body="$(curl -fsS --max-time 20 "$AGENDA_URL" 2>/dev/null)"
+if [ -z "$agenda_body" ]; then
+  bad "agenda $AGENDA_URL neodpovídá (curl selhal)"
+else
+  agenda_report="$(printf '%s' "$agenda_body" | python3 -c '
+import json, sys
+from datetime import datetime, timezone
+try:
+    data = json.loads(sys.stdin.read())
+    built = datetime.fromisoformat(data["generated"])
+    count = int(data.get("count", 0))
+except Exception:
+    print("BAD 0 0"); raise SystemExit
+if built.tzinfo is None:
+    built = built.replace(tzinfo=timezone.utc)
+hours = (datetime.now(timezone.utc) - built).total_seconds() / 3600
+print(f"OK {hours:.1f} {count}")
+')"
+  read -r agenda_status agenda_hours agenda_count <<< "$agenda_report"
+  if [ "${agenda_status:-BAD}" = "BAD" ]; then
+    bad "agenda odpovídá, ale není to platný JSON s polem generated"
+  elif awk -v a="$agenda_hours" -v m="$AGENDA_MAX_AGE_HOURS" 'BEGIN{exit !(a > m)}'; then
+    bad "agenda je stará $agenda_hours h (práh $AGENDA_MAX_AGE_HOURS h) — generátor nejspíš padá, viz agenda.service"
+  else
+    # Prázdná agenda je legitimní stav: kalendář prostě nic nemá. Proto warn,
+    # ne FAIL — na rozdíl od kanálu, kde prázdno vždy znamená rozbitý běh.
+    if [ "${agenda_count:-0}" -eq 0 ]; then
+      warn "agenda je čerstvá ($agenda_hours h), ale nemá žádnou událost"
+    else
+      ok "agenda je čerstvá, stáří $agenda_hours h, událostí: $agenda_count"
+    fi
+  fi
+fi
+
 # --- Home Assistant za proxy -------------------------------------------------
 ha_code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 20 "$HA_URL" 2>/dev/null)"
 if [ "$ha_code" = "200" ]; then
@@ -130,7 +169,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer caddy.service; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer caddy.service; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -139,12 +178,14 @@ if [ "$MODE" = "--deep" ]; then
       fi
     done
 
-    last_run="$(ssh_run "systemctl show news.service -p ExecMainStatus --value")"
-    if [ "$last_run" = "0" ]; then
-      ok "poslední běh news.service skončil úspěšně"
-    else
-      bad "poslední běh news.service skončil kódem '${last_run:-neznámý}' — journalctl -u news.service"
-    fi
+    for unit in news.service agenda.service; do
+      last_run="$(ssh_run "systemctl show $unit -p ExecMainStatus --value")"
+      if [ "$last_run" = "0" ]; then
+        ok "poslední běh $unit skončil úspěšně"
+      else
+        bad "poslední běh $unit skončil kódem '${last_run:-neznámý}' — journalctl -u $unit"
+      fi
+    done
 
     # Reverzní proxy: HA na proxovaný požadavek vrací 400, dokud nemá zapnuté
     # use_x_forwarded_for a mezi trusted_proxies i 127.0.0.1 — forwarded.py
@@ -162,7 +203,7 @@ if [ "$MODE" = "--deep" ]; then
     fi
 
     head_ "Shoda infra/ se serverem"
-    remote_sums="$(ssh_run 'md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service; sudo md5sum /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
+    remote_sums="$(ssh_run 'md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service; sudo md5sum /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -171,6 +212,7 @@ if [ "$MODE" = "--deep" ]; then
       while read -r sum path; do
         case "$path" in
           /opt/news/*)                    local_path="infra/news/$(basename "$path")" ;;
+          /opt/agenda/*)                  local_path="infra/agenda/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
           *) continue ;;

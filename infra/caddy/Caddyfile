@@ -2,6 +2,9 @@
 	handle /top.xml {
 		reverse_proxy 127.0.0.1:8088
 	}
+	handle /agenda.json {
+		reverse_proxy 127.0.0.1:8089
+	}
 	handle {
 		reverse_proxy 127.0.0.1:8123
 	}

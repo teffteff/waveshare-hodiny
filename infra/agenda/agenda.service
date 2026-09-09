@@ -1,0 +1,17 @@
+[Unit]
+Description=Slozi agendu z Google Kalendare pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+EnvironmentFile=/opt/agenda/agenda.env
+ExecStart=/opt/agenda/.venv/bin/python /opt/agenda/generate.py
+Nice=10
+# Type=oneshot ma TimeoutStartSec ve vychozim stavu vypnuty. Zaseknuty beh by
+# jinak drzel jednotku napored a timer by dalsi spousteni preskakoval.
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

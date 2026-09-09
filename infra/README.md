@@ -1,8 +1,9 @@
 # Serverová část hodin
 
-Hodiny samy o sobě žádný server nepotřebují, ale dvě obrazovky ho používají:
-zprávy si tahají RSS kanál, který na serveru generuje jazykový model, a hodnoty
-chodí z Home Assistanta. Obojí jde přes HTTPS reverzní proxy.
+Hodiny samy o sobě žádný server nepotřebují, ale několik obrazovek ho používá:
+zprávy si tahají RSS kanál, který na serveru generuje jazykový model, agenda
+čte Google Kalendář a hodnoty chodí z Home Assistanta. Všechno jde přes HTTPS
+reverzní proxy.
 
 Tenhle adresář je **kopie toho, co na serveru opravdu běží**. Když se server
 ztratí, dá se z něj složit znovu; když ho někdo změní bez commitu, ohlásí to
@@ -45,6 +46,8 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Caddy (HTTPS proxy) | 80, 443 | `/etc/caddy/Caddyfile`, `/etc/systemd/system/caddy.service` | `caddy/` |
 | Generátor zpráv | — | `/opt/news/generate.py`, `news.service` + `news.timer` | `news/` |
 | Server se zprávami | 8088 | `/opt/news/serve.py`, `news-web.service` | `news/` |
+| Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
+| Server s agendou | 8089 | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565 | Minecraft, go2rtc — s hodinami nesouvisí | — |
 
@@ -71,8 +74,9 @@ mění v Nastavení → Systém → Síť.
 ## Adresy, které používají hodiny
 
 ```
-https://$CLOCK_HOST/top.xml   zprávy
-https://$CLOCK_HOST           Home Assistant
+https://$CLOCK_HOST/top.xml      zprávy
+https://$CLOCK_HOST/agenda.json  agenda z kalendáře
+https://$CLOCK_HOST              Home Assistant
 ```
 
 Do hodin se nezadávají ručně: obě adresy jsou v kořenovém `.env`
@@ -93,11 +97,52 @@ problem)“, jedno z těch dvou je zavřené.
 
 - 80, 443 — Caddy a obnova certifikátu. **Bez nich certifikát tiše vyprší.**
 - 8088 — přímý přístup ke kanálu, dnes už jen záloha
+- 8089 — přímý přístup k agendě, taky jen záloha
 - 8123 — přímý přístup k HA, taky jen záloha
 
 Certifikát vydává Let's Encrypt přes tls-alpn-01, obnovuje ho Caddy sám.
 Neúspěšné pokusy jsou limitované (~5/h), takže **restartovat Caddy kvůli
 opakování nemá smysl** — sám si počká.
+
+## Agenda z Google Kalendáře
+
+`generate.py` čte kalendáře přes **servisní účet** Google Cloudu, ne přes
+uživatelský OAuth, a každých 15 minut zapíše `agenda.json` do
+`/opt/agenda/www/`. Odpověď má kolem kilobajtu a nese hotové řetězce: popisek
+dne, čas, titulek a index kalendáře. Časová zóna, expanze opakovaných událostí
+i skládání popisků se dělají tady, aby ve firmwaru nezůstala žádná datumová
+aritmetika.
+
+Přístup nedávají role v Cloudu, ale **sdílení kalendáře s adresou účtu**
+(`…@…iam.gserviceaccount.com`) ve webovém rozhraní Kalendáře, oprávnění
+„Zobrazit všechny podrobnosti události". Mobilní aplikace to neumí. Není
+potřeba souhlasná obrazovka ani doménová delegace.
+
+Proč ne uživatelský OAuth: klient, který zůstane ve stavu „Testing", vydává
+refresh tokeny s **platností sedm dní**. Obrazovka by každý týden zhasla.
+Klíč servisního účtu nevyprší.
+
+Dvě pasti, které stály čas:
+
+- Kalendář, ke kterému účet nemá přístup, vrací **404 `notFound`**, ne 403.
+  „Neexistuje" a „nemáš k němu právo" tedy vypadají stejně. Než začneš
+  pochybovat o ID, zkontroluj seznam sdílení.
+- Sdílený kalendář se **neobjeví** v `users/me/calendarList` servisního účtu;
+  ten zůstane prázdný napořád. Ptát se je potřeba přímo na ID kalendáře,
+  prázdný seznam není důkaz rozbitého sdílení.
+
+Kalendáře se vypisují v `AGENDA_CALENDARS` v `/opt/agenda/agenda.env` (práva
+600). **Pořadí je významné:** index kalendáře v tom seznamu si hodiny berou
+jako barvu, kterou událost odliší. Klíč účtu leží v `/opt/agenda/key.json`,
+práva 600, v adresáři s právy 700. Ani jeden soubor nepatří do repozitáře.
+
+Účet i klíč vznikly v projektu `gen-lang-client-…`, tedy v tom, který Googlu
+založilo AI Studio pro klíč Gemini. Je to schválně: generátor zpráv i agenda
+sdílejí jeden projekt.
+
+Prázdná agenda je **legitimní stav** — kalendář prostě nemusí nic mít. Proto ji
+`check-stack.sh` hlásí jako `warn`, ne jako `FAIL`, na rozdíl od prázdného
+kanálu se zprávami, kde prázdno vždycky znamená rozbitý běh.
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
@@ -244,7 +289,17 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
    a `pydantic`, `news.env.example` → `news.env` s klíčem (práva 600),
    jednotky do `/etc/systemd/system/`, `systemctl enable --now news-web.service
    news.timer`.
-4. `tools/check-stack.sh --deep`.
+4. Agenda: `agenda/*.py` do `/opt/agenda/` (práva adresáře 700), `.venv`
+   s `google-auth` a `requests` postavené **`/usr/bin/python3.11`**, klíč
+   servisního účtu do `key.json` (práva 600), `agenda.env.example` →
+   `agenda.env` s ID kalendářů (práva 600), jednotky do
+   `/etc/systemd/system/`, `systemctl enable --now agenda-web.service
+   agenda.timer`.
+5. `tools/check-stack.sh --deep`.
+
+**Python na tom stroji:** `python3` je 3.6.8, který nemá `zoneinfo` a tiše
+nainstaluje roky staré verze knihoven. Obě `.venv` se proto stavějí výslovně
+`/usr/bin/python3.11`.
 
 **SELinux:** binárka přesunutá z `/tmp` si nese label `user_tmp_t` a systemd ji
 odmítne spustit s `203/EXEC Permission denied`. Léčí to `restorecon -v

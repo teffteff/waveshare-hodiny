@@ -1,0 +1,21 @@
+[Unit]
+Description=Staticky server s agendou pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+Environment=AGENDA_WWW=/opt/agenda/www
+Environment=AGENDA_PORT=8089
+ExecStart=/opt/agenda/.venv/bin/python /opt/agenda/serve.py
+Restart=on-failure
+RestartSec=5
+# Sluzba posloucha na verejne IP, takze dostane stejne mantinely jako Caddy.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

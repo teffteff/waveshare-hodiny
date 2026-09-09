@@ -1,0 +1,10 @@
+[Unit]
+Description=Obnovuje agendu z Google Kalendare kazdych 15 minut
+
+[Timer]
+OnCalendar=*:00/15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
