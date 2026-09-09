@@ -58,9 +58,11 @@ changes the system text and verbal date shown on the display.
 - static and animated weather icons based on Meteocons,
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
-- optional automatic rotation between the clock, radar, news, forecast and
-  aircraft, in an order you choose,
+- optional automatic rotation between the clock, radar, news, forecast,
+  aircraft and agenda, in an order you choose,
 - a news screen fed by any RSS or Atom feed,
+- an agenda screen fed by Google Calendar, merged across several calendars and
+  coloured by the one each event came from,
 - a forecast screen with hourly and daily Open-Meteo data, optionally with air
   quality, PM2.5 and grass pollen — and nine hours instead of six without it,
 - an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by
@@ -357,11 +359,14 @@ headlines are cut with an ellipsis. The publication time is shown to the
 left of each headline in local time; a feed without dates is shown without
 times and sorts after dated items.
 
-The display font has no lowercase Czech diacritics, so headlines are
-transliterated to ASCII: `Ř` becomes `R` and `ř` becomes `r`. The mapping covers
-the whole Latin-1 Supplement and Latin Extended-A blocks, so Slovak, Polish and
-German names come through as well. Typographic quotes and dashes are replaced by
-their ASCII equivalents.
+Headlines are transliterated to ASCII: `Ř` becomes `R` and `ř` becomes `r`. The
+mapping covers the whole Latin-1 Supplement and Latin Extended-A blocks, so
+Slovak, Polish and German names come through as well, and typographic quotes and
+dashes are replaced by their ASCII equivalents. This is not a font limitation —
+`ClockCzechFont*.c` carry the complete Czech alphabet, lowercase included, and
+the name days under the date use it. A feed can arrive in any language, though,
+so everything is flattened; the agenda screen, which reads only your own server,
+keeps its accents.
 
 The feed is downloaded every 5 to 120 minutes, 10 by default, even while the news
 screen is closed. Opening the screen — by gesture or by the automatic rotation —
@@ -371,6 +376,35 @@ the feed. After a failure the firmware retries in two minutes and keeps the last
 successfully loaded items on screen; an error message appears only when the feed
 has never loaded. A disabled screen is not downloaded at all and is not reachable
 by the gesture.
+
+### Calendar agenda
+
+A separate screen shows what the calendar holds for the next few days: one line
+per event, with `DNES`, `ZÍTRA` or a date such as `pá 11.9.` above the first
+line of each day. An all-day event shows a dash instead of a time and sits at
+the top of its day. The colour of the time says which calendar the event is
+from.
+
+**The server talks to Google, the clock does not.** The clock reads a finished
+list from an address you enter in the **Agenda** tab, typically
+`https://your-server.example.net/agenda.json`. The server reads the calendars
+through a service account, merges them, expands recurring events and even builds
+the day labels, so no date arithmetic is left in the firmware and no token is
+stored on the clock. Which calendars appear is therefore configured on the
+server; the setup and the source files live in [infra/](infra/README.md).
+
+Between 3 and 10 events can be shown, 8 by default. Every extra day takes one
+line for its heading, so a longer horizon fits fewer events. The **Test the
+agenda** button downloads the address before you save and shows what will appear
+on the display.
+
+The agenda is downloaded every 5 to 120 minutes, 15 by default, even while the
+screen is closed. The server recomputes it every quarter of an hour anyway, so
+asking more often brings nothing new. An empty calendar is **not an error**: the
+screen says `Nic naplánovaného` and the automatic rotation skips it, because
+rotating to a page that only reports emptiness is not worth a slot — the finger
+hold still reaches it whenever you want. After a failure the firmware retries in
+two minutes and keeps the last successfully loaded events on screen.
 
 ### Weather forecast
 

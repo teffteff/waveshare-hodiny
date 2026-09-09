@@ -62,9 +62,11 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - volitelnou stupnici intenzity srážek v dBZ a mm/h podle zvoleného zdroje,
 - rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané přetažením prstu,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
-- volitelné automatické střídání hodin, radaru, zpráv, předpovědi a letadel se
-  samostatnou dobou zobrazení a vlastním pořadím obrazovek,
+- volitelné automatické střídání hodin, radaru, zpráv, předpovědi, letadel
+  a agendy se samostatnou dobou zobrazení a vlastním pořadím obrazovek,
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
+- obrazovku s agendou z Google Kalendáře, sloučenou z několika kalendářů
+  a obarvenou podle toho, ze kterého z nich událost je,
 - obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
   ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
 - radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
@@ -379,10 +381,13 @@ tečkami. Vlevo od titulku je čas
 vydání převedený do místního času; kanál bez data se zobrazí bez času a řadí
 se za zprávy s datem.
 
-Displej používá písmo bez malé české diakritiky, proto se titulky přepisují do
-ASCII: z `Ř` se stane `R` a z `ř` pak `r`. Přepis pokrývá celé bloky Latin-1
-Supplement a Latin Extended-A, takže projdou i slovenská, polská nebo německá
-jména. Typografické uvozovky a pomlčky se nahradí jejich ASCII obdobou.
+Titulky se přepisují do ASCII: z `Ř` se stane `R` a z `ř` pak `r`. Přepis
+pokrývá celé bloky Latin-1 Supplement a Latin Extended-A, takže projdou i
+slovenská, polská nebo německá jména, a typografické uvozovky a pomlčky se
+nahradí jejich ASCII obdobou. Není to omezení písma — `ClockCzechFont*.c` mají
+celou českou abecedu včetně malých písmen a jmeniny pod datem ji používají.
+Kanál ale může přijít v jakémkoli jazyce, takže se sráží všechno; obrazovka
+s agendou, která čte jen vlastní server, si diakritiku nechává.
 
 Kanál se stahuje v intervalu 5 až 120 minut, výchozí je 10 minut, a to i když
 je obrazovka zpráv zavřená. Otevření obrazovky gestem nebo automatickým
@@ -392,6 +397,33 @@ Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na displeji nech
 poslední úspěšně načtené zprávy; hláška o chybě se ukáže jen tehdy, když se
 kanál nepodařilo načíst ani jednou. Vypnutá obrazovka se nestahuje vůbec a
 neobjeví se ani gestem.
+
+### Agenda z kalendáře
+
+Samostatná obrazovka ukazuje, co je v kalendáři na nejbližší dny: řádek na
+událost, nad prvním řádkem každého dne popisek `DNES`, `ZÍTRA` nebo třeba
+`pá 11.9.`. Celodenní událost má místo času pomlčku a stojí na začátku svého
+dne. Barva času říká, ze kterého kalendáře událost je.
+
+**Do Googlu chodí server, ne hodiny.** Hodiny čtou hotový seznam z adresy, kterou
+zadáš v záložce **Agenda** — typicky `https://tvuj-server.example.net/agenda.json`.
+Server kalendáře přečte přes servisní účet, sloučí je, rozbalí opakované
+události a složí i popisky dnů, takže ve firmwaru nezůstala žádná datumová
+aritmetika a v hodinách žádný token. Které kalendáře se ukážou, se proto
+nastavuje na serveru; návod i zdrojové soubory jsou v [infra/](infra/README.md).
+
+Zobrazit lze 3 až 10 událostí; výchozí je 8. Každý den navíc si vezme jeden
+řádek na hlavičku, takže se jich při dlouhém výhledu vejde méně. Tlačítko
+**Vyzkoušet agendu** adresu stáhne ještě před uložením a ukáže, co se objeví na
+displeji.
+
+Agenda se stahuje v intervalu 5 až 120 minut, výchozí je 15 minut, a to i když
+je obrazovka zavřená. Server ji stejně přepočítává po čtvrthodině, takže
+častější dotaz nemá co přinést. Prázdný kalendář **není chyba**: obrazovka
+řekne `Nic naplánovaného` a automatické střídání ji přeskočí, protože rotovat
+na stránku, která hlásí jen prázdno, nemá cenu — podržením prstu se na ni
+dostaneš pořád. Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na
+displeji nechá poslední úspěšně načtené události.
 
 ### Předpověď počasí
 
