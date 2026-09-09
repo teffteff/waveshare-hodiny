@@ -176,7 +176,64 @@ void testLongCityNameIsTruncatedInRoute() {
 
 }  // namespace
 
+void testGoodAnswerSettlesImmediately() {
+  const RouteAttemptOutcome outcome =
+      routeAttemptAfter(RouteParseStatus::Ok, 0);
+  assert(outcome.state == PlaneRouteState::Known);
+  assert(!outcome.tryAgain);
+  assert(outcome.failures == 0);
+}
+
+void testNoRouteIsAnAnswerNotAFailure() {
+  // Server odpověděl a trasu nemá. Opakovat nemá co přinést a panel to má
+  // rovnou napsat.
+  const RouteAttemptOutcome outcome =
+      routeAttemptAfter(RouteParseStatus::NoRoute, 0);
+  assert(outcome.state == PlaneRouteState::Unknown);
+  assert(!outcome.tryAgain);
+  assert(outcome.failures == 0);
+}
+
+void testFirstFailuresKeepLooking() {
+  // Chyba sítě není totéž co "trasa neexistuje", takže se ještě zkusí a panel
+  // dál píše, že hledá.
+  RouteAttemptOutcome outcome = routeAttemptAfter(RouteParseStatus::Invalid, 0);
+  assert(outcome.state == PlaneRouteState::Pending);
+  assert(outcome.tryAgain);
+  assert(outcome.failures == 1);
+
+  outcome = routeAttemptAfter(RouteParseStatus::Invalid, outcome.failures);
+  assert(outcome.state == PlaneRouteState::Pending);
+  assert(outcome.tryAgain);
+  assert(outcome.failures == 2);
+}
+
+void testRepeatedFailureGivesUp() {
+  // api.adsb.lol vrací na některé volací značky 500 pokaždé. Bez stropu by
+  // panel psal "zjišťuji trasu" donekonečna a hodiny se ptaly nadarmo.
+  const RouteAttemptOutcome outcome =
+      routeAttemptAfter(RouteParseStatus::Invalid, ROUTE_MAX_ATTEMPTS - 1);
+  assert(outcome.state == PlaneRouteState::Unknown);
+  assert(!outcome.tryAgain);
+  assert(outcome.failures == ROUTE_MAX_ATTEMPTS);
+}
+
+void testFailureCounterDoesNotWrap() {
+  // Počítadlo je jeden bajt. Přetečení by stroj vrátilo na začátek a dotazy by
+  // se rozjely nanovo.
+  const RouteAttemptOutcome outcome =
+      routeAttemptAfter(RouteParseStatus::Invalid, 0xFF);
+  assert(outcome.state == PlaneRouteState::Unknown);
+  assert(!outcome.tryAgain);
+  assert(outcome.failures == 0xFF);
+}
+
 int main() {
+  testGoodAnswerSettlesImmediately();
+  testNoRouteIsAnAnswerNotAFailure();
+  testFirstFailuresKeepLooking();
+  testRepeatedFailureGivesUp();
+  testFailureCounterDoesNotWrap();
   testRealResponse();
   testImplausibleRouteIsRejected();
   testMissingPlausibleDefaultsToRejected();

@@ -19,19 +19,6 @@
 constexpr uint16_t PLANE_RADAR_WIDTH = 480;
 constexpr uint16_t PLANE_RADAR_HEIGHT = 480;
 
-// Jak je na tom trasa vybraného letu. Tři stavy proto, že "ještě nevím" a
-// "vím, že žádná není" vypadaly na displeji stejně - prázdným místem - a
-// majitel neměl jak poznat, jestli se má dál dívat, nebo je hotovo.
-enum class PlaneRouteState : uint8_t {
-  // Dotaz běží, nebo se po chybě sítě bude opakovat.
-  Pending = 0,
-  // Trasa je známá a sedí k poloze letadla.
-  Known = 1,
-  // Trasa není a nebude: server ji nezná, nebo letadlo nevysílá volací značku,
-  // bez které se na ni nedá zeptat.
-  Unknown = 2,
-};
-
 // Stav detailu vybraného letadla. Obrazovka si z něj skládá popisky sama, aby
 // se přepnutím jazyka přeložily i ony.
 struct PlaneRadarDetail {

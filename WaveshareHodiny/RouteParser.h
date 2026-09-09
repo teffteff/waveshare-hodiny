@@ -34,6 +34,40 @@ enum class RouteParseStatus : uint8_t {
   Invalid = 2,
 };
 
+// Jak je na tom trasa vybraného letu. Tři stavy proto, že "ještě nevím" a
+// "vím, že žádná není" vypadaly na displeji stejně - prázdným místem - a
+// majitel neměl jak poznat, jestli se má dál dívat, nebo je hotovo.
+enum class PlaneRouteState : uint8_t {
+  // Dotaz běží, nebo se po chybě sítě bude opakovat.
+  Pending = 0,
+  // Trasa je známá a sedí k poloze letadla.
+  Known = 1,
+  // Trasa není a nebude: server ji nezná, letadlo nevysílá volací značku, bez
+  // které se na ni nedá zeptat, nebo se dotaz opakovaně nepovedl.
+  Unknown = 2,
+};
+
+// Kolikrát se smí dotaz na tutéž volací značku zopakovat, než se to vzdá.
+// Nepovedené stažení není totéž co "tenhle let trasu nemá", takže se po první
+// chybě čeká - jenže api.adsb.lol na některé volací značky odpovídá chybou 500
+// pokaždé, a to už totéž prakticky je. Bez stropu by panel psal "zjišťuji
+// trasu" donekonečna a hodiny se ptaly každých pár vteřin nadarmo.
+constexpr uint8_t ROUTE_MAX_ATTEMPTS = 3;
+
+struct RouteAttemptOutcome {
+  // Co má panel ukázat.
+  PlaneRouteState state = PlaneRouteState::Pending;
+  // Má se dotaz zopakovat při dalším stažení letadel?
+  bool tryAgain = false;
+  // Kolik pokusů na tutéž značku už selhalo.
+  uint8_t failures = 0;
+};
+
+// Jak dopadl pokus o trasu. previousFailures je počet dosavadních neúspěchů
+// pro tutéž volací značku; vrácené failures se ukládá zpátky.
+RouteAttemptOutcome routeAttemptAfter(RouteParseStatus status,
+                                      uint8_t previousFailures);
+
 // Rozebere odpověď. Poloha letadla slouží k výběru úseku u vícenohé trasy:
 // u "LKPR-LTFM-OMDB" se dřív ukazoval první odlet a poslední přílet, i když
 // letadlo letělo prostřední úsek.

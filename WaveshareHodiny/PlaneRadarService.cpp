@@ -172,6 +172,9 @@ RouteInfo routeInfo;
 // zopakuje při dalším stažení letadel.
 bool routeFetchQueued = false;
 PlaneRouteState routeState = PlaneRouteState::Pending;
+// Kolik pokusů o trasu k zapamatovanému callsignu už selhalo. Nuluje se až
+// s jinou volací značkou, ne s dalším pokusem - jinak by strop nikdy nedošel.
+uint8_t routeFetchFailures = 0;
 int lastRouteHttpStatus = 0;
 
 // Otáčení mapy. Uživatel volí AZIMUT, KTERÝ JE NAHOŘE, tedy směr, kterým se
@@ -1015,6 +1018,7 @@ void fetchRouteIfPending(float aircraftLatitude, float aircraftLongitude) {
       // Na takovou značku se zeptat nejde a příště to nedopadne líp, takže
       // se to bere jako hotová odpověď: trasa se nedozví.
       routeState = PlaneRouteState::Unknown;
+      routeFetchFailures = 0;
       redrawRequested = true;
     }
     portEXIT_CRITICAL(&stateMux);
@@ -1048,17 +1052,14 @@ void fetchRouteIfPending(float aircraftLatitude, float aircraftLongitude) {
   if (routeFetchQueued && strcmp(routeCallsign, callsign) == 0) {
     routeFetchQueued = false;
     routeInfo = status == RouteParseStatus::Ok ? parsed : RouteInfo{};
-    // Nepovedené stažení není totéž co "tenhle let trasu nemá". Zapamatovaný
-    // callsign drží další pokus stranou, takže se po chybě sítě zahodí - jinak
-    // by se u vybraného letadla trasa nezkusila načíst už nikdy. Obrazovka
-    // přitom dál píše, že se trasa hledá: napsat "trasa neznámá" a za chvíli
-    // to vzít zpátky by lhalo o tom, co se děje.
-    if (status == RouteParseStatus::Invalid) {
-      routeCallsign[0] = '\0';
-    } else {
-      routeState = status == RouteParseStatus::Ok ? PlaneRouteState::Known
-                                                  : PlaneRouteState::Unknown;
-    }
+    // Co dál z toho plyne, rozhoduje routeAttemptAfter(): po chybě se ještě
+    // párkrát zkusí, protože nepovedené stažení není totéž co "tenhle let
+    // trasu nemá", ale donekonečna ne. Zapamatovaný callsign zůstává i po
+    // chybě, aby se poznalo, že jde pořád o tentýž let.
+    const RouteAttemptOutcome outcome =
+        routeAttemptAfter(status, routeFetchFailures);
+    routeState = outcome.state;
+    routeFetchFailures = outcome.failures;
     redrawRequested = true;
   }
   portEXIT_CRITICAL(&stateMux);
@@ -1095,14 +1096,22 @@ void reconcileSelection() {
     selectionCache = liveList[index];
     selectionCacheValid = true;
     // Trasa se ptá až tady, kdy je známý callsign - klepnutí zná jen adresu.
-    // Projde i letadlo, které značku začalo vysílat až teď: jeho zapamatovaný
-    // callsign je prázdný, takže se od toho nového liší.
-    if (!routeFetchQueued && routeState != PlaneRouteState::Known &&
-        selectionCache.callsign[0] != '\0' &&
-        strcmp(routeCallsign, selectionCache.callsign) != 0) {
-      strlcpy(routeCallsign, selectionCache.callsign, sizeof(routeCallsign));
-      routeFetchQueued = true;
-      routeState = PlaneRouteState::Pending;
+    if (!routeFetchQueued && selectionCache.callsign[0] != '\0') {
+      const bool otherFlight =
+          strcmp(routeCallsign, selectionCache.callsign) != 0;
+      if (otherFlight && routeState != PlaneRouteState::Known) {
+        // Jiná volací značka, tedy čistý start. Projde tudy i letadlo, které
+        // značku začalo vysílat až teď: zapamatovaná je prázdná.
+        strlcpy(routeCallsign, selectionCache.callsign, sizeof(routeCallsign));
+        routeFetchFailures = 0;
+        routeFetchQueued = true;
+        routeState = PlaneRouteState::Pending;
+      } else if (!otherFlight && routeState == PlaneRouteState::Pending &&
+                 routeFetchFailures > 0) {
+        // Tentýž let, minulý pokus selhal a strop ještě nedošel - stav by
+        // jinak nezůstal Pending.
+        routeFetchQueued = true;
+      }
     }
   } else if (++selectionMissCount > DETAIL_GRACE_POLLS) {
     selectedHex[0] = '\0';
@@ -1110,6 +1119,7 @@ void reconcileSelection() {
     selectionCacheValid = false;
     routeCallsign[0] = '\0';
     routeFetchQueued = false;
+    routeFetchFailures = 0;
     routeState = PlaneRouteState::Pending;
     routeInfo = RouteInfo{};
   }
@@ -1403,6 +1413,7 @@ bool planeRadarServiceHandleTap(int16_t x, int16_t y) {
     selectionCacheValid = false;
     routeCallsign[0] = '\0';
     routeFetchQueued = false;
+    routeFetchFailures = 0;
     routeState = PlaneRouteState::Pending;
     routeInfo = RouteInfo{};
     changed = true;
@@ -1436,6 +1447,7 @@ bool planeRadarServiceHandleTap(int16_t x, int16_t y) {
       routeInfo = RouteInfo{};
       routeCallsign[0] = '\0';
       routeFetchQueued = false;
+      routeFetchFailures = 0;
       // Na trasu se ptá jen letadlo, které volací značku opravdu vysílá:
       // hexadecimální adresa se v tom API čte jako číslo letu. Bez značky se
       // rovnou přizná, že trasa nebude - čekat na ni by bylo čekání nadarmo.
@@ -1493,6 +1505,7 @@ void planeRadarServiceCloseDetail() {
     selectionCacheValid = false;
     routeCallsign[0] = '\0';
     routeFetchQueued = false;
+    routeFetchFailures = 0;
     routeState = PlaneRouteState::Pending;
     routeInfo = RouteInfo{};
     redrawRequested = true;

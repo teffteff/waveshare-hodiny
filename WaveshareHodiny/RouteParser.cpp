@@ -96,6 +96,31 @@ void routeTextToAscii(char *destination, size_t capacity, const char *source) {
   destination[written] = '\0';
 }
 
+RouteAttemptOutcome routeAttemptAfter(RouteParseStatus status,
+                                      uint8_t previousFailures) {
+  RouteAttemptOutcome outcome;
+  if (status == RouteParseStatus::Ok) {
+    outcome.state = PlaneRouteState::Known;
+    return outcome;
+  }
+  if (status == RouteParseStatus::NoRoute) {
+    // Server odpověděl a trasu nemá. Opakovat nemá co přinést.
+    outcome.state = PlaneRouteState::Unknown;
+    return outcome;
+  }
+  // Odpověď se nedala přečíst: chyba sítě, nebo server, který na tuhle značku
+  // padá. Rozeznat se to nedá, tak se to zkusí znovu - ale ne napořád.
+  outcome.failures =
+      previousFailures < 0xFF ? static_cast<uint8_t>(previousFailures + 1) : 0xFF;
+  if (outcome.failures >= ROUTE_MAX_ATTEMPTS) {
+    outcome.state = PlaneRouteState::Unknown;
+    return outcome;
+  }
+  outcome.state = PlaneRouteState::Pending;
+  outcome.tryAgain = true;
+  return outcome;
+}
+
 RouteParseStatus routeParse(const char *payload, float aircraftLatitude,
                             float aircraftLongitude, RouteInfo &info) {
   info = RouteInfo{};
