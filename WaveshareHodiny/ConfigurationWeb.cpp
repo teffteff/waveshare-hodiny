@@ -1755,7 +1755,7 @@ void handleSaveConfig() {
     const int agendaItemCount = server.arg("agendaItemCount").toInt();
     if (agendaItemCount < CLOCK_AGENDA_MIN_ITEMS ||
         agendaItemCount > CLOCK_AGENDA_MAX_ITEMS) {
-      sendError(400, F("Počet událostí musí být od 3 do 10."));
+      sendError(400, F("Počet událostí musí být od 3 do 12."));
       return;
     }
     const int agendaRefreshMinutes = server.arg("agendaRefreshMinutes").toInt();

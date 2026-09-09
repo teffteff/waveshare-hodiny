@@ -31,9 +31,13 @@ constexpr size_t CLOCK_AGENDA_URL_LENGTH = 192;
 constexpr uint8_t CLOCK_RSS_MIN_ITEMS = 3;
 constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // Agenda kreslí jeden řádek na událost plus hlavičku dne, takže se jí na kruh
-// vejde víc než zpráv, které zabírají dva až tři řádky.
+// vejde víc než zpráv, které zabírají dva až tři řádky. Strop se rovná tomu,
+// kolik jich posílá server: dvanáct událostí se třemi hlavičkami dnů je 339 px
+// z 345, které pás mezi hlavičkou a legendou nabízí. Se čtyřmi hlavičkami se
+// poslední nevejde a rozvržení ji zahodí, což je pořád lepší než ji nabídnout
+// a nevykreslit.
 constexpr uint8_t CLOCK_AGENDA_MIN_ITEMS = 3;
-constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 10;
+constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 12;
 // Schema 20 is the public 1.5.5 baseline. Schema 24 added CHMI radar settings
 // plus automatic clock/radar rotation. Schema 25 added the persistent UI
 // language; schema 26 distinguishes an as-yet unselected language and uses

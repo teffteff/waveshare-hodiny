@@ -400,8 +400,10 @@ the day labels, so no date arithmetic is left in the firmware and no token is
 stored on the clock. Which calendars appear is therefore configured on the
 server; the setup and the source files live in [infra/](infra/README.md).
 
-Between 3 and 10 events can be shown, 8 by default. Every extra day takes one
-line for its heading, so a longer horizon fits fewer events. The **Test the
+Between 3 and 12 events can be shown, 8 by default. The list starts below the
+header and grows downwards. Every extra day takes one line for its heading, so
+with a longer horizon the last events do not fit and the screen leaves them out
+— a row running over the legend would be worse than one event fewer. The **Test the
 agenda** button downloads the address before you save and shows what will appear
 on the display.
 

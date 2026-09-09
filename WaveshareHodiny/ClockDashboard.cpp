@@ -2500,22 +2500,31 @@ void createRssPage(lv_obj_t *screen) {
 // legenda: jméno každého kalendáře ve své barvě. Barva času tak nepotřebuje
 // vysvětlení jinde než na téže obrazovce.
 constexpr int AGENDA_RADIUS = 240;
-// Levý okraj mřížky. V pásu, kde leží řádky, má kruh poloviční tětivu aspoň
-// 187 px, takže 168 nechává na obou stranách rezervu i pro nejširší řádek.
-constexpr int AGENDA_LEFT = -168;
-constexpr int AGENDA_RIGHT = 168;
+// Mřížka není na kruhu vystředěná, ale posunutá doprava: čas je krátký a levý
+// sloupec by jinak nechával širokou mezeru, zatímco názvy vpravo naráží na
+// okraj. Meze drží nejnižší a nejvyšší řádek - v y = ±166 má kruh poloviční
+// tětivu 167 px, takže se −150 i 166 vejdou i do nejkrajnějšího řádku. Počítá
+// se s tím, že úplně nahoře nemusí stát hlavička dne, ale rovnou celý název.
+constexpr int AGENDA_LEFT = -150;
+constexpr int AGENDA_RIGHT = 166;
 constexpr int AGENDA_TIME_WIDTH = 66;
 constexpr int AGENDA_COLUMN_GAP = 8;
-constexpr int AGENDA_ROW_GAP = 4;
+// Mezery jsou úsporné schválně: každé ušetřené dva pixely na řádek jsou při
+// deseti událostech dvacet pixelů, a to je celý další řádek.
+constexpr int AGENDA_ROW_GAP = 2;
 // Mezera nad hlavičkou dne. Odděluje dny výrazněji než mezera mezi řádky, aby
 // se seznam četl po dnech, ne jako jeden sloupec.
-constexpr int AGENDA_DAY_GAP = 10;
-constexpr int AGENDA_HEADER_Y = -190;
-constexpr int AGENDA_LEGEND_Y = 178;
+constexpr int AGENDA_DAY_GAP = 7;
+// Hlavička a legenda jsou u samého okraje: obě jsou krátké a vejdou se i tam,
+// kde by se celý řádek agendy už nevešel. Uvolněné místo uprostřed je přesně
+// to, co pojme další události.
+constexpr int AGENDA_HEADER_Y = -196;
+constexpr int AGENDA_LEGEND_Y = 186;
 // Svislý pás mezi hlavičkou a legendou. Co se do něj nevejde, se neukáže -
-// řádek přes legendu je horší než o událost méně.
-constexpr int AGENDA_BLOCK_TOP = -150;
-constexpr int AGENDA_BLOCK_HEIGHT = 300;
+// řádek přes legendu je horší než o událost méně. Při deseti událostech a
+// čtyřech hlavičkách dnů zbývá ještě rezerva, takže se vejde i nejhorší případ.
+constexpr int AGENDA_BLOCK_TOP = -172;
+constexpr int AGENDA_BLOCK_HEIGHT = 345;
 // Celodenní událost nemá čas; pomlčka drží sloupec, aby názvy začínaly pod
 // sebou i pod ní.
 constexpr char AGENDA_ALL_DAY_MARK[] = "-";
@@ -2570,17 +2579,6 @@ uint8_t agendaFittingItemCount(uint8_t count) {
   return count;
 }
 
-int agendaBlockHeight(uint8_t count) {
-  const int lineHeight = agendaLineHeight();
-  const int dayHeight = agendaDayHeight();
-  int total = 0;
-  for (uint8_t index = 0; index < count; ++index) {
-    total += lineHeight + AGENDA_ROW_GAP;
-    if (agendaRowStartsDay[index]) total += dayHeight + AGENDA_DAY_GAP;
-  }
-  return total;
-}
-
 // Rozmístí řádky do mřížky. Volá se až po naplnění všech řádků, protože dřív
 // není známo, kde jsou hranice dnů, a řádek s hlavičkou je o její výšku vyšší.
 void layoutAgendaItems() {
@@ -2588,9 +2586,11 @@ void layoutAgendaItems() {
   const int lineHeight = agendaLineHeight();
   const int dayHeight = agendaDayHeight();
   const uint8_t visible = agendaFittingItemCount(agendaVisibleItemCount);
-  const int total = agendaBlockHeight(visible);
-  int cursorY = -total / 2;
-  if (cursorY < AGENDA_BLOCK_TOP) cursorY = AGENDA_BLOCK_TOP;
+  // Seznam začíná pod hlavičkou, ne uprostřed kruhu. Vystředěný blok nechával
+  // nahoře i dole mezeru a při krátké agendě vypadal, že se na obrazovku víc
+  // nevejde - přitom místo bylo. Takhle roste dolů do prázdna, jako hodiny na
+  // předpovědi.
+  int cursorY = AGENDA_BLOCK_TOP;
   const int titleLeft = AGENDA_LEFT + AGENDA_TIME_WIDTH + AGENDA_COLUMN_GAP;
 
   for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {

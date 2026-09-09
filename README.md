@@ -419,8 +419,10 @@ události a složí i popisky dnů, takže ve firmwaru nezůstala žádná datum
 aritmetika a v hodinách žádný token. Které kalendáře se ukážou, se proto
 nastavuje na serveru; návod i zdrojové soubory jsou v [infra/](infra/README.md).
 
-Zobrazit lze 3 až 10 událostí; výchozí je 8. Každý den navíc si vezme jeden
-řádek na hlavičku, takže se jich při dlouhém výhledu vejde méně. Tlačítko
+Zobrazit lze 3 až 12 událostí; výchozí je 8. Seznam začíná pod hlavičkou a
+roste dolů. Každý den navíc si vezme jeden řádek na svou hlavičku, takže se
+při dlouhém výhledu poslední události nevejdou a obrazovka je vynechá — řádek
+přes legendu by byl horší než o událost méně. Tlačítko
 **Vyzkoušet agendu** adresu stáhne ještě před uložením a ukáže, co se objeví na
 displeji.
 
