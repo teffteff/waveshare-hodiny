@@ -12,7 +12,11 @@ Environment=PLANES_PORT=8090
 Environment=PLANES_BIND=127.0.0.1
 # Zadny venv: sluzba si vystaci se standardni knihovnou, na rozdil od
 # generatoru zprav a agendy, ktere maji zavislosti.
-ExecStart=/usr/bin/python3 /opt/planes/serve.py
+#
+# Interpret je vyslovne 3.11. Na Oracle Linuxu 8 je /usr/bin/python3 porad
+# jeste 3.6, ktera neumi ani "from __future__ import annotations"; sluzba by
+# se rozbila az za behu, ne pri nasazeni.
+ExecStart=/usr/bin/python3.11 /opt/planes/serve.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

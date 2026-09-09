@@ -336,9 +336,10 @@ $SSH "$CLOCK_SSH" 'sudo cp /opt/news/news*.service /opt/news/news.timer \
     && sudo systemctl restart news-web.service && sudo systemctl start news.service'
 ```
 
-Letadla jsou první služba bez `.venv`: vystačí si se standardní knihovnou,
-takže jede pod `/usr/bin/python3`. Poprvé je potřeba založit adresář a jednotku
-povolit:
+Letadla jsou první služba bez `.venv`: vystačí si se standardní knihovnou.
+Jednotka volá **`/usr/bin/python3.11`**, ne `python3` — ten je na Oracle Linuxu 8
+pořád ještě 3.6 a ta neumí ani `from __future__ import annotations`. Poprvé je
+potřeba založit adresář a jednotku povolit:
 
 ```sh
 $SSH "$CLOCK_SSH" 'sudo install -d -o opc -g opc /opt/planes'
