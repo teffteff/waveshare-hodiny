@@ -437,6 +437,14 @@ void normalizeConfig(ClockConfig &config) {
                                    CLOCK_RSS_MAX_ITEMS);
   config.rss.refreshMinutes = constrain(config.rss.refreshMinutes, 5, 120);
   config.rss.displaySeconds = constrain(config.rss.displaySeconds, 10, 3600);
+  config.agenda.itemCount =
+      constrain(config.agenda.itemCount, CLOCK_AGENDA_MIN_ITEMS,
+                CLOCK_AGENDA_MAX_ITEMS);
+  // Server agendu přepočítává po čtvrthodině, takže častěji než po pěti
+  // minutách je to jen buzení Wi-Fi pro nic.
+  config.agenda.refreshMinutes = constrain(config.agenda.refreshMinutes, 5, 120);
+  config.agenda.displaySeconds =
+      constrain(config.agenda.displaySeconds, 10, 3600);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);

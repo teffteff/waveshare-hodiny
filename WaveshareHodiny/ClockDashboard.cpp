@@ -118,6 +118,14 @@ lv_obj_t *planesDetailRouteTo = nullptr;
 lv_obj_t *planesDetailSignalLost = nullptr;
 bool planesFeatureAvailable = false;
 lv_obj_t *rssPage = nullptr;
+lv_obj_t *agendaPage = nullptr;
+lv_obj_t *agendaStatusLabel = nullptr;
+lv_obj_t *agendaDayLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
+lv_obj_t *agendaRowLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
+// Který řádek otevírá nový den. Podle toho se rozmisťuje: řádek s hlavičkou je
+// o její výšku vyšší než ostatní.
+bool agendaRowStartsDay[CLOCK_AGENDA_MAX_ITEMS] = {};
+uint8_t agendaVisibleItemCount = 0;
 lv_obj_t *rssHeaderLabel = nullptr;
 lv_obj_t *rssStatusLabel = nullptr;
 lv_obj_t *rssTitleLabels[CLOCK_RSS_MAX_ITEMS] = {};
@@ -284,10 +292,12 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_RSS = CLOCK_SCREEN_RSS,
   DASHBOARD_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST,
   DASHBOARD_SCREEN_PLANES = CLOCK_SCREEN_PLANES,
+  DASHBOARD_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
 bool rssFeatureAvailable = false;
+bool agendaFeatureAvailable = false;
 bool forecastFeatureAvailable = false;
 bool nightModeEnabled = false;
 uint8_t nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
@@ -391,6 +401,9 @@ SettingsActionCallback firmwareCheckCallback = nullptr;
 SettingsActionCallback firmwareInstallCallback = nullptr;
 RadarVisibilityCallback radarVisibilityCallback = nullptr;
 RssVisibilityCallback rssVisibilityCallback = nullptr;
+// Agenda se registruje zvlášť, stejně jako radar letadel: obrazovka vzniká až
+// při prvním zapnutí, takže ji clockDashboardInit() ještě nemusí znát.
+RssVisibilityCallback agendaVisibilityCallback = nullptr;
 ForecastVisibilityCallback forecastVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
 RssVisibilityCallback planesVisibilityCallback = nullptr;
@@ -421,6 +434,8 @@ void setTextColor(lv_obj_t *object, lv_color_t color);
 lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
                     lv_color_t color);
 void applyRssColors();
+void applyAgendaColors();
+void layoutAgendaItems();
 void updateForecastPage();
 void updateForecastHeaderLabel();
 
@@ -519,6 +534,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
   switch (screen) {
     case DASHBOARD_SCREEN_RADAR: return radarPage;
     case DASHBOARD_SCREEN_RSS: return rssPage;
+    case DASHBOARD_SCREEN_AGENDA: return agendaPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
@@ -535,6 +551,8 @@ bool screenAvailable(uint8_t screen) {
       return forecastFeatureAvailable && forecastPage != nullptr;
     case DASHBOARD_SCREEN_PLANES:
       return planesFeatureAvailable && planesPage != nullptr;
+    case DASHBOARD_SCREEN_AGENDA:
+      return agendaFeatureAvailable && agendaPage != nullptr;
     default: return true;
   }
 }
@@ -575,6 +593,12 @@ void setActiveScreen(uint8_t screen) {
   const bool isRss = screen == DASHBOARD_SCREEN_RSS;
   if (wasRss != isRss && rssVisibilityCallback != nullptr)
     rssVisibilityCallback(isRss);
+  // Agenda běží na vlastním intervalu i skrytá; otevření obrazovky jí jen dá
+  // vědět, aby stará data stáhla znovu.
+  const bool wasAgenda = previous == DASHBOARD_SCREEN_AGENDA;
+  const bool isAgenda = screen == DASHBOARD_SCREEN_AGENDA;
+  if (wasAgenda != isAgenda && agendaVisibilityCallback != nullptr)
+    agendaVisibilityCallback(isAgenda);
   // Předpověď běží na vlastním intervalu i skrytá; otevření obrazovky jí jen
   // dá vědět, aby stará data stáhla znovu.
   const bool wasForecast = previous == DASHBOARD_SCREEN_FORECAST;
@@ -2236,6 +2260,7 @@ void applyDashboardColors() {
   applyConnectionStatusColors();
   applyValuesPageColors();
   applyRssColors();
+  applyAgendaColors();
   // Předpověď má barvu v každé hodnotě zvlášť, takže se přebarvuje tím, že se
   // řádky složí znovu.
   updateForecastPage();
@@ -2448,6 +2473,185 @@ void createRssPage(lv_obj_t *screen) {
   makeChildrenTapThrough(rssPage);
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Obrazovka s agendou z kalendáře. Řádek na událost, nad prvním řádkem každého
+// dne hlavička s popiskem dne. Server posílá hotové řetězce, takže se tady nic
+// nepočítá - jen se rozmisťuje do kruhu.
+//
+// Šířka řádku se řídí stejnou geometrií jako u zpráv: rozhoduje ten okraj pásu,
+// který je dál od středu, protože LVGL láme text na jednu pevnou šířku.
+constexpr int AGENDA_RADIUS = 240;
+constexpr int AGENDA_INSET = 14;
+constexpr int AGENDA_ROW_GAP = 4;
+// Mezera nad hlavičkou dne. Odděluje dny výrazněji než mezera mezi řádky, aby
+// se seznam četl po dnech, ne jako jeden sloupec.
+constexpr int AGENDA_DAY_GAP = 10;
+constexpr int AGENDA_MIN_ROW_WIDTH = 140;
+// Mezera mezi časem a názvem události.
+constexpr char AGENDA_TIME_SEPARATOR[] = "  ";
+// Celodenní událost nemá čas; pomlčka drží sloupec, aby názvy začínaly
+// pod sebou.
+constexpr char AGENDA_ALL_DAY_MARK[] = "—";
+// "#RRGGBB " před časem, stejně jako u zpráv.
+constexpr size_t AGENDA_COLOR_TAG_LENGTH = 8;
+
+int agendaLineHeight() { return lv_font_get_line_height(&clock_czech_16); }
+int agendaDayHeight() { return lv_font_get_line_height(&clock_czech_14); }
+
+int agendaRowWidth(int yTop, int yBottom) {
+  const int top = yTop < 0 ? -yTop : yTop;
+  const int bottom = yBottom < 0 ? -yBottom : yBottom;
+  int extent = top > bottom ? top : bottom;
+  if (extent >= AGENDA_RADIUS) extent = AGENDA_RADIUS - 1;
+  const float half = sqrtf(static_cast<float>(AGENDA_RADIUS) * AGENDA_RADIUS -
+                           static_cast<float>(extent) * extent);
+  const int width = static_cast<int>(2.0f * half) - 2 * AGENDA_INSET;
+  return width < AGENDA_MIN_ROW_WIDTH ? AGENDA_MIN_ROW_WIDTH : width;
+}
+
+// Barva kalendáře. Index posílá server podle pořadí v AGENDA_CALENDARS, takže
+// se jednotlivé kalendáře od sebe poznají bez popisku, který by na kruhu
+// zabral šířku. V noční červené paletě se barvy slévají do jedné, protože
+// jiná než červená by rozbila noční vidění.
+lv_color_t agendaCalendarColor(uint8_t calendar) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  switch (calendar) {
+    case 0: return COLOR_OUTSIDE;
+    case 1: return COLOR_ROOM;
+    case 2: return COLOR_AIR;
+    default: return COLOR_HUMIDITY;
+  }
+}
+
+void agendaBuildColorTag(char tag[AGENDA_COLOR_TAG_LENGTH + 1],
+                         lv_color_t color) {
+  const uint32_t rgb = lv_color_to32(color);
+  snprintf(tag, AGENDA_COLOR_TAG_LENGTH + 1, "#%02X%02X%02X ",
+           static_cast<unsigned>((rgb >> 16) & 0xFF),
+           static_cast<unsigned>((rgb >> 8) & 0xFF),
+           static_cast<unsigned>(rgb & 0xFF));
+}
+
+void agendaAppendEscaped(String &target, const char *text) {
+  if (text == nullptr) return;
+  for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+    target += *cursor;
+    if (*cursor == '#') target += '#';
+  }
+}
+
+// Rozmístí řádky podle toho, které z nich otevírají nový den. Volá se až po
+// naplnění všech řádků, protože dřív není známo, kde jsou hranice dnů.
+void layoutAgendaItems() {
+  if (agendaPage == nullptr) return;
+  const int lineHeight = agendaLineHeight();
+  const int dayHeight = agendaDayHeight();
+  int total = 0;
+  for (size_t index = 0; index < agendaVisibleItemCount; ++index) {
+    total += lineHeight + AGENDA_ROW_GAP;
+    if (agendaRowStartsDay[index]) total += dayHeight + AGENDA_DAY_GAP;
+  }
+  int cursorY = -total / 2;
+  for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
+    lv_obj_t *day = agendaDayLabels[index];
+    lv_obj_t *row = agendaRowLabels[index];
+    if (day == nullptr || row == nullptr) continue;
+    if (index >= agendaVisibleItemCount) {
+      setObjectVisible(day, false);
+      setObjectVisible(row, false);
+      continue;
+    }
+    if (agendaRowStartsDay[index]) {
+      cursorY += AGENDA_DAY_GAP;
+      const int width = agendaRowWidth(cursorY, cursorY + dayHeight);
+      lv_obj_set_width(day, width);
+      lv_obj_align(day, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS - width / 2,
+                   AGENDA_RADIUS + cursorY);
+      setObjectVisible(day, true);
+      cursorY += dayHeight;
+    } else {
+      setObjectVisible(day, false);
+    }
+    const int width = agendaRowWidth(cursorY, cursorY + lineHeight);
+    lv_obj_set_width(row, width);
+    lv_obj_set_height(row, lineHeight);
+    lv_obj_align(row, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS - width / 2,
+                 AGENDA_RADIUS + cursorY);
+    setObjectVisible(row, true);
+    cursorY += lineHeight + AGENDA_ROW_GAP;
+  }
+}
+
+// Stránka agendy leží v PSRAM. Bez toho by dvacet štítků ukouslo přes deset
+// kilobajtů interní RAM, kterou potřebuje TLS - a rozbilo by to i kanál se
+// zprávami, který o agendě nic neví.
+class AgendaPsramAllocations {
+ public:
+  AgendaPsramAllocations() { clockLvglPreferPsram(true); }
+  ~AgendaPsramAllocations() { clockLvglPreferPsram(false); }
+
+  AgendaPsramAllocations(const AgendaPsramAllocations &) = delete;
+  AgendaPsramAllocations &operator=(const AgendaPsramAllocations &) = delete;
+};
+
+void createAgendaPage(lv_obj_t *screen) {
+  AgendaPsramAllocations psram;
+  agendaPage = lv_obj_create(screen);
+  lv_obj_set_size(agendaPage, 480, 480);
+  lv_obj_center(agendaPage);
+  lv_obj_set_style_bg_color(agendaPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(agendaPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(agendaPage, 0, 0);
+  lv_obj_set_style_pad_all(agendaPage, 0, 0);
+  lv_obj_set_style_radius(agendaPage, 0, 0);
+  lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  agendaStatusLabel = makeLabel(agendaPage, &clock_czech_16, COLOR_MUTED);
+  lv_label_set_long_mode(agendaStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(agendaStatusLabel, 340);
+  lv_obj_set_style_text_align(agendaStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(agendaStatusLabel, "");
+  alignCenter(agendaStatusLabel, 0, 0);
+  lv_obj_add_flag(agendaStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
+    lv_obj_t *day = makeLabel(agendaPage, &clock_czech_14, COLOR_MUTED);
+    lv_label_set_long_mode(day, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(day, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(day, "");
+    lv_obj_add_flag(day, LV_OBJ_FLAG_HIDDEN);
+    agendaDayLabels[index] = day;
+
+    lv_obj_t *row = makeLabel(agendaPage, &clock_czech_16, COLOR_TEXT);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+    lv_label_set_recolor(row, true);
+    lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(row, "");
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    agendaRowLabels[index] = row;
+
+    agendaRowStartsDay[index] = false;
+  }
+  agendaVisibleItemCount = 0;
+
+  makeChildrenTapThrough(agendaPage);
+  lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+void applyAgendaColors() {
+  if (agendaPage == nullptr) return;
+  const bool redNight = redNightVisualEnabled();
+  setTextColor(agendaStatusLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
+  for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
+    if (agendaDayLabels[index] != nullptr) {
+      setTextColor(agendaDayLabels[index], redNight ? COLOR_ERROR : COLOR_TEXT);
+    }
+    if (agendaRowLabels[index] != nullptr) {
+      setTextColor(agendaRowLabels[index], redNight ? COLOR_ERROR : COLOR_TEXT);
+    }
+  }
 }
 
 // Obrazovka předpovědi. Svislý rozpočet - kolik hodin po denní části a
@@ -4394,6 +4598,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetRssAvailable(clockConfigRssAvailable(config));
   clockDashboardSetForecastAvailable(clockConfigForecastAvailable(config));
   clockDashboardSetPlanesAvailable(clockConfigPlanesAvailable(config));
+  clockDashboardSetAgendaAvailable(clockConfigAgendaAvailable(config));
   // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
   // změně nastavení musí přepočítat - jinak by obrazovka kreslila hodiny do
   // místa, které si mezitím vzala spodní sekce.
@@ -5476,6 +5681,105 @@ void clockDashboardSetRssItem(size_t index, const char *title,
   setObjectVisible(titleLabel, true);
 }
 
+bool clockDashboardAgendaVisible() {
+  return activeScreen == DASHBOARD_SCREEN_AGENDA;
+}
+
+void clockDashboardSetAgendaVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_AGENDA : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetAgendaVisibilityCallback(
+    RssVisibilityCallback visibility) {
+  agendaVisibilityCallback = visibility;
+}
+
+void clockDashboardSetAgendaAvailable(bool available) {
+  // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji majitel
+  // nechce, nestojí ani jeden objekt LVGL.
+  if (available && agendaPage == nullptr && dashboardScreen != nullptr) {
+    createAgendaPage(dashboardScreen);
+  }
+  if (agendaFeatureAvailable == available) return;
+  agendaFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_AGENDA) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (agendaPage != nullptr)
+      lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (agendaVisibilityCallback != nullptr) agendaVisibilityCallback(false);
+  }
+  // O jednu obrazovku v rotaci míň nebo víc: ukazatel musí ubrat či přidat
+  // tečku, jinak by sliboval obrazovku, na kterou se nedá přepnout.
+  updateScreenDots();
+}
+
+void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
+                                   bool ready) {
+  if (agendaPage == nullptr) return;
+  if (count > CLOCK_AGENDA_MAX_ITEMS) count = CLOCK_AGENDA_MAX_ITEMS;
+  agendaVisibleItemCount = count;
+  for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
+    agendaRowStartsDay[index] = false;
+  }
+  const bool showMessage = count == 0;
+  setObjectVisible(agendaStatusLabel, showMessage);
+  if (showMessage) {
+    // Text si obrazovka skládá sama, aby se přepnutím jazyka přeložil i on.
+    // Úspěšné stažení prázdného kalendáře není chyba: den bez události je
+    // platný výsledek, takže se místo hlášky o nedostupnosti řekne, že prostě
+    // nic není.
+    const char *text;
+    if (message != nullptr && message[0] != '\0') {
+      text = message;
+    } else if (ready) {
+      text = englishLanguage() ? "Nothing scheduled" : "Nic naplánovaného";
+    } else {
+      text = englishLanguage() ? "Loading agenda..." : "Načítám agendu...";
+    }
+    lv_label_set_text(agendaStatusLabel, text);
+    // Řádky po předchozím naplnění musí zmizet, jinak by hláška ležela přes ně.
+    layoutAgendaItems();
+  }
+  applyAgendaColors();
+}
+
+void clockDashboardSetAgendaItem(size_t index, const char *day,
+                                 const char *time, const char *title,
+                                 uint8_t calendar) {
+  if (agendaPage == nullptr || index >= agendaVisibleItemCount) return;
+  lv_obj_t *dayLabel = agendaDayLabels[index];
+  lv_obj_t *rowLabel = agendaRowLabels[index];
+  if (dayLabel == nullptr || rowLabel == nullptr) return;
+
+  const bool startsDay = day != nullptr && day[0] != '\0';
+  agendaRowStartsDay[index] = startsDay;
+  if (startsDay) lv_label_set_text(dayLabel, day);
+
+  const bool hasTime = time != nullptr && time[0] != '\0';
+  const char *stamp = hasTime ? time : AGENDA_ALL_DAY_MARK;
+  String text;
+  // Arduino String roste na přesnou délku, takže bez rezervace by každý
+  // připsaný znak znamenal realloc. Zdvojené '#' se do odhadu vejdou.
+  text.reserve(2 * (title != nullptr ? strlen(title) : 0) + 2 * strlen(stamp) +
+               AGENDA_COLOR_TAG_LENGTH + sizeof(AGENDA_TIME_SEPARATOR) + 2);
+  char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+  agendaBuildColorTag(tag, agendaCalendarColor(calendar));
+  text += tag;
+  agendaAppendEscaped(text, stamp);
+  text += '#';
+  text += AGENDA_TIME_SEPARATOR;
+  agendaAppendEscaped(text, title != nullptr ? title : "");
+  lv_label_set_text(rowLabel, text.c_str());
+
+  // Rozmístit jde až po posledním řádku: dřív není známo, kde leží hranice dnů,
+  // a řádek s hlavičkou je o její výšku vyšší než ostatní.
+  if (index + 1 == agendaVisibleItemCount) layoutAgendaItems();
+}
+
 void clockDashboardSetRadarVisible(bool visible) { setRadarVisible(visible); }
 
 bool clockDashboardAutomaticRotationAllowed() {
@@ -5597,6 +5901,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+    if (agendaPage != nullptr) lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
     if (forecastPage != nullptr)
       lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
     if (planesPage != nullptr)
@@ -5622,6 +5927,12 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       if (radarVisibilityCallback != nullptr) radarVisibilityCallback(true);
     } else if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr) {
       lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_AGENDA &&
+               agendaPage != nullptr) {
+      lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
+      // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
+      // služba by zůstala vypnutá a už nikdy nic nestáhla.
+      if (agendaVisibilityCallback != nullptr) agendaVisibilityCallback(true);
     } else if (activeScreen == DASHBOARD_SCREEN_FORECAST &&
                forecastPage != nullptr) {
       lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);

@@ -53,6 +53,13 @@ void configurationWebSetRssTask(TaskHandle_t task);
 using RssProbeCallback = bool (*)(const ClockRssConfig &config,
                                   int &httpStatus, String &error);
 void configurationWebSetRssProbe(RssProbeCallback callback);
+void configurationWebSetAgendaTask(TaskHandle_t task);
+// Zkouška adresy agendy. Platí pro ni totéž co pro kanál zpráv: stažení
+// obstará úloha agendy, protože zásobník smyčky na ověření proti svazku
+// kořenů Mozilly nestačí.
+using AgendaProbeCallback = bool (*)(const ClockAgendaConfig &config,
+                                     int &httpStatus, String &error);
+void configurationWebSetAgendaProbe(AgendaProbeCallback callback);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();

@@ -84,6 +84,25 @@ void clockDashboardSetRssStatus(const char *channelTitle, const char *message,
                                 uint8_t count);
 void clockDashboardSetRssItem(size_t index, const char *title,
                               const char *time);
+// --- Agenda z kalendáře -----------------------------------------------------
+bool clockDashboardAgendaVisible();
+void clockDashboardSetAgendaVisible(bool visible);
+// Vypnutá obrazovka nebo prázdná adresa se do rotace ani pod gesto nepustí.
+// Stránka se zakládá až při prvním zapnutí, takže vypnutá agenda nestojí ani
+// jeden objekt LVGL.
+void clockDashboardSetAgendaAvailable(bool available);
+void clockDashboardSetAgendaVisibilityCallback(RssVisibilityCallback visibility);
+// Při count == 0 se místo seznamu ukáže hláška. Prázdná hláška znamená buď
+// "načítám", nebo - s ready - že kalendář opravdu nic nemá; text si obrazovka
+// skládá sama, aby se přepnutím jazyka přeložil i on. Volá se před sérií
+// clockDashboardSetAgendaItem().
+void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
+                                   bool ready);
+// Neprázdný day znamená, že událost otevírá nový den a dostane nad sebe
+// hlavičku. Prázdný time znamená celodenní událost.
+void clockDashboardSetAgendaItem(size_t index, const char *day,
+                                 const char *time, const char *title,
+                                 uint8_t calendar);
 bool clockDashboardForecastVisible();
 void clockDashboardSetForecastVisible(bool visible);
 // Vypnutá obrazovka se do rotace ani pod gesto nepustí.

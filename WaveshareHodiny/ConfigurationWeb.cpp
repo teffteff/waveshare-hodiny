@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "ConfigurationPage.h"
+#include "AgendaService.h"
 #include "RssService.h"
 #include "ConfigurationLocalization.h"
 #include "ChmiRadarService.h"
@@ -178,6 +179,8 @@ ClockConfig &configBuffer = clockConfigAllocate();
 TaskHandle_t homeAssistantTaskForDiagnostics = nullptr;
 TaskHandle_t rssTaskForDiagnostics = nullptr;
 RssProbeCallback rssProbeCallback = nullptr;
+TaskHandle_t agendaTaskForDiagnostics = nullptr;
+AgendaProbeCallback agendaProbeCallback = nullptr;
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
 bool webActive = false;
 unsigned long webAvailableUntil = 0;
@@ -1297,6 +1300,18 @@ void handleGetConfig() {
   result += config.rss.displaySeconds;
   result += F(",\"rssAutomaticRotation\":");
   result += config.rss.automaticRotation ? F("true") : F("false");
+  result += F(",\"agendaEnabled\":");
+  result += config.agenda.enabled ? F("true") : F("false");
+  result += F(",\"agendaUrl\":\"");
+  result += jsonEscape(config.agenda.url);
+  result += F("\",\"agendaItemCount\":");
+  result += config.agenda.itemCount;
+  result += F(",\"agendaRefreshMinutes\":");
+  result += config.agenda.refreshMinutes;
+  result += F(",\"agendaDisplaySeconds\":");
+  result += config.agenda.displaySeconds;
+  result += F(",\"agendaAutomaticRotation\":");
+  result += config.agenda.automaticRotation ? F("true") : F("false");
   result += F(",\"forecastEnabled\":");
   result += config.forecast.enabled ? F("true") : F("false");
   result += F(",\"forecastAirQuality\":");
@@ -1719,6 +1734,47 @@ void handleSaveConfig() {
     config.rss.refreshMinutes = static_cast<uint8_t>(rssRefreshMinutes);
     config.rss.displaySeconds = static_cast<uint16_t>(rssDisplaySeconds);
     config.rss.automaticRotation = server.arg("rssAutomaticRotation") == "1";
+  }
+  if (server.hasArg("agendaEnabled")) {
+    String agendaUrl = server.arg("agendaUrl");
+    agendaUrl.trim();
+    if (agendaUrl.length() >= CLOCK_AGENDA_URL_LENGTH) {
+      sendError(400, F("Adresa agendy je příliš dlouhá."));
+      return;
+    }
+    if (!agendaUrl.isEmpty() && !agendaUrl.startsWith("http://") &&
+        !agendaUrl.startsWith("https://")) {
+      sendError(400, F("Adresa agendy musí začínat http:// nebo https://."));
+      return;
+    }
+    const bool agendaEnabled = server.arg("agendaEnabled") == "1";
+    if (agendaEnabled && agendaUrl.isEmpty()) {
+      sendError(400, F("Pro zapnutou agendu doplň její adresu."));
+      return;
+    }
+    const int agendaItemCount = server.arg("agendaItemCount").toInt();
+    if (agendaItemCount < CLOCK_AGENDA_MIN_ITEMS ||
+        agendaItemCount > CLOCK_AGENDA_MAX_ITEMS) {
+      sendError(400, F("Počet událostí musí být od 3 do 10."));
+      return;
+    }
+    const int agendaRefreshMinutes = server.arg("agendaRefreshMinutes").toInt();
+    if (agendaRefreshMinutes < 5 || agendaRefreshMinutes > 120) {
+      sendError(400, F("Interval obnovy agendy musí být od 5 do 120 minut."));
+      return;
+    }
+    const int agendaDisplaySeconds = server.arg("agendaDisplaySeconds").toInt();
+    if (agendaDisplaySeconds < 10 || agendaDisplaySeconds > 3600) {
+      sendError(400, F("Doba zobrazení agendy musí být od 10 do 3600 sekund."));
+      return;
+    }
+    config.agenda.enabled = agendaEnabled;
+    clockConfigCopy(config.agenda.url, sizeof(config.agenda.url), agendaUrl);
+    config.agenda.itemCount = static_cast<uint8_t>(agendaItemCount);
+    config.agenda.refreshMinutes = static_cast<uint8_t>(agendaRefreshMinutes);
+    config.agenda.displaySeconds = static_cast<uint16_t>(agendaDisplaySeconds);
+    config.agenda.automaticRotation =
+        server.arg("agendaAutomaticRotation") == "1";
   }
 
   if (server.hasArg("forecastEnabled")) {
@@ -2160,6 +2216,70 @@ void handleRssTest() {
         *target.result += F("\",\"title\":\"");
         *target.result += jsonEscape(item.title);
         *target.result += F("\"}");
+      },
+      &context);
+  result += F("]}");
+  sendJson(200, result);
+}
+
+void handleAgendaTest() {
+  ClockAgendaConfig probe;
+  String url = server.arg("agendaUrl");
+  url.trim();
+  if (url.isEmpty()) url = currentConfig().agenda.url;
+  if (url.isEmpty()) {
+    sendError(400, F("Doplň adresu agendy."));
+    return;
+  }
+  if (url.length() >= CLOCK_AGENDA_URL_LENGTH) {
+    sendError(400, F("Adresa agendy je příliš dlouhá."));
+    return;
+  }
+  if (agendaProbeCallback == nullptr) {
+    sendError(503, F("Zkouška agendy nyní není dostupná."));
+    return;
+  }
+  clockConfigCopy(probe.url, sizeof(probe.url), url);
+  const int requestedCount = server.arg("agendaItemCount").toInt();
+  probe.itemCount = static_cast<uint8_t>(
+      requestedCount >= CLOCK_AGENDA_MIN_ITEMS &&
+              requestedCount <= CLOCK_AGENDA_MAX_ITEMS
+          ? requestedCount
+          : 8);
+  int httpStatus = 0;
+  String error;
+  if (!agendaProbeCallback(probe, httpStatus, error)) {
+    sendError(502, error.isEmpty() ? String(F("Agendu se nepodařilo načíst."))
+                                   : error);
+    return;
+  }
+  AgendaProbeStatus status;
+  agendaServiceProbeStatus(status);
+  String result;
+  result.reserve(1024);
+  // Prázdná agenda je platná odpověď, ne chyba: web ukáže nula událostí a
+  // majitel z toho pozná, že adresa i sdílení kalendáře fungují.
+  result = F("{\"ok\":true,\"count\":");
+  result += status.count;
+  result += F(",\"items\":[");
+  struct ItemContext {
+    String *result;
+    bool first;
+  } context{&result, true};
+  agendaServiceVisitProbeItems(
+      [](size_t, const AgendaDisplayItem &item, void *rawContext) {
+        ItemContext &target = *static_cast<ItemContext *>(rawContext);
+        if (!target.first) *target.result += ',';
+        target.first = false;
+        *target.result += F("{\"day\":\"");
+        *target.result += jsonEscape(item.day);
+        *target.result += F("\",\"time\":\"");
+        *target.result += jsonEscape(item.time);
+        *target.result += F("\",\"title\":\"");
+        *target.result += jsonEscape(item.title);
+        *target.result += F("\",\"calendar\":");
+        *target.result += item.calendar;
+        *target.result += '}';
       },
       &context);
   result += F("]}");
@@ -2785,6 +2905,11 @@ void handleDiagnostics() {
                 ? 0
                 : static_cast<uint32_t>(
                       uxTaskGetStackHighWaterMark(rssTaskForDiagnostics));
+  result += F(",\"agenda\":");
+  result += agendaTaskForDiagnostics == nullptr
+                ? 0
+                : static_cast<uint32_t>(
+                      uxTaskGetStackHighWaterMark(agendaTaskForDiagnostics));
   result += F("},\"minimumMemory\":{\"internalFree\":");
   result += static_cast<unsigned long>(heap_caps_get_minimum_free_size(
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -2909,6 +3034,12 @@ void handleDiagnostics() {
   appendDiagnosticJson(
       result,
       networkDiagnosticsSnapshot(NetworkDiagnosticKind::ForecastRuntime));
+  result += F(",\"agendaRuntime\":");
+  appendDiagnosticJson(
+      result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::AgendaRuntime));
+  result += F(",\"agendaTest\":");
+  appendDiagnosticJson(
+      result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::AgendaTest));
   result += '}';
   sendJson(200, result);
 }
@@ -3156,6 +3287,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   registerBoundedPost("/api/tmep/test", []() {
     if (requireConfigurationAccess()) handleTmepTest();
   });
+  registerBoundedPost("/api/agenda/test", []() {
+    if (requireConfigurationAccess()) handleAgendaTest();
+  });
   registerBoundedPost("/api/rss/test", []() {
     if (requireConfigurationAccess()) handleRssTest();
   });
@@ -3215,6 +3349,14 @@ void configurationWebSetRssProbe(RssProbeCallback callback) {
 
 void configurationWebSetRssTask(TaskHandle_t task) {
   rssTaskForDiagnostics = task;
+}
+
+void configurationWebSetAgendaTask(TaskHandle_t task) {
+  agendaTaskForDiagnostics = task;
+}
+
+void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {
+  agendaProbeCallback = callback;
 }
 
 void configurationWebLoop() {

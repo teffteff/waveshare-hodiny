@@ -14,6 +14,7 @@
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
+#include "AgendaService.h"
 #include "RssService.h"
 #include "ConfigurationWeb.h"
 #include "DayNightLogic.h"
@@ -78,6 +79,7 @@ ClockAppearanceConfig pendingAppearance;
 SemaphoreHandle_t runtimeConfigMutex = nullptr;
 TaskHandle_t homeAssistantTaskHandle = nullptr;
 TaskHandle_t rssTaskHandle = nullptr;
+TaskHandle_t agendaTaskHandle = nullptr;
 TaskHandle_t forecastTaskHandle = nullptr;
 String usbCommand;
 bool screenshotTransferActive = false;
@@ -123,6 +125,7 @@ bool radarRadiusApplyPending = false;
 unsigned long radarRadiusApplyAt = 0;
 bool automaticRotationPaused = true;
 uint32_t displayedRssGeneration = UINT32_MAX;
+uint32_t displayedAgendaGeneration = UINT32_MAX;
 uint32_t displayedForecastGeneration = UINT32_MAX;
 uint32_t displayedPlanesGeneration = UINT32_MAX;
 // Detail se překresluje mimo generaci snímku: klepnutí na letadlo mění panel,
@@ -159,11 +162,15 @@ constexpr uint32_t EXTERNAL_DATA_RETRY_MS = 60UL * 1000UL;
 // Kanál zpráv se po chybě zkouší dřív než v nastaveném intervalu, ale ne tak
 // často, aby při trvale nedostupném serveru zatěžoval síť.
 constexpr uint32_t RSS_RETRY_MS = 2UL * 60UL * 1000UL;
+constexpr uint32_t AGENDA_RETRY_MS = 2UL * 60UL * 1000UL;
 // Otevření obrazovky zpráv stáhne kanál znovu, jsou-li titulky starší. Stejná
 // mez jako u radaru: bez ní by rotace i gesto listovaly zprávami staré tolik,
 // kolik je nastavený interval, s ní zase kratší mez znamená stahování při
 // každém průletu rotace.
 constexpr uint32_t RSS_VISIBILITY_REFRESH_MS = 5UL * 60UL * 1000UL;
+// Server agendu přepočítává po čtvrthodině, takže mladší data otevření
+// obrazovky obnovovat nemusí - stejně by přišla stejná odpověď.
+constexpr uint32_t AGENDA_VISIBILITY_REFRESH_MS = 10UL * 60UL * 1000UL;
 // Předpověď se mění po hodinách, takže otevření obrazovky nemá cenu
 // stahovat znovu dřív než po čtvrthodině.
 constexpr uint32_t FORECAST_VISIBILITY_REFRESH_MS = 15UL * 60UL * 1000UL;
@@ -203,6 +210,17 @@ void copyRuntimeConfig(ClockConfig &destination) {
 // zásobníku, než má celá smyčka (16 kB, a leží v ní i LVGL a web server),
 // takže se stahování předává úloze kanálu, která na to má vyměřených 20 kB.
 // Web server je jednovláknový, takže stačí jediná žádost.
+struct AgendaProbeRequest {
+  ClockAgendaConfig config;
+  int httpStatus = 0;
+  bool ok = false;
+  char error[AGENDA_MESSAGE_LENGTH] = "";
+};
+AgendaProbeRequest agendaProbeRequest;
+volatile bool agendaProbePending = false;
+volatile bool agendaProbeDone = false;
+constexpr uint32_t AGENDA_PROBE_TIMEOUT_MS = 30UL * 1000UL;
+
 struct RssProbeRequest {
   ClockRssConfig config;
   int httpStatus = 0;
@@ -215,6 +233,19 @@ volatile bool rssProbeDone = false;
 // Nad součtem vlastních stropů stahování: 10 s čekání na síť, 5 s spojení,
 // 8 s odpověď. Kratší mez by hlásila chybu kanálu, který se ještě stahuje.
 constexpr uint32_t RSS_PROBE_TIMEOUT_MS = 30UL * 1000UL;
+
+// Úloha agendy si stejně jako kanál zpráv nebere celou ClockConfig, aby
+// nepotřebovala další pětikilobajtový buffer ani ho neměla na zásobníku vedle
+// TLS.
+void copyRuntimeAgendaConfig(ClockAgendaConfig &destination) {
+  if (runtimeConfigMutex == nullptr) {
+    destination = runtimeConfig.agenda;
+    return;
+  }
+  xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
+  destination = runtimeConfig.agenda;
+  xSemaphoreGive(runtimeConfigMutex);
+}
 
 // Úloha kanálu zpráv si nebere celou ClockConfig, aby nepotřebovala další
 // pětikilobajtový buffer ani ho neměla na zásobníku vedle TLS.
@@ -287,6 +318,7 @@ bool saveRuntimeConfig(const ClockConfig &config, bool tokenWasSubmitted) {
   // Bez tohoto by se změna adresy nebo zapnutí kanálu projevily až po
   // doběhnutí nastaveného intervalu, tedy klidně za dvě hodiny.
   if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
+  if (agendaTaskHandle != nullptr) xTaskNotifyGive(agendaTaskHandle);
   if (forecastTaskHandle != nullptr) xTaskNotifyGive(forecastTaskHandle);
   return true;
 }
@@ -468,6 +500,22 @@ void handleSettingsOpen() {
 
 // Kanál zpráv se stahuje na pozadí i se zavřenou obrazovkou, takže otevření
 // nic nezapíná; jen zkrátí čekání, když jsou zprávy v mezipaměti staré.
+void handleAgendaVisibility(bool visible) {
+  if (!visible || agendaTaskHandle == nullptr) return;
+  const ClockConfig &config = loopConfigSnapshot();
+  if (!clockConfigAgendaAvailable(config)) return;
+  AgendaStatus status;
+  // Zamčená mezipaměť: raději nestahovat než stahovat naslepo. Otevření
+  // obrazovky se zopakuje, jakmile se na ni přepne příště.
+  if (!agendaServiceStatus(status)) return;
+  if (status.ready && status.lastSuccessAvailable &&
+      status.lastSuccessAgeMs < AGENDA_VISIBILITY_REFRESH_MS) {
+    return;
+  }
+  // Notifikace v agendaTask nuluje deadline, takže se stahuje hned.
+  xTaskNotifyGive(agendaTaskHandle);
+}
+
 void handleRssVisibility(bool visible) {
   if (!visible || rssTaskHandle == nullptr) return;
   const ClockConfig &config = loopConfigSnapshot();
@@ -489,6 +537,40 @@ void handleRssVisibility(bool visible) {
 // Přijme zkoušku kanálu z web serveru a počká na úlohu kanálu, která ji
 // provede. Čeká se po malých krocích a mezi nimi se krmí watchdog smyčky:
 // stahování smí trvat přes dvacet sekund, což je jeho mez.
+bool runAgendaProbeFromWeb(const ClockAgendaConfig &config, int &httpStatus,
+                           String &error) {
+  error = "";
+  if (agendaTaskHandle == nullptr) {
+    error = F("Úloha agendy neběží.");
+    return false;
+  }
+  if (agendaProbePending) {
+    error = F("Zkouška už probíhá.");
+    return false;
+  }
+  agendaProbeRequest.config = config;
+  agendaProbeRequest.httpStatus = 0;
+  agendaProbeRequest.ok = false;
+  agendaProbeRequest.error[0] = '\0';
+  agendaProbeDone = false;
+  agendaProbePending = true;
+  xTaskNotifyGive(agendaTaskHandle);
+
+  const unsigned long deadline = millis() + AGENDA_PROBE_TIMEOUT_MS;
+  while (!agendaProbeDone) {
+    if (static_cast<long>(millis() - deadline) >= 0) {
+      // Žádost zůstává rozpracovaná; agendaProbePending pustí další zkoušku,
+      // až ta současná doběhne.
+      error = F("Zkouška se nedokončila včas.");
+      return false;
+    }
+    delay(20);
+  }
+  httpStatus = agendaProbeRequest.httpStatus;
+  if (!agendaProbeRequest.ok) error = agendaProbeRequest.error;
+  return agendaProbeRequest.ok;
+}
+
 bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
                         String &error) {
   httpStatus = 0;
@@ -673,6 +755,7 @@ constexpr uint8_t ROTATION_SCREEN_RADAR = CLOCK_SCREEN_RADAR;
 constexpr uint8_t ROTATION_SCREEN_RSS = CLOCK_SCREEN_RSS;
 constexpr uint8_t ROTATION_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST;
 constexpr uint8_t ROTATION_SCREEN_PLANES = CLOCK_SCREEN_PLANES;
+constexpr uint8_t ROTATION_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA;
 constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
 constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
 
@@ -696,6 +779,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardRssVisible()) return ROTATION_SCREEN_RSS;
   if (clockDashboardForecastVisible()) return ROTATION_SCREEN_FORECAST;
   if (clockDashboardPlanesVisible()) return ROTATION_SCREEN_PLANES;
+  if (clockDashboardAgendaVisible()) return ROTATION_SCREEN_AGENDA;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -719,12 +803,16 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_PLANES:
       clockDashboardSetPlanesVisible(true);
       break;
+    case ROTATION_SCREEN_AGENDA:
+      clockDashboardSetAgendaVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
       clockDashboardSetRssVisible(false);
       clockDashboardSetForecastVisible(false);
       clockDashboardSetPlanesVisible(false);
+      clockDashboardSetAgendaVisible(false);
       break;
   }
 }
@@ -739,6 +827,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
       return clockConfigForecastAvailable(config);
     case ROTATION_SCREEN_PLANES:
       return clockConfigPlanesAvailable(config);
+    case ROTATION_SCREEN_AGENDA:
+      return clockConfigAgendaAvailable(config);
     default: return true;
   }
 }
@@ -757,6 +847,9 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_PLANES:
       return clockConfigPlanesAvailable(config) &&
              config.planes.automaticRotation;
+    case ROTATION_SCREEN_AGENDA:
+      return clockConfigAgendaAvailable(config) &&
+             config.agenda.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -789,6 +882,15 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     weatherForecastServiceStatus(status);
     return status.ready && status.hourCount > 0;
   }
+  if (screen == ROTATION_SCREEN_AGENDA) {
+    AgendaStatus status;
+    // Zamčená mezipaměť neznamená prázdnou agendu; rotace to zkusí za chvíli
+    // znovu, místo aby obrazovku přeskočila jako nepřipravenou.
+    if (!agendaServiceStatus(status)) return false;
+    // Prázdný den je platný výsledek, ale rotovat na obrazovku, která řekne
+    // jen "nic nemáš", nemá cenu - ruční gesto na ni pustí pořád.
+    return status.ready && status.count > 0;
+  }
   if (screen == ROTATION_SCREEN_PLANES) {
     // Prázdná obloha je platný stav, takže se čeká jen na první vykreslený
     // snímek - ne na to, až nějaké letadlo přiletí.
@@ -810,6 +912,8 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
              1000UL;
     case ROTATION_SCREEN_PLANES:
       return static_cast<unsigned long>(config.planes.displaySeconds) * 1000UL;
+    case ROTATION_SCREEN_AGENDA:
+      return static_cast<unsigned long>(config.agenda.displaySeconds) * 1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -821,7 +925,8 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_RADAR) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_RSS) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_FORECAST) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_PLANES);
+      rotationScreenEnabled(config, ROTATION_SCREEN_PLANES) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_AGENDA);
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed();
@@ -921,6 +1026,12 @@ void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
   clockDashboardSetRssItem(index, item.title, item.time);
 }
 
+void pushAgendaItemToDashboard(size_t index, const AgendaDisplayItem &item,
+                               void *) {
+  clockDashboardSetAgendaItem(index, item.day, item.time, item.title,
+                              item.calendar);
+}
+
 // Předá obrazovce novou předpověď, jakmile ji služba stáhne. Generace se mění
 // i po neúspěšném pokusu, takže se hláška o nedostupnosti dostane na displej
 // stejnou cestou jako data.
@@ -953,6 +1064,23 @@ void maintainRssDisplay() {
     return;
   }
   displayedRssGeneration = status.generation;
+}
+
+void maintainAgendaDisplay() {
+  AgendaStatus status;
+  // Bez téhle podmínky by zamčená mezipaměť vypadala jako prázdná agenda a
+  // obrazovka by na jeden průchod zhasla a ukázala "Načítám agendu…".
+  if (!agendaServiceStatus(status)) return;
+  if (status.generation == displayedAgendaGeneration) return;
+  clockDashboardSetAgendaStatus(
+      status.message, static_cast<uint8_t>(status.count), status.ready);
+  // Když je mezipaměť právě zamčená stahováním, generaci si nezapíšeme a
+  // řádky doplníme při dalším průchodu.
+  if (status.count > 0 &&
+      !agendaServiceVisitItems(pushAgendaItemToDashboard, nullptr)) {
+    return;
+  }
+  displayedAgendaGeneration = status.generation;
 }
 
 // Snímek radaru letadel na obrazovku. Generace se mění i po neúspěšném
@@ -2063,6 +2191,90 @@ int weatherCodeForState(const String &state) {
   return -1;
 }
 
+// Agenda má vlastní úlohu ze stejného důvodu jako kanál zpráv: adresu zadává
+// majitel, takže se ověřuje proti svazku kořenů Mozilly, a ten potřebuje
+// výrazně víc zásobníku než jeden připnutý kořen.
+// Vrací, za jak dlouho je další pokus, nebo 0, když se agenda nepoužívá.
+unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
+                                  unsigned long &nextAgendaRefreshAt,
+                                  char *lastFetchedUrl,
+                                  size_t lastFetchedUrlSize) {
+  if (!(config.enabled && config.url[0] != '\0')) {
+    if (lastFetchedUrl[0] != '\0') {
+      // Agenda se vypnula nebo se jí vymazala adresa; staré události nesmí
+      // zůstat na obrazovce.
+      agendaServiceClear();
+      lastFetchedUrl[0] = '\0';
+    }
+    nextAgendaRefreshAt = 0;
+    return 0;
+  }
+  if (strcmp(lastFetchedUrl, config.url) != 0) {
+    // Jiný server: zahodíme události z toho původního a stáhneme hned.
+    if (lastFetchedUrl[0] != '\0') agendaServiceClear();
+    strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
+    nextAgendaRefreshAt = 0;
+  }
+  const unsigned long now = millis();
+  if (nextAgendaRefreshAt != 0 &&
+      static_cast<long>(now - nextAgendaRefreshAt) < 0) {
+    return nextAgendaRefreshAt - now;
+  }
+  int httpStatus = 0;
+  String error;
+  const bool ok = agendaServiceFetch(
+      config, NetworkDiagnosticKind::AgendaRuntime, httpStatus, error);
+  const unsigned long interval =
+      ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
+         : AGENDA_RETRY_MS;
+  nextAgendaRefreshAt = millis() + interval;
+  return interval;
+}
+
+// Provede zkoušku adresy, o kterou si řekl web server. Výsledek nesahá na
+// mezipaměť obrazovky, takže zkoušená adresa nepřepíše zobrazené události.
+void runPendingAgendaProbe() {
+  int httpStatus = 0;
+  String error;
+  const bool ok =
+      agendaServiceProbe(agendaProbeRequest.config, httpStatus, error);
+  agendaProbeRequest.httpStatus = httpStatus;
+  agendaProbeRequest.ok = ok;
+  strlcpy(agendaProbeRequest.error, error.c_str(),
+          sizeof(agendaProbeRequest.error));
+  // Pořadí je závazné: agendaProbePending pouští další žádost, takže se nuluje
+  // až po zapsání celého výsledku.
+  agendaProbeDone = true;
+  agendaProbePending = false;
+}
+
+void agendaTask(void *) {
+  unsigned long nextAgendaRefreshAt = 0;
+  char lastAgendaUrl[CLOCK_AGENDA_URL_LENGTH] = "";
+  ClockAgendaConfig config;
+  for (;;) {
+    // Zkouška z webu má přednost, stejně jako u kanálu zpráv.
+    if (agendaProbePending) {
+      runPendingAgendaProbe();
+      continue;
+    }
+    copyRuntimeAgendaConfig(config);
+    if (WiFi.status() != WL_CONNECTED) {
+      nextAgendaRefreshAt = 0;
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
+      continue;
+    }
+    const unsigned long waitMs = maintainAgendaFetch(
+        config, nextAgendaRefreshAt, lastAgendaUrl, sizeof(lastAgendaUrl));
+    // Vypnutá agenda nemá kdy pokračovat sama; probudí ji až uložení nastavení.
+    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
+                                             : pdMS_TO_TICKS(waitMs)) > 0) {
+      // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
+      if (!agendaProbePending) nextAgendaRefreshAt = 0;
+    }
+  }
+}
+
 // Kanál zpráv má vlastní úlohu. Do úlohy home-assistant se nevešel: její
 // zásobník je vyměřený na TLS s jedním připnutým kořenem a na parsování JSON,
 // kdežto ověření proti svazku kořenů Mozilly potřebuje výrazně víc.
@@ -2385,6 +2597,7 @@ void setup() {
   networkCoordinatorBegin();
   tmepServiceBegin();
   rssServiceBegin();
+  agendaServiceBegin();
   weatherForecastServiceBegin();
   LCD_Init();
   currentDisplayBrightness = runtimeConfig.dayBrightness;
@@ -2400,6 +2613,7 @@ void setup() {
                        handleRadarRangeChange, handleRssVisibility,
                        handleForecastVisibility);
   clockDashboardSetPlanesVisibilityCallback(handlePlanesVisibility);
+  clockDashboardSetAgendaVisibilityCallback(handleAgendaVisibility);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
@@ -2436,6 +2650,13 @@ void setup() {
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetRssTask(rssTaskHandle);
   configurationWebSetRssProbe(runRssProbeFromWeb);
+  // Agenda se ověřuje proti svazku kořenů Mozilly, takže její handshake stojí
+  // stejně zásobníku jako u kanálu zpráv.
+  xTaskCreatePinnedToCoreWithCaps(
+      agendaTask, "agenda", 20480, nullptr, 1, &agendaTaskHandle, 0,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  configurationWebSetAgendaTask(agendaTaskHandle);
+  configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
   // stojí stejně zásobníku jako u kanálu zpráv.
   xTaskCreatePinnedToCoreWithCaps(
@@ -2499,6 +2720,7 @@ void loop() {
   maintainRadarDisplay();
   maintainPlanesDisplay();
   maintainRssDisplay();
+  maintainAgendaDisplay();
   maintainForecastDisplay();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
