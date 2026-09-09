@@ -63,7 +63,7 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané přetažením prstu,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
 - volitelné automatické střídání hodin, radaru, zpráv, předpovědi a letadel se
-  samostatnou dobou zobrazení,
+  samostatnou dobou zobrazení a vlastním pořadím obrazovek,
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
 - obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
   ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
@@ -239,6 +239,7 @@ Web umožňuje nastavit:
   otevření nabídky, tlačítko Načíst entity ho jen obnoví,
 - barvu hodin, data a obou částí vteřinového efektu,
 - denní/noční jas, ruční nebo automatický režim a automatické střídání hodin s radarem,
+- pořadí obrazovek v záložce **Obrazovky**: přetažením nebo šipkami,
 - automatické OTA aktualizace a režim webového serveru,
 - volitelné heslo webového nastavení,
 - export/import zálohy, restart, ovládání podsvícení a živou diagnostiku.
@@ -316,8 +317,8 @@ slotech přibližně minutu po čase publikace ČHMÚ.
 ### Ukazatel obrazovek
 
 Nahoře na **každé** obrazovce je řada teček, jedna na obrazovku zapojenou do
-střídání — hodiny, meteoradar, zprávy, předpověď a letadla. Plná tečka je ta,
-na kterou se právě
+střídání, ve stejném pořadí, jaké je nastavené v záložce Obrazovky. Plná tečka
+je ta, na kterou se právě
 díváš. Vypnutá obrazovka svoji tečku nemá, takže řada vždycky odpovídá tomu,
 kam se dá gestem přepnout. Při jediné dostupné obrazovce se ukazatel nekreslí,
 protože jedna tečka o ničem nevypovídá; v nastavení a při aktualizaci firmwaru
@@ -552,10 +553,13 @@ nemaže.
 
 Obrazovky přepíná podržení prstu na místě, zhruba půl sekundy. Záleží na tom,
 kde prst leží: v levé polovině displeje se jde o obrazovku zpět, v pravé
-vpřed. Pořadí je hodiny, meteoradar, zprávy, předpověď, nastavení a zase zpět
-na hodiny, takže nastavení je z hodin na jedno podržení v levé polovině.
-Nedostupná obrazovka se přeskočí; nastavení vypnout nejde, aby hodiny bez
-radaru, zpráv i předpovědi neztratily cestu k webové adrese.
+vpřed. Výchozí pořadí je hodiny, meteoradar, zprávy, předpověď, letadla,
+nastavení a zase zpět na hodiny, takže nastavení je z hodin na jedno podržení
+v levé polovině. Prvních pět obrazovek si můžeš přeskládat v záložce
+**Obrazovky** webového nastavení; nastavení zůstává v cyklu poslední, aby se
+z něj odcházelo pokaždé stejně. Nedostupná obrazovka se přeskočí, ale své místo
+si drží; nastavení vypnout nejde, aby hodiny bez radaru, zpráv i předpovědi
+neztratily cestu k webové adrese.
 
 Z nastavení se odchází stejným podržením. Neuložené změny se přitom zahodí,
 uloží je jen tlačítko Uložit.
@@ -567,7 +571,8 @@ jej oddálí. Změna provedená na displeji je dočasná a nezapisuje se do flas
 | --- | --- |
 | Kterákoliv: podržení prstu v levé polovině | Přepne na předchozí dostupnou obrazovku |
 | Kterákoliv: podržení prstu v pravé polovině | Přepne na další dostupnou obrazovku |
-| Kterákoliv: krátký dotyk při vypnuté automatice den/noc | Přepne denní a noční režim |
+| Kterákoliv: dvojklepnutí při vypnuté automatice den/noc | Přepne denní a noční režim |
+| Letadla: krátký dotyk | Vybere letadlo pod prstem, nebo zavře jeho detail |
 | Meteoradar: přetažení nahoru nebo doprava | Přiblíží rozsah |
 | Meteoradar: přetažení dolů nebo doleva | Oddálí rozsah |
 
@@ -586,8 +591,9 @@ prstu se uvnitř nastavení nepoužívá.
 
 První stránka ovládá denní a noční jas a automatický režim. Druhá přepíná
 vteřiny, jejich efekt a animované ikony. Třetí řídí režim webového serveru a
-ruční kontrolu OTA. IP adresa je na veřejném snímku záměrně skrytá. Krátký
-dotyk hodin i meteoradaru při vypnuté automatice přepíná denní a noční režim.
+ruční kontrolu OTA. IP adresa je na veřejném snímku záměrně skrytá.
+Dvojklepnutí kamkoliv při vypnuté automatice přepíná denní a noční režim;
+jedno klepnutí ho nepřepíná, protože se pletlo s podržením prstu.
 
 ## Animované Meteocons
 

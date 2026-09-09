@@ -194,6 +194,27 @@ void testSlotIndexSelectsItsOwnFields() {
   assert(strcmp(slot.name, "SKLEP") == 0);
 }
 
+// Pořadí obrazovek chodí z webu jako jeden řetězec. Přijmout se smí jen úplná
+// permutace, jinak by z cyklu zmizela obrazovka.
+void testScreenOrderIsParsed() {
+  uint8_t order[CLOCK_SCREEN_ORDER_COUNT] = {};
+  assert(parseScreenOrder("planes,clock,forecast,rss,radar", order));
+  assert(order[0] == CLOCK_SCREEN_PLANES);
+  assert(order[1] == CLOCK_SCREEN_CLOCK);
+  assert(order[2] == CLOCK_SCREEN_FORECAST);
+  assert(order[3] == CLOCK_SCREEN_RSS);
+  assert(order[4] == CLOCK_SCREEN_RADAR);
+}
+
+void testIncompleteOrDuplicateScreenOrderIsRejected() {
+  uint8_t order[CLOCK_SCREEN_ORDER_COUNT] = {};
+  assert(!parseScreenOrder("", order));
+  assert(!parseScreenOrder("clock,radar,rss,forecast", order));
+  assert(!parseScreenOrder("clock,radar,rss,forecast,forecast", order));
+  assert(!parseScreenOrder("clock,radar,rss,forecast,planes,clock", order));
+  assert(!parseScreenOrder("clock,radar,rss,forecast,settings", order));
+}
+
 }  // namespace
 
 int main() {
@@ -206,5 +227,7 @@ int main() {
   testDuplicateColorValuesAreRejected();
   testInvalidColorScaleIsRejected();
   testSlotIndexSelectsItsOwnFields();
+  testScreenOrderIsParsed();
+  testIncompleteOrDuplicateScreenOrderIsRejected();
   return 0;
 }

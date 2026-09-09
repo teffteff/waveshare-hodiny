@@ -190,6 +190,7 @@ def stub_config() -> dict:
         "forecastAutomaticRotation": False,
         # Stejné pořadí jako ve firmwaru: (kvalita ovzduší ? 5 : 0) + dny.
         "forecastHourCounts": [12, 11, 10, 9, 8, 10, 8, 7, 6, 5],
+        "screenOrder": ["clock", "radar", "rss", "forecast", "planes"],
         "controlSecret": "nahled-bez-zarizeni",
     }
 

@@ -59,7 +59,22 @@ constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // Schema 35 appends the aircraft radar screen ported from MeteoPlaneRadar. The
 // schema 34 prefix stays byte-for-byte unchanged and the screen starts
 // disabled, so an upgrade never starts polling adsb.fi on its own.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 35;
+// Schema 36 appends the order the screens rotate in. The schema 35 prefix stays
+// byte-for-byte unchanged and the order starts at the built-in one, so an
+// upgrade keeps showing the screens exactly where they were.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 36;
+
+// Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
+// nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 5;
+
+enum ClockOrderedScreen : uint8_t {
+  CLOCK_SCREEN_CLOCK = 0,
+  CLOCK_SCREEN_RADAR = 1,
+  CLOCK_SCREEN_RSS = 2,
+  CLOCK_SCREEN_FORECAST = 3,
+  CLOCK_SCREEN_PLANES = 4,
+};
 
 enum ClockLanguage : uint8_t {
   CLOCK_LANGUAGE_UNSET = 0,
@@ -367,6 +382,13 @@ struct ClockConfig {
   // Pole schématu 35 leží až za předpovědí, aby schéma 34 zůstalo přesnou
   // předponou a migrace byla opět jen zkopírováním bajtů.
   ClockPlanesConfig planes;
+  // Pole schématu 36 leží až za radarem letadel, aby schéma 35 zůstalo přesnou
+  // předponou a migrace byla opět jen zkopírováním bajtů. Drží pořadí, ve
+  // kterém se obrazovky střídají - hodnoty jsou ClockOrderedScreen, každá
+  // právě jednou.
+  uint8_t screenOrder[CLOCK_SCREEN_ORDER_COUNT] = {
+      CLOCK_SCREEN_CLOCK, CLOCK_SCREEN_RADAR, CLOCK_SCREEN_RSS,
+      CLOCK_SCREEN_FORECAST, CLOCK_SCREEN_PLANES};
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -401,6 +423,9 @@ static_assert(offsetof(ClockConfig, forecast) == 5648 &&
 static_assert(offsetof(ClockConfig, planes) == 5656 &&
                   sizeof(ClockPlanesConfig) == 32,
               "Schema 35 must preserve the complete schema 34 prefix.");
+
+static_assert(offsetof(ClockConfig, screenOrder) == 5688,
+              "Schema 36 must preserve the complete schema 35 prefix.");
 
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
@@ -437,6 +462,15 @@ bool clockConfigForecastAvailable(const ClockConfig &config);
 // Radar letadel stojí na veřejném API adsb.fi, takže stačí zapnutá obrazovka -
 // souřadnice bere ze stejného místa jako meteoradar a předpověď.
 bool clockConfigPlanesAvailable(const ClockConfig &config);
+// Obrazovka na dané pozici v pořadí střídání. Mimo rozsah vrací ciferník,
+// který je jediná obrazovka, kterou vypnout nejde.
+uint8_t clockConfigScreenAt(const ClockConfig &config, uint8_t position);
+// Pozice obrazovky v pořadí střídání; neznámá obrazovka končí na nule.
+uint8_t clockConfigScreenPosition(const ClockConfig &config, uint8_t screen);
+// Srovná pořadí zpátky na permutaci všech obrazovek. Neznámé i zdvojené
+// hodnoty se zahodí a chybějící obrazovky se doplní ve výchozím pořadí, takže
+// z poškozeného pole nikdy nezmizí obrazovka, na kterou se dá přepnout.
+void clockConfigNormalizeScreenOrder(uint8_t *order);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,
                          uint8_t defaultAnalogDateFormat =

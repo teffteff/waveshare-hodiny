@@ -153,8 +153,8 @@ lv_obj_t *radarStatusLabel = nullptr;
 
 // Ukazatel obrazovek. Leží nad všemi stránkami, ne v jedné z nich - jinak by
 // z něj byl ukazatel jediné obrazovky. Pořadí teček odpovídá pořadí, ve kterém
-// se obrazovky střídají.
-constexpr uint8_t SCREEN_DOT_COUNT = 5;
+// se obrazovky střídají, tedy tomu z konfigurace.
+constexpr uint8_t SCREEN_DOT_COUNT = CLOCK_SCREEN_ORDER_COUNT;
 lv_obj_t *screenDots[SCREEN_DOT_COUNT] = {};
 lv_obj_t *screenDotsBacking = nullptr;
 // Vteřinový prstenec má poloměr 226 a jeho největší tečka (kometa při velikosti
@@ -276,12 +276,14 @@ unsigned long suppressDashboardClickUntil = 0;
 // Ciferník, radar a zprávy se střídají na jednom místě. Držet to jako jeden
 // stav je bezpečnější než dvě nezávislé viditelnosti, které by se mohly
 // odkrýt naráz.
+// Čísla odpovídají ClockOrderedScreen, takže se jimi dá indexovat pořadí
+// obrazovek uložené v konfiguraci.
 enum DashboardScreen : uint8_t {
-  DASHBOARD_SCREEN_CLOCK = 0,
-  DASHBOARD_SCREEN_RADAR = 1,
-  DASHBOARD_SCREEN_RSS = 2,
-  DASHBOARD_SCREEN_FORECAST = 3,
-  DASHBOARD_SCREEN_PLANES = 4,
+  DASHBOARD_SCREEN_CLOCK = CLOCK_SCREEN_CLOCK,
+  DASHBOARD_SCREEN_RADAR = CLOCK_SCREEN_RADAR,
+  DASHBOARD_SCREEN_RSS = CLOCK_SCREEN_RSS,
+  DASHBOARD_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST,
+  DASHBOARD_SCREEN_PLANES = CLOCK_SCREEN_PLANES,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -3357,7 +3359,11 @@ void updateScreenDots() {
   if (screenDotsBacking == nullptr) return;
   uint8_t activeIndex = 0;
   uint8_t count = 0;
-  for (uint8_t screen = 0; screen < SCREEN_DOT_COUNT; ++screen) {
+  // Tečky se řadí podle pořadí z konfigurace, ne podle čísel obrazovek - jinak
+  // by ukazatel sliboval jiný sled, než jakým se obrazovky střídají.
+  for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position) {
+    const uint8_t screen =
+        clockConfigScreenAt(dashboardRuntimeConfig, position);
     if (!screenAvailable(screen)) continue;
     if (screen == activeScreen) activeIndex = count;
     ++count;
@@ -5091,12 +5097,21 @@ void clockDashboardSetNightMode(bool enabled) {
 
 bool clockDashboardNightModeEnabled() { return nightModeEnabled; }
 
-void clockDashboardHandleShortClick() {
+namespace {
+
+// Klepnutí, kterým se zavíralo nastavení, se nesmí propsat do stránky pod ním.
+// Vrací true, když se má právě zpracovávané klepnutí zahodit.
+bool consumeSuppressedTap() {
+  if (!suppressNextDashboardClick) return false;
+  suppressNextDashboardClick = false;
+  return static_cast<long>(millis() - suppressDashboardClickUntil) < 0;
+}
+
+}  // namespace
+
+void clockDashboardHandleDoubleTap() {
   if (settingsVisible || firmwareUpdateActive) return;
-  if (suppressNextDashboardClick) {
-    suppressNextDashboardClick = false;
-    if (static_cast<long>(millis() - suppressDashboardClickUntil) < 0) return;
-  }
+  if (consumeSuppressedTap()) return;
   if (automaticDayNightEnabled) return;
   clockDashboardSetNightMode(!nightModeEnabled);
 }
@@ -5169,19 +5184,16 @@ void clockDashboardSetPlanesAvailable(bool available) {
   updateScreenDots();
 }
 
-bool clockDashboardHandlePlanesTap(int16_t x, int16_t y) {
+void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   // Nad otevřeným nastavením a během aktualizace firmwaru zůstává activeScreen
   // na letadlech, i když je vidět jiná stránka. Klepnutí na ovladač v nastavení
   // by tedy vybíralo letadlo a rozjelo dotaz na jeho trasu.
-  if (settingsVisible || firmwareUpdateActive) return false;
-  if (activeScreen != DASHBOARD_SCREEN_PLANES) return false;
-  // Klepnutí, kterým se zavíralo nastavení, se nesmí propsat do mapy pod ním.
-  if (suppressNextDashboardClick) {
-    suppressNextDashboardClick = false;
-    if (static_cast<long>(millis() - suppressDashboardClickUntil) < 0)
-      return true;
-  }
-  return planeRadarServiceHandleTap(x, y);
+  if (settingsVisible || firmwareUpdateActive) return;
+  // Zahodit se musí i klepnutí mimo letadla: jinak by potlačení čekalo dál a
+  // spolklo nejbližší dvojklepnutí, kterým se přepíná denní režim.
+  if (consumeSuppressedTap()) return;
+  if (activeScreen != DASHBOARD_SCREEN_PLANES) return;
+  planeRadarServiceHandleTap(x, y);
 }
 
 namespace {

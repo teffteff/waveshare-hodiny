@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -26,6 +27,46 @@ bool parseHtmlColor(const String &value, uint32_t &color) {
   }
   color = static_cast<uint32_t>(parsed);
   return true;
+}
+
+const char *clockScreenName(uint8_t screen) {
+  switch (screen) {
+    case CLOCK_SCREEN_RADAR: return "radar";
+    case CLOCK_SCREEN_RSS: return "rss";
+    case CLOCK_SCREEN_FORECAST: return "forecast";
+    case CLOCK_SCREEN_PLANES: return "planes";
+    default: return "clock";
+  }
+}
+
+bool parseScreenOrder(const String &text, uint8_t *order) {
+  bool seen[CLOCK_SCREEN_ORDER_COUNT] = {};
+  size_t count = 0;
+  const char *cursor = text.c_str();
+  while (*cursor != '\0') {
+    while (*cursor == ' ') ++cursor;
+    const char *end = cursor;
+    while (*end != '\0' && *end != ',') ++end;
+    const char *tokenEnd = end;
+    while (tokenEnd > cursor && tokenEnd[-1] == ' ') --tokenEnd;
+    const size_t length = static_cast<size_t>(tokenEnd - cursor);
+    if (count >= CLOCK_SCREEN_ORDER_COUNT) return false;
+    uint8_t screen = CLOCK_SCREEN_ORDER_COUNT;
+    for (uint8_t candidate = 0; candidate < CLOCK_SCREEN_ORDER_COUNT;
+         ++candidate) {
+      const char *name = clockScreenName(candidate);
+      if (strlen(name) == length && strncmp(name, cursor, length) == 0) {
+        screen = candidate;
+        break;
+      }
+    }
+    if (screen >= CLOCK_SCREEN_ORDER_COUNT || seen[screen]) return false;
+    seen[screen] = true;
+    order[count++] = screen;
+    if (*end == '\0') break;
+    cursor = end + 1;
+  }
+  return count == CLOCK_SCREEN_ORDER_COUNT;
 }
 
 void applyMetricPreset(ClockMetricConfig &metric, const String &preset) {

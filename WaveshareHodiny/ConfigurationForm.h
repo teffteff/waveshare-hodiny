@@ -26,6 +26,14 @@ bool readColorScaleFromSource(const ConfigurationFormSource &source,
                               const String &prefix,
                               ClockMetricColorScale &scale);
 
+// Jméno obrazovky, pod kterým ji zná web. Neznámé číslo vrací ciferník.
+const char *clockScreenName(uint8_t screen);
+
+// Pořadí obrazovek z formuláře: jména oddělená čárkou, například
+// "clock,rss,radar,forecast,planes". Přijme jen úplnou permutaci všech
+// obrazovek; cokoliv jiného je chyba, protože by z cyklu ubrala obrazovku.
+bool parseScreenOrder(const String &text, uint8_t *order);
+
 enum class ValueSlotFormResult : uint8_t {
   // Stránka uložená ze starší verze pole valueSlot* vůbec neposílá. Takový
   // formulář nesmí uložený slot přepsat ani shodit celé uložení.

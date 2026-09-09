@@ -24,6 +24,13 @@ bool shortTapPending = false;
 // klepl" nestačí.
 uint16_t shortTapX = 0;
 uint16_t shortTapY = 0;
+bool doubleTapPending = false;
+// Klepnutí, které ještě čeká, jestli z něj nebude dvojklepnutí. Hlásí se až po
+// vypršení okna, takže se jedno gesto nikdy nezapočítá dvakrát.
+bool heldTapPending = false;
+uint16_t heldTapX = 0;
+uint16_t heldTapY = 0;
+uint32_t heldTapAt = 0;
 bool touchDown = false;
 uint16_t touchStartX = 0;
 uint16_t touchStartY = 0;
@@ -52,6 +59,16 @@ constexpr int32_t TOUCH_SWIPE_CROSS_PX = 90;
 constexpr uint32_t TOUCH_SWIPE_MS = 700;
 // Svislá osa displeje; podržení vlevo od ní znamená zpět, vpravo vpřed.
 constexpr int32_t TOUCH_MIDDLE_X = 240;
+// Do kdy po prvním klepnutí musí dorazit druhé, aby z nich bylo dvojklepnutí.
+// Měří se od posledního vzorku prvního dotyku po poslední vzorek druhého, takže
+// se do okna vejde i doba, po kterou prst leží podruhé - proto je delší, než
+// jak dlouhá pauza mezi klepnutími vypadá. Po celou tu dobu se první klepnutí
+// drží, jinak by dvojklepnutí na radaru letadel stihlo vybrat letadlo dřív, než
+// se pozná jako dvojklepnutí.
+constexpr uint32_t TOUCH_DOUBLE_TAP_MS = 400;
+// Jak daleko od prvního klepnutí smí druhé dopadnout. Volnější než dotyk na
+// jednom místě: mezi dvěma klepnutími se prst zvedá a vrací.
+constexpr int32_t TOUCH_DOUBLE_TAP_PX = 90;
 // Hranice dlouhého stisku pro LVGL. Musí padnout přesně tam, kde si dotyk
 // přebírá podržení, jinak by se na jedno gesto stalo dvakrát: LVGL posílá
 // LV_EVENT_SHORT_CLICKED jen do své hranice, ale my držíme stisk ještě
@@ -114,6 +131,37 @@ void flushDisplay(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixe
   lv_disp_flush_ready(driver);
 }
 
+// Zadržené klepnutí projde dál jako samostatné, jakmile je jisté, že druhé
+// nepřijde.
+void releaseHeldTap() {
+  if (!heldTapPending) return;
+  heldTapPending = false;
+  shortTapPending = true;
+  shortTapX = heldTapX;
+  shortTapY = heldTapY;
+}
+
+void expireHeldTap(uint32_t now) {
+  if (heldTapPending && now - heldTapAt > TOUCH_DOUBLE_TAP_MS) releaseHeldTap();
+}
+
+// Druhé klepnutí blízko prvního a včas znamená dvojklepnutí; cokoliv jiného je
+// nové samostatné klepnutí, které se zase zadrží.
+void registerTap(uint16_t x, uint16_t y, uint32_t at) {
+  if (heldTapPending && at - heldTapAt <= TOUCH_DOUBLE_TAP_MS &&
+      abs(static_cast<int32_t>(x) - heldTapX) <= TOUCH_DOUBLE_TAP_PX &&
+      abs(static_cast<int32_t>(y) - heldTapY) <= TOUCH_DOUBLE_TAP_PX) {
+    heldTapPending = false;
+    doubleTapPending = true;
+    return;
+  }
+  releaseHeldTap();
+  heldTapPending = true;
+  heldTapX = x;
+  heldTapY = y;
+  heldTapAt = at;
+}
+
 // Gesto se pozná až po zvednutí prstu z celého tahu, ne z gestového registru
 // CST820. Ten hlásí směr už v průběhu tahu a při každém dalším čtení znovu, což
 // se muselo zamykat, a krátké tahy po zaobleném displeji často propásl. Tady
@@ -136,15 +184,14 @@ void classifyTouchGesture() {
     // Podržení v levé polovině vrací zpět, v pravé jde vpřed.
     screenHoldPending = touchLastX < TOUCH_MIDDLE_X ? -1 : 1;
   } else if (stillFinger) {
-    shortTapPending = true;
-    shortTapX = touchLastX;
-    shortTapY = touchLastY;
+    registerTap(touchLastX, touchLastY, touchLastSeenAt);
   }
 }
 
 void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
   Touch_Read_Data();
   const uint32_t now = millis();
+  expireHeldTap(now);
 
   // Přenos po I2C může uspět a přesto vrátit nesmysl, typicky samé 0xFF.
   // Dekóduje se jako dotyk daleko mimo panel; takový vzorek zahodíme, jinak by
@@ -270,6 +317,12 @@ int8_t displayDriverTakeScreenHold() {
   return direction;
 }
 
+bool displayDriverTakeDoubleTap() {
+  const bool pending = doubleTapPending;
+  doubleTapPending = false;
+  return pending;
+}
+
 int8_t displayDriverTakeRangeSwipe() {
   const int8_t direction = rangeSwipePending;
   rangeSwipePending = 0;
@@ -277,6 +330,9 @@ int8_t displayDriverTakeRangeSwipe() {
 }
 
 bool displayDriverTakeShortTap(int16_t &x, int16_t &y) {
+  // Hlavní smyčka se ptá častěji, než LVGL čte dotyk, takže okno dvojklepnutí
+  // vyprší i tady - jinak by klepnutí čekalo na první pohyb prstu.
+  expireHeldTap(millis());
   if (!shortTapPending) return false;
   shortTapPending = false;
   x = static_cast<int16_t>(shortTapX);

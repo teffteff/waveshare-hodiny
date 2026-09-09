@@ -666,15 +666,28 @@ bool previewRadarRangeFromWeb(uint16_t radiusKm) {
 
 // Ciferník, radar, zprávy, předpověď a nastavení se střídají na jednom místě.
 // Podržení prstu prochází celý tento cyklus, automatická rotace jen jeho
-// datovou část; nedostupná obrazovka se přeskočí. Pořadí odpovídá tečkám
-// ukazatele obrazovek v ClockDashboard.
-constexpr uint8_t ROTATION_SCREEN_CLOCK = 0;
-constexpr uint8_t ROTATION_SCREEN_RADAR = 1;
-constexpr uint8_t ROTATION_SCREEN_RSS = 2;
-constexpr uint8_t ROTATION_SCREEN_FORECAST = 3;
-constexpr uint8_t ROTATION_SCREEN_PLANES = 4;
-constexpr uint8_t ROTATION_SCREEN_SETTINGS = 5;
-constexpr uint8_t ROTATION_SCREEN_COUNT = 6;
+// datovou část; nedostupná obrazovka se přeskočí. Čísla obrazovek odpovídají
+// ClockOrderedScreen, takže se jimi dá indexovat pořadí z konfigurace.
+constexpr uint8_t ROTATION_SCREEN_CLOCK = CLOCK_SCREEN_CLOCK;
+constexpr uint8_t ROTATION_SCREEN_RADAR = CLOCK_SCREEN_RADAR;
+constexpr uint8_t ROTATION_SCREEN_RSS = CLOCK_SCREEN_RSS;
+constexpr uint8_t ROTATION_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST;
+constexpr uint8_t ROTATION_SCREEN_PLANES = CLOCK_SCREEN_PLANES;
+constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
+constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
+
+// Pořadí obrazovek v cyklu si skládá majitel na webu; nastavení v něm zůstává
+// poslední, aby se z něj odcházelo vždycky stejným směrem. Cyklus se proto
+// prochází po pozicích, ne po číslech obrazovek.
+uint8_t rotationScreenAtPosition(const ClockConfig &config, uint8_t position) {
+  if (position >= CLOCK_SCREEN_ORDER_COUNT) return ROTATION_SCREEN_SETTINGS;
+  return clockConfigScreenAt(config, position);
+}
+
+uint8_t rotationScreenPosition(const ClockConfig &config, uint8_t screen) {
+  if (screen == ROTATION_SCREEN_SETTINGS) return CLOCK_SCREEN_ORDER_COUNT;
+  return clockConfigScreenPosition(config, screen);
+}
 
 uint8_t activeRotationScreen() {
   // Nastavení je překryv nad ostatními stránkami, takže rozhoduje první.
@@ -849,9 +862,11 @@ void maintainAutomaticScreenRotation() {
     }
   }
 
+  const uint8_t currentPosition = rotationScreenPosition(config, current);
   for (uint8_t step = 1; step < ROTATION_SCREEN_COUNT; ++step) {
-    const uint8_t candidate =
-        static_cast<uint8_t>((current + step) % ROTATION_SCREEN_COUNT);
+    const uint8_t candidate = rotationScreenAtPosition(
+        config,
+        static_cast<uint8_t>((currentPosition + step) % ROTATION_SCREEN_COUNT));
     if (!rotationScreenEnabled(config, candidate)) continue;
     if (!rotationScreenReady(config, candidate)) continue;
     radarRotationWaitingForCycle = false;
@@ -869,11 +884,13 @@ void maintainDisplayGestures() {
   // vpravo vpřed; nastavení je v cyklu poslední a odchází se z něj stejně.
   const int8_t holdDirection = displayDriverTakeScreenHold();
   if (holdDirection != 0 && clockDashboardManualScreenChangeAllowed()) {
-    const uint8_t current = activeRotationScreen();
+    const uint8_t current =
+        rotationScreenPosition(config, activeRotationScreen());
     for (uint8_t step = 1; step < ROTATION_SCREEN_COUNT; ++step) {
-      const uint8_t candidate = static_cast<uint8_t>(
-          (current + ROTATION_SCREEN_COUNT + holdDirection * step) %
-          ROTATION_SCREEN_COUNT);
+      const uint8_t candidate = rotationScreenAtPosition(
+          config, static_cast<uint8_t>(
+                      (current + ROTATION_SCREEN_COUNT + holdDirection * step) %
+                      ROTATION_SCREEN_COUNT));
       if (!rotationScreenAvailable(config, candidate)) continue;
       showRotationScreen(candidate);
       displayModeStartedAt = millis();
@@ -892,12 +909,12 @@ void maintainDisplayGestures() {
   }
   int16_t tapX = 0;
   int16_t tapY = 0;
-  if (displayDriverTakeShortTap(tapX, tapY)) {
-    // Na radaru letadel klepnutí nejdřív vybírá letadlo nebo zavírá detail;
-    // teprve když se nic netrefí, přepne se denní režim jako jinde.
-    if (!clockDashboardHandlePlanesTap(tapX, tapY))
-      clockDashboardHandleShortClick();
-  }
+  // Jedno klepnutí vybírá letadlo na radaru nebo zavírá jeho detail; jinde
+  // nedělá nic. Denní režim přepíná až dvojklepnutí, protože jedno klepnutí se
+  // pletlo s podržením prstu a místo obrazovky přepínalo den a noc.
+  if (displayDriverTakeShortTap(tapX, tapY))
+    clockDashboardHandleSingleTap(tapX, tapY);
+  if (displayDriverTakeDoubleTap()) clockDashboardHandleDoubleTap();
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {

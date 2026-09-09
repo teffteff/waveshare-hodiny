@@ -69,7 +69,9 @@ bool clockDashboardManualScreenChangeAllowed();
 void clockDashboardSetNightMode(bool enabled);
 bool clockDashboardNightModeEnabled();
 uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle);
-void clockDashboardHandleShortClick();
+// Dvojklepnutí přepíná denní a noční režim. Jedním klepnutím se přepínal, jenže
+// se pletlo s podržením prstu, kterým se mění obrazovka.
+void clockDashboardHandleDoubleTap();
 bool clockDashboardRadarVisible();
 void clockDashboardSetRadarVisible(bool visible);
 bool clockDashboardRssVisible();
@@ -102,9 +104,10 @@ void clockDashboardSetPlanesVisible(bool visible);
 // při prvním zapnutí, takže vypnutý radar nestojí ani jeden objekt LVGL.
 void clockDashboardSetPlanesAvailable(bool available);
 void clockDashboardSetPlanesVisibilityCallback(RssVisibilityCallback visibility);
-// Klepnutí na mapě letadel vybere letadlo pod prstem nebo zavře detail. Vrací
-// true, když se něco změnilo - pak se nemá brát jako přepnutí denního režimu.
-bool clockDashboardHandlePlanesTap(int16_t x, int16_t y);
+// Jedno klepnutí. Na mapě letadel vybere letadlo pod prstem nebo zavře jeho
+// detail; na ostatních obrazovkách nedělá nic, protože denní režim přepíná
+// dvojklepnutí.
+void clockDashboardHandleSingleTap(int16_t x, int16_t y);
 // Předá obrazovce hotový snímek radaru letadel i s detailem vybraného letu.
 void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
                                      bool watchedVisible,

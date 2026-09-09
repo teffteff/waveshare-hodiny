@@ -5,6 +5,7 @@
 #include <nvs_flash.h>
 
 #include <cmath>
+#include <cstring>
 #include <new>
 
 namespace {
@@ -44,6 +45,7 @@ constexpr uint32_t RADAR_SOURCE_PREDECESSOR_SCHEMA_VERSION = 31;
 constexpr uint32_t RADAR_STATUS_LINE_PREDECESSOR_SCHEMA_VERSION = 32;
 constexpr uint32_t FORECAST_PREDECESSOR_SCHEMA_VERSION = 33;
 constexpr uint32_t PLANES_PREDECESSOR_SCHEMA_VERSION = 34;
+constexpr uint32_t SCREEN_ORDER_PREDECESSOR_SCHEMA_VERSION = 35;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -144,6 +146,18 @@ struct ConfigRecordV34 {
   uint32_t magic;
   uint32_t schemaVersion;
   uint8_t config[SCHEMA_34_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
+// Schéma 35 končilo radarem letadel, jehož poslední pole je char[16] na
+// zarovnané adrese, takže ani ono žádnou koncovou výplň nemělo - offset pořadí
+// obrazovek se rovná jeho velikosti.
+constexpr size_t SCHEMA_35_CONFIG_SIZE = offsetof(ClockConfig, screenOrder);
+
+struct ConfigRecordV35 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_35_CONFIG_SIZE];
   uint32_t checksum;
 };
 
@@ -292,6 +306,11 @@ static_assert(SCHEMA_33_CONFIG_SIZE == 5648 &&
 static_assert(SCHEMA_34_CONFIG_SIZE == 5656 &&
                   sizeof(ConfigRecordV34) == 5668,
               "Migrační záznam schématu 34 musí zachovat přesnou velikost.");
+static_assert(SCHEMA_35_CONFIG_SIZE == 5688 &&
+                  sizeof(ConfigRecordV35) == 5700,
+              "Migrační záznam schématu 35 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV35) <= sizeof(ConfigRecord),
+              "Schéma 35 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV34) <= sizeof(ConfigRecord),
               "Schéma 34 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV33) <= sizeof(ConfigRecord),
@@ -340,6 +359,7 @@ void normalizeColorScale(ClockMetricColorScale &scale) {
 
 void normalizeConfig(ClockConfig &config) {
   config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+  clockConfigNormalizeScreenOrder(config.screenOrder);
   config.dayBrightness = constrain(config.dayBrightness, 1, 100);
   config.nightBrightness = constrain(config.nightBrightness, 1, 100);
   config.sunriseOffsetMinutes = constrain(config.sunriseOffsetMinutes, -60, 60);
@@ -497,6 +517,37 @@ bool clockConfigPlanesAvailable(const ClockConfig &config) {
   // adsb.fi pokrývá celý svět, takže na rozdíl od kompozice ČHMÚ nemá obrazovka
   // žádnou zeměpisnou podmínku - stačí, že ji majitel zapnul.
   return config.planes.enabled;
+}
+
+uint8_t clockConfigScreenAt(const ClockConfig &config, uint8_t position) {
+  if (position >= CLOCK_SCREEN_ORDER_COUNT) return CLOCK_SCREEN_CLOCK;
+  const uint8_t screen = config.screenOrder[position];
+  return screen < CLOCK_SCREEN_ORDER_COUNT ? screen : CLOCK_SCREEN_CLOCK;
+}
+
+uint8_t clockConfigScreenPosition(const ClockConfig &config, uint8_t screen) {
+  for (uint8_t position = 0; position < CLOCK_SCREEN_ORDER_COUNT; ++position) {
+    if (config.screenOrder[position] == screen) return position;
+  }
+  return 0;
+}
+
+void clockConfigNormalizeScreenOrder(uint8_t *order) {
+  bool seen[CLOCK_SCREEN_ORDER_COUNT] = {};
+  uint8_t normalized[CLOCK_SCREEN_ORDER_COUNT];
+  uint8_t count = 0;
+  for (size_t index = 0; index < CLOCK_SCREEN_ORDER_COUNT; ++index) {
+    const uint8_t screen = order[index];
+    if (screen >= CLOCK_SCREEN_ORDER_COUNT || seen[screen]) continue;
+    seen[screen] = true;
+    normalized[count++] = screen;
+  }
+  // Co v poli chybělo, se doplní na konec ve výchozím pořadí. Obrazovka bez
+  // místa v cyklu by byla nedostupná i gestem.
+  for (uint8_t screen = 0; screen < CLOCK_SCREEN_ORDER_COUNT; ++screen) {
+    if (!seen[screen]) normalized[count++] = screen;
+  }
+  memcpy(order, normalized, sizeof(normalized));
 }
 
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
@@ -670,6 +721,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV35) ||
                              storedSize == sizeof(ConfigRecordV34) ||
                              storedSize == sizeof(ConfigRecordV33) ||
                              storedSize == sizeof(ConfigRecordV32) ||
@@ -695,6 +747,29 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  // Schéma 35 je přesnou předponou schématu 36; pořadí obrazovek si po
+  // zkopírování bajtů podrží výchozí hodnoty z clockConfigApplyDefaults(), tedy
+  // to zabudované - povýšení firmwaru obrazovky nepřeskládá.
+  const ConfigRecordV35 &legacyV35 =
+      *reinterpret_cast<const ConfigRecordV35 *>(&record);
+  uint32_t embeddedSchemaV35 = 0;
+  if (readComplete && storedSize == sizeof(legacyV35)) {
+    memcpy(&embeddedSchemaV35, legacyV35.config, sizeof(embeddedSchemaV35));
+  }
+  const bool validSchema35Record =
+      readComplete && storedSize == sizeof(legacyV35) &&
+      legacyV35.magic == CONFIG_MAGIC &&
+      legacyV35.schemaVersion == SCREEN_ORDER_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV35 == SCREEN_ORDER_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV35.checksum ==
+          bytesChecksum(legacyV35.config, sizeof(legacyV35.config));
+  if (validSchema35Record) {
+    memcpy(&config, legacyV35.config, sizeof(legacyV35.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   // Schéma 34 je přesnou předponou schématu 35; radar letadel si po zkopírování

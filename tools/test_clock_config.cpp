@@ -47,6 +47,11 @@ constexpr size_t SCHEMA_34_CONFIG_SIZE = offsetof(ClockConfig, planes);
 constexpr size_t SCHEMA_34_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_34_CONFIG_SIZE;
 
+constexpr uint32_t SCHEMA_35 = 35;
+constexpr size_t SCHEMA_35_CONFIG_SIZE = offsetof(ClockConfig, screenOrder);
+constexpr size_t SCHEMA_35_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_35_CONFIG_SIZE;
+
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
   for (size_t index = 0; index < size; ++index) {
@@ -100,6 +105,10 @@ std::string schema32Record(const ClockConfig &source) {
 
 std::string schema34Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_34, SCHEMA_34_CONFIG_SIZE);
+}
+
+std::string schema35Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_35, SCHEMA_35_CONFIG_SIZE);
 }
 
 void seed(const std::string &record) {
@@ -728,6 +737,80 @@ void testPlanesRoundTripAndClamping() {
   assert(fixed.planes.altitudeMaxFt == CLOCK_PLANE_ALTITUDE_CEILING_FT);
 }
 
+// Migrace 35 → 36 nesmí obrazovky přeskládat: pořadí, které starší firmware
+// neznal, začíná na zabudovaném.
+void testSchema35MigrationAddsDefaultScreenOrder() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.planes.enabled = true;
+  source.planes.rangeIndex = 3;
+  clockConfigCopy(source.planes.watchCallsign,
+                  sizeof(source.planes.watchCallsign), "CSA1234");
+  source.forecast.enabled = true;
+
+  const std::string record = schema35Record(source);
+  assert(record.size() == SCHEMA_35_RECORD_SIZE);
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 35 zůstal nedotčený, včetně radaru letadel na konci.
+  assert(migrated.planes.enabled);
+  assert(migrated.planes.rangeIndex == 3);
+  assert(strcmp(migrated.planes.watchCallsign, "CSA1234") == 0);
+  assert(migrated.forecast.enabled);
+  // Nové pole drží zabudované pořadí obrazovek.
+  assert(migrated.screenOrder[0] == CLOCK_SCREEN_CLOCK);
+  assert(migrated.screenOrder[1] == CLOCK_SCREEN_RADAR);
+  assert(migrated.screenOrder[2] == CLOCK_SCREEN_RSS);
+  assert(migrated.screenOrder[3] == CLOCK_SCREEN_FORECAST);
+  assert(migrated.screenOrder[4] == CLOCK_SCREEN_PLANES);
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
+void testScreenOrderRoundTripAndNormalization() {
+  hostPreferencesReset();
+  ClockConfig config;
+  clockConfigApplyDefaults(config);
+  config.screenOrder[0] = CLOCK_SCREEN_PLANES;
+  config.screenOrder[1] = CLOCK_SCREEN_CLOCK;
+  config.screenOrder[2] = CLOCK_SCREEN_FORECAST;
+  config.screenOrder[3] = CLOCK_SCREEN_RSS;
+  config.screenOrder[4] = CLOCK_SCREEN_RADAR;
+  assert(clockConfigSave(config));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.screenOrder[0] == CLOCK_SCREEN_PLANES);
+  assert(loaded.screenOrder[4] == CLOCK_SCREEN_RADAR);
+  assert(clockConfigScreenAt(loaded, 1) == CLOCK_SCREEN_CLOCK);
+  assert(clockConfigScreenPosition(loaded, CLOCK_SCREEN_RSS) == 3);
+
+  // Zdvojená a neznámá hodnota by ubrala obrazovku z cyklu; chybějící se
+  // doplní na konec ve výchozím pořadí.
+  hostPreferencesReset();
+  ClockConfig wild;
+  clockConfigApplyDefaults(wild);
+  wild.screenOrder[0] = CLOCK_SCREEN_RSS;
+  wild.screenOrder[1] = CLOCK_SCREEN_RSS;
+  wild.screenOrder[2] = 200;
+  wild.screenOrder[3] = CLOCK_SCREEN_PLANES;
+  wild.screenOrder[4] = CLOCK_SCREEN_PLANES;
+  assert(clockConfigSave(wild));
+
+  ClockConfig repaired;
+  assert(clockConfigLoad(repaired));
+  assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
+  assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
+  assert(repaired.screenOrder[2] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrder[3] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrder[4] == CLOCK_SCREEN_FORECAST);
+}
+
 int main() {
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
@@ -745,5 +828,7 @@ int main() {
   testSchema32MigrationAddsRadarStatusLine();
   testSchema34MigrationAddsDisabledPlanes();
   testPlanesRoundTripAndClamping();
+  testSchema35MigrationAddsDefaultScreenOrder();
+  testScreenOrderRoundTripAndNormalization();
   return 0;
 }

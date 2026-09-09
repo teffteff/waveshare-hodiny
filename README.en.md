@@ -59,7 +59,7 @@ changes the system text and verbal date shown on the display.
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
 - optional automatic rotation between the clock, radar, news, forecast and
-  aircraft,
+  aircraft, in an order you choose,
 - a news screen fed by any RSS or Atom feed,
 - a forecast screen with hourly and daily Open-Meteo data, optionally with air
   quality, PM2.5 and grass pollen — and nine hours instead of six without it,
@@ -219,6 +219,7 @@ The web interface configures:
   refreshes it,
 - clock and date colors, fonts, date format and seconds effects,
 - day/night brightness and automatic switching,
+- the screen order on the **Screens** tab, by dragging or with the arrows,
 - automatic OTA updates and web-server availability,
 - an optional web password,
 - backup import/export, restart, display controls and live diagnostics.
@@ -298,7 +299,7 @@ publication time.
 ### Screen indicator
 
 A row of dots sits at the top of **every** screen, one per screen taking part
-in the rotation — clock, radar, news, forecast and aircraft. The filled dot is
+in the rotation, in the order you set on the Screens tab. The filled dot is
 the one you are
 looking at. A disabled screen has no dot, so the row always matches what the
 gesture can actually reach. With a single available screen the indicator is not
@@ -520,17 +521,22 @@ token, TMEP.cz export URL, web password and control API secret.
 
 Screens are changed by holding a finger still for about half a second. Where
 the finger rests decides the direction: the left half of the display goes one
-screen back, the right half one forward. The order is clock, radar, news,
-forecast, settings and back to the clock, so the settings are one hold in the
-left half away from the clock. Unavailable screens are skipped; the settings
-screen can never be switched off, so a clock with no radar, news or forecast
-still has a way to the web address. The same hold leaves the settings again, discarding
+screen back, the right half one forward. The default order is clock, radar,
+news, forecast, aircraft, settings and back to the clock, so the settings are
+one hold in the left half away from the clock. The first five screens can be
+reordered on the **Screens** tab of the web configuration; the settings stay
+last in the cycle so that leaving them always ends up in the same place.
+Unavailable screens are skipped but keep their place; the settings screen can
+never be switched off, so a clock with no radar, news or forecast still has a
+way to the web address. The same hold leaves the settings again, discarding
 anything not yet stored by the Save button.
 
 On the radar, dragging up or right zooms in and dragging down or left zooms
 out; this range change remains temporary until restart. With automatic
-day/night mode disabled, a short tap on any of these screens switches the
-appearance. Gestures are recognised in software from the raw touch
+day/night mode disabled, a double tap on any of these screens switches the
+appearance. A single tap does not, because it was too easy to hit instead of
+the hold that changes screens; on the aircraft radar a single tap still selects
+the aircraft under the finger or closes its detail. Gestures are recognised in software from the raw touch
 coordinates rather than from the CST820 gesture register, and only once the
 finger lifts, so short drags across the round display are not lost and a single
 gesture never fires twice. Arrow buttons move between the three settings pages;

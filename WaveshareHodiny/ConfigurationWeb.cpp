@@ -1334,6 +1334,16 @@ void handleGetConfig() {
   result += config.planes.displaySeconds;
   result += F(",\"planesAutomaticRotation\":");
   result += config.planes.automaticRotation ? F("true") : F("false");
+  // Pořadí obrazovek jde na web jako jména, ne čísla: pořadí v ClockConfig se
+  // dá rozšířit, aniž by se rozešlo s tím, co si stránka pamatuje.
+  result += F(",\"screenOrder\":[");
+  for (size_t index = 0; index < CLOCK_SCREEN_ORDER_COUNT; ++index) {
+    if (index > 0) result += ',';
+    result += '"';
+    result += clockScreenName(config.screenOrder[index]);
+    result += '"';
+  }
+  result += ']';
   // Kolik hodin se na obrazovku vejde pro každou kombinaci kvality ovzduší a
   // počtu dní. Počítá to rozvržení obrazovky, aby si web nemusel držet vlastní
   // kopii stejného vzorce; index je (kvalita ovzduší ? 5 : 0) + počet dní.
@@ -1802,6 +1812,17 @@ void handleSaveConfig() {
         server.arg("planesAutomaticRotation") == "1";
   }
 
+  // Stránka uložená ze starší verze pole vůbec neposílá; uložené pořadí se
+  // tím nesmí přepsat.
+  if (server.hasArg("screenOrder")) {
+    uint8_t screenOrder[CLOCK_SCREEN_ORDER_COUNT];
+    if (!parseScreenOrder(server.arg("screenOrder"), screenOrder)) {
+      sendError(400, F("Pořadí obrazovek není platné."));
+      return;
+    }
+    memcpy(config.screenOrder, screenOrder, sizeof(config.screenOrder));
+  }
+
   const String submittedTmepUrl = server.arg("tmepExportUrl");
   if (!submittedTmepUrl.isEmpty()) {
     String exportId;
@@ -2196,6 +2217,7 @@ void handleTmepTest() {
   const ClockConfig &config = currentConfig();
   String exportId = config.tmepExportId;
   String exportKey = config.tmepExportKey;
+
   const String submittedTmepUrl = server.arg("tmepExportUrl");
   if (!submittedTmepUrl.isEmpty() &&
       !parseTmepExportUrl(submittedTmepUrl, exportId, exportKey)) {
