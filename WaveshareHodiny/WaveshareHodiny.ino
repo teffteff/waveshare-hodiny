@@ -13,6 +13,7 @@
 #include "ClockConfig.h"
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
+#include "PlaneRadarService.h"
 #include "RssService.h"
 #include "ConfigurationWeb.h"
 #include "DayNightLogic.h"
@@ -122,6 +123,20 @@ unsigned long radarRadiusApplyAt = 0;
 bool automaticRotationPaused = true;
 uint32_t displayedRssGeneration = UINT32_MAX;
 uint32_t displayedForecastGeneration = UINT32_MAX;
+uint32_t displayedPlanesGeneration = UINT32_MAX;
+// Detail se překresluje mimo generaci snímku: klepnutí na letadlo mění panel,
+// ne mapu pod ním, takže by se jinak ukázal až s dalším stažením.
+bool displayedPlanesDetailOpen = false;
+bool displayedPlanesRoutePending = false;
+bool displayedPlanesRouteKnown = false;
+char displayedPlanesDetailHex[8] = "";
+// Hláška se porovnává zvlášť: chyba, po které se vůbec nekreslilo, generaci
+// snímku neposune, a obrazovka by o ní jinak nikdy nedala vědět.
+char displayedPlanesMessage[64] = "";
+// Dosah se porovnává zvlášť, aby se popisek po přetažení prstem přepsal hned.
+// Nový snímek přijde až po stažení, které na pomalé síti trvá i vteřiny, a do
+// té doby by pod prstem svítil starý údaj.
+uint16_t displayedPlanesRangeKm = 0;
 unsigned long displayModeStartedAt = 0;
 bool radarRotationWaitingForCycle = false;
 uint32_t radarRotationCycleAtTimeout = 0;
@@ -326,6 +341,23 @@ void applyPendingClockAppearance() {
   clockDashboardApplyAppearance(pendingAppearance);
 }
 
+// Radar letadel se musí dozvědět o každé změně nastavení - dosah, azimut,
+// filtr výšky i hlídaný let mění to, na co se serveru ptáme a co se kreslí.
+// Zapnuté střídání navíc drží stahování i se schovanou obrazovkou, jinak by
+// rotace obrazovku přeskakovala pořád dokola: čeká na první snímek, který by
+// se bez stahování nikdy nevykreslil.
+void applyPlaneRadarState(const ClockConfig &config, bool visible) {
+  const bool planesAvailable = clockConfigPlanesAvailable(config);
+  planeRadarServiceSetActive(
+      planesAvailable && visible,
+      planesAvailable && config.planes.automaticRotation,
+      config.openMeteoLatitude, config.openMeteoLongitude, config.planes);
+}
+
+void applyPlaneRadarState(const ClockConfig &config) {
+  applyPlaneRadarState(config, clockDashboardPlanesVisible());
+}
+
 void applyPendingRuntimeConfiguration() {
   if (!runtimeConfigurationApplyPending ||
       static_cast<long>(millis() - runtimeConfigurationApplyAt) < 0) {
@@ -352,6 +384,7 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarPauseSeconds,
       dashboardConfigBuffer.radarLegend,
       dashboardConfigBuffer.radarSource);
+  applyPlaneRadarState(dashboardConfigBuffer);
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
   // panelu. Provádíme ji až po dokončení obsluhy HTTP požadavku.
   LCD_Resync();
@@ -530,6 +563,24 @@ void handleRadarVisibility(bool visible) {
                             config.radarSource);
 }
 
+// Radar letadel stahuje jen když je vidět, nebo když si ho majitel pustil do
+// rotace - adsb.fi je API zdarma a hodiny z něj nemají tahat data pořád.
+void handlePlanesVisibility(bool visible) {
+  displayModeStartedAt = millis();
+  automaticRotationPaused = false;
+  if (visible) {
+    // Odchod z obrazovky canvas schová a odkrýt ho umí jen předání snímku.
+    // Beze změny dat by se ale žádné nekonalo - třeba když jsou hodiny offline -
+    // a mapa by po návratu zůstala černá, i když hotový snímek pořád leží
+    // v paměti. Vynulovaná generace vynutí jedno předání hned.
+    displayedPlanesGeneration = UINT32_MAX;
+  }
+  // Bere se předaná hodnota, ne to, co zrovna ukazuje activeScreen: při
+  // aktualizaci firmwaru přijde false ještě dřív, než se obrazovka přepne, a
+  // odvozením by radar dál stahoval přes celé odpočítávání OTA.
+  applyPlaneRadarState(loopConfigSnapshot(), visible);
+}
+
 void handleRadarRangeChange(int8_t direction) {
   static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 200, 0};
   const ClockConfig &config = loopConfigSnapshot();
@@ -618,8 +669,9 @@ constexpr uint8_t ROTATION_SCREEN_CLOCK = 0;
 constexpr uint8_t ROTATION_SCREEN_RADAR = 1;
 constexpr uint8_t ROTATION_SCREEN_RSS = 2;
 constexpr uint8_t ROTATION_SCREEN_FORECAST = 3;
-constexpr uint8_t ROTATION_SCREEN_SETTINGS = 4;
-constexpr uint8_t ROTATION_SCREEN_COUNT = 5;
+constexpr uint8_t ROTATION_SCREEN_PLANES = 4;
+constexpr uint8_t ROTATION_SCREEN_SETTINGS = 5;
+constexpr uint8_t ROTATION_SCREEN_COUNT = 6;
 
 uint8_t activeRotationScreen() {
   // Nastavení je překryv nad ostatními stránkami, takže rozhoduje první.
@@ -627,6 +679,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardRadarVisible()) return ROTATION_SCREEN_RADAR;
   if (clockDashboardRssVisible()) return ROTATION_SCREEN_RSS;
   if (clockDashboardForecastVisible()) return ROTATION_SCREEN_FORECAST;
+  if (clockDashboardPlanesVisible()) return ROTATION_SCREEN_PLANES;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -647,11 +700,15 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_FORECAST:
       clockDashboardSetForecastVisible(true);
       break;
+    case ROTATION_SCREEN_PLANES:
+      clockDashboardSetPlanesVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
       clockDashboardSetRssVisible(false);
       clockDashboardSetForecastVisible(false);
+      clockDashboardSetPlanesVisible(false);
       break;
   }
 }
@@ -664,6 +721,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_RSS: return clockConfigRssAvailable(config);
     case ROTATION_SCREEN_FORECAST:
       return clockConfigForecastAvailable(config);
+    case ROTATION_SCREEN_PLANES:
+      return clockConfigPlanesAvailable(config);
     default: return true;
   }
 }
@@ -679,6 +738,9 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_FORECAST:
       return clockConfigForecastAvailable(config) &&
              config.forecast.automaticRotation;
+    case ROTATION_SCREEN_PLANES:
+      return clockConfigPlanesAvailable(config) &&
+             config.planes.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -711,6 +773,13 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     weatherForecastServiceStatus(status);
     return status.ready && status.hourCount > 0;
   }
+  if (screen == ROTATION_SCREEN_PLANES) {
+    // Prázdná obloha je platný stav, takže se čeká jen na první vykreslený
+    // snímek - ne na to, až nějaké letadlo přiletí.
+    PlaneRadarSnapshot snapshot;
+    planeRadarServiceSnapshot(snapshot);
+    return snapshot.ready && snapshot.pixels != nullptr;
+  }
   return true;
 }
 
@@ -723,6 +792,8 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_FORECAST:
       return static_cast<unsigned long>(config.forecast.displaySeconds) *
              1000UL;
+    case ROTATION_SCREEN_PLANES:
+      return static_cast<unsigned long>(config.planes.displaySeconds) * 1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -733,7 +804,8 @@ void maintainAutomaticScreenRotation() {
   const bool anyRotation =
       rotationScreenEnabled(config, ROTATION_SCREEN_RADAR) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_RSS) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_FORECAST);
+      rotationScreenEnabled(config, ROTATION_SCREEN_FORECAST) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_PLANES);
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed();
@@ -807,12 +879,22 @@ void maintainDisplayGestures() {
     }
   }
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
-  if (rangeSwipeDirection != 0 && radarAvailable &&
-      clockDashboardRadarVisible() &&
-      clockDashboardAutomaticRotationAllowed()) {
-    handleRadarRangeChange(rangeSwipeDirection);
+  if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
+    if (radarAvailable && clockDashboardRadarVisible()) {
+      handleRadarRangeChange(rangeSwipeDirection);
+    } else if (clockDashboardPlanesVisible()) {
+      planeRadarServiceChangeRange(rangeSwipeDirection);
+      displayModeStartedAt = millis();
+    }
   }
-  if (displayDriverTakeShortTap()) clockDashboardHandleShortClick();
+  int16_t tapX = 0;
+  int16_t tapY = 0;
+  if (displayDriverTakeShortTap(tapX, tapY)) {
+    // Na radaru letadel klepnutí nejdřív vybírá letadlo nebo zavírá detail;
+    // teprve když se nic netrefí, přepne se denní režim jako jinde.
+    if (!clockDashboardHandlePlanesTap(tapX, tapY))
+      clockDashboardHandleShortClick();
+  }
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
@@ -853,6 +935,40 @@ void maintainRssDisplay() {
   displayedRssGeneration = status.generation;
 }
 
+// Snímek radaru letadel na obrazovku. Generace se mění i po neúspěšném
+// stažení, takže se hláška dostane na displej stejnou cestou jako data.
+void maintainPlanesDisplay() {
+  if (!clockDashboardPlanesVisible()) return;
+  PlaneRadarSnapshot snapshot;
+  planeRadarServiceSnapshot(snapshot);
+  // Detail i hláška se překreslují i beze změny generace: klepnutí na letadlo
+  // mění jen panel, ne mapu pod ním, a chyba, po které se vůbec nekreslilo -
+  // třeba čekání na síť nebo nedostatek PSRAM - generaci neposune vůbec. Bez
+  // porovnání hlášky by obrazovka mlčky visela na starém snímku.
+  if (snapshot.generation == displayedPlanesGeneration &&
+      snapshot.detail.open == displayedPlanesDetailOpen &&
+      snapshot.detail.routePending == displayedPlanesRoutePending &&
+      snapshot.detail.routeKnown == displayedPlanesRouteKnown &&
+      strcmp(snapshot.detail.hex, displayedPlanesDetailHex) == 0 &&
+      snapshot.rangeKm == displayedPlanesRangeKm &&
+      strcmp(snapshot.message, displayedPlanesMessage) == 0) {
+    return;
+  }
+  clockDashboardSetPlanesSnapshot(snapshot.pixels, snapshot.shownCount,
+                                  snapshot.watchedVisible, snapshot.emergency,
+                                  snapshot.rangeKm, snapshot.message,
+                                  snapshot.loading, snapshot.detail);
+  displayedPlanesGeneration = snapshot.generation;
+  displayedPlanesDetailOpen = snapshot.detail.open;
+  displayedPlanesRoutePending = snapshot.detail.routePending;
+  displayedPlanesRouteKnown = snapshot.detail.routeKnown;
+  strlcpy(displayedPlanesDetailHex, snapshot.detail.hex,
+          sizeof(displayedPlanesDetailHex));
+  strlcpy(displayedPlanesMessage, snapshot.message,
+          sizeof(displayedPlanesMessage));
+  displayedPlanesRangeKm = snapshot.rangeKm;
+}
+
 void maintainRadarDisplay() {
   ChmiRadarSnapshot snapshot;
   chmiRadarServiceSnapshot(snapshot);
@@ -881,6 +997,7 @@ void maintainRadarNightVisual() {
   if (radarRedNightModeApplied == enabled) return;
   radarRedNightModeApplied = enabled;
   chmiRadarServiceSetRedNightMode(enabled);
+  planeRadarServiceSetRedNightMode(enabled);
 }
 
 void handleConfigurationWebStatus(bool active) {
@@ -1196,6 +1313,7 @@ void maintainNetworkTime() {
         config.radarRadiusKm, config.radarFrameCount,
         config.radarMapOpacity, config.radarPauseSeconds,
         config.radarLegend, config.radarSource);
+    applyPlaneRadarState(config);
 #if !FIRMWARE_RELEASE
     Serial.println("NTP synchronizovano");
 #endif
@@ -1318,8 +1436,14 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     // buffery čistou černou ještě před prvním zápisem OTA do flash.
     delay(500);
     chmiRadarServicePrepareForFirmwareUpdate();
+    planeRadarServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
+    planeRadarServiceBegin();
+    // Příprava na aktualizaci službu vypnula. Se schovanou obrazovkou by ji
+    // nikdo nezapnul zpátky - callback viditelnosti se nezavolá - a radar by po
+    // přerušené aktualizaci mlčel až do restartu, včetně vypadnutí ze střídání.
+    applyPlaneRadarState(loopConfigSnapshot());
     firmwareUpdateCountdownStarted = false;
     firmwareUpdateBlackRequested = false;
     displayResyncAt = millis() + 500;
@@ -2247,14 +2371,21 @@ void setup() {
                        handleSettingsFirmwareInstall, handleRadarVisibility,
                        handleRadarRangeChange, handleRssVisibility,
                        handleForecastVisibility);
+  clockDashboardSetPlanesVisibilityCallback(handlePlanesVisibility);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
+  planeRadarServiceBegin();
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
       runtimeConfig.radarRadiusKm, runtimeConfig.radarFrameCount,
       runtimeConfig.radarMapOpacity, runtimeConfig.radarPauseSeconds,
       runtimeConfig.radarLegend, runtimeConfig.radarSource);
+  // Poloha a nastavení se službě předají hned; stahovat začne až po
+  // synchronizaci času, kdy applyPlaneRadarState() doplní skutečný stav.
+  planeRadarServiceSetActive(false, false, runtimeConfig.openMeteoLatitude,
+                             runtimeConfig.openMeteoLongitude,
+                             runtimeConfig.planes);
   clockDashboardSetSecond(60);
   displayResyncAt = millis() + 2000;
 #if FIRMWARE_RELEASE
@@ -2338,6 +2469,7 @@ void loop() {
   maintainRadarNightVisual();
   maintainRadarRangeChange();
   maintainRadarDisplay();
+  maintainPlanesDisplay();
   maintainRssDisplay();
   maintainForecastDisplay();
   maintainAutomaticScreenRotation();

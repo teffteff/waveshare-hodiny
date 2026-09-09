@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "ClockConfig.h"
+#include "PlaneRadarService.h"
 #include "WeatherForecast.h"
 
 struct ClockValues {
@@ -94,6 +95,23 @@ void clockDashboardSetForecast(const WeatherForecastData &forecast);
 // Dokud předpověď nedorazila, drží obrazovku hláška. Text si obrazovka skládá
 // sama, aby se přepnutím jazyka přeložil i on.
 void clockDashboardSetForecastFailed(bool failed);
+// --- Radar letadel ----------------------------------------------------------
+bool clockDashboardPlanesVisible();
+void clockDashboardSetPlanesVisible(bool visible);
+// Vypnutá obrazovka se do rotace ani pod gesto nepustí. Stránka se zakládá až
+// při prvním zapnutí, takže vypnutý radar nestojí ani jeden objekt LVGL.
+void clockDashboardSetPlanesAvailable(bool available);
+void clockDashboardSetPlanesVisibilityCallback(RssVisibilityCallback visibility);
+// Klepnutí na mapě letadel vybere letadlo pod prstem nebo zavře detail. Vrací
+// true, když se něco změnilo - pak se nemá brát jako přepnutí denního režimu.
+bool clockDashboardHandlePlanesTap(int16_t x, int16_t y);
+// Předá obrazovce hotový snímek radaru letadel i s detailem vybraného letu.
+void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
+                                     bool watchedVisible,
+                                     const char *emergency, uint16_t rangeKm,
+                                     const char *message, bool loading,
+                                     const PlaneRadarDetail &detail);
+
 bool clockDashboardAutomaticRotationAllowed();
 void clockDashboardSetWifiAddress(const char *ipAddress);
 void clockDashboardSetFirmwareVersion(const char *version,

@@ -101,6 +101,22 @@ lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_SLOT_COUNT] = {};
 // prvním zapnutí - do té doby nestojí ani jeden objekt LVGL.
 lv_obj_t *dashboardScreen = nullptr;
 lv_obj_t *forecastPage = nullptr;
+lv_obj_t *planesPage = nullptr;
+lv_obj_t *planesCanvas = nullptr;
+lv_obj_t *planesClockLabel = nullptr;
+lv_obj_t *planesStatusLabel = nullptr;
+lv_obj_t *planesRangeLabel = nullptr;
+// Detail vybraného letadla. Panel je LVGL, ne kresba do bufferu: potřebuje
+// pořádné písmo, malá písmena i diakritiku, což drobné mapové písmo neumí.
+lv_obj_t *planesDetailPanel = nullptr;
+lv_obj_t *planesDetailTitle = nullptr;
+lv_obj_t *planesDetailClose = nullptr;
+constexpr uint8_t PLANES_DETAIL_ROW_COUNT = 6;
+lv_obj_t *planesDetailRows[PLANES_DETAIL_ROW_COUNT] = {};
+lv_obj_t *planesDetailRouteFrom = nullptr;
+lv_obj_t *planesDetailRouteTo = nullptr;
+lv_obj_t *planesDetailSignalLost = nullptr;
+bool planesFeatureAvailable = false;
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *rssHeaderLabel = nullptr;
 lv_obj_t *rssStatusLabel = nullptr;
@@ -138,7 +154,7 @@ lv_obj_t *radarStatusLabel = nullptr;
 // Ukazatel obrazovek. Leží nad všemi stránkami, ne v jedné z nich - jinak by
 // z něj byl ukazatel jediné obrazovky. Pořadí teček odpovídá pořadí, ve kterém
 // se obrazovky střídají.
-constexpr uint8_t SCREEN_DOT_COUNT = 4;
+constexpr uint8_t SCREEN_DOT_COUNT = 5;
 lv_obj_t *screenDots[SCREEN_DOT_COUNT] = {};
 lv_obj_t *screenDotsBacking = nullptr;
 // Vteřinový prstenec má poloměr 226 a jeho největší tečka (kometa při velikosti
@@ -265,6 +281,7 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_RADAR = 1,
   DASHBOARD_SCREEN_RSS = 2,
   DASHBOARD_SCREEN_FORECAST = 3,
+  DASHBOARD_SCREEN_PLANES = 4,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -374,6 +391,7 @@ RadarVisibilityCallback radarVisibilityCallback = nullptr;
 RssVisibilityCallback rssVisibilityCallback = nullptr;
 ForecastVisibilityCallback forecastVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
+RssVisibilityCallback planesVisibilityCallback = nullptr;
 
 bool redNightVisualEnabled() {
   return nightModeEnabled && nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
@@ -391,6 +409,7 @@ void showSettingsSubpage(uint8_t page);
 void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber);
 void updateScreenDots();
 void updateRadarClockLabel();
+void updatePlanesClockLabel();
 void updateOverlayStatusLabels();
 const char *radarEmptyStateText(bool busy);
 void updateClockStyleCardSelection();
@@ -499,6 +518,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
     case DASHBOARD_SCREEN_RADAR: return radarPage;
     case DASHBOARD_SCREEN_RSS: return rssPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
+    case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
   }
 }
@@ -511,6 +531,8 @@ bool screenAvailable(uint8_t screen) {
     // majitel nechce, nestojí ani jeden objekt LVGL.
     case DASHBOARD_SCREEN_FORECAST:
       return forecastFeatureAvailable && forecastPage != nullptr;
+    case DASHBOARD_SCREEN_PLANES:
+      return planesFeatureAvailable && planesPage != nullptr;
     default: return true;
   }
 }
@@ -557,6 +579,22 @@ void setActiveScreen(uint8_t screen) {
   const bool isForecast = screen == DASHBOARD_SCREEN_FORECAST;
   if (wasForecast != isForecast && forecastVisibilityCallback != nullptr)
     forecastVisibilityCallback(isForecast);
+  // Radar letadel stahuje jen když je vidět, nebo když si ho majitel pustil do
+  // rotace; jinak by se z hodin stal stálý zákazník cizího API.
+  const bool wasPlanes = previous == DASHBOARD_SCREEN_PLANES;
+  const bool isPlanes = screen == DASHBOARD_SCREEN_PLANES;
+  if (wasPlanes != isPlanes) {
+    if (!isPlanes) {
+      // Odchod z obrazovky zavírá detail: po návratu by visel nad letadlem,
+      // které už dávno odletělo.
+      planeRadarServiceCloseDetail();
+      if (planesCanvas != nullptr)
+        lv_obj_add_flag(planesCanvas, LV_OBJ_FLAG_HIDDEN);
+      if (planesDetailPanel != nullptr)
+        lv_obj_add_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (planesVisibilityCallback != nullptr) planesVisibilityCallback(isPlanes);
+  }
   // Stránka se právě vytáhla dopředu, takže ukazatel musí zpátky nad ni.
   updateScreenDots();
 }
@@ -2783,6 +2821,131 @@ void createForecastPage(lv_obj_t *screen) {
   lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
 }
 
+// --- Radar letadel ----------------------------------------------------------
+// Mapa i letadla přijdou hotové z PlaneRadarService jako buffer RGB565; tady
+// se jen podloží pod canvas. Text kolem je LVGL, protože drobné mapové písmo
+// neumí malá písmena ani diakritiku, a jména měst z trasy je potřebují.
+constexpr int PLANES_CLOCK_OFFSET_Y = -186;
+// Řádek s počtem letadel sedí těsně pod hodinami: podklad hodin sahá k y=68,
+// řádek při písmu 14 měří 22 px, takže -158 nechá mezi oběma proužky 2 px.
+// Výš už to nejde, aniž by se podklady slily do jednoho bloku.
+constexpr int PLANES_STATUS_OFFSET_Y = -158;
+constexpr int PLANES_RANGE_OFFSET_Y = 164;
+constexpr int PLANES_DETAIL_WIDTH = 330;
+// Šest řádků, dvě řádky trasy a poznámka o ztraceném signálu. Rohy panelu musí
+// zůstat uvnitř kruhu displeje: 330x290 dává úhlopříčku 220 px proti poloměru
+// 240 px.
+constexpr int PLANES_DETAIL_HEIGHT = 290;
+
+// Objekty obrazovky se zakládají do PSRAM, ze stejného důvodu jako u
+// předpovědi: v interní RAM by ubraly kilobajty, o které pak přijde TLS
+// handshake - a to i službám, které o radaru letadel nic nevědí.
+class PlanesPsramAllocations {
+ public:
+  PlanesPsramAllocations() { clockLvglPreferPsram(true); }
+  ~PlanesPsramAllocations() { clockLvglPreferPsram(false); }
+
+  PlanesPsramAllocations(const PlanesPsramAllocations &) = delete;
+  PlanesPsramAllocations &operator=(const PlanesPsramAllocations &) = delete;
+};
+
+lv_obj_t *makePlanesOverlayLabel(lv_obj_t *parent, const lv_font_t *font,
+                                 lv_color_t color, int offsetY) {
+  // Tmavý podklad tu není ozdoba: řádek leží přímo na mapě a nad světlou
+  // ikonou letadla by text zmizel.
+  lv_obj_t *label = makeLabel(parent, font, color);
+  lv_label_set_text(label, "");
+  lv_obj_set_style_bg_color(label, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(label, LV_OPA_80, 0);
+  lv_obj_set_style_pad_hor(label, 8, 0);
+  lv_obj_set_style_pad_ver(label, 2, 0);
+  alignCenter(label, 0, offsetY);
+  return label;
+}
+
+void createPlanesPage(lv_obj_t *screen) {
+  PlanesPsramAllocations psramAllocations;
+
+  planesPage = lv_obj_create(screen);
+  lv_obj_set_size(planesPage, 480, 480);
+  lv_obj_center(planesPage);
+  lv_obj_set_style_bg_color(planesPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(planesPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(planesPage, 0, 0);
+  lv_obj_set_style_pad_all(planesPage, 0, 0);
+  lv_obj_set_style_radius(planesPage, 0, 0);
+  lv_obj_clear_flag(planesPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  planesCanvas = lv_canvas_create(planesPage);
+  lv_obj_center(planesCanvas);
+  lv_obj_add_flag(planesCanvas, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(planesCanvas, LV_OBJ_FLAG_CLICKABLE);
+
+  planesClockLabel = makePlanesOverlayLabel(planesPage, &clock_czech_20,
+                                            COLOR_TEXT, PLANES_CLOCK_OFFSET_Y);
+  lv_obj_add_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
+  planesStatusLabel = makePlanesOverlayLabel(
+      planesPage, &clock_czech_14, COLOR_OUTSIDE, PLANES_STATUS_OFFSET_Y);
+  lv_label_set_recolor(planesStatusLabel, true);
+  planesRangeLabel = makePlanesOverlayLabel(
+      planesPage, &clock_czech_20, COLOR_OUTSIDE, PLANES_RANGE_OFFSET_Y);
+
+  // Detail letadla. Leží nad mapou a odchází se z něj klepnutím kamkoli, takže
+  // sám žádné dotyky nechytá.
+  planesDetailPanel = lv_obj_create(planesPage);
+  lv_obj_set_size(planesDetailPanel, PLANES_DETAIL_WIDTH, PLANES_DETAIL_HEIGHT);
+  lv_obj_center(planesDetailPanel);
+  lv_obj_set_style_bg_color(planesDetailPanel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(planesDetailPanel, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(planesDetailPanel, COLOR_OUTSIDE, 0);
+  lv_obj_set_style_border_width(planesDetailPanel, 2, 0);
+  lv_obj_set_style_radius(planesDetailPanel, 14, 0);
+  lv_obj_set_style_pad_all(planesDetailPanel, 0, 0);
+  lv_obj_clear_flag(planesDetailPanel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+
+  planesDetailTitle = makeLabel(planesDetailPanel, &clock_czech_20, COLOR_ROOM);
+  lv_label_set_text(planesDetailTitle, "");
+  lv_obj_align(planesDetailTitle, LV_ALIGN_TOP_LEFT, 18, 14);
+
+  // Křížek v rohu. Je to značka, ne tlačítko - zavírá kterékoli klepnutí.
+  planesDetailClose = makeLabel(planesDetailPanel, &clock_czech_18, COLOR_ERROR);
+  lv_label_set_text(planesDetailClose, "X");
+  lv_obj_align(planesDetailClose, LV_ALIGN_TOP_RIGHT, -18, 14);
+
+  for (uint8_t row = 0; row < PLANES_DETAIL_ROW_COUNT; ++row) {
+    lv_obj_t *label = makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
+    lv_label_set_recolor(label, true);
+    lv_label_set_text(label, "");
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 18, 48 + row * 24);
+    planesDetailRows[row] = label;
+  }
+
+  // Trasa na DVĚ řádky. Jedna řádka se šipkou mezi městy se musela zmenšit,
+  // aby se vedle sebe vešla dvě jména, a byla pak nečitelná; na půl má každá
+  // celou šířku panelu.
+  planesDetailRouteFrom =
+      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_MUTED);
+  lv_label_set_text(planesDetailRouteFrom, "");
+  lv_obj_align(planesDetailRouteFrom, LV_ALIGN_TOP_LEFT, 18,
+               48 + PLANES_DETAIL_ROW_COUNT * 24 + 6);
+  planesDetailRouteTo =
+      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_MUTED);
+  lv_label_set_text(planesDetailRouteTo, "");
+  lv_obj_align(planesDetailRouteTo, LV_ALIGN_TOP_LEFT, 18,
+               48 + PLANES_DETAIL_ROW_COUNT * 24 + 28);
+
+  planesDetailSignalLost =
+      makeLabel(planesDetailPanel, &clock_czech_16, COLOR_ROOM);
+  lv_label_set_text(planesDetailSignalLost, "");
+  lv_obj_align(planesDetailSignalLost, LV_ALIGN_BOTTOM_RIGHT, -14, -8);
+  lv_obj_add_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN);
+
+  makeChildrenTapThrough(planesPage);
+  lv_obj_add_flag(planesPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Hlavička obrazovky: čas a venkovní teplota, stejně jako ve stavovém řádku
 // radaru. Předpověď totiž zabírá celý displej a ciferník pod ní není vidět.
 void updateForecastHeaderLabel() {
@@ -3101,12 +3264,9 @@ const char *radarEmptyStateText(bool busy) {
 
 // Čas a venkovní teplota do jednoho řádku. Ukáže jen tu polovinu, kterou už
 // zařízení zná - půl řádku je pořád lepší než prázdné místo.
-void updateRadarClockLabel() {
-  if (radarClockLabel == nullptr) return;
-  if (!radarStatusLineEnabled) {
-    lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
+// Čas a venkovní teplota do jednoho řádku. Používá ho stavový řádek
+// meteoradaru i radaru letadel, aby obě mapy ukazovaly totéž stejně.
+bool composeStatusLineText(char *text, size_t capacity) {
   // "--:--" drží místo, dokud se čas nesynchronizuje; jako údaj nemá cenu.
   const bool haveTime = displayedTimeText[0] != '\0' &&
                         strcmp(displayedTimeText, "--:--") != 0;
@@ -3118,16 +3278,21 @@ void updateRadarClockLabel() {
     snprintf(temperature, sizeof(temperature), "%d°C",
              static_cast<int>(std::lround(degrees)));
   }
-  char text[32];
   if (haveTime && temperature[0] != '\0') {
-    snprintf(text, sizeof(text), "%s%s%s", displayedTimeText, STATUS_LINE_GAP,
+    snprintf(text, capacity, "%s%s%s", displayedTimeText, STATUS_LINE_GAP,
              temperature);
   } else if (haveTime) {
-    snprintf(text, sizeof(text), "%s", displayedTimeText);
+    snprintf(text, capacity, "%s", displayedTimeText);
   } else {
-    snprintf(text, sizeof(text), "%s", temperature);
+    snprintf(text, capacity, "%s", temperature);
   }
-  if (text[0] == '\0') {
+  return text[0] != '\0';
+}
+
+void updateRadarClockLabel() {
+  if (radarClockLabel == nullptr) return;
+  char text[32];
+  if (!radarStatusLineEnabled || !composeStatusLineText(text, sizeof(text))) {
     lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -3136,10 +3301,24 @@ void updateRadarClockLabel() {
   lv_obj_clear_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
+void updatePlanesClockLabel() {
+  if (planesClockLabel == nullptr) return;
+  char text[32];
+  // Stejný přepínač jako u meteoradaru: je to tentýž řádek na téže mapě.
+  if (!radarStatusLineEnabled || !composeStatusLineText(text, sizeof(text))) {
+    lv_obj_add_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_label_set_text(planesClockLabel, text);
+  alignCenter(planesClockLabel, 0, PLANES_CLOCK_OFFSET_Y);
+  lv_obj_clear_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Čas a venkovní teplota se ukazují ve stavovém řádku radaru i v hlavičce
 // předpovědi, takže je obě obnovuje jedno volání.
 void updateOverlayStatusLabels() {
   updateRadarClockLabel();
+  updatePlanesClockLabel();
   updateForecastHeaderLabel();
 }
 
@@ -4208,6 +4387,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   radarStatusLineEnabled = config.radarStatusLine;
   clockDashboardSetRssAvailable(clockConfigRssAvailable(config));
   clockDashboardSetForecastAvailable(clockConfigForecastAvailable(config));
+  clockDashboardSetPlanesAvailable(clockConfigPlanesAvailable(config));
   // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
   // změně nastavení musí přepočítat - jinak by obrazovka kreslila hodiny do
   // místa, které si mezitím vzala spodní sekce.
@@ -4953,6 +5133,234 @@ bool clockDashboardForecastVisible() {
   return activeScreen == DASHBOARD_SCREEN_FORECAST;
 }
 
+bool clockDashboardPlanesVisible() {
+  return activeScreen == DASHBOARD_SCREEN_PLANES;
+}
+
+void clockDashboardSetPlanesVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_PLANES : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetPlanesVisibilityCallback(
+    RssVisibilityCallback visibility) {
+  planesVisibilityCallback = visibility;
+}
+
+void clockDashboardSetPlanesAvailable(bool available) {
+  // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji majitel
+  // nechce, nestojí ani jeden objekt LVGL.
+  if (available && planesPage == nullptr && dashboardScreen != nullptr) {
+    createPlanesPage(dashboardScreen);
+  }
+  if (planesFeatureAvailable == available) return;
+  planesFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_PLANES) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (planesPage != nullptr)
+      lv_obj_add_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (planesVisibilityCallback != nullptr) planesVisibilityCallback(false);
+  }
+  // O jednu obrazovku v rotaci míň nebo víc: ukazatel musí ubrat či přidat
+  // tečku, jinak by sliboval obrazovku, na kterou se nedá přepnout.
+  updateScreenDots();
+}
+
+bool clockDashboardHandlePlanesTap(int16_t x, int16_t y) {
+  // Nad otevřeným nastavením a během aktualizace firmwaru zůstává activeScreen
+  // na letadlech, i když je vidět jiná stránka. Klepnutí na ovladač v nastavení
+  // by tedy vybíralo letadlo a rozjelo dotaz na jeho trasu.
+  if (settingsVisible || firmwareUpdateActive) return false;
+  if (activeScreen != DASHBOARD_SCREEN_PLANES) return false;
+  // Klepnutí, kterým se zavíralo nastavení, se nesmí propsat do mapy pod ním.
+  if (suppressNextDashboardClick) {
+    suppressNextDashboardClick = false;
+    if (static_cast<long>(millis() - suppressDashboardClickUntil) < 0)
+      return true;
+  }
+  return planeRadarServiceHandleTap(x, y);
+}
+
+namespace {
+
+// Nouzový squawk přebírá řádek s počtem letadel. Řádek je jen jeden, takže se
+// obojí nemůže překrýt - nouze prostě počet přebije.
+const char *planesEmergencyText(const char *code) {
+  const bool english = englishLanguage();
+  if (strcmp(code, ADSB_SQUAWK_HIJACK) == 0)
+    return english ? "HIJACK" : "ÚNOS";
+  if (strcmp(code, ADSB_SQUAWK_RADIO) == 0)
+    return english ? "RADIO FAILURE" : "PORUCHA RÁDIA";
+  return english ? "EMERGENCY" : "NOUZE";
+}
+
+void updatePlanesDetail(const PlaneRadarDetail &detail) {
+  if (planesDetailPanel == nullptr) return;
+  if (!detail.open) {
+    lv_obj_add_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const bool english = englishLanguage();
+  const bool metric = dashboardRuntimeConfig.planes.metricUnits;
+
+  // Nadpis: callsign, nebo ICAO adresa, když ho letadlo nevysílá.
+  lv_label_set_text(planesDetailTitle,
+                    detail.callsign[0] != '\0'
+                        ? detail.callsign
+                        : (detail.hex[0] != '\0' ? detail.hex : "?"));
+
+  char line[48];
+  uint8_t row = 0;
+  if (metric) {
+    snprintf(line, sizeof(line), "%s: %d m", english ? "ALTITUDE" : "VÝŠKA",
+             static_cast<int>(std::lround(detail.altitudeFt * 0.3048f)));
+  } else {
+    snprintf(line, sizeof(line), "%s: %d ft", english ? "ALTITUDE" : "VÝŠKA",
+             static_cast<int>(std::lround(detail.altitudeFt)));
+  }
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  if (metric) {
+    snprintf(line, sizeof(line), "%s: %d km/h", english ? "SPEED" : "RYCHLOST",
+             static_cast<int>(std::lround(detail.groundSpeedKt * 1.852f)));
+  } else {
+    snprintf(line, sizeof(line), "%s: %d kt", english ? "SPEED" : "RYCHLOST",
+             static_cast<int>(std::lround(detail.groundSpeedKt)));
+  }
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  if (detail.hasTrack) {
+    snprintf(line, sizeof(line), "%s: %d°", english ? "TRACK" : "SMĚR",
+             static_cast<int>(std::lround(detail.trackDeg)));
+  } else {
+    snprintf(line, sizeof(line), "%s: %s", english ? "TRACK" : "SMĚR",
+             english ? "unknown" : "neznámý");
+  }
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  // Stoupání a klesání se pozná ze znaménka. Šipka by byla hezčí, jenže písmo
+  // clock_czech_16 je česká podmnožina a trojúhelníkové šipky v něm nejsou -
+  // LVGL by nenakreslilo nic a řádek by končil prázdnou mezerou.
+  if (metric) {
+    snprintf(line, sizeof(line), "%s: %+.1f m/s",
+             english ? "CLIMB" : "STOUPÁNÍ",
+             static_cast<double>(detail.verticalRateFtMin * 0.00508f));
+  } else {
+    snprintf(line, sizeof(line), "%s: %+d ft/min",
+             english ? "CLIMB" : "STOUPÁNÍ",
+             static_cast<int>(std::lround(detail.verticalRateFtMin)));
+  }
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  // Typ a registrace na jednom řádku. Obojí veze táž odpověď jako polohu, tedy
+  // zadarmo; kterékoli z nich může chybět.
+  if (detail.type[0] != '\0' || detail.registration[0] != '\0') {
+    snprintf(line, sizeof(line), "%s: %s%s%s", english ? "TYPE" : "TYP",
+             detail.type[0] != '\0' ? detail.type : "?",
+             detail.registration[0] != '\0' ? "  " : "",
+             detail.registration);
+  } else {
+    line[0] = '\0';
+  }
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  // Nouzový stav má vlastní řádek, ne náhradní místo po typu: letadlo, které
+  // hlásí typ nebo registraci, by o něm jinak neřeklo vůbec nic.
+  if (detail.emergency[0] != '\0') {
+    snprintf(line, sizeof(line), "#FF4848 %s  %s#", detail.emergency,
+             planesEmergencyText(detail.emergency));
+  } else {
+    line[0] = '\0';
+  }
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  // Trasa. Spousta letů žádnou nemá - všeobecné letectví, vojenské stroje,
+  // vrtulníky - a to je normální stav, ne chyba, takže se prostě nic neukáže.
+  if (detail.routePending) {
+    lv_label_set_text(planesDetailRouteFrom,
+                      english ? "Looking up route..." : "Zjišťuji trasu...");
+    lv_label_set_text(planesDetailRouteTo, "");
+  } else if (detail.routeKnown) {
+    snprintf(line, sizeof(line), "%s: %s", english ? "From" : "Z",
+             detail.route.from[0] != '\0' ? detail.route.from : "?");
+    lv_label_set_text(planesDetailRouteFrom, line);
+    snprintf(line, sizeof(line), "%s: %s", english ? "To" : "Do",
+             detail.route.to[0] != '\0' ? detail.route.to : "?");
+    lv_label_set_text(planesDetailRouteTo, line);
+  } else {
+    lv_label_set_text(planesDetailRouteFrom, "");
+    lv_label_set_text(planesDetailRouteTo, "");
+  }
+
+  // Dokud letadlo v datech chybí, čísla nejsou živá; přiznat to je poctivější
+  // než nechat zmrzlé hodnoty vypadat jako aktuální.
+  if (detail.signalLost) {
+    lv_label_set_text(planesDetailSignalLost,
+                      english ? "signal lost" : "signál ztracen");
+    lv_obj_clear_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  lv_obj_clear_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(planesDetailPanel);
+}
+
+}  // namespace
+
+void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
+                                     bool watchedVisible,
+                                     const char *emergency, uint16_t rangeKm,
+                                     const char *message, bool loading,
+                                     const PlaneRadarDetail &detail) {
+  if (planesCanvas == nullptr || planesStatusLabel == nullptr ||
+      planesRangeLabel == nullptr) {
+    return;
+  }
+  const bool english = englishLanguage();
+
+  if (pixels != nullptr) {
+    lv_canvas_set_buffer(planesCanvas, const_cast<uint16_t *>(pixels),
+                         PLANE_RADAR_WIDTH, PLANE_RADAR_HEIGHT,
+                         LV_IMG_CF_TRUE_COLOR);
+    lv_obj_clear_flag(planesCanvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(planesCanvas);
+  } else {
+    lv_obj_add_flag(planesCanvas, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  char text[64];
+  if (emergency != nullptr && emergency[0] != '\0') {
+    // Nouze přebíjí počet letadel; červeně, aby to nešlo přehlédnout.
+    snprintf(text, sizeof(text), "#FF4848 %s  %s#", emergency,
+             planesEmergencyText(emergency));
+  } else if (message != nullptr && message[0] != '\0') {
+    snprintf(text, sizeof(text), "#FFB843 %s#", message);
+  } else if (pixels == nullptr) {
+    snprintf(text, sizeof(text), "#B5B5B5 %s#",
+             loading ? (english ? "Loading aircraft..." : "Načítám letadla...")
+                     : (english ? "Waiting for data" : "Čekám na data"));
+  } else {
+    const char *label = english ? "AIRCRAFT" : "LETADLA";
+    snprintf(text, sizeof(text), "%s%s: %u%s",
+             watchedVisible ? "#65C744 " : "", label,
+             static_cast<unsigned>(shownCount),
+             watchedVisible ? " *#" : "");
+  }
+  lv_label_set_text(planesStatusLabel, text);
+  alignCenter(planesStatusLabel, 0, PLANES_STATUS_OFFSET_Y);
+
+  snprintf(text, sizeof(text), "%u km", static_cast<unsigned>(rangeKm));
+  lv_label_set_text(planesRangeLabel, text);
+  alignCenter(planesRangeLabel, 0, PLANES_RANGE_OFFSET_Y);
+
+  updatePlanesClockLabel();
+  updatePlanesDetail(detail);
+}
+
 void clockDashboardSetForecastVisible(bool visible) {
   setActiveScreen(visible ? DASHBOARD_SCREEN_FORECAST
                           : DASHBOARD_SCREEN_CLOCK);
@@ -5179,10 +5587,17 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     if (forecastPage != nullptr)
       lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
+    if (planesPage != nullptr)
+      lv_obj_add_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     if (activeScreen == DASHBOARD_SCREEN_RADAR &&
         radarVisibilityCallback != nullptr)
       radarVisibilityCallback(false);
+    // Radar letadel stahuje jen zapnutý; bez tohohle by během aktualizace
+    // soupeřil o síť s OTA.
+    if (activeScreen == DASHBOARD_SCREEN_PLANES &&
+        planesVisibilityCallback != nullptr)
+      planesVisibilityCallback(false);
     lv_obj_clear_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(firmwareUpdateOverlay);
     updateScreenDots();
@@ -5198,6 +5613,12 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     } else if (activeScreen == DASHBOARD_SCREEN_FORECAST &&
                forecastPage != nullptr) {
       lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_PLANES &&
+               planesPage != nullptr) {
+      lv_obj_clear_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
+      // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
+      // služba by zůstala vypnutá a už nikdy nic nestáhla.
+      if (planesVisibilityCallback != nullptr) planesVisibilityCallback(true);
     } else {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }

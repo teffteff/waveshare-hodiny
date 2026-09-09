@@ -40,6 +40,28 @@ autorovi za zveřejnění zdrojového kódu a inspiraci pro integraci radaru ČH
 Odtud pochází i řešení druhého zdroje srážek (RainViewer), stupnice intenzity
 a evropský mapový podklad v `WaveshareHodiny/EuropeMapData.h`.
 
+Ze stejného projektu je převzatá celá obrazovka radaru letadel: tvar ikony
+letounu, barevná pásma výšek, otáčení mapy podle azimutu nahoře na displeji,
+držení výběru přes ICAO adresu i způsob, jak se z adsb.lol vybírá věrohodný
+úsek vícenohé trasy. Kreslení bylo přepsané z Arduino_GFX do zdejšího bufferu
+RGB565 (`WaveshareHodiny/MapCanvas.cpp`) a rozbor odpovědí z ArduinoJsonu na
+ruční průchod (`WaveshareHodiny/AdsbParser.cpp` a `RouteParser.cpp`), protože
+firmware žádnou JSON knihovnu nepoužívá. Převzaté jsou i tabulky pro převod
+Unicode na ASCII, kterými procházejí jména měst z trasy.
+
+## Data o letadlech adsb.fi a adsb.lol
+
+Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:
+
+- polohy letadel z https://opendata.adsb.fi/ (data ADS-B od dobrovolných
+  přispěvatelů, licence ODbL),
+- trasu vybraného letu z https://api.adsb.lol/.
+
+Obě služby prosí, aby se volající představil a nedotazoval se častěji, než
+potřebuje. Firmware proto posílá vlastní User-Agent, ptá se jen když je
+obrazovka vidět nebo zapojená do střídání, a u větších dosahů si sám prodlouží
+interval. Na trasu se ptá jen na jedno vybrané letadlo a odpověď si drží.
+
 ## Meteorologická data ČHMÚ
 
 Meteoradar používá radarový kompozit MAX_Z poskytovaný Českým

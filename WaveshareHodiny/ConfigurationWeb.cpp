@@ -20,6 +20,7 @@
 #include "RssService.h"
 #include "ConfigurationLocalization.h"
 #include "ChmiRadarService.h"
+#include "PlaneRadarService.h"
 #include "ClockDashboard.h"
 #include "DiagnosticPage.h"
 #include "Display_ST7701.h"
@@ -1308,6 +1309,31 @@ void handleGetConfig() {
   result += config.forecast.displaySeconds;
   result += F(",\"forecastAutomaticRotation\":");
   result += config.forecast.automaticRotation ? F("true") : F("false");
+  result += F(",\"planesEnabled\":");
+  result += config.planes.enabled ? F("true") : F("false");
+  result += F(",\"planesRange\":");
+  result += config.planes.rangeIndex;
+  result += F(",\"planesRefreshSeconds\":");
+  result += config.planes.refreshSeconds;
+  result += F(",\"planesTopBearing\":");
+  result += config.planes.topBearingDeg;
+  result += F(",\"planesAltitudeMinFt\":");
+  result += config.planes.altitudeMinFt;
+  result += F(",\"planesAltitudeMaxFt\":");
+  result += config.planes.altitudeMaxFt;
+  result += F(",\"planesOnlyWithCallsign\":");
+  result += config.planes.onlyWithCallsign ? F("true") : F("false");
+  result += F(",\"planesSquawkAlert\":");
+  result += config.planes.squawkAlert ? F("true") : F("false");
+  result += F(",\"planesMetricUnits\":");
+  result += config.planes.metricUnits ? F("true") : F("false");
+  result += F(",\"planesWatchCallsign\":\"");
+  result += jsonEscape(config.planes.watchCallsign);
+  result += F("\"");
+  result += F(",\"planesDisplaySeconds\":");
+  result += config.planes.displaySeconds;
+  result += F(",\"planesAutomaticRotation\":");
+  result += config.planes.automaticRotation ? F("true") : F("false");
   // Kolik hodin se na obrazovku vejde pro každou kombinaci kvality ovzduší a
   // počtu dní. Počítá to rozvržení obrazovky, aby si web nemusel držet vlastní
   // kopii stejného vzorce; index je (kvalita ovzduší ? 5 : 0) + počet dní.
@@ -1713,6 +1739,67 @@ void handleSaveConfig() {
         static_cast<uint16_t>(forecastDisplaySeconds);
     config.forecast.automaticRotation =
         server.arg("forecastAutomaticRotation") == "1";
+  }
+
+  if (server.hasArg("planesEnabled")) {
+    const int planesRange = server.arg("planesRange").toInt();
+    if (planesRange < 0 || planesRange >= CLOCK_PLANE_RANGE_COUNT) {
+      sendError(400, F("Dosah radaru letadel není v nabídce."));
+      return;
+    }
+    const int planesRefreshSeconds = server.arg("planesRefreshSeconds").toInt();
+    if (planesRefreshSeconds < 5 || planesRefreshSeconds > 120) {
+      sendError(400, F("Interval letadel musí být 5 až 120 sekund."));
+      return;
+    }
+    const int planesTopBearing = server.arg("planesTopBearing").toInt();
+    if (planesTopBearing < 0 || planesTopBearing > 359) {
+      sendError(400, F("Azimut nahoře na displeji musí být 0 až 359 stupňů."));
+      return;
+    }
+    const int planesAltitudeMinFt = server.arg("planesAltitudeMinFt").toInt();
+    const int planesAltitudeMaxFt = server.arg("planesAltitudeMaxFt").toInt();
+    if (planesAltitudeMinFt < 0 ||
+        planesAltitudeMinFt > CLOCK_PLANE_ALTITUDE_CEILING_FT ||
+        planesAltitudeMaxFt < 0 ||
+        planesAltitudeMaxFt > CLOCK_PLANE_ALTITUDE_CEILING_FT) {
+      sendError(400, F("Filtr výšky musí být 0 až 60000 stop."));
+      return;
+    }
+    // Nula v horní mezi znamená totéž co strop; musí se převést dřív, než se
+    // meze porovnají, jinak by se "od 5000 do bez omezení" odmítlo jako chyba.
+    const int planesCeilingFt =
+        planesAltitudeMaxFt == 0 ? CLOCK_PLANE_ALTITUDE_CEILING_FT
+                                 : planesAltitudeMaxFt;
+    if (planesAltitudeMinFt > planesCeilingFt) {
+      sendError(400, F("Dolní mez výšky nesmí být větší než horní."));
+      return;
+    }
+    const int planesDisplaySeconds = server.arg("planesDisplaySeconds").toInt();
+    if (planesDisplaySeconds < 10 || planesDisplaySeconds > 3600) {
+      sendError(400, F("Doba zobrazení letadel musí být 10 až 3600 sekund."));
+      return;
+    }
+    config.planes.enabled = server.arg("planesEnabled") == "1";
+    config.planes.rangeIndex = static_cast<uint8_t>(planesRange);
+    config.planes.refreshSeconds = static_cast<uint8_t>(planesRefreshSeconds);
+    config.planes.topBearingDeg = static_cast<uint16_t>(planesTopBearing);
+    config.planes.altitudeMinFt = static_cast<uint16_t>(planesAltitudeMinFt);
+    // Srovnaná mez se ukládá rovnou: clockConfigSave() upravuje jen svou
+    // vlastní kopii, takže by běžící konfigurace držela nulu až do restartu
+    // a filtr by do té doby schovával každé letadlo, které výšku hlásí.
+    config.planes.altitudeMaxFt = static_cast<uint16_t>(planesCeilingFt);
+    config.planes.onlyWithCallsign =
+        server.arg("planesOnlyWithCallsign") == "1";
+    config.planes.squawkAlert = server.arg("planesSquawkAlert") == "1";
+    config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
+    clockConfigCopy(config.planes.watchCallsign,
+                    sizeof(config.planes.watchCallsign),
+                    server.arg("planesWatchCallsign"));
+    config.planes.displaySeconds =
+        static_cast<uint16_t>(planesDisplaySeconds);
+    config.planes.automaticRotation =
+        server.arg("planesAutomaticRotation") == "1";
   }
 
   const String submittedTmepUrl = server.arg("tmepExportUrl");
@@ -2591,6 +2678,8 @@ void handleDiagnostics() {
   const FirmwareUpdateSnapshot firmware = firmwareUpdateServiceSnapshot();
   ChmiRadarDiagnostics radar;
   chmiRadarServiceDiagnostics(radar);
+  PlaneRadarDiagnostics planes;
+  planeRadarServiceDiagnostics(planes);
   const ClockConfig &config = currentConfig();
   bool sunAvailable = false;
   bool sunIsDay = true;
@@ -2602,7 +2691,7 @@ void handleDiagnostics() {
                                   lightOn, nightMode);
   }
   String result;
-  result.reserve(2400);
+  result.reserve(2700);
   result = F("{\"ok\":true,\"configurationAvailable\":");
   result += webActive ? F("true") : F("false");
   result += F(",\"webMode\":\"");
@@ -2730,6 +2819,35 @@ void handleDiagnostics() {
   result += jsonEscape(radar.newestFrameTime);
   result += F("\",\"message\":\"");
   result += jsonEscape(radar.message);
+  result += F("\"}");
+  result += F(",\"planes\":{\"available\":");
+  result += planes.available ? F("true") : F("false");
+  result += F(",\"active\":");
+  result += planes.active ? F("true") : F("false");
+  result += F(",\"visible\":");
+  result += planes.visible ? F("true") : F("false");
+  result += F(",\"loading\":");
+  result += planes.loading ? F("true") : F("false");
+  result += F(",\"ready\":");
+  result += planes.ready ? F("true") : F("false");
+  result += F(",\"aircraftCount\":");
+  result += planes.aircraftCount;
+  result += F(",\"radiusKm\":");
+  result += planes.rangeKm;
+  result += F(",\"lastSuccessfulRefreshAgeMs\":");
+  result += planes.lastSuccessfulRefreshAgeMs;
+  result += F(",\"nextRefreshInMs\":");
+  result += planes.nextRefreshInMs;
+  result += F(",\"lastHttpStatus\":");
+  result += planes.lastHttpStatus;
+  result += F(",\"lastDownloadedBytes\":");
+  result += static_cast<unsigned long>(planes.lastDownloadedBytes);
+  result += F(",\"lastRouteHttpStatus\":");
+  result += planes.lastRouteHttpStatus;
+  result += F(",\"serverMessage\":\"");
+  result += jsonEscape(planes.serverMessage);
+  result += F("\",\"message\":\"");
+  result += jsonEscape(planes.message);
   result += F("\"}");
   result += F(",\"homeAssistantRuntime\":");
   appendDiagnosticJson(

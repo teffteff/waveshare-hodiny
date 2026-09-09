@@ -46,6 +46,8 @@ run_test rain_viewer_index "$FIRMWARE_DIR/RainViewerIndex.cpp" || failures=$((fa
 run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))
 run_test weather_forecast_layout || failures=$((failures + 1))
 run_test map_canvas "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
+run_test adsb_parser "$FIRMWARE_DIR/AdsbParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+run_test route_parser "$FIRMWARE_DIR/RouteParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then

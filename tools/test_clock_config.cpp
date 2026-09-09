@@ -42,6 +42,10 @@ constexpr size_t SCHEMA_32_CONFIG_SIZE =
     alignof(ClockConfig) * alignof(ClockConfig);
 constexpr size_t SCHEMA_32_RECORD_SIZE =
     sizeof(uint32_t) * 3 + SCHEMA_32_CONFIG_SIZE;
+constexpr uint32_t SCHEMA_34 = 34;
+constexpr size_t SCHEMA_34_CONFIG_SIZE = offsetof(ClockConfig, planes);
+constexpr size_t SCHEMA_34_RECORD_SIZE =
+    sizeof(uint32_t) * 3 + SCHEMA_34_CONFIG_SIZE;
 
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
@@ -92,6 +96,10 @@ std::string schema30Record(const ClockConfig &source) {
 
 std::string schema32Record(const ClockConfig &source) {
   return legacyRecord(source, SCHEMA_32, SCHEMA_32_CONFIG_SIZE);
+}
+
+std::string schema34Record(const ClockConfig &source) {
+  return legacyRecord(source, SCHEMA_34, SCHEMA_34_CONFIG_SIZE);
 }
 
 void seed(const std::string &record) {
@@ -600,6 +608,126 @@ void testSchema32MigrationAddsRadarStatusLine() {
   assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
 }
 
+// Povýšení na schéma 35 nesmí radar letadel zapnout samo od sebe: obrazovka by
+// začala stahovat z adsb.fi, aniž o to kdo požádal.
+void testSchema34MigrationAddsDisabledPlanes() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dataSource = CLOCK_DATA_SOURCE_HOME_ASSISTANT;
+  source.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  source.radarStatusLine = false;
+  source.forecast.enabled = true;
+  source.forecast.dayCount = 4;
+  source.forecast.airQuality = false;
+  clockConfigCopy(source.rss.url, sizeof(source.rss.url),
+                  "https://www.irozhlas.cz/rss/irozhlas");
+  source.rss.enabled = true;
+
+  const std::string record = schema34Record(source);
+  assert(record.size() == SCHEMA_34_RECORD_SIZE);
+  seed(record);
+
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Celý prefix schématu 34 zůstal nedotčený, včetně předpovědi na jeho konci.
+  assert(migrated.dataSource == CLOCK_DATA_SOURCE_HOME_ASSISTANT);
+  assert(migrated.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER);
+  assert(!migrated.radarStatusLine);
+  assert(migrated.rss.enabled);
+  assert(strcmp(migrated.rss.url, "https://www.irozhlas.cz/rss/irozhlas") == 0);
+  assert(migrated.forecast.enabled);
+  assert(migrated.forecast.dayCount == 4);
+  assert(!migrated.forecast.airQuality);
+  // Nová obrazovka zůstává vypnutá a mimo rotaci.
+  assert(!migrated.planes.enabled);
+  assert(!migrated.planes.automaticRotation);
+  assert(!clockConfigPlanesAvailable(migrated));
+  assert(migrated.planes.rangeIndex == 1);
+  assert(migrated.planes.watchCallsign[0] == '\0');
+
+  // Migrace se musí uložit v novém formátu, aby proběhla jen jednou.
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+}
+
+void testPlanesRoundTripAndClamping() {
+  hostPreferencesReset();
+  ClockConfig config;
+  clockConfigApplyDefaults(config);
+  config.planes.enabled = true;
+  config.planes.automaticRotation = true;
+  config.planes.rangeIndex = 3;
+  config.planes.refreshSeconds = 12;
+  config.planes.topBearingDeg = 90;
+  config.planes.displaySeconds = 45;
+  config.planes.altitudeMinFt = 1000;
+  config.planes.altitudeMaxFt = 12000;
+  config.planes.onlyWithCallsign = true;
+  config.planes.squawkAlert = false;
+  config.planes.metricUnits = false;
+  clockConfigCopy(config.planes.watchCallsign,
+                  sizeof(config.planes.watchCallsign), "CSA1234");
+  assert(clockConfigSave(config));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.planes.enabled);
+  assert(loaded.planes.automaticRotation);
+  assert(loaded.planes.rangeIndex == 3);
+  assert(loaded.planes.refreshSeconds == 12);
+  assert(loaded.planes.topBearingDeg == 90);
+  assert(loaded.planes.displaySeconds == 45);
+  assert(loaded.planes.altitudeMinFt == 1000);
+  assert(loaded.planes.altitudeMaxFt == 12000);
+  assert(loaded.planes.onlyWithCallsign);
+  assert(!loaded.planes.squawkAlert);
+  assert(!loaded.planes.metricUnits);
+  assert(strcmp(loaded.planes.watchCallsign, "CSA1234") == 0);
+  assert(clockConfigPlanesAvailable(loaded));
+
+  // Nesmyslný dosah, perioda i azimut se musí srovnat do mezí.
+  hostPreferencesReset();
+  ClockConfig wild;
+  clockConfigApplyDefaults(wild);
+  wild.planes.rangeIndex = 9;
+  wild.planes.refreshSeconds = 1;
+  wild.planes.topBearingDeg = 400;
+  wild.planes.displaySeconds = 5;
+  assert(clockConfigSave(wild));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(clamped.planes.rangeIndex == 1);
+  assert(clamped.planes.refreshSeconds == 5);
+  assert(clamped.planes.topBearingDeg == 0);
+  assert(clamped.planes.displaySeconds == 10);
+
+  // Nulová horní mez by schovala všechno, co výšku hlásí; u dolní meze přitom
+  // nula znamená "bez omezení", takže je to snadný překlep.
+  hostPreferencesReset();
+  ClockConfig zeroCeiling;
+  clockConfigApplyDefaults(zeroCeiling);
+  zeroCeiling.planes.altitudeMinFt = 0;
+  zeroCeiling.planes.altitudeMaxFt = 0;
+  assert(clockConfigSave(zeroCeiling));
+  ClockConfig ceilingFixed;
+  assert(clockConfigLoad(ceilingFixed));
+  assert(ceilingFixed.planes.altitudeMinFt == 0);
+  assert(ceilingFixed.planes.altitudeMaxFt == CLOCK_PLANE_ALTITUDE_CEILING_FT);
+
+  // Prohozené meze výšky filtr vypnou, místo aby schovaly celou oblohu.
+  hostPreferencesReset();
+  ClockConfig swapped;
+  clockConfigApplyDefaults(swapped);
+  swapped.planes.altitudeMinFt = 20000;
+  swapped.planes.altitudeMaxFt = 3000;
+  assert(clockConfigSave(swapped));
+  ClockConfig fixed;
+  assert(clockConfigLoad(fixed));
+  assert(fixed.planes.altitudeMinFt == 0);
+  assert(fixed.planes.altitudeMaxFt == CLOCK_PLANE_ALTITUDE_CEILING_FT);
+}
+
 int main() {
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
@@ -615,5 +743,7 @@ int main() {
   testSchema30MigrationAddsDisabledBottomSlot();
   testBottomValueSlotRoundTripAndNormalization();
   testSchema32MigrationAddsRadarStatusLine();
+  testSchema34MigrationAddsDisabledPlanes();
+  testPlanesRoundTripAndClamping();
   return 0;
 }

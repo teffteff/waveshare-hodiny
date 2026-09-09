@@ -14,6 +14,8 @@ void displayDriverSetPartialRefresh(bool enabled, bool rebuildBuffers = false);
 int8_t displayDriverTakeScreenHold();
 // Přetažení prstem: -1 přiblížit rozsah radaru, +1 oddálit, 0 nic.
 int8_t displayDriverTakeRangeSwipe();
-bool displayDriverTakeShortTap();
+// Krátké klepnutí i s místem, kam dopadlo. Souřadnice potřebuje radar letadel,
+// který jimi vybírá letadlo pod prstem.
+bool displayDriverTakeShortTap(int16_t &x, int16_t &y);
 bool displayDriverBeginFramebufferCapture(Print &output);
 bool displayDriverStreamFramebufferChunk(Print &output);

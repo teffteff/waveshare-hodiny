@@ -56,7 +56,10 @@ constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
 // Schema 34 appends the weather forecast screen. The schema 33 prefix stays
 // byte-for-byte unchanged and the screen starts disabled, so an upgrade never
 // pushes another screen into the rotation.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 34;
+// Schema 35 appends the aircraft radar screen ported from MeteoPlaneRadar. The
+// schema 34 prefix stays byte-for-byte unchanged and the screen starts
+// disabled, so an upgrade never starts polling adsb.fi on its own.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 35;
 
 enum ClockLanguage : uint8_t {
   CLOCK_LANGUAGE_UNSET = 0,
@@ -238,6 +241,50 @@ struct ClockForecastConfig {
   uint16_t displaySeconds = 20;
 };
 
+// Obrazovka radaru letadel. Data vozí adsb.fi, trasu vybraného letu adsb.lol.
+// Převzato z projektu MeteoPlaneRadar (viz THIRD_PARTY_NOTICES.md).
+//
+// Dosahy jsou pevné, protože je pevná i mřížka teček pod mapou a poloměr kruhu
+// se na ně přepočítává; ukládá se proto index, ne kilometry.
+constexpr uint8_t CLOCK_PLANE_RANGE_COUNT = 4;
+inline constexpr uint16_t CLOCK_PLANE_RANGES_KM[CLOCK_PLANE_RANGE_COUNT] = {
+    10, 25, 50, 100};
+// Callsign má nejvýš osm znaků, ICAO adresa sedm; šestnáct bajtů pokryje obojí
+// i s rezervou, protože se hlídaný let zadává ručně.
+constexpr size_t CLOCK_PLANE_CALLSIGN_LENGTH = 16;
+// Nad tuhle výšku už nic nelétá, takže horní mez filtru znamená "vypnuto".
+constexpr uint16_t CLOCK_PLANE_ALTITUDE_CEILING_FT = 60000;
+
+struct ClockPlanesConfig {
+  bool enabled = false;
+  // Zapojení do automatické rotace, stejně jako u radaru, zpráv a předpovědi.
+  bool automaticRotation = false;
+  // Emergency squawky 7500/7600/7700 zvýrazní letadlo kroužkem a přeberou řádek
+  // s počtem letadel. Ve výchozím stavu zapnuté - je to jediné, co obrazovka
+  // hlásí sama od sebe.
+  bool squawkAlert = true;
+  // Letadla bez callsignu (TIS-B, MLAT, vojenské a soukromé stroje) se dají
+  // schovat, protože o nich stejně není co ukázat.
+  bool onlyWithCallsign = false;
+  // Metry a km/h proti stopám a uzlům v detailu letadla.
+  bool metricUnits = true;
+  uint8_t rangeIndex = 1;
+  // Nejkratší perioda dotazu. Větší dosahy si k ní přidají svoje minimum, aby
+  // se z hodin nestal nezdvořilý uživatel API zdarma.
+  uint8_t refreshSeconds = 5;
+  // Azimut, který je nahoře na displeji - tedy směr, kterým se člověk dívá z
+  // okna. Otáčí se projekce, ne displej.
+  uint16_t topBearingDeg = 0;
+  uint16_t displaySeconds = 20;
+  // Výškový filtr ve stopách. Netýká se počtu letadel ani hlídaného letu, aby
+  // nastavená výška nemohla schovat nouzový stav.
+  uint16_t altitudeMinFt = 0;
+  uint16_t altitudeMaxFt = CLOCK_PLANE_ALTITUDE_CEILING_FT;
+  // Hlídaný let. Porovnává se s callsignem i s ICAO adresou, protože lidé
+  // citují to, co zrovna mají.
+  char watchCallsign[CLOCK_PLANE_CALLSIGN_LENGTH] = "";
+};
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -317,6 +364,9 @@ struct ClockConfig {
   // Pole schématu 34 leží až za radarStatusTemperatureEntityId, aby schéma 33
   // zůstalo přesnou předponou a migrace byla opět jen zkopírováním bajtů.
   ClockForecastConfig forecast;
+  // Pole schématu 35 leží až za předpovědí, aby schéma 34 zůstalo přesnou
+  // předponou a migrace byla opět jen zkopírováním bajtů.
+  ClockPlanesConfig planes;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -348,6 +398,10 @@ static_assert(offsetof(ClockConfig, forecast) == 5648 &&
                   sizeof(ClockForecastConfig) == 8,
               "Schema 34 must preserve the complete schema 33 prefix.");
 
+static_assert(offsetof(ClockConfig, planes) == 5656 &&
+                  sizeof(ClockPlanesConfig) == 32,
+              "Schema 35 must preserve the complete schema 34 prefix.");
+
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
 // je kvůli migraci uložený zvlášť.
@@ -374,6 +428,9 @@ bool clockConfigRssAvailable(const ClockConfig &config);
 // Zdroj hodnot na ciferníku na tom nezáleží: souřadnice má konfigurace i tehdy,
 // když hodnoty čte z Home Assistantu.
 bool clockConfigForecastAvailable(const ClockConfig &config);
+// Radar letadel stojí na veřejném API adsb.fi, takže stačí zapnutá obrazovka -
+// souřadnice bere ze stejného místa jako meteoradar a předpověď.
+bool clockConfigPlanesAvailable(const ClockConfig &config);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,
                          uint8_t defaultAnalogDateFormat =

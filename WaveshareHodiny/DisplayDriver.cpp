@@ -20,6 +20,10 @@ size_t screenshotOffset = 0;
 int8_t screenHoldPending = 0;
 int8_t rangeSwipePending = 0;
 bool shortTapPending = false;
+// Kam se klepnulo. Radar letadel podle toho vybírá letadlo, takže samo "někdo
+// klepl" nestačí.
+uint16_t shortTapX = 0;
+uint16_t shortTapY = 0;
 bool touchDown = false;
 uint16_t touchStartX = 0;
 uint16_t touchStartY = 0;
@@ -133,6 +137,8 @@ void classifyTouchGesture() {
     screenHoldPending = touchLastX < TOUCH_MIDDLE_X ? -1 : 1;
   } else if (stillFinger) {
     shortTapPending = true;
+    shortTapX = touchLastX;
+    shortTapY = touchLastY;
   }
 }
 
@@ -270,9 +276,11 @@ int8_t displayDriverTakeRangeSwipe() {
   return direction;
 }
 
-bool displayDriverTakeShortTap() {
+bool displayDriverTakeShortTap(int16_t &x, int16_t &y) {
   if (!shortTapPending) return false;
   shortTapPending = false;
+  x = static_cast<int16_t>(shortTapX);
+  y = static_cast<int16_t>(shortTapY);
   return true;
 }
 

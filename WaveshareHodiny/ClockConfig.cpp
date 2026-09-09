@@ -41,6 +41,7 @@ constexpr uint32_t BOTTOM_SLOT_PREDECESSOR_SCHEMA_VERSION = 30;
 constexpr uint32_t RADAR_SOURCE_PREDECESSOR_SCHEMA_VERSION = 31;
 constexpr uint32_t RADAR_STATUS_LINE_PREDECESSOR_SCHEMA_VERSION = 32;
 constexpr uint32_t FORECAST_PREDECESSOR_SCHEMA_VERSION = 33;
+constexpr uint32_t PLANES_PREDECESSOR_SCHEMA_VERSION = 34;
 
 // Firmware 1.5.5 stored the same prefix as ClockConfig up to dateFormat.
 // Keeping the payload as bytes preserves its exact released NVS layout and
@@ -129,6 +130,18 @@ struct ConfigRecordV33 {
   uint32_t magic;
   uint32_t schemaVersion;
   uint8_t config[SCHEMA_33_CONFIG_SIZE];
+  uint32_t checksum;
+};
+
+// Schéma 34 končilo strukturou předpovědi, jejíž poslední pole je uint16_t na
+// zarovnané adrese, takže ani ono žádnou koncovou výplň nemělo - offset radaru
+// letadel se rovná jeho velikosti.
+constexpr size_t SCHEMA_34_CONFIG_SIZE = offsetof(ClockConfig, planes);
+
+struct ConfigRecordV34 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[SCHEMA_34_CONFIG_SIZE];
   uint32_t checksum;
 };
 
@@ -274,6 +287,11 @@ static_assert(SCHEMA_32_CONFIG_SIZE == 5520,
 static_assert(SCHEMA_33_CONFIG_SIZE == 5648 &&
                   sizeof(ConfigRecordV33) == 5660,
               "Migrační záznam schématu 33 musí zachovat přesnou velikost.");
+static_assert(SCHEMA_34_CONFIG_SIZE == 5656 &&
+                  sizeof(ConfigRecordV34) == 5668,
+              "Migrační záznam schématu 34 musí zachovat přesnou velikost.");
+static_assert(sizeof(ConfigRecordV34) <= sizeof(ConfigRecord),
+              "Schéma 34 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV33) <= sizeof(ConfigRecord),
               "Schéma 33 se musí vejít do společného pracovního bufferu.");
 static_assert(sizeof(ConfigRecordV32) <= sizeof(ConfigRecord),
@@ -391,6 +409,29 @@ void normalizeConfig(ClockConfig &config) {
       constrain(config.forecast.refreshMinutes, 10, 180);
   config.forecast.displaySeconds =
       constrain(config.forecast.displaySeconds, 10, 3600);
+  if (config.planes.rangeIndex >= CLOCK_PLANE_RANGE_COUNT)
+    config.planes.rangeIndex = 1;
+  config.planes.refreshSeconds = constrain(config.planes.refreshSeconds, 5, 120);
+  config.planes.displaySeconds =
+      constrain(config.planes.displaySeconds, 10, 3600);
+  if (config.planes.topBearingDeg >= 360) config.planes.topBearingDeg = 0;
+  config.planes.altitudeMaxFt =
+      constrain(config.planes.altitudeMaxFt, static_cast<uint16_t>(0),
+                CLOCK_PLANE_ALTITUDE_CEILING_FT);
+  config.planes.altitudeMinFt =
+      constrain(config.planes.altitudeMinFt, static_cast<uint16_t>(0),
+                CLOCK_PLANE_ALTITUDE_CEILING_FT);
+  // Nulová horní mez by schovala všechno, co výšku hlásí. Dvě sousední políčka
+  // formuláře dávají nule opačný význam - u dolní meze znamená "bez omezení" -
+  // takže je to snadný překlep; bere se proto jako strop.
+  if (config.planes.altitudeMaxFt == 0)
+    config.planes.altitudeMaxFt = CLOCK_PLANE_ALTITUDE_CEILING_FT;
+  // Prohozené meze by schovaly všechno; filtr se v tom případě vypne, protože
+  // to je zjevně překlep, ne přání vidět prázdnou oblohu.
+  if (config.planes.altitudeMinFt > config.planes.altitudeMaxFt) {
+    config.planes.altitudeMinFt = 0;
+    config.planes.altitudeMaxFt = CLOCK_PLANE_ALTITUDE_CEILING_FT;
+  }
   if (!std::isfinite(config.openMeteoLatitude) ||
       config.openMeteoLatitude < -90.0f || config.openMeteoLatitude > 90.0f ||
       !std::isfinite(config.openMeteoLongitude) ||
@@ -448,6 +489,12 @@ bool clockConfigRssAvailable(const ClockConfig &config) {
 
 bool clockConfigForecastAvailable(const ClockConfig &config) {
   return config.forecast.enabled;
+}
+
+bool clockConfigPlanesAvailable(const ClockConfig &config) {
+  // adsb.fi pokrývá celý svět, takže na rozdíl od kompozice ČHMÚ nemá obrazovka
+  // žádnou zeměpisnou podmínku - stačí, že ji majitel zapnul.
+  return config.planes.enabled;
 }
 
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
@@ -612,6 +659,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV34) ||
                              storedSize == sizeof(ConfigRecordV33) ||
                              storedSize == sizeof(ConfigRecordV32) ||
                              storedSize == sizeof(ConfigRecordV31) ||
@@ -636,6 +684,29 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  // Schéma 34 je přesnou předponou schématu 35; radar letadel si po zkopírování
+  // bajtů podrží výchozí hodnoty z clockConfigApplyDefaults(), tedy vypnutou
+  // obrazovku - povýšení firmwaru samo od sebe nezačne stahovat z adsb.fi.
+  const ConfigRecordV34 &legacyV34 =
+      *reinterpret_cast<const ConfigRecordV34 *>(&record);
+  uint32_t embeddedSchemaV34 = 0;
+  if (readComplete && storedSize == sizeof(legacyV34)) {
+    memcpy(&embeddedSchemaV34, legacyV34.config, sizeof(embeddedSchemaV34));
+  }
+  const bool validSchema34Record =
+      readComplete && storedSize == sizeof(legacyV34) &&
+      legacyV34.magic == CONFIG_MAGIC &&
+      legacyV34.schemaVersion == PLANES_PREDECESSOR_SCHEMA_VERSION &&
+      embeddedSchemaV34 == PLANES_PREDECESSOR_SCHEMA_VERSION &&
+      legacyV34.checksum ==
+          bytesChecksum(legacyV34.config, sizeof(legacyV34.config));
+  if (validSchema34Record) {
+    memcpy(&config, legacyV34.config, sizeof(legacyV34.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   // Schéma 33 je přesnou předponou schématu 34; obrazovka předpovědi si po

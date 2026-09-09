@@ -58,10 +58,14 @@ changes the system text and verbal date shown on the display.
 - static and animated weather icons based on Meteocons,
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
-- optional automatic rotation between the clock, radar, news and forecast,
+- optional automatic rotation between the clock, radar, news, forecast and
+  aircraft,
 - a news screen fed by any RSS or Atom feed,
 - a forecast screen with hourly and daily Open-Meteo data, optionally with air
   quality, PM2.5 and grass pollen — and nine hours instead of six without it,
+- an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by
+  altitude, 10 to 100 km ranges, an altitude filter, emergency squawk alerts,
+  a watched flight and an aircraft detail with the flight route from adsb.lol,
 - two additional values such as CO₂, VOC, particulate matter, humidity,
   pressure or battery level,
 - eight independent values on the VALUES face, each with its own name, Home
@@ -294,7 +298,8 @@ publication time.
 ### Screen indicator
 
 A row of dots sits at the top of **every** screen, one per screen taking part
-in the rotation — clock, radar, news and forecast. The filled dot is the one you are
+in the rotation — clock, radar, news, forecast and aircraft. The filled dot is
+the one you are
 looking at. A disabled screen has no dot, so the row always matches what the
 gesture can actually reach. With a single available screen the indicator is not
 drawn at all, because one dot says nothing; it is also hidden in the settings
@@ -408,6 +413,76 @@ keeps the last successfully loaded forecast on screen; an error message appears
 only when the forecast has never loaded. Air quality is an extra: if it fails,
 the forecast still appears, just without the bottom section. A disabled screen
 is not downloaded at all and is not reachable by the gesture.
+
+### Aircraft radar
+
+The screen shows nearby aircraft on the same map the weather radar uses.
+Positions come from the free [adsb.fi](https://opendata.adsb.fi/) API and the
+route of the selected flight from [adsb.lol](https://api.adsb.lol/); both are
+key-free and need no registration. The location is the same city the weather
+uses, so there is nothing to configure twice.
+
+An aircraft's colour carries its altitude — red below 2 km, orange from 2 to
+6 km, yellow from 6 to 10 km and blue from 10 km up; an aircraft that reports
+no altitude is grey. A scale with the band edges is drawn under the aircraft
+count, so the colours need not be memorised. The icon is turned to match the
+ground track, and when an aircraft broadcasts no track a circle is drawn
+instead of an arrow.
+
+Swiping across the display steps the range through 10, 25, 50 and 100 km, just
+as it does on the weather radar; the dots below the readout show how many steps
+are left. A range picked by touch lasts until the next restart, after which the
+value saved through the web takes over again.
+
+The settings let you choose **which compass bearing sits at the top of the
+display** — that is, the direction you are looking out of the window. The whole
+projection turns with it, map and cities included, so what is at the top of the
+display is in front of you. The display itself is not rotated, only the
+projection, so touch mapping keeps working.
+
+The **altitude filter** keeps only the aircraft within the given band, so the
+interesting one stands out in a busy sky. The aircraft count line reports how
+many are visible, so it drops with the filter; how many the server actually sent
+is on the diagnostics page. The filter does not touch the watched flight or
+emergencies — those are looked for before it, so an altitude setting can never
+hide an emergency. Aircraft that report no altitude at all pass the filter,
+because there is nothing to sort them by. Aircraft without a callsign can be
+hidden separately.
+
+An **emergency squawk** — 7500 (hijack), 7600 (radio failure) or 7700 (general
+emergency) — rings the aircraft in red and takes over the aircraft count line.
+A **watched flight**, given by callsign or ICAO address, gets a green ring and
+passes the altitude filter as well.
+
+Tapping an aircraft opens a detail with its altitude, speed, ground track,
+climb rate, type, registration and flight route. Units switch between metric
+and aeronautical. Another tap anywhere closes it. The selection is keyed on the
+aircraft's ICAO address rather than its position in the list: the list is
+rebuilt on every fetch and its order is not guaranteed, so an index would
+silently repoint the panel at a different aircraft. When an aircraft drops out
+of the data for a moment the panel stays open with the last known values and
+admits it with a *signal lost* note; it closes only after three fetches without
+it.
+
+The route is looked up for one selected aircraft only, never for the whole
+list, and the answer is cached. The aircraft's position is sent along with the
+callsign so the server can judge whether the route fits where the aircraft
+actually is — without that, an aircraft over Prague was shown flying Athens –
+Istanbul, because callsigns are recycled between rotations. Plenty of flights
+have no route at all (general aviation, military aircraft, helicopters); that
+is a normal state, not an error, and nothing is shown.
+
+The poll interval is 5 to 120 seconds. Larger ranges add their own minimum on
+top — 10 seconds from 50 km and 15 seconds from 100 km — because they return
+more data and a second either way does not matter there; adsb.fi is a free API
+and the firmware behaves as a polite guest. Data is only fetched while the
+screen is visible or taking part in the automatic rotation — and while it is in
+the rotation but currently hidden, at most once every five minutes. All the
+radar needs then is to have a frame ready for its turn; opening the screen
+forces a fetch of its own. After a failure the
+interval is doubled and the last good frame stays on the display: an empty sky
+after one failed fetch looks like the truth but is not. A disabled screen is
+never fetched and is not reachable by the gesture either.
 
 ### Color scales
 

@@ -62,11 +62,14 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - volitelnou stupnici intenzity srážek v dBZ a mm/h podle zvoleného zdroje,
 - rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané přetažením prstu,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
-- volitelné automatické střídání hodin, radaru, zpráv a předpovědi se
+- volitelné automatické střídání hodin, radaru, zpráv, předpovědi a letadel se
   samostatnou dobou zobrazení,
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
 - obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
   ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
+- radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
+  výšky, dosahy 10 až 100 km, filtr výšky, upozornění na nouzový squawk,
+  hlídaný let a detail letadla i s trasou letu z adsb.lol,
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
 - devět nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
   entitou Home Assistantu, jednotkou, přesností a barevnou škálou,
@@ -220,6 +223,9 @@ Web umožňuje nastavit:
   a barevné škály,
 - styl animovaných ikon `Monochrome`, `Flat` nebo `Line`,
 - meteoradar ČHMÚ s obrysem ČR, městy, pohledy 25, 50, 100, 200 km nebo celá ČR a volbou 1 až 15 snímků,
+- radar letadel z adsb.fi: dosah 10 až 100 km, interval dotazů, azimut nahoře
+  na displeji, filtr výšky, hlídaný let, upozornění na nouzový squawk
+  a jednotky detailu,
 - měřené hodnoty A a B, jednotky, přesnost a barevné škály,
 - devět hodnot ciferníku HODNOTY, každou zvlášť zapínatelnou, s vlastní entitou,
   názvem, jednotkou, přesností a barevnou škálou; sekce se zobrazí jen se
@@ -310,7 +316,8 @@ slotech přibližně minutu po čase publikace ČHMÚ.
 ### Ukazatel obrazovek
 
 Nahoře na **každé** obrazovce je řada teček, jedna na obrazovku zapojenou do
-střídání — hodiny, meteoradar, zprávy a předpověď. Plná tečka je ta, na kterou se právě
+střídání — hodiny, meteoradar, zprávy, předpověď a letadla. Plná tečka je ta,
+na kterou se právě
 díváš. Vypnutá obrazovka svoji tečku nemá, takže řada vždycky odpovídá tomu,
 kam se dá gestem přepnout. Při jediné dostupné obrazovce se ukazatel nekreslí,
 protože jedna tečka o ničem nevypovídá; v nastavení a při aktualizaci firmwaru
@@ -330,7 +337,8 @@ dotykem na displeji zůstává pouze do restartu; po něm se obnoví hodnota
 naposledy uložená přes web.
 
 Automatické střídání je ve výchozím stavu vypnuté. Po zapnutí lze nastavit
-samostatnou dobu zobrazení hodin, radaru, zpráv i předpovědi; do střídání se zapojí jen ty
+samostatnou dobu zobrazení hodin, radaru, zpráv, předpovědi i letadel; do
+střídání se zapojí jen ty
 obrazovky, které jsou zapnuté, a ručně otevřená obrazovka zůstane až do dalšího
 gesta. Nastavený čas radaru je minimální: rozběhnutý animační cyklus se vždy
 dokončí včetně závěrečné pauzy, takže přechod zpět na hodiny nepřeruší animaci
@@ -424,6 +432,67 @@ displeji nechá poslední úspěšně načtenou předpověď; hláška o chybě 
 tehdy, když se předpověď nepodařilo načíst ani jednou. Kvalita ovzduší je
 doplněk: když se nestáhne, předpověď se ukáže bez spodní sekce. Vypnutá
 obrazovka se nestahuje vůbec a neobjeví se ani gestem.
+
+### Radar letadel
+
+Obrazovka ukazuje letadla v okolí na stejné mapě, jakou používá meteoradar.
+Polohy vozí veřejné API [adsb.fi](https://opendata.adsb.fi/), trasu vybraného
+letu [adsb.lol](https://api.adsb.lol/); obojí je bez klíče a bez registrace.
+Poloha se bere ze stejného města jako počasí, takže se nikde nenastavuje znovu.
+
+Barva letadla nese jeho výšku — pod 2 km červená, 2 až 6 km oranžová, 6 až
+10 km žlutá a od 10 km modrá; letadlo, které výšku nehlásí, je šedé. Stupnice
+s hranicemi pásem je nakreslená pod počtem letadel, takže barvu není třeba si
+pamatovat. Ikona je otočená po traťovém úhlu, a když letadlo směr nevysílá,
+nakreslí se místo šipky kolečko.
+
+Dosah se přepíná přetažením prstu po displeji mezi 10, 25, 50 a 100 km, stejně
+jako u meteoradaru; tečky pod popiskem ukazují, kolik kroků ještě zbývá. Dotyk
+na displeji platí do restartu, po něm se obnoví hodnota uložená přes web.
+
+V nastavení se dá zvolit **azimut, který je nahoře na displeji** — tedy směr,
+kterým se z okna díváš. Otočí se celá projekce včetně mapy a měst, takže co je
+na displeji nahoře, je před tebou. Neotáčí se přitom displej, jen projekce, aby
+zůstalo sedět ovládání dotykem.
+
+**Filtr výšky** nechá na mapě jen letadla v zadaném rozsahu, aby nad rušnou
+oblohou bylo vidět to zajímavé. Číslo na řádku s počtem letadel říká, kolik jich
+je vidět, takže se s filtrem sníží; kolik jich server poslal celkem, ukazuje
+diagnostika. Hlídaného letu ani nouzových stavů se filtr netýká — ty se hledají
+před ním, takže schovat nouzi kvůli nastavené výšce nejde. Letadla, která výšku
+vůbec nehlásí, filtr propouští: není podle čeho je zařadit. Letadla bez volací
+značky se dají skrýt zvlášť.
+
+**Nouzový squawk** 7500 (únos), 7600 (porucha rádia) a 7700 (nouze) obtáhne
+letadlo červeně a přebere řádek s počtem letadel. **Hlídaný let** zadaný volací
+značkou nebo ICAO adresou dostane zelený kroužek a projde i filtrem výšky.
+
+Klepnutím na letadlo se otevře detail s výškou, rychlostí, traťovým úhlem,
+stoupáním, typem, registrací a trasou letu. Jednotky se přepínají mezi
+metrickými a leteckými. Zavírá ho další klepnutí kamkoli. Výběr se drží podle
+ICAO adresy letadla, ne podle pozice v seznamu: ten se staví při každém stažení
+znovu a jeho pořadí není zaručené, takže by panel po chvíli ukazoval jiné
+letadlo. Když letadlo z dat na chvíli zmizí, panel zůstane otevřený s
+posledními známými hodnotami a přizná to poznámkou *signál ztracen*; zavře se
+až po třech stahováních bez něj.
+
+Trasa se hledá jen pro jedno vybrané letadlo, nikdy pro celý seznam, a odpověď
+se drží. Spolu s volací značkou se posílá i poloha letadla a server podle ní
+posoudí, jestli trasa k poloze sedí — bez toho se letadlu nad Prahou ukazovala
+trasa Atény – Istanbul, protože se volací značky mezi rotacemi recyklují.
+Spousta letů žádnou trasu nemá (všeobecné letectví, vojenské stroje,
+vrtulníky); je to normální stav, ne chyba, a prostě se nic nezobrazí.
+
+Dotazovat se dá jednou za 5 až 120 sekund. Větší dosahy si k nastavené hodnotě
+přidají vlastní minimum — 10 sekund od 50 km a 15 sekund od 100 km — protože
+vracejí víc dat a o vteřinu tam nejde; adsb.fi je API zdarma a firmware se k
+němu chová jako slušný host. Stahuje se jen tehdy, když je obrazovka vidět nebo
+zapojená do automatického střídání — a je-li jen ve střídání a zrovna schovaná,
+ptá se nejvýš jednou za pět minut. Stačí totiž, aby měl radar snímek po ruce, až
+na něj přijde řada; otevření obrazovky si stažení vynutí samo. Po neúspěchu se čeká dvojnásobek intervalu
+a na displeji zůstane poslední povedený snímek: prázdná obloha po jednom
+nepovedeném stažení vypadá jako pravda, ale není. Vypnutá obrazovka se
+nestahuje vůbec a neobjeví se ani gestem.
 
 ### Barevné prahy měřených hodnot
 
