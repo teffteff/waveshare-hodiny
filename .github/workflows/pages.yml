@@ -1,13 +1,12 @@
 name: GitHub Pages
 
+# Web se publikuje při každém pushi do main. Dřív se stavěl jen při změně
+# docs/, takže běžný commit do firmware nechal na Pages viset starší nasazení,
+# a když ho přepsal starý Jekyll build z větve, zmizel z webu instalátor
+# i firmware/ota.json a hodinám přestala fungovat kontrola aktualizací.
 on:
   push:
     branches: [main]
-    paths:
-      - docs/**
-      - screenshots/**
-      - media/**
-      - .github/workflows/pages.yml
   release:
     types: [published]
   workflow_dispatch:
@@ -89,3 +88,25 @@ jobs:
       - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+      # Nasazení může přepsat jiný zdroj Pages (klasický build z větve). Web by
+      # pak tiše ztratil instalátor i OTA metadata, takže se po nasazení ověří,
+      # co je opravdu online.
+      - name: Verify published site
+        run: |
+          base="${{ steps.deployment.outputs.page_url }}"
+          base="${base%/}"
+          failed=0
+          paths=(index.html styles.css app.js)
+          # Bez publikovaného release web firmware adresář nemá, viz "Prepare site".
+          if [[ -f _site/firmware/ota.json ]]; then paths+=(firmware/ota.json); fi
+          for path in "${paths[@]}"; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --retry 5 --retry-all-errors \
+              --retry-delay 10 --max-time 30 "$base/$path" || echo 000)"
+            printf '%-24s %s\n' "$path" "$code"
+            [[ "$code" == "200" ]] || failed=1
+          done
+          if (( failed )); then
+            echo "::error::Publikovaný web neodpovídá nahranému artefaktu. Zkontroluj Settings -> Pages -> Source, musí být GitHub Actions." >&2
+            exit 1
+          fi
