@@ -17,7 +17,7 @@
 // zlomek, ale strop nesmí být těsný: hledání nouzového kódu a hlídaného letu
 // se dělá až nad staženým seznamem, takže co sem nepadne, to se neukáže vůbec.
 // Sto padesát pokryje i sto kilometrů nad hustou Evropou; obě pole leží v PSRAM,
-// takže je to zhruba dvacet kilobajtů, o které jinde nikdo nepřijde.
+// takže je to zhruba pětatřicet kilobajtů, o které jinde nikdo nepřijde.
 constexpr size_t ADSB_MAX_AIRCRAFT = 150;
 
 // Nouzové squawky. Drží se jako text, protože 7700 je osmičkový kód a "0021"
@@ -51,6 +51,12 @@ struct AdsbAircraft {
   // zadarmo - druhé API kvůli tomu není potřeba.
   char type[10] = "";
   char registration[12] = "";
+  // Typ vypsaný slovy ("AIRBUS A-321neo"), jak ho server zná z databáze
+  // letadel. Zkratka "A21N" sama o sobě řekne něco jen tomu, kdo je zná
+  // nazpaměť. Veze ho táž odpověď jako polohu, takže zase zadarmo; asi dvacetina
+  // letadel ho nemá, protože je server ve své databázi nenajde. Čtyřicet bajtů
+  // pokryje i "BOMBARDIER BD-700 Global 7000/7500", delší jména se useknou.
+  char description[40] = "";
   char squawk[6] = "";
   bool hasTrack = false;
 };

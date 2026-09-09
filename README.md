@@ -419,6 +419,13 @@ události a složí i popisky dnů, takže ve firmwaru nezůstala žádná datum
 aritmetika a v hodinách žádný token. Které kalendáře se ukážou, se proto
 nastavuje na serveru; návod i zdrojové soubory jsou v [infra/](infra/README.md).
 
+**Adresa smí nést i heslo.** Agenda je na rozdíl od zpráv soukromá, takže
+u referenčního serveru stojí za HTTP basic auth a do hodin se zadává ve tvaru
+`https://uzivatel:heslo@tvuj-server.example.net/agenda.json`. Firmware kvůli
+tomu nedělá nic zvláštního: přihlášení si z adresy vytáhne `HTTPClient` a
+přiloží ho k požadavku sám. Adresa pak ale musí být `https://` — na `http://`
+by heslo šlo po drátě otevřeně.
+
 Zobrazit lze 3 až 12 událostí; výchozí je 8. Seznam začíná pod hlavičkou a
 roste dolů. Každý den navíc si vezme jeden řádek na svou hlavičku, takže se
 při dlouhém výhledu poslední události nevejdou a obrazovka je vynechá — řádek
@@ -510,10 +517,14 @@ letadlo červeně a přebere řádek s počtem letadel. **Hlídaný let** zadan�
 značkou nebo ICAO adresou dostane zelený kroužek a projde i filtrem výšky.
 
 Klepnutím na letadlo se otevře detail s výškou, rychlostí, traťovým úhlem,
-stoupáním, typem, registrací a trasou letu. Jednotky se přepínají mezi
-metrickými a leteckými. Zavírá ho další klepnutí kamkoli. Výběr se drží podle
-ICAO adresy letadla, ne podle pozice v seznamu: ten se staví při každém stažení
-znovu a jeho pořadí není zaručené, takže by panel po chvíli ukazoval jiné
+stoupáním, typem, registrací a trasou letu. Pod zkratkou typu draku stojí ještě
+jeho jméno slovy — pod „A21N“ tedy *AIRBUS A-321neo* —, protože zkratky zná
+nazpaměť málokdo. Veze ho táž odpověď jako polohu, takže se kvůli němu nic
+navíc nestahuje; asi dvacetina letadel ho nemá, protože je server ve své
+databázi letadel nenajde, a pak zůstane stát samotná zkratka. Jednotky se
+přepínají mezi metrickými a leteckými. Zavírá ho další klepnutí kamkoli. Výběr
+se drží podle ICAO adresy letadla, ne podle pozice v seznamu: ten se staví při
+každém stažení znovu a jeho pořadí není zaručené, takže by panel ukazoval jiné
 letadlo. Když letadlo z dat na chvíli zmizí, panel zůstane otevřený s
 posledními známými hodnotami a přizná to poznámkou *signál ztracen*; zavře se
 až po třech stahováních bez něj.
@@ -523,7 +534,10 @@ se drží. Spolu s volací značkou se posílá i poloha letadla a server podle 
 posoudí, jestli trasa k poloze sedí — bez toho se letadlu nad Prahou ukazovala
 trasa Atény – Istanbul, protože se volací značky mezi rotacemi recyklují.
 Spousta letů žádnou trasu nemá (všeobecné letectví, vojenské stroje,
-vrtulníky); je to normální stav, ne chyba, a prostě se nic nezobrazí.
+vrtulníky); je to normální stav, ne chyba, a detail napíše *Trasa neznámá*.
+Totéž řekne u letadla bez volací značky, na kterou se dá zeptat jen s ní.
+Dokud odpověď nedorazila, stojí na tom místě *Zjišťuji trasu…* — po chybě sítě
+taky, protože se pokus zopakuje s dalším stažením letadel.
 
 Dotazovat se dá jednou za 5 až 120 sekund. Větší dosahy si k nastavené hodnotě
 přidají vlastní minimum — 10 sekund od 50 km a 15 sekund od 100 km — protože

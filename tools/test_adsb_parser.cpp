@@ -13,7 +13,8 @@ namespace {
 const char *const REAL_RESPONSE =
     "{\"ac\":["
     "{\"hex\":\"49d0d1\",\"type\":\"adsb_icao\",\"flight\":\"CSA1234 \","
-    "\"r\":\"OK-TVU\",\"t\":\"A320\",\"alt_baro\":35000,\"gs\":420.5,"
+    "\"r\":\"OK-TVU\",\"t\":\"A320\",\"desc\":\"AIRBUS A-320\","
+    "\"alt_baro\":35000,\"gs\":420.5,"
     "\"track\":95.2,\"baro_rate\":-64,\"squawk\":\"1000\","
     "\"lat\":50.104,\"lon\":14.26,\"messages\":1234,\"seen\":0.1},"
     "{\"hex\":\"3c6dd2\",\"type\":\"adsb_icao\",\"flight\":\"DLH88X  \","
@@ -37,6 +38,8 @@ void testRealResponse() {
   assert(std::string(aircraft[0].registration) == "OK-TVU");
   // Typ draku je "t", ne "type" - "adsb_icao" je zdroj zprávy.
   assert(std::string(aircraft[0].type) == "A320");
+  // Týž typ slovy. Detail letadla ho píše pod zkratku, které nikdo nerozumí.
+  assert(std::string(aircraft[0].description) == "AIRBUS A-320");
   assert(aircraft[0].altitudeFt == 35000.0f);
   assert(aircraft[0].hasTrack);
   assert(aircraft[0].trackDeg > 95.1f && aircraft[0].trackDeg < 95.3f);
@@ -44,8 +47,10 @@ void testRealResponse() {
   assert(std::string(aircraft[0].squawk) == "1000");
   assert(adsbEmergencyCode(aircraft[0]) == nullptr);
 
-  // Druhé letadlo hlásí směr pod jiným klíčem a vysílá nouzový kód.
+  // Druhé letadlo hlásí směr pod jiným klíčem a vysílá nouzový kód. Jméno typu
+  // nemá - server ho ve své databázi nenašel - a to je normální stav.
   assert(std::string(aircraft[1].callsign) == "DLH88X");
+  assert(aircraft[1].description[0] == '\0');
   assert(aircraft[1].hasTrack);
   assert(aircraft[1].trackDeg > 270.4f && aircraft[1].trackDeg < 270.6f);
   assert(std::string(adsbEmergencyCode(aircraft[1])) == "7700");
@@ -324,6 +329,7 @@ void testLongFieldsAreTruncatedNotOverflowed() {
       "{\"ac\":[{\"hex\":\"aaaaaaaaaaaaaaaaaaaa\","
       "\"flight\":\"ABCDEFGHIJKLMNOP\","
       "\"r\":\"REGISTRACEDLOUHA\",\"t\":\"TYPTYPTYPTYP\","
+      "\"desc\":\"VYROBCE MODEL S NEKONECNE DLOUHYM JMENEM TYPU\","
       "\"lat\":50.2,\"lon\":14.3}]}";
   AdsbAircraft aircraft[ADSB_MAX_AIRCRAFT];
   const AdsbParseOutcome outcome =
@@ -334,6 +340,8 @@ void testLongFieldsAreTruncatedNotOverflowed() {
   assert(strlen(aircraft[0].registration) ==
          sizeof(aircraft[0].registration) - 1);
   assert(strlen(aircraft[0].type) == sizeof(aircraft[0].type) - 1);
+  assert(strlen(aircraft[0].description) ==
+         sizeof(aircraft[0].description) - 1);
 }
 
 void testTruncatedPayloadIsRejectedWhole() {

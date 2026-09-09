@@ -131,8 +131,7 @@ uint32_t displayedPlanesGeneration = UINT32_MAX;
 // Detail se překresluje mimo generaci snímku: klepnutí na letadlo mění panel,
 // ne mapu pod ním, takže by se jinak ukázal až s dalším stažením.
 bool displayedPlanesDetailOpen = false;
-bool displayedPlanesRoutePending = false;
-bool displayedPlanesRouteKnown = false;
+PlaneRouteState displayedPlanesRouteState = PlaneRouteState::Pending;
 char displayedPlanesDetailHex[8] = "";
 // Hláška se porovnává zvlášť: chyba, po které se vůbec nekreslilo, generaci
 // snímku neposune, a obrazovka by o ní jinak nikdy nedala vědět.
@@ -1102,8 +1101,7 @@ void maintainPlanesDisplay() {
   // porovnání hlášky by obrazovka mlčky visela na starém snímku.
   if (snapshot.generation == displayedPlanesGeneration &&
       snapshot.detail.open == displayedPlanesDetailOpen &&
-      snapshot.detail.routePending == displayedPlanesRoutePending &&
-      snapshot.detail.routeKnown == displayedPlanesRouteKnown &&
+      snapshot.detail.routeState == displayedPlanesRouteState &&
       strcmp(snapshot.detail.hex, displayedPlanesDetailHex) == 0 &&
       snapshot.rangeKm == displayedPlanesRangeKm &&
       strcmp(snapshot.message, displayedPlanesMessage) == 0) {
@@ -1115,8 +1113,7 @@ void maintainPlanesDisplay() {
                                   snapshot.loading, snapshot.detail);
   displayedPlanesGeneration = snapshot.generation;
   displayedPlanesDetailOpen = snapshot.detail.open;
-  displayedPlanesRoutePending = snapshot.detail.routePending;
-  displayedPlanesRouteKnown = snapshot.detail.routeKnown;
+  displayedPlanesRouteState = snapshot.detail.routeState;
   strlcpy(displayedPlanesDetailHex, snapshot.detail.hex,
           sizeof(displayedPlanesDetailHex));
   strlcpy(displayedPlanesMessage, snapshot.message,

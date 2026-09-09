@@ -108,6 +108,11 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
                        sizeof(target.type));
     jsonCopyTextMember(objectBegin, objectEnd, "r", target.registration,
                        sizeof(target.registration));
+    // "desc" je týž typ vypsaný slovy ("AIRBUS A-321neo"). Server ho pošle jen
+    // u letadel, která má ve své databázi, takže chybějící pole je normální
+    // stav - detail pak ukáže samotnou zkratku.
+    jsonCopyTextMember(objectBegin, objectEnd, "desc", target.description,
+                       sizeof(target.description));
     copySquawk(objectBegin, objectEnd, target.squawk, sizeof(target.squawk));
     ++outcome.count;
   }

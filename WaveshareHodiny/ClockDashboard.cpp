@@ -113,7 +113,11 @@ lv_obj_t *planesDetailPanel = nullptr;
 lv_obj_t *planesDetailTitle = nullptr;
 lv_obj_t *planesDetailClose = nullptr;
 constexpr uint8_t PLANES_DETAIL_ROW_COUNT = 6;
+// Řádek s typem draku. Hned pod ním leží název typu vypsaný slovy, takže se
+// řádky za ním posunou o jeho výšku níž.
+constexpr uint8_t PLANES_DETAIL_TYPE_ROW = 4;
 lv_obj_t *planesDetailRows[PLANES_DETAIL_ROW_COUNT] = {};
+lv_obj_t *planesDetailTypeName = nullptr;
 lv_obj_t *planesDetailRouteFrom = nullptr;
 lv_obj_t *planesDetailRouteTo = nullptr;
 lv_obj_t *planesDetailSignalLost = nullptr;
@@ -3167,10 +3171,22 @@ constexpr int PLANES_CLOCK_OFFSET_Y = -186;
 constexpr int PLANES_STATUS_OFFSET_Y = -158;
 constexpr int PLANES_RANGE_OFFSET_Y = 164;
 constexpr int PLANES_DETAIL_WIDTH = 330;
-// Šest řádků, dvě řádky trasy a poznámka o ztraceném signálu. Rohy panelu musí
-// zůstat uvnitř kruhu displeje: 330x290 dává úhlopříčku 220 px proti poloměru
-// 240 px.
-constexpr int PLANES_DETAIL_HEIGHT = 290;
+// Šest řádků, název typu slovy, dvě řádky trasy a poznámka o ztraceném
+// signálu. Rohy panelu musí zůstat uvnitř kruhu displeje: 330x310 dává
+// polovinu úhlopříčky 227 px proti poloměru 240 px.
+constexpr int PLANES_DETAIL_HEIGHT = 310;
+// První řádek a rozestup mezi řádky. Název typu je menším písmem, takže si
+// bere méně místa než celý řádek.
+constexpr int PLANES_DETAIL_ROWS_TOP = 48;
+constexpr int PLANES_DETAIL_ROW_STEP = 24;
+constexpr int PLANES_DETAIL_TYPE_NAME_HEIGHT = 20;
+
+// Kam padne který řádek. Řádky pod typem draku uhýbají názvu typu.
+int planesDetailRowY(uint8_t row) {
+  const int shift =
+      row > PLANES_DETAIL_TYPE_ROW ? PLANES_DETAIL_TYPE_NAME_HEIGHT : 0;
+  return PLANES_DETAIL_ROWS_TOP + row * PLANES_DETAIL_ROW_STEP + shift;
+}
 
 // Objekty obrazovky se zakládají do PSRAM, ze stejného důvodu jako u
 // předpovědi: v interní RAM by ubraly kilobajty, o které pak přijde TLS
@@ -3252,9 +3268,22 @@ void createPlanesPage(lv_obj_t *screen) {
     lv_obj_t *label = makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
     lv_label_set_recolor(label, true);
     lv_label_set_text(label, "");
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 18, 48 + row * 24);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 18, planesDetailRowY(row));
     planesDetailRows[row] = label;
   }
+
+  // Název typu slovy pod zkratkou draku. Menším písmem a potichu, protože je
+  // to vysvětlivka k řádku nad ním, ne další údaj. Nejdelší jména z databáze
+  // letadel jsou přes čtyřicet znaků, takže má pevnou šířku a přeteklý zbytek
+  // uzavřou tři tečky - jinak by text vylezl z panelu ven.
+  planesDetailTypeName =
+      makeLabel(planesDetailPanel, &clock_czech_14, COLOR_MUTED);
+  lv_label_set_text(planesDetailTypeName, "");
+  lv_obj_set_width(planesDetailTypeName, PLANES_DETAIL_WIDTH - 36);
+  lv_label_set_long_mode(planesDetailTypeName, LV_LABEL_LONG_DOT);
+  lv_obj_align(planesDetailTypeName, LV_ALIGN_TOP_LEFT, 18,
+               planesDetailRowY(PLANES_DETAIL_TYPE_ROW) +
+                   PLANES_DETAIL_ROW_STEP);
 
   // Trasa na DVĚ řádky. Jedna řádka se šipkou mezi městy se musela zmenšit,
   // aby se vedle sebe vešla dvě jména, a byla pak nečitelná; na půl má každá
@@ -3263,12 +3292,12 @@ void createPlanesPage(lv_obj_t *screen) {
       makeLabel(planesDetailPanel, &clock_czech_16, COLOR_MUTED);
   lv_label_set_text(planesDetailRouteFrom, "");
   lv_obj_align(planesDetailRouteFrom, LV_ALIGN_TOP_LEFT, 18,
-               48 + PLANES_DETAIL_ROW_COUNT * 24 + 6);
+               planesDetailRowY(PLANES_DETAIL_ROW_COUNT) + 6);
   planesDetailRouteTo =
       makeLabel(planesDetailPanel, &clock_czech_16, COLOR_MUTED);
   lv_label_set_text(planesDetailRouteTo, "");
   lv_obj_align(planesDetailRouteTo, LV_ALIGN_TOP_LEFT, 18,
-               48 + PLANES_DETAIL_ROW_COUNT * 24 + 28);
+               planesDetailRowY(PLANES_DETAIL_ROW_COUNT) + 28);
 
   planesDetailSignalLost =
       makeLabel(planesDetailPanel, &clock_czech_16, COLOR_ROOM);
@@ -5615,6 +5644,11 @@ void updatePlanesDetail(const PlaneRadarDetail &detail) {
   }
   lv_label_set_text(planesDetailRows[row++], line);
 
+  // Typ vypsaný slovy pod zkratkou. "A21N" pozná málokdo, "AIRBUS A-321neo"
+  // skoro každý. Server jméno pošle jen u letadel ze své databáze; když ho
+  // nemá, zůstane řádek prázdný a nad ním stojí samotná zkratka.
+  lv_label_set_text(planesDetailTypeName, detail.description);
+
   // Nouzový stav má vlastní řádek, ne náhradní místo po typu: letadlo, které
   // hlásí typ nebo registraci, by o něm jinak neřeklo vůbec nic.
   if (detail.emergency[0] != '\0') {
@@ -5626,21 +5660,27 @@ void updatePlanesDetail(const PlaneRadarDetail &detail) {
   lv_label_set_text(planesDetailRows[row++], line);
 
   // Trasa. Spousta letů žádnou nemá - všeobecné letectví, vojenské stroje,
-  // vrtulníky - a to je normální stav, ne chyba, takže se prostě nic neukáže.
-  if (detail.routePending) {
-    lv_label_set_text(planesDetailRouteFrom,
-                      english ? "Looking up route..." : "Zjišťuji trasu...");
-    lv_label_set_text(planesDetailRouteTo, "");
-  } else if (detail.routeKnown) {
-    snprintf(line, sizeof(line), "%s: %s", english ? "From" : "Z",
-             detail.route.from[0] != '\0' ? detail.route.from : "?");
-    lv_label_set_text(planesDetailRouteFrom, line);
-    snprintf(line, sizeof(line), "%s: %s", english ? "To" : "Do",
-             detail.route.to[0] != '\0' ? detail.route.to : "?");
-    lv_label_set_text(planesDetailRouteTo, line);
-  } else {
-    lv_label_set_text(planesDetailRouteFrom, "");
-    lv_label_set_text(planesDetailRouteTo, "");
+  // vrtulníky - a to je normální stav, ne chyba. Dřív po nich zůstalo prázdné
+  // místo, nerozeznatelné od hledání, které ještě běží; teď se to napíše.
+  switch (detail.routeState) {
+    case PlaneRouteState::Pending:
+      lv_label_set_text(planesDetailRouteFrom,
+                        english ? "Looking up route..." : "Zjišťuji trasu...");
+      lv_label_set_text(planesDetailRouteTo, "");
+      break;
+    case PlaneRouteState::Known:
+      snprintf(line, sizeof(line), "%s: %s", english ? "From" : "Z",
+               detail.route.from[0] != '\0' ? detail.route.from : "?");
+      lv_label_set_text(planesDetailRouteFrom, line);
+      snprintf(line, sizeof(line), "%s: %s", english ? "To" : "Do",
+               detail.route.to[0] != '\0' ? detail.route.to : "?");
+      lv_label_set_text(planesDetailRouteTo, line);
+      break;
+    case PlaneRouteState::Unknown:
+      lv_label_set_text(planesDetailRouteFrom,
+                        english ? "Route unknown" : "Trasa neznámá");
+      lv_label_set_text(planesDetailRouteTo, "");
+      break;
   }
 
   // Dokud letadlo v datech chybí, čísla nejsou živá; přiznat to je poctivější

@@ -400,6 +400,13 @@ the day labels, so no date arithmetic is left in the firmware and no token is
 stored on the clock. Which calendars appear is therefore configured on the
 server; the setup and the source files live in [infra/](infra/README.md).
 
+**The address may carry a password.** The agenda, unlike the news feed, is
+private, so on the reference server it sits behind HTTP basic auth and is
+entered as `https://user:password@your-server.example.net/agenda.json`. The
+firmware does nothing special for that: `HTTPClient` takes the credentials out
+of the address and sends them itself. The address must then be `https://`, as
+on `http://` the password would travel in the clear.
+
 Between 3 and 12 events can be shown, 8 by default. The list starts below the
 header and grows downwards. Every extra day takes one line for its heading, so
 with a longer horizon the last events do not fit and the screen leaves them out
@@ -499,14 +506,18 @@ A **watched flight**, given by callsign or ICAO address, gets a green ring and
 passes the altitude filter as well.
 
 Tapping an aircraft opens a detail with its altitude, speed, ground track,
-climb rate, type, registration and flight route. Units switch between metric
-and aeronautical. Another tap anywhere closes it. The selection is keyed on the
-aircraft's ICAO address rather than its position in the list: the list is
-rebuilt on every fetch and its order is not guaranteed, so an index would
-silently repoint the panel at a different aircraft. When an aircraft drops out
-of the data for a moment the panel stays open with the last known values and
-admits it with a *signal lost* note; it closes only after three fetches without
-it.
+climb rate, type, registration and flight route. Under the type code stands the
+type spelled out — *AIRBUS A-321neo* under "A21N" — because few people know the
+codes by heart. It rides in the same response as the position, so nothing extra
+is downloaded for it; about one aircraft in twenty has none, because the server
+does not find it in its aircraft database, and then the code stands alone.
+Units switch between metric and aeronautical. Another tap anywhere closes it.
+The selection is keyed on the aircraft's ICAO address rather than its position
+in the list: the list is rebuilt on every fetch and its order is not
+guaranteed, so an index would silently repoint the panel at a different
+aircraft. When an aircraft drops out of the data for a moment the panel stays
+open with the last known values and admits it with a *signal lost* note; it
+closes only after three fetches without it.
 
 The route is looked up for one selected aircraft only, never for the whole
 list, and the answer is cached. The aircraft's position is sent along with the
@@ -514,7 +525,11 @@ callsign so the server can judge whether the route fits where the aircraft
 actually is — without that, an aircraft over Prague was shown flying Athens –
 Istanbul, because callsigns are recycled between rotations. Plenty of flights
 have no route at all (general aviation, military aircraft, helicopters); that
-is a normal state, not an error, and nothing is shown.
+is a normal state, not an error, and the detail says *Route unknown*. It says
+the same for an aircraft without a callsign, the only thing the route can be
+asked about. Until the answer arrives, *Looking up route...* stands there — and
+after a network error too, because the attempt is repeated with the next
+aircraft fetch.
 
 The poll interval is 5 to 120 seconds. Larger ranges add their own minimum on
 top — 10 seconds from 50 km and 15 seconds from 100 km — because they return
