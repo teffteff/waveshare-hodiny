@@ -14,6 +14,7 @@
 #include <time.h>
 
 #include "ChmiCa.h"
+#include "ChmiFrameNames.h"
 #include "ClockConfig.h"
 #include "CzechMapData.h"
 #include "EuropeMapData.h"
@@ -22,10 +23,12 @@
 #include "NetworkCoordinator.h"
 
 namespace {
-constexpr char INDEX_URL[] =
+constexpr char FRAME_BASE_URL[] =
     "https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/png/";
 constexpr char FILE_PREFIX[] = "pacz2gmaps3.z_max3d.";
-constexpr size_t FILE_NAME_CAPACITY = 56;
+// Kolik slotů zpět se smí hledat ten nejnovější publikovaný.
+constexpr uint8_t NEWEST_SLOT_PROBES = 4;
+constexpr size_t FILE_NAME_CAPACITY = CHMI_FRAME_NAME_CAPACITY;
 constexpr size_t PNG_CAPACITY = 131072;
 constexpr size_t MAX_ANIMATION_FRAME_COUNT = 15;
 // Snímky z obou zdrojů leží ve stejných polích, takže se stropy nesmí rozejít.
@@ -258,73 +261,9 @@ bool cacheDownloadedPng(size_t index, size_t size, const char *fileName) {
   return true;
 }
 
-void insertLatestName(char names[][FILE_NAME_CAPACITY], size_t &count,
-                      const char *candidate) {
-  for (size_t index = 0; index < count; ++index) {
-    if (strcmp(names[index], candidate) == 0) return;
-  }
-  if (count < MAX_ANIMATION_FRAME_COUNT) {
-    size_t position = count++;
-    while (position > 0 && strcmp(names[position - 1], candidate) > 0) {
-      strlcpy(names[position], names[position - 1], FILE_NAME_CAPACITY);
-      --position;
-    }
-    strlcpy(names[position], candidate, FILE_NAME_CAPACITY);
-    return;
-  }
-  if (strcmp(candidate, names[0]) <= 0) return;
-  size_t position = 0;
-  while (position + 1 < MAX_ANIMATION_FRAME_COUNT &&
-         strcmp(names[position + 1], candidate) < 0) {
-    strlcpy(names[position], names[position + 1], FILE_NAME_CAPACITY);
-    ++position;
-  }
-  strlcpy(names[position], candidate, FILE_NAME_CAPACITY);
-}
-
-void parseIndexChunk(const uint8_t *data, size_t length, size_t &prefixMatch,
-                     char *candidate, size_t &candidateLength,
-                     char latestNames[][FILE_NAME_CAPACITY], size_t &count) {
-  constexpr size_t prefixLength = sizeof(FILE_PREFIX) - 1;
-  for (size_t index = 0; index < length; ++index) {
-    const char value = static_cast<char>(data[index]);
-    if (candidateLength > 0) {
-      if (candidateLength + 1 >= FILE_NAME_CAPACITY || value == '<' ||
-          value == '"' || value == '\'' || value == ' ') {
-        candidateLength = 0;
-        prefixMatch = 0;
-        continue;
-      }
-      candidate[candidateLength++] = value;
-      candidate[candidateLength] = '\0';
-      if (candidateLength >= 4 &&
-          strcmp(candidate + candidateLength - 4, ".png") == 0) {
-        insertLatestName(latestNames, count, candidate);
-        candidateLength = 0;
-        prefixMatch = 0;
-      }
-      continue;
-    }
-
-    if (value == FILE_PREFIX[prefixMatch]) {
-      ++prefixMatch;
-      if (prefixMatch == prefixLength) {
-        memcpy(candidate, FILE_PREFIX, prefixLength);
-        candidateLength = prefixLength;
-        candidate[candidateLength] = '\0';
-        prefixMatch = 0;
-      }
-    } else {
-      prefixMatch = value == FILE_PREFIX[0] ? 1 : 0;
-    }
-  }
-}
-
-bool latestFileNames(char output[][FILE_NAME_CAPACITY], size_t &count,
-                     uint32_t revision) {
-  count = 0;
-  memset(output, 0,
-         MAX_ANIMATION_FRAME_COUNT * FILE_NAME_CAPACITY * sizeof(char));
+// Je snímek pro tenhle slot už venku? Ptáme se metodou HEAD, tedy na hlavičky
+// bez těla: odpověď má pár set bajtů proti čtyřiceti kilobajtům samotného PNG.
+bool frameExists(const char *fileName, uint32_t revision) {
   NetworkOperationGuard networkGuard(15000);
   if (!networkGuard) return false;
   WiFiClientSecure client;
@@ -334,58 +273,64 @@ bool latestFileNames(char output[][FILE_NAME_CAPACITY], size_t &count,
   http.useHTTP10(true);
   http.setConnectTimeout(6000);
   http.setTimeout(15000);
-  const String indexUrl = String(INDEX_URL) + F("?clock=") + millis();
-  if (!http.begin(client, indexUrl)) return false;
-  http.addHeader(F("Cache-Control"), F("no-cache"));
-  const int status = http.GET();
-  portENTER_CRITICAL(&stateMux);
-  lastHttpStatus = status;
-  lastDownloadedBytes = 0;
-  currentFile[0] = '\0';
-  portEXIT_CRITICAL(&stateMux);
-  if (status != HTTP_CODE_OK) {
-    http.end();
-    return false;
-  }
-
-  WiFiClient *stream = http.getStreamPtr();
-  uint8_t chunk[768];
-  size_t prefixMatch = 0;
-  char candidate[FILE_NAME_CAPACITY] = "";
-  size_t candidateLength = 0;
-  size_t indexBytesRead = 0;
-  int remaining = http.getSize();
-  unsigned long lastDataAt = millis();
-  while (remaining > 0 || remaining == -1) {
-    if (!requestMatches(revision)) {
-      http.end();
-      return false;
-    }
-    const size_t available = stream->available();
-    if (available == 0) {
-      const unsigned long idleFor = millis() - lastDataAt;
-      if (idleFor > 15000 || (!http.connected() && idleFor > 750)) break;
-      delay(2);
-      continue;
-    }
-    const size_t wanted = min(available, sizeof(chunk));
-    const int bytesRead = stream->readBytes(chunk, wanted);
-    if (bytesRead <= 0) break;
-    indexBytesRead += static_cast<size_t>(bytesRead);
-    lastDataAt = millis();
-    parseIndexChunk(chunk, static_cast<size_t>(bytesRead), prefixMatch, candidate,
-                    candidateLength, output, count);
-    if (remaining > 0) remaining -= bytesRead;
-    advanceAnimation(millis());
-    delay(2);
-  }
+  const String url = String(FRAME_BASE_URL) + fileName;
+  if (!http.begin(client, url)) return false;
+  const int status = http.sendRequest("HEAD");
   http.end();
   portENTER_CRITICAL(&stateMux);
-  lastDownloadedBytes = indexBytesRead;
-  if (count > 0)
-    strlcpy(latestIndexFile, output[count - 1], sizeof(latestIndexFile));
+  lastHttpStatus = status;
   portEXIT_CRITICAL(&stateMux);
-  return count > 0;
+  if (!requestMatches(revision)) return false;
+  return status == HTTP_CODE_OK;
+}
+
+// Nejnovější slot, který server opravdu má. Obnova běží minutu po hranici
+// slotu a publikace se o pár desítek vteřin opozdit může, takže se v takovém
+// případě ustoupí o slot zpět. Čtyři pokusy pokryjí dvacet minut výpadku
+// publikace; delší výpadek je porucha na straně ČHMÚ, ne věc, kterou by měly
+// hodiny přečkat dalšími dotazy.
+bool newestPublishedSlot(time_t &slot, uint32_t revision) {
+  const time_t now = time(nullptr);
+  if (now < VALID_TIME_THRESHOLD) return false;
+  time_t candidate = chmiFrameSlotAt(now);
+  for (uint8_t probe = 0; probe < NEWEST_SLOT_PROBES; ++probe) {
+    if (!requestMatches(revision)) return false;
+    char fileName[FILE_NAME_CAPACITY] = "";
+    chmiFrameName(candidate, fileName, sizeof(fileName));
+    if (fileName[0] == '\0') return false;
+    if (frameExists(fileName, revision)) {
+      slot = candidate;
+      return true;
+    }
+    candidate -= CHMI_FRAME_SLOT_SECONDS;
+  }
+  return false;
+}
+
+// Jména nejnovějších snímků, vzestupně od nejstaršího - v tomhle pořadí je
+// čte animace.
+//
+// Dřív se sahalo pro výpis adresáře, jenže ten má přes 300 kB: ČHMÚ v něm drží
+// týden snímků po pěti minutách a hodiny z něj potřebovaly jediný údaj, totiž
+// kde seznam končí. Stahoval se přitom při každé obnově, tedy dvanáctkrát za
+// hodinu, a po celou dobu držel zámek sítě ostatním službám. Jména jsou
+// dokonale pravidelná, takže se dopočítají z hodin; ze sítě zbyl jediný dotaz
+// na to, jestli je nejnovější slot už publikovaný.
+bool latestFileNames(char output[][FILE_NAME_CAPACITY], size_t &count,
+                     uint32_t revision) {
+  count = 0;
+  memset(output, 0,
+         MAX_ANIMATION_FRAME_COUNT * FILE_NAME_CAPACITY * sizeof(char));
+  time_t newest = 0;
+  if (!newestPublishedSlot(newest, revision)) return false;
+  if (!chmiFrameNamesEndingAt(newest, output, MAX_ANIMATION_FRAME_COUNT))
+    return false;
+  count = MAX_ANIMATION_FRAME_COUNT;
+  portENTER_CRITICAL(&stateMux);
+  lastDownloadedBytes = 0;
+  strlcpy(latestIndexFile, output[count - 1], sizeof(latestIndexFile));
+  portEXIT_CRITICAL(&stateMux);
+  return true;
 }
 
 bool downloadPng(const char *fileName, size_t &outputSize,
@@ -400,7 +345,7 @@ bool downloadPng(const char *fileName, size_t &outputSize,
   http.useHTTP10(true);
   http.setConnectTimeout(6000);
   http.setTimeout(15000);
-  const String url = String(INDEX_URL) + fileName;
+  const String url = String(FRAME_BASE_URL) + fileName;
   portENTER_CRITICAL(&stateMux);
   strlcpy(currentFile, fileName, sizeof(currentFile));
   lastDownloadedBytes = 0;
@@ -464,6 +409,14 @@ bool downloadPngWithRetry(const char *fileName, size_t &outputSize,
   for (uint8_t attempt = 0; attempt < maxAttempts; ++attempt) {
     if (downloadPng(fileName, outputSize, revision)) return true;
     if (!requestMatches(revision)) return false;
+    // Snímek, který server nemá, se opakováním neobjeví. Od té doby, co se
+    // jména počítají z času, může takový dotaz vzniknout - dřív pocházela ze
+    // seznamu, kde stálo jen to, co opravdu leží na disku. Pět pokusů se
+    // zdržením by za takovou díru zaplatilo pěti handshaky navíc.
+    portENTER_CRITICAL(&stateMux);
+    const bool missing = lastHttpStatus == HTTP_CODE_NOT_FOUND;
+    portEXIT_CRITICAL(&stateMux);
+    if (missing) return false;
     if (attempt + 1 < maxAttempts) delay(500UL * (attempt + 1));
   }
   return false;

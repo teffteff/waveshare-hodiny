@@ -316,6 +316,15 @@ Rozsvícená tečka ukazuje, kde v animaci právě jsi, a během kompletní př�
 prázdné cache je červená. Nová data se kontrolují v pevných pětiminutových
 slotech přibližně minutu po čase publikace ČHMÚ.
 
+Jména snímků si hodiny **dopočítají z vlastního času**, protože ČHMÚ je
+pojmenovává slotem v UTC (`pacz2gmaps3.z_max3d.20260909.1740.0.png`). Dřív se
+kvůli nim stahoval výpis adresáře, jenže ten má přes 300 kB — server v něm drží
+týden snímků po pěti minutách — a hodiny z něj potřebovaly jediný údaj: kde
+seznam končí. Ze sítě proto zbyl jediný dotaz metodou HEAD, jestli je nejnovější
+slot už publikovaný; když ještě ne, ustoupí se až o čtyři sloty zpět. Za obnovu
+to ušetří těch 300 kB a hlavně čas, po který stahování drželo zámek sítě
+ostatním obrazovkám.
+
 ### Ukazatel obrazovek
 
 Nahoře na **každé** obrazovce je řada teček, jedna na obrazovku zapojenou do

@@ -298,6 +298,16 @@ are, and turns red while an empty cache is being fully prepared. New imagery is
 checked in fixed five-minute slots, approximately one minute after the CHMI
 publication time.
 
+The clock **works the frame names out from its own clock**, because CHMI names
+them after the slot in UTC (`pacz2gmaps3.z_max3d.20260909.1740.0.png`). It used
+to download the directory listing for them, but that listing runs past 300 KB,
+since the server keeps a week of five-minute frames in it, and the clock needed
+one fact from it: where the list ends. What is left on the network is a single
+HEAD request asking whether the newest slot has been published, stepping back up
+to four slots when it has not. That saves the 300 KB per refresh, and more
+importantly the time the download spent holding the network lock against every
+other screen.
+
 ### Screen indicator
 
 A row of dots sits at the top of **every** screen, one per screen taking part
