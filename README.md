@@ -316,6 +316,12 @@ Rozsvícená tečka ukazuje, kde v animaci právě jsi, a během kompletní př�
 prázdné cache je červená. Nová data se kontrolují v pevných pětiminutových
 slotech přibližně minutu po čase publikace ČHMÚ.
 
+Snímky jedné obnovy chodí po **jednom spojení**. Dřív si každý platil vlastní
+TLS handshake, což je na ESP32 zhruba vteřina; u šesti snímků to byla polovina
+čekání na první obrázek. Studený start radaru se tím zkrátil ze 16 až 17 sekund
+na 10 až 11. Dlaždice RainVieweru to takhle dělaly odjakživa, ČHMÚ se to jen
+naučilo později.
+
 Jména snímků si hodiny **dopočítají z vlastního času**, protože ČHMÚ je
 pojmenovává slotem v UTC (`pacz2gmaps3.z_max3d.20260909.1740.0.png`). Dřív se
 kvůli nim stahoval výpis adresáře, jenže ten má přes 300 kB — server v něm drží

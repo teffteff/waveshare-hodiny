@@ -298,6 +298,12 @@ are, and turns red while an empty cache is being fully prepared. New imagery is
 checked in fixed five-minute slots, approximately one minute after the CHMI
 publication time.
 
+The frames of one refresh arrive over **a single connection**. Each used to pay
+for its own TLS handshake, which costs about a second on an ESP32, so with six
+frames that was half the wait for the first picture. A cold radar start went
+from 16 to 17 seconds down to 10 to 11. The RainViewer tiles always worked this
+way; the CHMI side only learned it later.
+
 The clock **works the frame names out from its own clock**, because CHMI names
 them after the slot in UTC (`pacz2gmaps3.z_max3d.20260909.1740.0.png`). It used
 to download the directory listing for them, but that listing runs past 300 KB,

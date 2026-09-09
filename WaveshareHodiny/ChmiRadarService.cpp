@@ -57,6 +57,11 @@ constexpr float WHOLE_COUNTRY_LATITUDE = 49.805f;
 constexpr float WHOLE_COUNTRY_LONGITUDE = 15.475f;
 constexpr uint16_t WHOLE_COUNTRY_RADIUS_KM = 260;
 
+// Spojení pro snímky žije mezi stahováními, aby si každý snímek nemusel platit
+// vlastní TLS handshake. Stejný důvod i stejný postup jako u dlaždic
+// RainVieweru, které to takhle dělají od začátku.
+WiFiClientSecure frameClient;
+
 TaskHandle_t taskHandle = nullptr;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 bool active = false;
@@ -266,6 +271,8 @@ bool cacheDownloadedPng(size_t index, size_t size, const char *fileName) {
 bool frameExists(const char *fileName, uint32_t revision) {
   NetworkOperationGuard networkGuard(15000);
   if (!networkGuard) return false;
+  // Vlastní krátkodobý klient, ne ten pro snímky: přes HEAD se spojení znovu
+  // použít nedá a měřením vyšlo, že to stahování snímků naopak zdrží.
   WiFiClientSecure client;
   client.setCACert(CHMI_ROOT_CA);
   client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
@@ -333,35 +340,32 @@ bool latestFileNames(char output[][FILE_NAME_CAPACITY], size_t &count,
   return true;
 }
 
-bool downloadPng(const char *fileName, size_t &outputSize,
+bool downloadPng(HTTPClient &http, const char *fileName, size_t &outputSize,
                  uint32_t revision) {
   outputSize = 0;
-  NetworkOperationGuard networkGuard(15000);
-  if (!networkGuard) return false;
-  WiFiClientSecure client;
-  client.setCACert(CHMI_ROOT_CA);
-  client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
-  HTTPClient http;
-  http.useHTTP10(true);
-  http.setConnectTimeout(6000);
-  http.setTimeout(15000);
   const String url = String(FRAME_BASE_URL) + fileName;
   portENTER_CRITICAL(&stateMux);
   strlcpy(currentFile, fileName, sizeof(currentFile));
   lastDownloadedBytes = 0;
   portEXIT_CRITICAL(&stateMux);
-  if (!http.begin(client, url)) return false;
+  if (!http.begin(frameClient, url)) return false;
   const int status = http.GET();
   portENTER_CRITICAL(&stateMux);
   lastHttpStatus = status;
   portEXIT_CRITICAL(&stateMux);
   if (status != HTTP_CODE_OK) {
     http.end();
+    // Tělo chybové odpovědi zůstalo nepřečtené a keep-alive stojí na tom, že se
+    // odpověď dočte celá; další snímek by si ho jinak přečetl jako svůj.
+    frameClient.stop();
     return false;
   }
+  // Bez ohlášené délky se s keep-alive nedá poznat, kde odpověď končí. ČHMÚ ji
+  // u statických souborů posílá vždy; kdyby jednou ne, radši se nestahuje.
   const int declaredSize = http.getSize();
-  if (declaredSize > static_cast<int>(PNG_CAPACITY)) {
+  if (declaredSize < 0 || declaredSize > static_cast<int>(PNG_CAPACITY)) {
     http.end();
+    frameClient.stop();
     return false;
   }
 
@@ -372,6 +376,7 @@ bool downloadPng(const char *fileName, size_t &outputSize,
          (remaining > 0 || remaining == -1)) {
     if (!requestMatches(revision)) {
       http.end();
+      frameClient.stop();
       return false;
     }
     const size_t available = stream->available();
@@ -395,19 +400,25 @@ bool downloadPng(const char *fileName, size_t &outputSize,
     delay(DOWNLOAD_CHUNK_PAUSE_MS);
   }
   http.end();
-  if (declaredSize >= 0 && outputSize != static_cast<size_t>(declaredSize))
+  if (outputSize != static_cast<size_t>(declaredSize)) {
+    // Nedočtená odpověď nechává ve spojení zbytek, který nikomu nepatří.
+    frameClient.stop();
     return false;
+  }
   static const uint8_t signature[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
                                       '\n'};
   return outputSize >= sizeof(signature) &&
          memcmp(pngBuffer, signature, sizeof(signature)) == 0;
 }
 
-bool downloadPngWithRetry(const char *fileName, size_t &outputSize,
-                          uint32_t revision) {
+bool downloadPngWithRetry(HTTPClient &http, const char *fileName,
+                          size_t &outputSize, uint32_t revision) {
   constexpr uint8_t maxAttempts = 5;
   for (uint8_t attempt = 0; attempt < maxAttempts; ++attempt) {
-    if (downloadPng(fileName, outputSize, revision)) return true;
+    if (downloadPng(http, fileName, outputSize, revision)) return true;
+    // Neúspěch často znamená, že spojení je pryč. Zahodíme ho, aby si další
+    // pokus postavil nové místo zápisu do mrtvého socketu.
+    frameClient.stop();
     if (!requestMatches(revision)) return false;
     // Snímek, který server nemá, se opakováním neobjeví. Od té doby, co se
     // jména počítají z času, může takový dotaz vzniknout - dřív pocházela ze
@@ -1235,6 +1246,28 @@ bool loadAnimation(float latitude, float longitude, uint16_t radiusKm,
     loadedCount = 0;
   }
 
+  // Jedno spojení a jeden zámek sítě na celou dávku snímků. Sáhnout si pro
+  // zámek u každého snímku zvlášť by mezi ně pustilo jinou službu a s ní
+  // druhou TLS relaci - a otevřená relace drží pořádný kus interní paměti,
+  // které je tu málo. Takhle je otevřená vždycky jen jedna a snímky za ní
+  // chodí bez dalšího handshaku, přesně jako dlaždice RainVieweru.
+  NetworkOperationGuard networkGuard(15000);
+  if (!networkGuard) {
+    setStatus(false, "Sit je zaneprazdnena");
+    portENTER_CRITICAL(&stateMux);
+    if (revision == requestRevision) fullPreparationInProgress = false;
+    portEXIT_CRITICAL(&stateMux);
+    return false;
+  }
+  frameClient.setCACert(CHMI_ROOT_CA);
+  frameClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
+  HTTPClient http;
+  // Bez useHTTP10(): ta v jádře ESP32 vypíná i keep-alive, kvůli kterému to
+  // celé je.
+  http.setReuse(true);
+  http.setConnectTimeout(6000);
+  http.setTimeout(15000);
+
   const auto prepareMissingFrame = [&](size_t index) {
     const char *fileName = latestNames[selectedStart + index];
     if (preparedFrameReady[index] &&
@@ -1258,7 +1291,7 @@ bool loadAnimation(float latitude, float longitude, uint16_t radiusKm,
     }
 
     size_t pngSize = 0;
-    if (!downloadPngWithRetry(fileName, pngSize, revision)) {
+    if (!downloadPngWithRetry(http, fileName, pngSize, revision)) {
       setStatus(false, "Snimek CHMU se nepodarilo stahnout");
       return false;
     }
@@ -1503,12 +1536,31 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
                          mapOpacityValue, revision);
   }
 
+  // Jedno spojení a jeden zámek sítě na celou dávku snímků. Sáhnout si pro
+  // zámek u každého snímku zvlášť by mezi ně pustilo jinou službu a s ní
+  // druhou TLS relaci - a otevřená relace drží pořádný kus interní paměti,
+  // které je tu málo. Takhle je otevřená vždycky jen jedna a snímky za ní
+  // chodí bez dalšího handshaku, přesně jako dlaždice RainVieweru.
+  NetworkOperationGuard networkGuard(15000);
+  if (!networkGuard) {
+    setStatus(false, "Sit je zaneprazdnena");
+    return false;
+  }
+  frameClient.setCACert(CHMI_ROOT_CA);
+  frameClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
+  HTTPClient http;
+  // Bez useHTTP10(): ta v jádře ESP32 vypíná i keep-alive, kvůli kterému to
+  // celé je.
+  http.setReuse(true);
+  http.setConnectTimeout(6000);
+  http.setTimeout(15000);
+
   pendingRefreshCount = 0;
   const size_t firstNew = selectedCount - shift;
   for (size_t slot = 0; slot < shift; ++slot) {
     const char *fileName = latestNames[selectedStart + firstNew + slot];
     size_t pngSize = 0;
-    if (!downloadPngWithRetry(fileName, pngSize, revision) ||
+    if (!downloadPngWithRetry(http, fileName, pngSize, revision) ||
         !cachePendingPng(slot, pngSize) ||
         !decodeRadar(pngBuffer, pngSize, latitude, longitude, radiusKm,
                      mapOpacityValue, decodeBuffer) ||
