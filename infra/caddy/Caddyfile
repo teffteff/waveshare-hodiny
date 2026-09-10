@@ -27,6 +27,18 @@
 	handle /planes.json {
 		reverse_proxy 127.0.0.1:8090
 	}
+	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
+	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
+	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by
+	# se relativni odkazy na strance skladaly proti korenu domeny.
+	redir /novinky /novinky/
+	handle /novinky/* {
+		basic_auth {
+			hlidac {env.WATCHER_HASH}
+		}
+		uri strip_prefix /novinky
+		reverse_proxy 127.0.0.1:8091
+	}
 	handle {
 		reverse_proxy 127.0.0.1:8123
 	}
