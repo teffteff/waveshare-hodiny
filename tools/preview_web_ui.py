@@ -68,7 +68,7 @@ def metric(name: str, entity: str, suffix: str, decimals: int) -> dict:
 
 
 def value_slots() -> list[dict]:
-    """Osm slotů obrazovky HODNOTY; první čtyři jsou zapnuté jako po migraci."""
+    """Dvě stránky po devíti slotech HODNOTY; první čtyři jsou zapnuté jako po migraci."""
     seeded = [
         ("VENKU", "sensor.venkovni_teplota", "°C", 1, "#4CCBEC"),
         ("OBÝVÁK", "sensor.obyvak_teplota", "°C", 1, "#FFB843"),
@@ -76,7 +76,7 @@ def value_slots() -> list[dict]:
         ("CO₂", "sensor.obyvak_co2", "ppm", 0, "#FFB843"),
     ]
     slots = []
-    for index in range(8):
+    for index in range(18):
         if index < len(seeded):
             name, entity, suffix, decimals, color = seeded[index]
             enabled = True

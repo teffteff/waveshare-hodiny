@@ -21,7 +21,8 @@ constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
 // a devátá hodnota na středu pod mřížkou, kde kruhový displej nechává volné
 // místo zrcadlící okraj nad časem.
 constexpr size_t CLOCK_VALUE_GRID_SLOT_COUNT = 8;
-constexpr size_t CLOCK_VALUE_SLOT_COUNT = CLOCK_VALUE_GRID_SLOT_COUNT + 1;
+constexpr size_t CLOCK_VALUE_PAGE_SLOT_COUNT = CLOCK_VALUE_GRID_SLOT_COUNT + 1;
+constexpr size_t CLOCK_VALUE_SLOT_COUNT = 2 * CLOCK_VALUE_PAGE_SLOT_COUNT;
 constexpr size_t CLOCK_RSS_URL_LENGTH = 192;
 // Stejný strop jako u kanálu se zprávami: adresa míří na vlastní server, ne na
 // cizí službu s dlouhými parametry.
@@ -86,7 +87,8 @@ constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 12;
 // stays byte-for-byte unchanged and the address starts empty, which means the
 // clock keeps asking adsb.fi directly - an upgrade never redirects the radar to
 // a server the owner has not named.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 38;
+// Schema 39 appends nine independent slots for the swipe-only second values page.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 39;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -458,6 +460,8 @@ struct ClockConfig {
   // Vyplněná ukazuje na vlastní zdroj z infra/planes, který tutéž odpověď
   // ořeže na to, co firmware opravdu čte.
   char planesFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
+  // Appended after the complete schema 38 prefix; disabled on upgrade.
+  ClockValueSlotConfig secondPageSlots[CLOCK_VALUE_PAGE_SLOT_COUNT];
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -533,12 +537,16 @@ static_assert(CLOCK_CONFIG_SCHEMA_37_SIZE == 5896 &&
 // je kvůli migraci uložený zvlášť.
 inline ClockValueSlotConfig &clockConfigValueSlot(ClockConfig &config,
                                                  size_t index) {
+  if (index >= CLOCK_VALUE_PAGE_SLOT_COUNT)
+    return config.secondPageSlots[index - CLOCK_VALUE_PAGE_SLOT_COUNT];
   return index < CLOCK_VALUE_GRID_SLOT_COUNT ? config.slots[index]
                                              : config.bottomSlot;
 }
 
 inline const ClockValueSlotConfig &clockConfigValueSlot(
     const ClockConfig &config, size_t index) {
+  if (index >= CLOCK_VALUE_PAGE_SLOT_COUNT)
+    return config.secondPageSlots[index - CLOCK_VALUE_PAGE_SLOT_COUNT];
   return index < CLOCK_VALUE_GRID_SLOT_COUNT ? config.slots[index]
                                              : config.bottomSlot;
 }

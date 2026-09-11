@@ -753,6 +753,15 @@ bool clockConfigBegin() {
   return nvs_flash_init_partition(CONFIG_PARTITION) == ESP_OK;
 }
 
+struct ConfigRecordV38 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[offsetof(ClockConfig, secondPageSlots)];
+  uint32_t checksum;
+};
+static_assert(offsetof(ClockConfig, secondPageSlots) == 6088,
+              "Preserve the complete schema 38 record, including padding.");
+
 bool clockConfigLoad(ClockConfig &config) {
   clockConfigApplyDefaults(config);
   Preferences preferences;
@@ -764,6 +773,7 @@ bool clockConfigLoad(ClockConfig &config) {
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
+                             storedSize == sizeof(ConfigRecordV38) ||
                              storedSize == sizeof(ConfigRecordV37) ||
                              storedSize == sizeof(ConfigRecordV36) ||
                              storedSize == sizeof(ConfigRecordV35) ||
@@ -792,6 +802,21 @@ bool clockConfigLoad(ClockConfig &config) {
     config = record.config;
     normalizeConfig(config);
     return true;
+  }
+
+  const ConfigRecordV38 &legacyV38 =
+      *reinterpret_cast<const ConfigRecordV38 *>(&record);
+  uint32_t embeddedSchemaV38 = 0;
+  if (readComplete && storedSize == sizeof(legacyV38))
+    memcpy(&embeddedSchemaV38, legacyV38.config, sizeof(embeddedSchemaV38));
+  if (readComplete && storedSize == sizeof(legacyV38) &&
+      legacyV38.magic == CONFIG_MAGIC && legacyV38.schemaVersion == 38 &&
+      embeddedSchemaV38 == 38 &&
+      legacyV38.checksum == bytesChecksum(legacyV38.config, sizeof(legacyV38.config))) {
+    memcpy(&config, legacyV38.config, sizeof(legacyV38.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return clockConfigSave(config);
   }
 
   // Schéma 37 je přesnou předponou schématu 38; adresa zdroje letadel zůstane

@@ -225,7 +225,22 @@ void testIncompleteOrDuplicateScreenOrderIsRejected() {
 
 }  // namespace
 
+void testSecondPageFormBoundaries() {
+  for (size_t index : {size_t(9), size_t(17)}) {
+    Fields fields;
+    for (const auto &field : customSlotFields())
+      fields["valueSlot" + std::to_string(index) + field.first.substr(10)] = field.second;
+    ClockConfig config;
+    clockConfigApplyDefaults(config);
+    auto source = sourceFor(fields);
+    assert(readValueSlotFromSource(source, index, clockConfigValueSlot(config, index)) == ValueSlotFormResult::Applied);
+    assert(strcmp(clockConfigValueSlot(config, index).entityId, "sensor.loznice_teplota") == 0);
+    assert(!config.bottomSlot.enabled);
+  }
+}
+
 int main() {
+  testSecondPageFormBoundaries();
   testMissingFieldsKeepStoredSlot();
   testCustomSlotIsRead();
   testPresetSlotOverwritesNameAndSuffix();

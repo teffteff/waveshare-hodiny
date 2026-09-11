@@ -1009,7 +1009,9 @@ void maintainDisplayGestures() {
   }
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
-    if (radarAvailable && clockDashboardRadarVisible()) {
+    if (clockDashboardSwipeValues()) {
+      displayModeStartedAt = millis();
+    } else if (radarAvailable && clockDashboardRadarVisible()) {
       handleRadarRangeChange(rangeSwipeDirection);
     } else if (clockDashboardPlanesVisible()) {
       planeRadarServiceChangeRange(rangeSwipeDirection);

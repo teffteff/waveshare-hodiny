@@ -787,3 +787,7 @@ that made this integration possible.
 
 The project is licensed under the [MIT License](LICENSE). Third-party components
 and assets are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Second VALUES screen
+
+With Home Assistant and the VALUES clock style, swipe across the display to switch between two banks of nine values. Both banks share the same top screen dot; long press still moves through the other pages. In the web configuration, open Values and configure slots 1–9 under First screen and 10–18 under Second screen. Each slot has its own entity, name, unit, decimals, enabled state and colour scale. The new slots start disabled after upgrading. Existing configuration and backups remain compatible; new backups include all 18 slots.

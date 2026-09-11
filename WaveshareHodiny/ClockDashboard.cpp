@@ -63,6 +63,8 @@ bool dashboardRuntimeConfigAvailable = false;
 
 bool analogLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_ANALOG; }
 
+uint8_t activeValuesPage = 0;
+
 bool valuesLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_VALUES; }
 
 lv_obj_t *timeLabel = nullptr;
@@ -96,8 +98,8 @@ lv_obj_t *valuesPage = nullptr;
 lv_obj_t *valuesTimeLabel = nullptr;
 lv_obj_t *valuesDateLabel = nullptr;
 lv_obj_t *valuesNamedayLabel = nullptr;
-lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_SLOT_COUNT] = {};
-lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_SLOT_COUNT] = {};
+lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
+lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 // Kořen obrazovky se drží kvůli stránce předpovědi, která se zakládá až při
 // prvním zapnutí - do té doby nestojí ani jeden objekt LVGL.
 lv_obj_t *dashboardScreen = nullptr;
@@ -4445,7 +4447,7 @@ void makeValuesPage(lv_obj_t *screen) {
   lv_label_set_text(valuesNamedayLabel, "");
   alignCenter(valuesNamedayLabel, 0, -108);
 
-  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+  for (size_t index = 0; index < CLOCK_VALUE_PAGE_SLOT_COUNT; ++index) {
     const ValueSlotPosition position = valueSlotPosition(index);
     const int x = position.x;
     const int y = position.y;
@@ -4517,12 +4519,13 @@ void updateValuesPage() {
   if (valuesPage == nullptr || !valuesLayoutEnabled()) return;
   const bool openMeteo =
       dashboardRuntimeConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO;
-  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+  for (size_t index = 0; index < CLOCK_VALUE_PAGE_SLOT_COUNT; ++index) {
     lv_obj_t *title = valueSlotTitleLabels[index];
     lv_obj_t *value = valueSlotValueLabels[index];
     if (title == nullptr || value == nullptr) continue;
+    const size_t slotIndex = index + activeValuesPage * CLOCK_VALUE_PAGE_SLOT_COUNT;
     const ClockValueSlotConfig &slot =
-        clockConfigValueSlot(dashboardRuntimeConfig, index);
+        clockConfigValueSlot(dashboardRuntimeConfig, slotIndex);
     // Sloty 4-8 nemají v režimu Open-Meteo odkud brát hodnotu ani kde se
     // nastavit, takže by zůstaly natrvalo prázdné.
     if (!slot.enabled || (openMeteo && index > 3)) {
@@ -4533,10 +4536,10 @@ void updateValuesPage() {
     setObjectVisible(title, true);
     setObjectVisible(value, true);
 
-    const ValueSlotDisplay display = valueSlotDisplay(index, slot);
+    const ValueSlotDisplay display = valueSlotDisplay(slotIndex, slot);
     lv_label_set_text(title, display.name);
 
-    const float reading = valueSlotReading(index);
+    const float reading = valueSlotReading(slotIndex);
     char number[16];
     formatMetricValue(number, sizeof(number), reading, display.decimals);
     char suffix[CLOCK_METRIC_SUFFIX_LENGTH];
@@ -4761,6 +4764,7 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
 
 void clockDashboardApplyConfiguration(const ClockConfig &config) {
   dashboardRuntimeConfig = config;
+  if (config.dataSource != CLOCK_DATA_SOURCE_HOME_ASSISTANT) activeValuesPage = 0;
   dashboardRuntimeConfigAvailable = true;
   radarFeatureAvailable = clockConfigRadarAvailable(config);
   radarStatusLineEnabled = config.radarStatusLine;
@@ -5069,6 +5073,16 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   updateScreenDots();
 }
 
+bool clockDashboardSwipeValues() {
+  if (activeScreen != DASHBOARD_SCREEN_CLOCK || settingsVisible ||
+      firmwareUpdateActive || !valuesLayoutEnabled() ||
+      dashboardRuntimeConfig.dataSource != CLOCK_DATA_SOURCE_HOME_ASSISTANT)
+    return false;
+  activeValuesPage = 1 - activeValuesPage;
+  updateValuesPage();
+  return true;
+}
+
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   const uint8_t style = constrain(
       appearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
@@ -5106,6 +5120,7 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
                                      analogCardinalAccentColor != accentColor ||
                                      analogCardinalAccentsEnabled !=
                                          accentsEnabled;
+  if (styleChanged) activeValuesPage = 0;
   activeClockStyle = style;
   analogToneColor = tone;
   analogHandToneColor = handTone;

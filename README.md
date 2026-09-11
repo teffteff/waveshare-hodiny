@@ -938,3 +938,7 @@ knihovny, fonty a grafické assety s vlastními licencemi; jejich autoři,
 licence a zdrojové odkazy jsou uvedené v
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). MIT licence projektu jejich
 původní licenční podmínky nenahrazuje.
+
+### Druhá obrazovka HODNOTY
+
+S Home Assistantem a ciferníkem HODNOTY přepneš tažením prstu mezi dvěma sadami po devíti hodnotách. Tečka nahoře zůstává stejná; podržení dál přepíná ostatní stránky. Na webu otevři Hodnoty: první obrazovka používá pozice 1–9, druhá 10–18. Každá pozice má vlastní entitu, název, jednotku, desetinná místa, zapnutí a barevnou škálu. Nové pozice jsou po aktualizaci vypnuté. Původní konfigurace a zálohy zůstávají kompatibilní; nové zálohy obsahují všech 18 hodnot.
