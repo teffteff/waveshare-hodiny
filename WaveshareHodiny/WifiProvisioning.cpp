@@ -29,15 +29,21 @@ unsigned long provisioningStartedAt = 0;
 bool provisioningActive = false;
 
 void loadStoredCredentials() {
-#if FIRMWARE_RELEASE
+  // USB development updates must retain Wi-Fi provisioned by release firmware.
+  // Local build credentials are only a fallback for an unprovisioned device.
+  storedSsid = "";
+  storedPassword = "";
   Preferences preferences;
-  if (!preferences.begin(WIFI_NAMESPACE, true)) return;
-  storedSsid = preferences.getString(WIFI_SSID_KEY);
-  storedPassword = preferences.getString(WIFI_PASSWORD_KEY);
-  preferences.end();
-#elif HAS_DEVELOPMENT_WIFI
-  storedSsid = WIFI_SSID;
-  storedPassword = WIFI_PASSWORD;
+  if (preferences.begin(WIFI_NAMESPACE, true)) {
+    storedSsid = preferences.getString(WIFI_SSID_KEY);
+    storedPassword = preferences.getString(WIFI_PASSWORD_KEY);
+    preferences.end();
+  }
+#if HAS_DEVELOPMENT_WIFI
+  if (storedSsid.isEmpty()) {
+    storedSsid = WIFI_SSID;
+    storedPassword = WIFI_PASSWORD;
+  }
 #endif
 }
 

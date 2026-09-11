@@ -4,6 +4,7 @@
 // Data přežívají mezi instancemi Preferences stejně jako skutečné NVS,
 // takže migrace i následné uložení lze ověřit v jednom běhu testu.
 
+#include <Arduino.h>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -47,7 +48,7 @@ inline size_t hostPreferencesBlobSize(const char *partition, const char *space,
 
 class Preferences {
  public:
-  bool begin(const char *space, bool readOnly, const char *partition) {
+  bool begin(const char *space, bool readOnly, const char *partition = "nvs") {
     space_ = space == nullptr ? "" : space;
     partition_ = partition == nullptr ? "" : partition;
     readOnly_ = readOnly;
@@ -75,6 +76,15 @@ class Preferences {
     const size_t size = found->size() < maxSize ? found->size() : maxSize;
     memcpy(output, found->data(), size);
     return size;
+  }
+
+  String getString(const char *key) {
+    const auto *found = lookup(key);
+    return found == nullptr ? String("") : String(std::string(found->begin(), found->end()));
+  }
+
+  size_t putString(const char *key, const String &value) {
+    return putBytes(key, value.c_str(), value.length());
   }
 
   bool remove(const char *key) {
