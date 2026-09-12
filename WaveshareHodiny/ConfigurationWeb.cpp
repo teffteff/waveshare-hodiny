@@ -17,21 +17,18 @@
 #include <cctype>
 #include <cstring>
 
-#include "ConfigurationPage.h"
+#include "CompressedPages.h"
 #include "AgendaService.h"
 #include "RssService.h"
-#include "ConfigurationLocalization.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
 #include "ClockDashboard.h"
-#include "DiagnosticPage.h"
 #include "Display_ST7701.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "FirmwareUpdateService.h"
 #include "HomeAssistantConnectionPolicy.h"
 #include "HttpDownload.h"
-#include "LoginPage.h"
 #include "NetworkCoordinator.h"
 #include "NetworkDiagnostics.h"
 #include "TmepService.h"
@@ -131,8 +128,9 @@ class BoundedWebServer : public WebServer {
   static constexpr size_t RESPONSE_SLICE_BYTES = 1460;
   // Poslední pojistka proti klientovi, který si odpověď nikdy nevyzvedne.
   // Displej po tu dobu stojí, useknutá odpověď je ale pořád lepší než restart.
-  // Patnáct sekund pokryje i telefon na okraji dosahu - stránka potřebuje
-  // zhruba 13 kB/s - a zároveň zůstane pod dvacetisekundovým watchdogem.
+  // Patnáct sekund pokryje i telefon na okraji dosahu - zabalená stránka
+  // potřebuje necelé 4 kB/s - a zároveň zůstane pod dvacetisekundovým
+  // watchdogem.
   static constexpr unsigned long RESPONSE_DEADLINE_MS = 15UL * 1000UL;
 
   // Na zápis se čeká vlastním selectem, protože NetworkClient::write si uvnitř
@@ -818,6 +816,16 @@ void addSecurityHeaders() {
         "frame-ancestors 'none'"));
 }
 
+// Stránky jsou ve firmwaru jen zabalené gzipem: ušetří to kolem 180 kB flash
+// a hlavně zkrátí dobu, po kterou smyčka drží odesílání. Accept-Encoding se
+// nezkoumá, protože nezabalenou podobu firmware ani nemá a prohlížeč bez gzipu
+// by si stejně neporadil ani se zbytkem rozhraní.
+void sendCompressedPage(PGM_P contentType, const uint8_t *payload,
+                        size_t size) {
+  server.sendHeader(F("Content-Encoding"), F("gzip"));
+  server.send_P(200, contentType, reinterpret_cast<PGM_P>(payload), size);
+}
+
 void sendJson(int status, const String &payload) {
   addSecurityHeaders();
   server.send(status, F("application/json; charset=utf-8"), payload);
@@ -1159,19 +1167,22 @@ void handleRoot() {
   addSecurityHeaders();
   if (webActive) {
     extendWebAvailability();
-    server.send_P(200, PSTR("text/html; charset=utf-8"),
-                  webPasswordEnabled && !webSessionAuthenticated()
-                      ? LOGIN_PAGE
-                      : CONFIGURATION_PAGE);
+    const bool locked = webPasswordEnabled && !webSessionAuthenticated();
+    sendCompressedPage(PSTR("text/html; charset=utf-8"),
+                       locked ? LOGIN_PAGE_GZIP : CONFIGURATION_PAGE_GZIP,
+                       locked ? sizeof(LOGIN_PAGE_GZIP)
+                              : sizeof(CONFIGURATION_PAGE_GZIP));
   } else {
-    server.send_P(200, PSTR("text/html; charset=utf-8"), DIAGNOSTIC_PAGE);
+    sendCompressedPage(PSTR("text/html; charset=utf-8"), DIAGNOSTIC_PAGE_GZIP,
+                       sizeof(DIAGNOSTIC_PAGE_GZIP));
   }
 }
 
 void handleDiagnosticPage() {
   persistBrowserLanguageIfUnset();
   addSecurityHeaders();
-  server.send_P(200, PSTR("text/html; charset=utf-8"), DIAGNOSTIC_PAGE);
+  sendCompressedPage(PSTR("text/html; charset=utf-8"), DIAGNOSTIC_PAGE_GZIP,
+                     sizeof(DIAGNOSTIC_PAGE_GZIP));
 }
 
 bool requestOriginAllowed() {
@@ -3334,8 +3345,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   server.on("/", HTTP_GET, handleRoot);
   server.on("/ui-language.js", HTTP_GET, []() {
     addSecurityHeaders();
-    server.send_P(200, PSTR("text/javascript; charset=utf-8"),
-                  CONFIGURATION_LOCALIZATION_JS);
+    sendCompressedPage(PSTR("text/javascript; charset=utf-8"),
+                       CONFIGURATION_LOCALIZATION_JS_GZIP,
+                       sizeof(CONFIGURATION_LOCALIZATION_JS_GZIP));
   });
   server.on("/diagnostics", HTTP_GET, handleDiagnosticPage);
   registerBoundedPost("/api/auth/login", handleWebLogin);

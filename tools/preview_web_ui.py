@@ -19,27 +19,13 @@ import argparse
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-ROOT = Path(__file__).resolve().parent.parent
-FIRMWARE = ROOT / "WaveshareHodiny"
-PAGE_HEADER = FIRMWARE / "ConfigurationPage.h"
-LOCALIZATION_HEADER = FIRMWARE / "ConfigurationLocalization.h"
-
-
-def extract_raw_string(path: Path, symbol: str, delimiter: str) -> str:
-    """Vrátí obsah surového řetězce C++ R"DELIM( ... )DELIM"."""
-    source = path.read_text(encoding="utf-8")
-    opening = f'{symbol}[] PROGMEM = R"{delimiter}('
-    start = source.find(opening)
-    if start < 0:
-        raise SystemExit(f"V {path.name} se nepodařilo najít {symbol}.")
-    start += len(opening)
-    end = source.find(f'){delimiter}"', start)
-    if end < 0:
-        raise SystemExit(f"Řetězec {symbol} v {path.name} není ukončený.")
-    return source[start:end]
+from web_ui_sources import (
+    LOCALIZATION_HEADER,
+    PAGE_HEADER,
+    extract_raw_string,
+)
 
 
 def side(name: str, entity: str, icon: str, color: str) -> dict:

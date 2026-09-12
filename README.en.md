@@ -702,6 +702,25 @@ Pass a serial port explicitly when needed:
 The development build retains USB diagnostics, screenshot commands and local
 development defaults. It does not install a public OTA release automatically.
 
+### Web interface
+
+The settings pages are edited as plain HTML in `ConfigurationPage.h`,
+`ConfigurationLocalization.h`, `LoginPage.h` and `DiagnosticPage.h`. They are
+not compiled in that form. Both `build.sh` and `build-release.sh` first gzip
+them into the generated header `WaveshareHodiny/CompressedPages.h`, which Git
+ignores. The compressed configuration page is about a third of its source size,
+so it reaches a phone on a weak signal before it could stall the clock.
+
+When compiling the sketch directly with `arduino-cli compile` or the Arduino
+IDE, generate the header first:
+
+```bash
+python3 tools/generate_compressed_pages.py
+```
+
+The device always sends pages compressed, so call `curl` with `--compressed`.
+`python3 tools/preview_web_ui.py` previews the interface without a clock.
+
 ### Optional local `.env`
 
 The entire `.env` file is ignored by Git. It can supply local Wi-Fi, Home

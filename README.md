@@ -779,6 +779,26 @@ Vývojový build se ukládá do `build/waveshare-hodiny-develop/`, podporuje USB
 diagnostiku a screenshoty a úmyslně neinstaluje OTA release. Bez `.env` se
 stále sestaví, pouze nemá vývojové výchozí Wi-Fi a HA hodnoty.
 
+### Webové rozhraní
+
+Stránky nastavení se upravují přímo jako HTML v `ConfigurationPage.h`,
+`ConfigurationLocalization.h`, `LoginPage.h` a `DiagnosticPage.h`. Do firmwaru
+se ale nepřekládají v této podobě: `build.sh` i `build-release.sh` je nejdřív
+zabalí gzipem do generované hlavičky `WaveshareHodiny/CompressedPages.h`, kterou
+Git ignoruje. Konfigurační stránka má zabalená zhruba třetinu velikosti, takže
+se na telefon se slabým signálem odešle dřív, než by stačila zaseknout hodiny.
+
+Kdo překládá sketch přímo přes `arduino-cli compile` nebo Arduino IDE, musí
+hlavičku napřed vygenerovat:
+
+```sh
+python3 tools/generate_compressed_pages.py
+```
+
+Zařízení posílá stránky vždy zabalené, proto je `curl` potřeba volat s
+přepínačem `--compressed`. Rychlý náhled bez hodin nabízí
+`python3 tools/preview_web_ui.py`.
+
 ### Volitelná lokální `.env`
 
 `.env` je celý ignorovaný Gitem a není pro sestavení povinný. Generátor
