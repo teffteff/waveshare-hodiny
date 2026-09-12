@@ -5078,6 +5078,15 @@ bool clockDashboardSwipeValues() {
       firmwareUpdateActive || !valuesLayoutEnabled() ||
       dashboardRuntimeConfig.dataSource != CLOCK_DATA_SOURCE_HOME_ASSISTANT)
     return false;
+  // Po aktualizaci je druhá sada vypnutá. Náhodné tažení by pak schovalo celou
+  // mřížku a hodiny by vypadaly, že o hodnoty přišly. Zpátky na první sadu se
+  // ale projít dá vždycky, i když majitel druhou mezitím vypnul.
+  if (activeValuesPage == 0) {
+    bool secondPageUsed = false;
+    for (const ClockValueSlotConfig &slot : dashboardRuntimeConfig.secondPageSlots)
+      secondPageUsed = secondPageUsed || slot.enabled;
+    if (!secondPageUsed) return false;
+  }
   activeValuesPage = 1 - activeValuesPage;
   updateValuesPage();
   return true;
