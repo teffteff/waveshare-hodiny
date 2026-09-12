@@ -740,6 +740,16 @@ void clockConfigApplyDefaults(ClockConfig &config) {
   applyLegacySideValueDefaults(config);
 }
 
+// Záznam i s konfigurací má přes 8 kB. Jako statická proměnná by ležel v .bss
+// interní RAM, a to dvakrát - pro načtení i pro uložení - a ubíral by TLS
+// stejně jako dřívější statické kopie ClockConfig. Patří proto do PSRAM.
+ConfigRecord &allocateConfigRecord() {
+  void *memory = heap_caps_malloc(sizeof(ConfigRecord),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (memory == nullptr) memory = malloc(sizeof(ConfigRecord));
+  return *new (memory) ConfigRecord();
+}
+
 ClockConfig &clockConfigAllocate() {
   void *memory = heap_caps_malloc(sizeof(ClockConfig),
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -769,7 +779,7 @@ bool clockConfigLoad(ClockConfig &config) {
 
   // Aktuální i jediný podporovaný migrační záznam sdílejí jeden statický
   // buffer. Konfigurace je velká a nemá ležet na zásobníku loopTask.
-  static ConfigRecord record;
+  static ConfigRecord &record = allocateConfigRecord();
   record = ConfigRecord{};
   const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
   const bool supportedSize = storedSize == sizeof(record) ||
@@ -1173,7 +1183,7 @@ bool clockConfigLoad(ClockConfig &config) {
 }
 
 bool clockConfigSave(const ClockConfig &config) {
-  static ConfigRecord record;
+  static ConfigRecord &record = allocateConfigRecord();
   record = ConfigRecord{};
   record.magic = CONFIG_MAGIC;
   record.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;

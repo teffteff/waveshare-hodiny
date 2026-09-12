@@ -730,8 +730,10 @@ bool previewRadarRangeFromWeb(uint16_t radiusKm) {
     return false;
   }
   runtimeConfig.radarRadiusKm = radiusKm;
-  const ClockConfig config = runtimeConfig;
   xSemaphoreGive(runtimeConfigMutex);
+  // Kopie hodnotou by si na zásobníku loop vzala přes 8 kB z šestnácti;
+  // viz loopConfigSnapshot().
+  const ClockConfig &config = loopConfigSnapshot();
   radarRadiusApplyPending = false;
   radarRadiusApplyAt = 0;
   displayModeStartedAt = millis();
