@@ -34,9 +34,26 @@
 #include "TmepService.h"
 
 namespace {
-constexpr size_t MAX_POST_BODY_BYTES = 16 * 1024;
+// Nastavení se dvěma sadami po devíti hodnotách, s plnými barevnými škálami a
+// dlouhými entitami má přes 19 kB. Buffery leží v PSRAM, takže dvojnásobná
+// rezerva nic nestojí.
+constexpr size_t MAX_POST_BODY_BYTES = 32 * 1024;
 constexpr size_t MAX_POST_KEY_BYTES = 64;
 constexpr size_t MAX_POST_VALUE_BYTES = 1024;
+// Každé pole potřebuje aspoň "k=" a oddělovač, víc se jich do těla nevejde.
+constexpr size_t MAX_POST_FIELD_COUNT = MAX_POST_BODY_BYTES / 3 + 1;
+
+// Pole těla formuláře: dekódované jméno leží v postKeys_, hodnota zůstává
+// zakódovaná v postBody_. Tělo je nejvýš 32 kB, takže offsety se vejdou do
+// šestnácti bitů.
+struct RawField {
+  uint16_t keyOffset;
+  uint16_t keyLength;
+  uint16_t valueStart;
+  uint16_t valueLength;
+};
+static_assert(MAX_POST_BODY_BYTES <= UINT16_MAX,
+              "RawField offsets are 16-bit; widen them before raising the limit.");
 
 class BoundedWebServer : public WebServer {
  public:
@@ -48,6 +65,15 @@ class BoundedWebServer : public WebServer {
     if (postBody_ == nullptr) {
       postBody_ = static_cast<char *>(heap_caps_malloc(
           MAX_POST_BODY_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (postKeys_ == nullptr) {
+      postKeys_ = static_cast<char *>(heap_caps_malloc(
+          MAX_POST_BODY_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (postFields_ == nullptr) {
+      postFields_ = static_cast<RawField *>(heap_caps_malloc(
+          MAX_POST_FIELD_COUNT * sizeof(RawField),
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     }
   }
 
@@ -63,6 +89,7 @@ class BoundedWebServer : public WebServer {
       postBodyReady_ = false;
       postBodyTooLarge_ = clientContentLength() > MAX_POST_BODY_BYTES;
       postBodyMalformed_ = false;
+      postFieldCount_ = 0;
       if (postBody_ != nullptr) postBody_[0] = '\0';
       return;
     }
@@ -79,7 +106,7 @@ class BoundedWebServer : public WebServer {
     if (raw.status == RAW_END) {
       if (!postBodyTooLarge_ && postBody_ != nullptr) {
         postBody_[postBodyLength_] = '\0';
-        postBodyMalformed_ = !validRawBodyShape();
+        postBodyMalformed_ = !validRawBodyShape() || !indexRawFields();
         postBodyReady_ = !postBodyMalformed_;
       }
       return;
@@ -96,17 +123,15 @@ class BoundedWebServer : public WebServer {
 
   String arg(const String &name) {
     if (!rawPostActive_) return WebServer::arg(name);
-    size_t valueStart = 0;
-    size_t valueLength = 0;
-    if (!findRawArgument(name, valueStart, valueLength)) return String();
-    return WebServer::urlDecode(String(postBody_ + valueStart, valueLength));
+    const RawField *field = findRawField(name);
+    if (field == nullptr) return String();
+    return WebServer::urlDecode(
+        String(postBody_ + field->valueStart, field->valueLength));
   }
 
   bool hasArg(const String &name) {
     if (!rawPostActive_) return WebServer::hasArg(name);
-    size_t valueStart = 0;
-    size_t valueLength = 0;
-    return findRawArgument(name, valueStart, valueLength);
+    return findRawField(name) != nullptr;
   }
 
  protected:
@@ -185,31 +210,75 @@ class BoundedWebServer : public WebServer {
     return true;
   }
 
-  bool findRawArgument(const String &name, size_t &valueStart,
-                       size_t &valueLength) const {
-    if (!postBodyAccepted()) return false;
+  // Jméno pole je v těle jednou, dotazů na něj ale ukládání nastavení položí
+  // stovky. Dřív každý dotaz prošel celé tělo a každé jméno cestou znovu
+  // dekódoval do nového Stringu - znak po znaku, s realokací. Čas tak rostl
+  // se čtvercem velikosti formuláře: 5,4 kB se ukládalo 1,9 s, 7,2 kB se
+  // dvěma sadami hodnot už 3,3 s a plný formulář by se blížil
+  // dvacetisekundovému watchdogu. Jména se proto dekódují jednou do indexu a
+  // dotaz už jen porovnává bajty.
+  bool indexRawFields() {
+    if (postKeys_ == nullptr || postFields_ == nullptr) return false;
+    size_t keyBytes = 0;
     size_t fieldStart = 0;
-    while (fieldStart <= postBodyLength_) {
+    while (fieldStart < postBodyLength_) {
       size_t fieldEnd = fieldStart;
       while (fieldEnd < postBodyLength_ && postBody_[fieldEnd] != '&')
         ++fieldEnd;
       size_t equalsAt = fieldStart;
       while (equalsAt < fieldEnd && postBody_[equalsAt] != '=') ++equalsAt;
       if (equalsAt < fieldEnd) {
-        const String encodedName(postBody_ + fieldStart, equalsAt - fieldStart);
-        if (WebServer::urlDecode(encodedName) == name) {
-          valueStart = equalsAt + 1;
-          valueLength = fieldEnd - valueStart;
-          return true;
-        }
+        if (postFieldCount_ >= MAX_POST_FIELD_COUNT) return false;
+        RawField &field = postFields_[postFieldCount_++];
+        field.keyOffset = static_cast<uint16_t>(keyBytes);
+        keyBytes += urlDecodeInto(postBody_ + fieldStart, equalsAt - fieldStart,
+                                  postKeys_ + keyBytes);
+        field.keyLength = static_cast<uint16_t>(keyBytes - field.keyOffset);
+        field.valueStart = static_cast<uint16_t>(equalsAt + 1);
+        field.valueLength = static_cast<uint16_t>(fieldEnd - equalsAt - 1);
       }
-      if (fieldEnd == postBodyLength_) break;
       fieldStart = fieldEnd + 1;
     }
-    return false;
+    return true;
+  }
+
+  // Stejná pravidla jako WebServer::urlDecode: '+' je mezera a %XX bajt.
+  // Dekódované jméno je vždycky nejvýš tak dlouhé jako zakódované, takže se
+  // všechna vejdou do bufferu velikosti těla.
+  static size_t urlDecodeInto(const char *text, size_t length, char *out) {
+    size_t written = 0;
+    size_t index = 0;
+    while (index < length) {
+      const char encoded = text[index++];
+      if (encoded == '%' && index + 1 < length) {
+        const char hex[] = {text[index], text[index + 1], '\0'};
+        index += 2;
+        out[written++] = static_cast<char>(strtol(hex, nullptr, 16));
+      } else {
+        out[written++] = encoded == '+' ? ' ' : encoded;
+      }
+    }
+    return written;
+  }
+
+  // První výskyt vyhrává, stejně jako dřív.
+  const RawField *findRawField(const String &name) const {
+    if (!postBodyAccepted() || postFields_ == nullptr) return nullptr;
+    const size_t length = name.length();
+    for (size_t index = 0; index < postFieldCount_; ++index) {
+      const RawField &field = postFields_[index];
+      if (field.keyLength == length &&
+          memcmp(postKeys_ + field.keyOffset, name.c_str(), length) == 0) {
+        return &field;
+      }
+    }
+    return nullptr;
   }
 
   char *postBody_ = nullptr;
+  char *postKeys_ = nullptr;
+  RawField *postFields_ = nullptr;
+  size_t postFieldCount_ = 0;
   size_t postBodyLength_ = 0;
   bool rawPostActive_ = false;
   bool postBodyReady_ = false;
