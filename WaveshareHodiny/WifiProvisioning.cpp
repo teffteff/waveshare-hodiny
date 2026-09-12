@@ -29,15 +29,20 @@ unsigned long provisioningStartedAt = 0;
 bool provisioningActive = false;
 
 void loadStoredCredentials() {
-#if FIRMWARE_RELEASE
-  Preferences preferences;
-  if (!preferences.begin(WIFI_NAMESPACE, true)) return;
-  storedSsid = preferences.getString(WIFI_SSID_KEY);
-  storedPassword = preferences.getString(WIFI_PASSWORD_KEY);
-  preferences.end();
-#elif HAS_DEVELOPMENT_WIFI
+#if HAS_DEVELOPMENT_WIFI
+  // An explicitly selected home/work build profile takes precedence.
   storedSsid = WIFI_SSID;
   storedPassword = WIFI_PASSWORD;
+#else
+  // Builds without local credentials can reuse Wi-Fi provisioned by a release.
+  storedSsid = "";
+  storedPassword = "";
+  Preferences preferences;
+  if (preferences.begin(WIFI_NAMESPACE, true)) {
+    storedSsid = preferences.getString(WIFI_SSID_KEY);
+    storedPassword = preferences.getString(WIFI_PASSWORD_KEY);
+    preferences.end();
+  }
 #endif
 }
 

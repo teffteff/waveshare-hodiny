@@ -33,6 +33,7 @@ run_test() {
 }
 
 failures=0
+run_test wifi_provisioning "$FIRMWARE_DIR/WifiProvisioning.cpp" || failures=$((failures + 1))
 run_test day_night_logic "$FIRMWARE_DIR/DayNightLogic.cpp" || failures=$((failures + 1))
 run_test semver "$FIRMWARE_DIR/SemVer.cpp" || failures=$((failures + 1))
 run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1))

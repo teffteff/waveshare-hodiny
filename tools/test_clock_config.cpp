@@ -348,8 +348,8 @@ void testSchema28MigrationSeedsValueSlots() {
 
   // Zbylé čtyři pozice čekají vypnuté na uživatele.
   for (size_t index = 4; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
-    assert(!migrated.slots[index].enabled);
-    assert(migrated.slots[index].entityId[0] == '\0');
+    assert(!clockConfigValueSlot(migrated, index).enabled);
+    assert(clockConfigValueSlot(migrated, index).entityId[0] == '\0');
   }
 
   // Migrace se musí uložit zpět jako plný záznam schématu 29.
@@ -947,7 +947,45 @@ void testScreenOrderRoundTripAndNormalization() {
   }
 }
 
+void testSecondValuePagePersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.bottomSlot.enabled = true;
+  clockConfigCopy(source.bottomSlot.name, sizeof(source.bottomSlot.name), "FIRST");
+  clockConfigCopy(source.planesFeedUrl, sizeof(source.planesFeedUrl), "https://example.test/planes");
+  seed(legacyRecord(source, 38, offsetof(ClockConfig, secondPageSlots)));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(strcmp(migrated.planesFeedUrl, source.planesFeedUrl) == 0);
+  assert(migrated.bottomSlot.enabled);
+  for (size_t i = 9; i < 18; ++i) {
+    auto &slot = clockConfigValueSlot(migrated, i);
+    assert(!slot.enabled);
+    assert(slot.entityId[0] == '\0');
+    slot.enabled = true;
+    clockConfigCopy(slot.entityId, sizeof(slot.entityId), ("sensor.second_" + std::to_string(i)).c_str());
+    slot.decimals = 2;
+  }
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(strcmp(loaded.bottomSlot.name, "FIRST") == 0);
+  for (size_t i = 9; i < 18; ++i) {
+    const auto &slot = clockConfigValueSlot(loaded, i);
+    assert(slot.enabled && slot.decimals == 2);
+    assert(std::string(slot.entityId) == "sensor.second_" + std::to_string(i));
+  }
+  auto corrupted = legacyRecord(source, 38, offsetof(ClockConfig, secondPageSlots));
+  corrupted.back() ^= 1;
+  seed(corrupted);
+  assert(clockConfigLoad(loaded));
+  assert(!loaded.bottomSlot.enabled);
+  assert(loaded.planesFeedUrl[0] == '\0');
+}
+
 int main() {
+  testSecondValuePagePersistenceAndMigration();
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
   testSchema27MigrationKeepsStoredValues();
