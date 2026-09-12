@@ -11,6 +11,7 @@
 #include <esp_system.h>
 #include <mbedtls/md.h>
 #include <mbedtls/pkcs5.h>
+#include <lwip/sockets.h>
 
 #include <cmath>
 #include <cctype>
@@ -111,7 +112,64 @@ class BoundedWebServer : public WebServer {
     return findRawArgument(name, valueStart, valueLength);
   }
 
+ protected:
+  // Odpověď odchází po jednotlivých TCP segmentech a mezi nimi se krmí hlídací
+  // pes smyčky. WebServer jinak předá celou stránku jedinému write(), které si
+  // po každém odeslaném kousku obnoví počet pokusů - u pomalého klienta se
+  // tedy nevrátí ani po minutách a dvacetisekundový task watchdog hodiny
+  // restartuje zpátky na ciferník.
+  size_t _currentClientWrite(const char *data, size_t length) override {
+    return writeResponseInSlices(data, length);
+  }
+
+  size_t _currentClientWrite_P(PGM_P data, size_t length) override {
+    return writeResponseInSlices(data, length);
+  }
+
  private:
+  // Jeden segment ethernetu; větší kus stejně stack TCP rozdělí sám.
+  static constexpr size_t RESPONSE_SLICE_BYTES = 1460;
+  // Poslední pojistka proti klientovi, který si odpověď nikdy nevyzvedne.
+  // Displej po tu dobu stojí, useknutá odpověď je ale pořád lepší než restart.
+  // Patnáct sekund pokryje i telefon na okraji dosahu - stránka potřebuje
+  // zhruba 13 kB/s - a zároveň zůstane pod dvacetisekundovým watchdogem.
+  static constexpr unsigned long RESPONSE_DEADLINE_MS = 15UL * 1000UL;
+
+  // Na zápis se čeká vlastním selectem, protože NetworkClient::write si uvnitř
+  // vybere až deset sekund a o lhůtu níže by se tím nedalo opřít.
+  bool socketAcceptsMoreData() {
+    const int descriptor = client().fd();
+    if (descriptor < 0) return false;
+    fd_set writable;
+    FD_ZERO(&writable);
+    FD_SET(descriptor, &writable);
+    timeval wait = {0, 200 * 1000};
+    return lwip_select(descriptor + 1, nullptr, &writable, nullptr, &wait) > 0 &&
+           FD_ISSET(descriptor, &writable);
+  }
+
+  size_t writeResponseInSlices(const char *data, size_t length) {
+    const unsigned long startedAt = millis();
+    size_t sent = 0;
+    while (sent < length) {
+      feedLoopWDT();
+      if (millis() - startedAt >= RESPONSE_DEADLINE_MS) {
+        client().stop();
+        break;
+      }
+      if (!client().connected()) break;
+      // Zavřené okno klienta se za chvíli otevře; vzdát se po prvním zadrhnutí
+      // by znamenalo useknutou stránku, čekat na něj ve write() zase restart.
+      if (!socketAcceptsMoreData()) continue;
+      const size_t slice = length - sent < RESPONSE_SLICE_BYTES
+                               ? length - sent
+                               : RESPONSE_SLICE_BYTES;
+      sent += client().write(reinterpret_cast<const uint8_t *>(data + sent),
+                             slice);
+    }
+    return sent;
+  }
+
   bool validRawBodyShape() const {
     size_t fieldStart = 0;
     while (fieldStart < postBodyLength_) {
