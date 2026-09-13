@@ -22,8 +22,9 @@
 // starší přestal zálohu číst.
 //
 // Co v záloze schválně není: Wi-Fi (bez ní se k hodinám nejde dostat, a leží
-// v jiném oddílu flash) a secret ovládacího API - ten je identitou konkrétních
-// hodin, na kterou míří automatizace, ne nastavením ke sdílení.
+// v jiném oddílu flash), secret ovládacího API a název v síti (DeviceName.h) -
+// obojí je identitou konkrétních hodin, na kterou míří automatizace a
+// záložky v prohlížeči, ne nastavením ke sdílení.
 
 constexpr size_t SETTINGS_SHARE_URL_LENGTH = 192;
 // Název zálohy na serveru včetně ukončovací nuly: malá písmena, číslice a

@@ -67,6 +67,10 @@ void configurationWebSetAgendaProbe(AgendaProbeCallback callback);
 using SettingsShareCallback = bool (*)(const SettingsShareRequest &request,
                                        SettingsShareResult &result);
 void configurationWebSetSettingsShare(SettingsShareCallback callback);
+// Uživatel změnil název hodin v síti (DeviceName.h). Volá se po odeslání
+// odpovědi, s už uloženým názvem.
+using DeviceNameChangedCallback = void (*)(const char *name);
+void configurationWebSetDeviceNameChanged(DeviceNameChangedCallback callback);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();

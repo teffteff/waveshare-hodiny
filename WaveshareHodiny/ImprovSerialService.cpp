@@ -1,5 +1,6 @@
 #include "ImprovSerialService.h"
 
+#include "DeviceName.h"
 #include "FirmwareBuild.h"
 
 #if FIRMWARE_RELEASE
@@ -75,6 +76,13 @@ void sendError(improv::Error error, Stream *stream = nullptr) {
   }
 }
 
+// Adresa nastavení, kterou si po připojení k Wi-Fi otevře instalační stránka.
+std::string deviceSettingsUrl() {
+  char name[DEVICE_NAME_LENGTH];
+  deviceNameLoad(name, sizeof(name));
+  return std::string("http://") + name + ".local/";
+}
+
 void sendRpcResponse(Stream &stream, improv::Command command,
                      const std::vector<std::string> &values = {}) {
   std::vector<uint8_t> response =
@@ -103,7 +111,7 @@ bool handleCommand(improv::ImprovCommand command, Stream &stream) {
       sendState(currentState, &stream);
       if (currentState == improv::STATE_PROVISIONED) {
         sendRpcResponse(stream, improv::GET_CURRENT_STATE,
-                        {"http://waveshare-hodiny.local/"});
+                        {deviceSettingsUrl()});
       }
       return true;
 
@@ -180,7 +188,7 @@ void improvSerialServiceProvisioningSucceeded() {
   sendState(improv::STATE_PROVISIONED, stream);
   if (stream != nullptr) {
     sendRpcResponse(*stream, improv::WIFI_SETTINGS,
-                    {"http://waveshare-hodiny.local/"});
+                    {deviceSettingsUrl()});
   }
   provisioningStream = nullptr;
 }

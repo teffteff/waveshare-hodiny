@@ -34,6 +34,7 @@
 #include "JsonScan.h"
 #include "NetworkCoordinator.h"
 #include "NetworkDiagnostics.h"
+#include "DeviceName.h"
 #include "SettingsBackup.h"
 #include "TmepService.h"
 
@@ -311,6 +312,8 @@ RssProbeCallback rssProbeCallback = nullptr;
 TaskHandle_t agendaTaskForDiagnostics = nullptr;
 AgendaProbeCallback agendaProbeCallback = nullptr;
 SettingsShareCallback settingsShareCallback = nullptr;
+DeviceNameChangedCallback deviceNameChangedCallback = nullptr;
+char deviceName[DEVICE_NAME_LENGTH] = "";
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
 bool webActive = false;
 unsigned long webAvailableUntil = 0;
@@ -1729,6 +1732,12 @@ void handleGetConfig() {
   else
     result += F("timed");
   result += '"';
+  // Název projde jen s písmeny, číslicemi a pomlčkou, escapovat není co.
+  result += F(",\"deviceName\":\"");
+  result += deviceName;
+  result += F("\",\"defaultDeviceName\":\"");
+  result += DEVICE_NAME_DEFAULT;
+  result += '"';
   result += F(",\"timeColor\":\"");
   result += htmlColor(config.timeColor);
   result += F("\",\"timeColonEffect\":\"");
@@ -2223,6 +2232,25 @@ void handleSaveConfig() {
     sendError(400, F("Režim webového serveru není platný."));
     return;
   }
+  // Starší stránka pole neposílá; pak název zůstává. Prázdné pole znamená
+  // výchozí název.
+  char requestedDeviceName[DEVICE_NAME_LENGTH];
+  clockConfigCopy(requestedDeviceName, sizeof(requestedDeviceName), deviceName);
+  if (server.hasArg("deviceName")) {
+    String submittedName = server.arg("deviceName");
+    submittedName.trim();
+    submittedName.toLowerCase();
+    if (submittedName.isEmpty()) submittedName = DEVICE_NAME_DEFAULT;
+    if (!deviceNameValid(submittedName.c_str())) {
+      sendError(400, F("Název zařízení smí mít 1 až 32 malých písmen bez "
+                       "diakritiky, číslic a pomlček a nesmí pomlčkou začínat "
+                       "ani končit."));
+      return;
+    }
+    clockConfigCopy(requestedDeviceName, sizeof(requestedDeviceName),
+                    submittedName);
+  }
+  const bool deviceNameChanged = strcmp(requestedDeviceName, deviceName) != 0;
   const String url = normalizedUrl(server.arg("haUrl"));
   if (!validHomeAssistantUrl(url)) {
     sendError(400, F("Adresa Home Assistantu musí začínat http:// nebo https://."));
@@ -2427,10 +2455,19 @@ void handleSaveConfig() {
     sendError(500, F("Režim webového serveru se nepodařilo uložit."));
     return;
   }
+  if (deviceNameChanged) {
+    if (!deviceNamePersist(requestedDeviceName)) {
+      sendError(500, F("Název zařízení se nepodařilo uložit."));
+      return;
+    }
+    clockConfigCopy(deviceName, sizeof(deviceName), requestedDeviceName);
+  }
   lastSaveConfirmationId = saveConfirmationId;
   extendWebAvailability();
   sendJson(200, F("{\"ok\":true}"));
   applyWebMode(requestedWebMode);
+  if (deviceNameChanged && deviceNameChangedCallback != nullptr)
+    deviceNameChangedCallback(deviceName);
 }
 
 // Zkouška kanálu zpráv z prohlížeče. Stahuje adresu z formuláře, ne uloženou,
@@ -4105,6 +4142,7 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   initializeControlSecret();
   initializeWebPassword();
   initializeSettingsShareUrl();
+  deviceNameLoad(deviceName, sizeof(deviceName));
   server.beginBoundedPostSupport();
   Preferences preferences;
   if (preferences.begin(WEB_PREFS_NAMESPACE, true, "clockcfg")) {
@@ -4245,6 +4283,10 @@ void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {
 
 void configurationWebSetSettingsShare(SettingsShareCallback callback) {
   settingsShareCallback = callback;
+}
+
+void configurationWebSetDeviceNameChanged(DeviceNameChangedCallback callback) {
+  deviceNameChangedCallback = callback;
 }
 
 void configurationWebLoop() {

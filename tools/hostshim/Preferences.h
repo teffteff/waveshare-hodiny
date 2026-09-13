@@ -87,6 +87,8 @@ class Preferences {
     return putBytes(key, value.c_str(), value.length());
   }
 
+  bool isKey(const char *key) { return lookup(key) != nullptr; }
+
   bool remove(const char *key) {
     if (!writable()) return false;
     return hostshim::store().erase(

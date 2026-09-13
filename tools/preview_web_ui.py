@@ -130,6 +130,8 @@ def stub_config() -> dict:
         "nightVisualMode": "red",
         "automaticFirmwareUpdate": False,
         "webMode": "always",
+        "deviceName": "waveshare-hodiny",
+        "defaultDeviceName": "waveshare-hodiny",
         "clockStyle": "digital",
         "analogToneColor": "#00D6FF",
         "analogHandToneColor": "#00D6FF",

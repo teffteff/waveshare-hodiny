@@ -19,6 +19,7 @@
 #include "SettingsShareService.h"
 #include "ConfigurationWeb.h"
 #include "DayNightLogic.h"
+#include "DeviceName.h"
 #include "DisplayDriver.h"
 #include "Display_ST7701.h"
 #include "FirmwareBuild.h"
@@ -97,6 +98,12 @@ volatile bool homeAssistantUpdatePending = false;
 volatile bool dayNightLightRefreshRequested = false;
 portMUX_TYPE dayNightLightRefreshMux = portMUX_INITIALIZER_UNLOCKED;
 bool mdnsStarted = false;
+// Název hodin v síti (DeviceName.h) a kdy mDNS přejde na nový. Přejmenování
+// počká pár vteřin, aby stránka ještě stihla pod starou adresou načíst
+// uložené nastavení.
+char networkDeviceName[DEVICE_NAME_LENGTH] = "";
+unsigned long mdnsRestartAt = 0;
+constexpr unsigned long MDNS_RENAME_DELAY_MS = 3000;
 String displayedWifiIp;
 bool runtimeConfigurationApplyPending = false;
 bool clockAppearanceApplyPending = false;
@@ -1485,6 +1492,9 @@ void maintainDisplaySync() {
 }
 
 void initializeNetworkTime() {
+  deviceNameLoad(networkDeviceName, sizeof(networkDeviceName));
+  // Jméno pro DHCP se předává při startu rozhraní, proto před Wi-Fi.
+  WiFi.setHostname(networkDeviceName);
   wifiProvisioningBegin();
   configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", "pool.ntp.org",
                "time.cloudflare.com");
@@ -1496,6 +1506,22 @@ void initializeNetworkTime() {
   Serial.println("Wi-Fi konfigurace chybi; cas zustava demonstracni");
 #endif
 #endif
+}
+
+void startMdns() {
+  mdnsStarted = MDNS.begin(networkDeviceName);
+  if (!mdnsStarted) return;
+  MDNS.addService("http", "tcp", 80);
+#if !FIRMWARE_RELEASE
+  Serial.printf("Nastaveni: http://%s.local/\n", networkDeviceName);
+#endif
+}
+
+void handleDeviceNameChanged(const char *name) {
+  clockConfigCopy(networkDeviceName, sizeof(networkDeviceName), name);
+  // DHCP jméno převezme router při dalším připojení k Wi-Fi.
+  WiFi.setHostname(networkDeviceName);
+  mdnsRestartAt = (millis() + MDNS_RENAME_DELAY_MS) | 1;
 }
 
 void maintainNetworkTime() {
@@ -1523,15 +1549,14 @@ void maintainNetworkTime() {
 #if !FIRMWARE_RELEASE
     Serial.println("Wi-Fi pripojena, cekam na NTP");
 #endif
-    if (!mdnsStarted) {
-      mdnsStarted = MDNS.begin("waveshare-hodiny");
-      if (mdnsStarted) {
-        MDNS.addService("http", "tcp", 80);
-#if !FIRMWARE_RELEASE
-        Serial.println("Nastaveni: http://waveshare-hodiny.local/");
-#endif
-      }
-    }
+    if (!mdnsStarted) startMdns();
+  }
+  if (mdnsRestartAt != 0 &&
+      static_cast<long>(millis() - mdnsRestartAt) >= 0) {
+    mdnsRestartAt = 0;
+    if (mdnsStarted) MDNS.end();
+    mdnsStarted = false;
+    startMdns();
   }
 
   time_t now;
@@ -2792,6 +2817,7 @@ void setup() {
   configurationWebSetAgendaTask(agendaTaskHandle);
   configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
   configurationWebSetSettingsShare(runSettingsShareFromWeb);
+  configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
   // stojí stejně zásobníku jako u kanálu zpráv.
   xTaskCreatePinnedToCoreWithCaps(
