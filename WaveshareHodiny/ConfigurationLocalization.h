@@ -97,6 +97,11 @@ const char CONFIGURATION_LOCALIZATION_JS[] PROGMEM = R"JS(
     if (match) return `— stored: ${match[1]}`;
     match = value.match(/^Server odpověděl chybou HTTP (\d+)\.$/);
     if (match) return `The server responded with HTTP error ${match[1]}.`;
+    // Popisek pole už překladač přeložil v DOM a hlášku píše prohlížeč sám.
+    match = value.match(/^Oprav pole „(.+)“: (.*)$/s);
+    if (match) return `Fix the field “${translated(match[1])}”: ${match[2]}`;
+    match = value.match(/^Oprav neplatnou hodnotu: (.*)$/s);
+    if (match) return `Fix the invalid value: ${match[1]}`;
     match = value.match(/^Kód (.+)$/);
     if (match) return `Code ${match[1]}`;
     match = value.match(/^Chyba (.+)$/);
