@@ -278,9 +278,10 @@ void applyLegacyValueSlotDefaults(ClockConfig &config) {
 
 void applyOpenMeteoDefaults(ClockConfig &config) {
   config.dataSource = CLOCK_DATA_SOURCE_OPEN_METEO;
-  clockConfigCopy(config.openMeteoCity, sizeof(config.openMeteoCity), "Brno");
-  config.openMeteoLatitude = 49.1951f;
-  config.openMeteoLongitude = 16.6068f;
+  clockConfigCopy(config.openMeteoCity, sizeof(config.openMeteoCity),
+                  "Ondřejov · Praha-východ · Středočeský kraj · Česko");
+  config.openMeteoLatitude = 49.90461f;
+  config.openMeteoLongitude = 14.7842f;
   config.openMeteoCountry = CLOCK_LOCATION_COUNTRY_CZECHIA;
   static const char *values[] = {"temperature_2m", "apparent_temperature",
                                  "relative_humidity_2m", "pressure_msl"};
@@ -556,8 +557,8 @@ void normalizeConfig(ClockConfig &config) {
       config.openMeteoLatitude < -90.0f || config.openMeteoLatitude > 90.0f ||
       !std::isfinite(config.openMeteoLongitude) ||
       config.openMeteoLongitude < -180.0f || config.openMeteoLongitude > 180.0f) {
-    config.openMeteoLatitude = 49.1951f;
-    config.openMeteoLongitude = 16.6068f;
+    config.openMeteoLatitude = 49.90461f;
+    config.openMeteoLongitude = 14.7842f;
   }
   config.secondRingBackgroundColor &= 0xFFFFFF;
   config.secondDotColor &= 0xFFFFFF;

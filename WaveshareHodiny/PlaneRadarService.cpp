@@ -104,8 +104,8 @@ uint8_t *responseBuffer = nullptr;
 bool active = false;
 bool visible = false;
 bool redNightMode = false;
-float requestLatitude = 49.1951f;
-float requestLongitude = 16.6068f;
+float requestLatitude = 49.90461f;
+float requestLongitude = 14.7842f;
 ClockPlanesConfig requestPlanes;
 // Adresa vlastního zdroje letadel, prázdná pro přímý dotaz na adsb.fi. Kopie
 // tady proto, že konfigurace přichází z jiné úlohy a smyčka radaru si ji nesmí

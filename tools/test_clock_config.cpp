@@ -148,7 +148,8 @@ void testEmptyStorageUsesDefaults() {
   ClockConfig config;
   clockConfigLoad(config);
   assert(config.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
-  assert(strcmp(config.openMeteoCity, "Brno") == 0);
+  assert(strcmp(config.openMeteoCity,
+                "Ondřejov · Praha-východ · Středočeský kraj · Česko") == 0);
   assert(config.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO);
   assert(strcmp(config.leftSide.name, "VENKU") == 0);
   // Střídání obrazovek je stejně jako u radaru vypnuté, dokud ho uživatel
