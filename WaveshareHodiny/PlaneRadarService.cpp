@@ -133,6 +133,15 @@ bool haveAircraftData = false;
 // před prvním stažením, takže "něco je na obrazovce" už nestačí ani rotaci,
 // ani diagnostice.
 bool dataFrameReady = false;
+// Letadla v seznamu jsou z doby, kdy obrazovka nebyla vidět. Na pozadí se
+// stahuje jednou za pět minut a schovaná obrazovka se nepřekresluje vůbec, takže
+// by po otevření na vteřinu naskočila letadla na starých místech a s prvním
+// stažením přeskočila jinam. Dokud nedorazí čerstvá data, kreslí se jen mapa
+// a řádek s počtem píše, že se letadla načítají.
+bool aircraftStale = false;
+// Zveřejněný snímek nese právě ta stará letadla, takže ho obrazovka nesmí
+// převzít. Shodí ho až další vykreslený snímek.
+bool staleFrameDisplayed = false;
 bool loading = false;
 uint32_t generation = 0;
 unsigned long lastSuccessAt = 0;
@@ -878,7 +887,7 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   char selection[8];
   portENTER_CRITICAL(&stateMux);
   strlcpy(selection, selectedHex, sizeof(selection));
-  const uint8_t count = aircraftCount;
+  const uint8_t count = aircraftStale ? 0 : aircraftCount;
   const bool typeNameLabels = requestMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   portEXIT_CRITICAL(&stateMux);
 
@@ -1048,6 +1057,7 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
           sizeof(frameEmergency));
   // Hotový snímek se zveřejní až tady, jedním přepnutím indexu.
   displayedBuffer = target;
+  staleFrameDisplayed = false;
   ++generation;
   ready = true;
   if (haveAircraftData) dataFrameReady = true;
@@ -1160,6 +1170,7 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
   liveList = parsed;
   aircraftCount = static_cast<uint8_t>(outcome.count);
   haveAircraftData = true;
+  aircraftStale = false;
   strlcpy(serverMessage, outcome.message, sizeof(serverMessage));
   lastSuccessAt = millis();
   portEXIT_CRITICAL(&stateMux);
@@ -1335,10 +1346,15 @@ void planeRadarTask(void *) {
     // černý s jedinou hláškou, dokud server neodpověděl - a to jsou vteřiny.
     // Kreslí se ještě před čekáním na síť, aby obrazovka nebyla prázdná ani
     // tehdy, když se Wi-Fi teprve připojuje.
+    //
+    // Stejně se hned po otevření překreslí snímek se starými letadly: bez nich,
+    // aby do stažení visela jen mapa.
     portENTER_CRITICAL(&stateMux);
     const bool haveAnyFrame = ready;
+    const bool replaceStaleFrame = wantVisible && staleFrameDisplayed;
     portEXIT_CRITICAL(&stateMux);
-    if (!haveAnyFrame) renderFrame(planes, latitude, longitude, night);
+    if (!haveAnyFrame || replaceStaleFrame)
+      renderFrame(planes, latitude, longitude, night);
 
     // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný".
     if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
@@ -1358,6 +1374,10 @@ void planeRadarTask(void *) {
     dueAt = nextFetchAt;
     fetchNow = fetchNowRequested;
     fetchNowRequested = false;
+    // Snímek hlásí načítání i pro stažení, které teprve čeká ve frontě. Příznak
+    // se proto přehazuje ve stejném zámku, jinak by obrazovka mezi tím chytila
+    // "Čekám na data".
+    if (fetchNow) loading = true;
     forceRedraw = redrawRequested;
     redrawRequested = false;
     portEXIT_CRITICAL(&stateMux);
@@ -1509,6 +1529,15 @@ void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
     fetchNowRequested = true;
     notify = true;
   }
+  // Po otevření se čeká na čerstvá letadla. Schovaná obrazovka starý snímek
+  // zadržovat nemusí - rotace podle něj pozná, že radar má co ukázat, a při
+  // dalším otevření se zadrží znovu.
+  if (nowVisible && !wasVisible) {
+    aircraftStale = true;
+    staleFrameDisplayed = displayedBuffer >= 0;
+  } else if (!nowVisible) {
+    staleFrameDisplayed = false;
+  }
   if (nowVisible) {
     redrawRequested = true;
     notify = true;
@@ -1532,14 +1561,17 @@ void planeRadarServiceSetRedNightMode(bool enabled) {
 
 void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
   portENTER_CRITICAL(&stateMux);
-  snapshot.pixels =
-      displayedBuffer >= 0 ? displayBuffers[displayedBuffer] : nullptr;
+  snapshot.pixels = displayedBuffer >= 0 && !staleFrameDisplayed
+                        ? displayBuffers[displayedBuffer]
+                        : nullptr;
   // Obrazovka si ukazatel odnáší; od téhle chvíle se do toho bufferu nekreslí.
+  // Platí to i pro zadržený starý snímek: canvas si ho mohl vzít ještě před
+  // schováním obrazovky a drží ho, dokud nedostane jiný.
   handedOutBuffer = displayedBuffer;
   snapshot.generation = generation;
-  snapshot.loading = loading;
+  snapshot.loading = loading || fetchNowRequested;
   snapshot.ready = dataFrameReady;
-  snapshot.haveAircraftData = haveAircraftData;
+  snapshot.haveAircraftData = haveAircraftData && !aircraftStale;
   snapshot.shownCount = shownCount;
   snapshot.watchedVisible = watchedVisible;
   strlcpy(snapshot.emergency, frameEmergency, sizeof(snapshot.emergency));

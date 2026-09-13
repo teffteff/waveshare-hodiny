@@ -6056,6 +6056,11 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                englishLanguage() ? "min" : "min", frameTime);
     else
       snprintf(frameText, sizeof(frameText), "%s", frameTime);
+  } else if (currentFrameNumber == 0) {
+    // Zatím jen podkladová mapa: na místo času snímku patří, že se radar
+    // načítá. Prázdný řádek vypadal, jako by se nic nedělo.
+    snprintf(frameText, sizeof(frameText), "%s",
+             radarEmptyStateText(loading || fullPreparationInProgress));
   } else {
     frameText[0] = '\0';
   }

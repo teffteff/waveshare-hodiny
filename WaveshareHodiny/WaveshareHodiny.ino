@@ -121,6 +121,7 @@ uint8_t firmwareUpdateCountdownDisplayed = 0;
 bool firmwareUpdateDisplayActive = false;
 uint32_t displayedRadarGeneration = UINT32_MAX;
 char displayedRadarTime[6] = "";
+bool displayedRadarBusy = false;
 uint16_t displayedRadarRadiusKm = 50;
 bool radarRadiusApplyPending = false;
 unsigned long radarRadiusApplyAt = 0;
@@ -1197,10 +1198,15 @@ void maintainPlanesDisplay() {
 void maintainRadarDisplay() {
   ChmiRadarSnapshot snapshot;
   chmiRadarServiceSnapshot(snapshot);
+  // Konec stahování generaci neposouvá vždycky - nepovedené stažení jen
+  // přepíše hlášku. Bez porovnání by pod mapou zůstalo viset "Načítám radar".
+  const bool busy = snapshot.loading || snapshot.fullPreparationInProgress;
   if (snapshot.generation == displayedRadarGeneration &&
-      strcmp(snapshot.frameTime, displayedRadarTime) == 0)
+      strcmp(snapshot.frameTime, displayedRadarTime) == 0 &&
+      busy == displayedRadarBusy)
     return;
   displayedRadarGeneration = snapshot.generation;
+  displayedRadarBusy = busy;
   displayedRadarRadiusKm = snapshot.radiusKm;
   strlcpy(displayedRadarTime, snapshot.frameTime,
           sizeof(displayedRadarTime));
