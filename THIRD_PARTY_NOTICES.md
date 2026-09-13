@@ -49,6 +49,12 @@ ruční průchod (`WaveshareHodiny/AdsbParser.cpp` a `RouteParser.cpp`), protož
 firmware žádnou JSON knihovnu nepoužívá. Převzaté jsou i tabulky pro převod
 Unicode na ASCII, kterými procházejí jména měst z trasy.
 
+Ikony obrazovky předpovědi v `WaveshareHodiny/ForecastIcons.cpp` jsou převzaté
+z `MeteoPlaneRadar/WxIcon.cpp` a `WxIcon.h`, revize
+`ee27c29b54ca8ffc42b65cd01c710de0b7b5e6a9`. Původní vektorové tvary a mapování
+WMO kódů zůstávají zachované; kreslení je převedené z Arduino_GFX do LVGL
+s podporou červeného nočního režimu.
+
 ## Data o letadlech adsb.fi a adsb.lol
 
 Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:

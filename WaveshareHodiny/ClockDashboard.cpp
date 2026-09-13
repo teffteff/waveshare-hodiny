@@ -1,6 +1,7 @@
 #include "AgendaParser.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
+#include "ForecastIcons.h"
 #include "WeatherIconMapping.h"
 
 #include <lvgl.h>
@@ -2825,10 +2826,8 @@ constexpr int FORECAST_AIR_LINE_HEIGHT = WEATHER_FORECAST_AIR_LINE_HEIGHT;
 constexpr int FORECAST_AIR_TOP_Y = WEATHER_FORECAST_AIR_TOP_Y;
 constexpr int FORECAST_RADIUS = 240;
 constexpr int FORECAST_DIVIDER_INSET = 24;
-// Ikony jsou stejné meteocons jako na ciferníku, jen zmenšené z 84 na 24 px.
-constexpr int FORECAST_ICON_SIZE = 24;
-constexpr uint16_t FORECAST_ICON_ZOOM =
-    (256 * FORECAST_ICON_SIZE + 42) / 84;
+static_assert(FORECAST_ICON_SIZE <= WEATHER_FORECAST_ROW_HEIGHT,
+              "Forecast icons must fit within their rows");
 constexpr int FORECAST_LABEL_X = -134;
 constexpr int FORECAST_LABEL_WIDTH = 32;
 constexpr int FORECAST_ICON_X = -96;
@@ -2863,6 +2862,7 @@ class ForecastPsramAllocations {
 // značkou: dva objekty na sloupec by na šestnácti řádcích znamenaly desítky
 // kilobajtů paměti navíc.
 struct ForecastRow {
+  ForecastIconState iconState;
   lv_obj_t *label = nullptr;
   lv_obj_t *icon = nullptr;
   lv_obj_t *temperature = nullptr;
@@ -2919,34 +2919,6 @@ lv_color_t forecastWindColor(float kmh) {
   if (kmh < 39.0f) return COLOR_MUTED;
   if (kmh < 62.0f) return COLOR_ROOM;
   return COLOR_ERROR;
-}
-
-// Barva ikony podle podmínek. Statické meteocons jsou bílé masky s alfou,
-// takže barvu určuje až img_recolor - stejně jako u ikony na ciferníku.
-lv_color_t forecastIconColor(int weatherCode, bool isDay) {
-  if (redNightVisualEnabled()) return COLOR_ERROR;
-  switch (weatherIconConditionForCode(weatherCode, isDay)) {
-    case WeatherIconCondition::ClearDay:
-    case WeatherIconCondition::MostlyClearDay:
-    case WeatherIconCondition::PartlyCloudyDay:
-      return lv_color_make(255, 209, 102);
-    case WeatherIconCondition::ClearNight:
-    case WeatherIconCondition::MostlyClearNight:
-    case WeatherIconCondition::PartlyCloudyNight:
-    case WeatherIconCondition::OvercastNight:
-      return lv_color_make(181, 199, 232);
-    case WeatherIconCondition::Drizzle:
-    case WeatherIconCondition::Rain:
-      return COLOR_OUTSIDE;
-    case WeatherIconCondition::Sleet:
-      return lv_color_make(143, 211, 255);
-    case WeatherIconCondition::Snow:
-      return lv_color_make(232, 244, 255);
-    case WeatherIconCondition::Thunderstorms:
-      return COLOR_ROOM;
-    default:
-      return COLOR_MUTED;
-  }
 }
 
 // Pásma evropského indexu kvality ovzduší (0-20 dobrý až nad 100 mimořádně
@@ -3054,12 +3026,12 @@ void createForecastRow(ForecastRow &row) {
   lv_obj_set_style_text_align(row.label, LV_TEXT_ALIGN_LEFT, 0);
   lv_label_set_text(row.label, "");
 
-  // Ikona si drží svých 84 x 84 px a kreslí se zmenšená kolem středu, takže
-  // se zarovnává středem. Menší objekt by zmenšenou kresbu odřízl.
-  row.icon = lv_img_create(forecastPage);
-  lv_img_set_zoom(row.icon, FORECAST_ICON_ZOOM);
-  lv_img_set_antialias(row.icon, true);
-  lv_obj_set_style_img_recolor_opa(row.icon, LV_OPA_COVER, 0);
+  row.icon = lv_obj_create(forecastPage);
+  lv_obj_remove_style_all(row.icon);
+  lv_obj_set_size(row.icon, FORECAST_ICON_SIZE, FORECAST_ICON_SIZE);
+  lv_obj_clear_flag(row.icon, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(row.icon, drawForecastIcon, LV_EVENT_DRAW_MAIN,
+                      &row.iconState);
   lv_obj_add_flag(row.icon, LV_OBJ_FLAG_HIDDEN);
 
   row.temperature = createForecastValueLabel(FORECAST_TEMPERATURE_WIDTH);
@@ -3377,18 +3349,10 @@ void forecastSetWind(lv_obj_t *label, float kmh) {
   forecastSetValue(label, value, "km/h", forecastWindColor(kmh));
 }
 
-void forecastSetIcon(lv_obj_t *icon, int wmoCode, bool isDay) {
-  const int code = weatherCodeFromWmo(wmoCode);
-  const lv_img_dsc_t *source = openWeatherIconForCode(code, isDay);
-  if (source == nullptr) {
-    lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
-  lv_img_set_src(icon, source);
-  // lv_img_set_src si objekt roztáhne na velikost zdroje, takže zarovnání
-  // musí přijít až po něm.
-  lv_obj_set_style_img_recolor(icon, forecastIconColor(code, isDay), 0);
-  lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
+void forecastSetIcon(ForecastRow &row, int wmoCode, bool isDay) {
+  row.iconState = {wmoCode, isDay, redNightVisualEnabled()};
+  lv_obj_clear_flag(row.icon, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_invalidate(row.icon);
 }
 
 void updateForecastAirQuality() {
@@ -3465,7 +3429,7 @@ void updateForecastPage() {
 
   char value[16];
   for (size_t index = 0; index < forecastHourRowCount; ++index) {
-    const ForecastRow &row = forecastRows[index];
+    ForecastRow &row = forecastRows[index];
     const bool present = index < forecastDisplayed.hourCount;
     setForecastRowVisible(row, present);
     if (!present) continue;
@@ -3479,7 +3443,7 @@ void updateForecastPage() {
     }
     setTextColor(row.label, forecastMutedColor());
     lv_label_set_text(row.label, value);
-    forecastSetIcon(row.icon, hour.weatherCode, hour.isDay);
+    forecastSetIcon(row, hour.weatherCode, hour.isDay);
     if (std::isnan(hour.temperatureC)) {
       lv_label_set_text(row.temperature, "");
     } else {
@@ -3495,7 +3459,7 @@ void updateForecastPage() {
   for (size_t offset = 0; offset < forecastDayRowCount; ++offset) {
     const size_t index = forecastHourRowCount + offset;
     if (index >= forecastCreatedRowCount) break;
-    const ForecastRow &row = forecastRows[index];
+    ForecastRow &row = forecastRows[index];
     const bool present = offset < forecastDisplayed.dayCount;
     setForecastRowVisible(row, present);
     if (!present) continue;
@@ -3506,7 +3470,7 @@ void updateForecastPage() {
     lv_label_set_text(row.label, localtime_r(&stamp, &local) != nullptr
                                      ? forecastWeekdayName(local.tm_wday)
                                      : "");
-    forecastSetIcon(row.icon, day.weatherCode, true);
+    forecastSetIcon(row, day.weatherCode, true);
     if (std::isnan(day.maximumC) && std::isnan(day.minimumC)) {
       lv_label_set_text(row.temperature, "");
     } else if (std::isnan(day.minimumC)) {
