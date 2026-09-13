@@ -11,7 +11,9 @@ ExecStart=/opt/news/.venv/bin/python /opt/news/generate.py
 Nice=10
 # Type=oneshot ma TimeoutStartSec ve vychozim stavu vypnuty. Zaseknuty beh by
 # jinak drzel jednotku napored a timer by dalsi spousteni preskakoval.
-TimeoutStartSec=300
+# Kazda poloha z registru (locations.py) pridava jedno volani modelu i s jeho
+# opakovanimi pokusy, proto vic nez puvodnich pet minut pro jediny vyber.
+TimeoutStartSec=900
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

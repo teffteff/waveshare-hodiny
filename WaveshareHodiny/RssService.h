@@ -21,6 +21,14 @@ struct RssDisplayItem {
 using RssItemVisitor = void (*)(size_t index, const RssDisplayItem &item,
                                 void *context);
 
+// Poloha hodin z nastavení počasí. Doplní se do adresy kanálu jen tam, kde
+// adresa nese zástupné značky {city}, {lat} nebo {lon} (RssFeedUrl.h).
+struct RssLocation {
+  char city[CLOCK_OPEN_METEO_CITY_LENGTH] = "";
+  float latitude = 0.0f;
+  float longitude = 0.0f;
+};
+
 // Malý přehled bez samotných titulků, aby se vešel na zásobník volajícího.
 struct RssStatus {
   uint32_t generation = 0;
@@ -54,15 +62,15 @@ bool rssServiceVisitItems(RssItemVisitor visitor, void *context);
 // Stáhne a rozebere kanál do mezipaměti obrazovky. Ověření proti svazku
 // kořenů Mozilly stojí přes 16 kB zásobníku, takže se volá výhradně z úlohy
 // kanálu, nikdy ze smyčky displeje ani z web serveru.
-bool rssServiceFetch(const ClockRssConfig &config,
+bool rssServiceFetch(const ClockRssConfig &config, const RssLocation &location,
                      NetworkDiagnosticKind diagnosticKind, int &httpStatus,
                      String &error);
 // Zkouška kanálu pro web. Stahuje a rozebírá stejně jako rssServiceFetch, ale
 // výsledek ukládá stranou: zkoušená adresa nesmí přepsat zprávy, které hodiny
 // právě ukazují. Platí pro ni stejný nárok na zásobník, takže i ona patří do
 // úlohy kanálu.
-bool rssServiceProbe(const ClockRssConfig &config, int &httpStatus,
-                     String &error);
+bool rssServiceProbe(const ClockRssConfig &config, const RssLocation &location,
+                     int &httpStatus, String &error);
 bool rssServiceProbeStatus(RssProbeStatus &status);
 bool rssServiceVisitProbeItems(RssItemVisitor visitor, void *context);
 // Zahodí mezipaměť i stahovací buffer. Volá se, když se kanál vypne nebo

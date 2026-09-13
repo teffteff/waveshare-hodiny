@@ -11,6 +11,7 @@
 
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "RssFeedUrl.h"
 
 // Kořenové certifikáty Mozilly slinkované v mbedTLS. Adresu kanálu zadává
 // uživatel, takže připnout jeden kořen jako u ostatních služeb nejde.
@@ -46,6 +47,9 @@ struct RssCache {
   RssFeed probe;
   char probeTimes[RSS_MAX_ITEMS][RSS_TIME_LENGTH];
   bool probeReady;
+  // Adresa s doplněnou polohou. Půl kilobajtu by na zásobníku úlohy s TLS
+  // relací překáželo; tady v PSRAM ne. Platí jen po dobu jednoho stažení.
+  char url[RSS_FEED_URL_CAPACITY];
 };
 
 RssCache *rssCache = nullptr;
@@ -230,6 +234,7 @@ bool rssServiceVisitProbeItems(RssItemVisitor visitor, void *context) {
 // rozebraný kanál uloží: běžné stažení převezme obrazovka, zkouška zůstane
 // stranou v probe, aby zkoušená adresa nepřepsala zobrazené zprávy.
 static bool rssServiceDownload(const ClockRssConfig &config,
+                               const RssLocation &location,
                                NetworkDiagnosticKind diagnosticKind,
                                bool probeOnly, int &httpStatus,
                                String &error) {
@@ -282,7 +287,12 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   xSemaphoreGive(rssMutex);
 
   size_t payloadLength = 0;
-  {
+  const bool urlReady =
+      rssFeedBuildUrl(config.url, location.city, location.latitude,
+                      location.longitude, cache->url, sizeof(cache->url));
+  if (!urlReady) {
+    error = F("Adresa kanálu je po doplnění polohy příliš dlouhá.");
+  } else {
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
     // Adresu kanálu zadává uživatel, takže se certifikát ověřuje proti svazku
@@ -312,7 +322,7 @@ static bool rssServiceDownload(const ClockRssConfig &config,
     WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
                                 : plainClient;
     httpDownloadPrepare(http);
-    if (http.begin(client, config.url)) {
+    if (http.begin(client, cache->url)) {
       httpStatus = http.GET();
       if (httpStatus == HTTP_CODE_OK) {
         const int declaredSize = http.getSize();
@@ -346,7 +356,7 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   // ukousne kus interní RAM, až na ni nezbude pro web server. Odpojuje se až
   // po zániku klienta, aby si ověřovací callback a uvolněný svazek nemohly
   // překážet.
-  if (secure) esp_crt_bundle_detach(nullptr);
+  if (secure && urlReady) esp_crt_bundle_detach(nullptr);
 
   if (error.isEmpty() && httpStatus != HTTP_CODE_OK) {
     error = httpStatus == HTTP_CODE_NOT_FOUND
@@ -428,16 +438,17 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   return ok;
 }
 
-bool rssServiceFetch(const ClockRssConfig &config,
+bool rssServiceFetch(const ClockRssConfig &config, const RssLocation &location,
                      NetworkDiagnosticKind diagnosticKind, int &httpStatus,
                      String &error) {
-  return rssServiceDownload(config, diagnosticKind, false, httpStatus, error);
+  return rssServiceDownload(config, location, diagnosticKind, false,
+                            httpStatus, error);
 }
 
-bool rssServiceProbe(const ClockRssConfig &config, int &httpStatus,
-                     String &error) {
-  return rssServiceDownload(config, NetworkDiagnosticKind::RssTest, true,
-                            httpStatus, error);
+bool rssServiceProbe(const ClockRssConfig &config, const RssLocation &location,
+                     int &httpStatus, String &error) {
+  return rssServiceDownload(config, location, NetworkDiagnosticKind::RssTest,
+                            true, httpStatus, error);
 }
 
 void rssServiceClear() {
