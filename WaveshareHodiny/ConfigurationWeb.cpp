@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <time.h>
 
@@ -4087,6 +4088,14 @@ void configurationWebSetSettingsShare(SettingsShareCallback callback) {
 }
 
 void configurationWebLoop() {
+  // NetworkClient::connected() v jádře 3.0.7 volá recv() s nulovou délkou,
+  // které u zdravého spojení vrátí 0 a errno nenastaví, a pak se podle errno
+  // rozhoduje. Zůstane-li v něm ENOTCONN nebo ECONNRESET po předchozím
+  // spojení a další požadavek už čeká ve frontě, accept() uspěje, errno
+  // nepřepíše a čerstvé spojení se zahodí nepřečtené - prohlížeč dostane RST.
+  // Stávalo se to u zhruba každého pátého požadavku odeslaného hned po
+  // předchozím. Skutečné odpojení nastaví errno znovu, takže nula nic neskryje.
+  errno = 0;
   server.handleClient();
   if (selectedWebMode == CONFIGURATION_WEB_TIMED &&
       webActive && static_cast<long>(millis() - webAvailableUntil) >= 0) {
