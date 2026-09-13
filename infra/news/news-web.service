@@ -8,6 +8,11 @@ Type=simple
 User=opc
 Environment=NEWS_WWW=/opt/news/www
 Environment=NEWS_PORT=8088
+# Registr poloh sdileny s generate.py. news.env se sem schvalne nenacita, aby
+# proces na verejne IP neznal klic k modelu; kdo zmeni strop poloh v news.env,
+# musi ho zmenit i tady.
+Environment=NEWS_STATE=/opt/news/state/locations
+Environment=NEWS_MAX_LOCATIONS=4
 ExecStart=/opt/news/.venv/bin/python /opt/news/serve.py
 Restart=on-failure
 RestartSec=5

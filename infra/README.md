@@ -45,7 +45,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 |---|---|---|---|
 | Caddy (HTTPS proxy) | 80, 443 | `/etc/caddy/Caddyfile`, `/etc/caddy/caddy.env`, `/etc/systemd/system/caddy.service` | `caddy/` |
 | Generátor zpráv | — | `/opt/news/generate.py`, `news.service` + `news.timer` | `news/` |
-| Server se zprávami | 8088 | `/opt/news/serve.py`, `news-web.service` | `news/` |
+| Server se zprávami | 8088 | `/opt/news/serve.py`, `locations.py`, `news-web.service`, registr poloh v `/opt/news/state/locations/` | `news/` |
 | Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
 | Server s agendou | 8089, jen loopback | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
 | Přepravčí letadel | 8090, jen loopback | `/opt/planes/serve.py`, `planes-web.service` | `planes/` |
@@ -61,6 +61,20 @@ prázdna. Stará stopa v repu: `news/news.env.example` je oproti serveru
 opravená (server má pořád původní variantu s `ANTHROPIC_API_KEY` z doby, kdy
 se čekalo, že generátor pojede na Claude). Kontrola shody tenhle soubor
 schválně přeskakuje.
+
+**Zprávy podle polohy hodin.** Adresa kanálu v hodinách může nést zástupné
+značky: `https://$CLOCK_HOST/top.xml?city={city}&lat={lat}&lon={lon}`.
+Firmware je nahradí městem a souřadnicemi z polohy zařízení (záložka Počasí);
+adresám bez značek polohu neposílá. `serve.py` si polohu zaokrouhlenou na
+desetinu stupně zapíše do registru a dokud pro ni generátor nic neudělal,
+vrací společný `top.xml`. Každý běh timeru pak kromě společného výběru udělá
+pro každou polohu viděnou za posledních 7 dní vlastní `top-<klíč>.xml`
+s regionálními zdroji navíc (`NEWS_REGIONAL_FEEDS`, výchozí ČT24 Regiony)
+— jedno volání modelu na polohu. Registr má strop `NEWS_MAX_LOCATIONS`
+(výchozí 4, musí sedět v `news.env` i `news-web.service`), protože server
+visí na veřejné IP; nové hodiny tak dostanou místní výběr nejpozději po
+dalším běhu timeru (přes noc až 10 h). Výběr pro polohu, který zaostává
+za společným o víc než 3 h, se nevydává.
 
 **Stav k 8. 9. 2026:** vyřešeno. Store má `use_x_forwarded_for` i
 `trusted_proxies`, `http:` blok je z YAML pryč, obě řádky `header_up` jsou
@@ -397,7 +411,9 @@ co `--deep` ohlásí jako rozjeté. Po commitu:
 set -a; . .env; set +a          # načte CLOCK_HOST, CLOCK_SSH, CLOCK_SSH_KEY
 SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
-    infra/news/generate.py infra/news/serve.py "$CLOCK_SSH:/opt/news/"
+    infra/news/generate.py infra/news/serve.py infra/news/locations.py \
+    infra/news/news.service infra/news/news.timer infra/news/news-web.service \
+    "$CLOCK_SSH:/opt/news/"
 $SSH "$CLOCK_SSH" 'sudo cp /opt/news/news*.service /opt/news/news.timer \
     /etc/systemd/system/ && sudo systemctl daemon-reload \
     && sudo systemctl restart news-web.service && sudo systemctl start news.service'
