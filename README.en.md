@@ -224,7 +224,7 @@ The web interface configures:
 - the screen order on the **Screens** tab, by dragging or with the arrows,
 - automatic OTA updates and web-server availability,
 - an optional web password,
-- backup import/export, restart, display controls and live diagnostics.
+- full settings backup to a file or shared between clocks via your own server, restart, display controls and live diagnostics.
 
 ### CHMI precipitation radar
 
@@ -591,7 +591,7 @@ disabled completely. Use it only on a trusted network; the dashboard gear icon
 indicates an active configuration server. An optional 6–20 character password
 protects web settings. The **System** tab shows an unprotected state in red and
 an active password in green. Only a derived hash is stored, and the password is
-not included in backups.
+only included in a backup when you enter it while backing up.
 
 ### Diagnostics and backups
 
@@ -600,9 +600,22 @@ pixel clock, current and minimum internal RAM and PSRAM, the smallest free
 stack space seen in the loop and data tasks, Wi-Fi, Home Assistant,
 Open-Meteo and TMEP.cz runtime state. Radar details include the selected city, GPS,
 range, prepared-frame count and time span, last successful refresh, next check,
-HTTP status and the file currently being processed. Exported JSON backups
-contain appearance and entity IDs but intentionally omit the Home Assistant
-token, TMEP.cz export URL, web password and control API secret.
+HTTP status and the file currently being processed.
+
+The clock builds backups itself from what it has stored, so a backup contains
+**all settings**: both value pages, appearance, screen order, service addresses
+and the web mode. Only Wi-Fi and the control API secret stay with each clock.
+The Home Assistant token, TMEP.cz export key, web password and backup server
+address are included **only when the web configuration password is entered**
+while backing up; otherwise they never leave the device. Restoring a backup
+without them keeps the tokens the target clock already has (the Home Assistant
+token only for the same server address).
+
+Backups can be saved to a file, or to your own server and loaded on another
+clock: on the **System** tab enter `https://hodiny:password@server/settings`,
+a backup name and **Save to server**; on the other clock use the same address,
+**Load list** and **Load into this clock**. The server side lives in
+`infra/settings/`. Older browser backups (version 2) can still be imported.
 
 ## Touchscreen settings
 

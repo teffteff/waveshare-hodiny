@@ -178,7 +178,23 @@ def stub_config() -> dict:
         "forecastHourCounts": [12, 11, 10, 9, 8, 10, 8, 7, 6, 5],
         "screenOrder": ["clock", "radar", "rss", "forecast", "planes"],
         "controlSecret": "nahled-bez-zarizeni",
+        "webPasswordConfigured": True,
+        "settingsShareConfigured": False,
+        "settingsShareUrl": "",
     }
+
+
+# Záloha pro náhled. Data nejsou skutečná záloha; firmware by je odmítl, ale
+# stránce stačí tvar obálky.
+PREVIEW_BACKUP = {
+    "format": "waveshare-hodiny-settings",
+    "version": 3,
+    "firmware": "0.0.0-preview",
+    "schema": 39,
+    "secrets": False,
+    "exportedAt": "2026-09-13T10:00:00Z",
+    "data": "V0hTQgEAAAA",
+}
 
 
 STUB_RESPONSES = {
@@ -250,6 +266,32 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 ["light.loznice", "Ložnice", "", "off"],
                 ["binary_sensor.dvere", "Vchodové dveře", "", "off"],
             ]})
+            return
+        if path.startswith("/api/backup/"):
+            fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+            secrets = bool(fields.get("password"))
+            if path == "/api/backup/export":
+                self._json({"ok": True, "secrets": secrets,
+                            "backup": {**PREVIEW_BACKUP, "secrets": secrets}})
+            elif path == "/api/backup/import":
+                print(f"POST {path}: {fields.get('parts')} kousků", flush=True)
+                self._json({"ok": True, "secrets": False, "webPasswordChanged": False})
+            elif path == "/api/backup/share/list":
+                self._json({"ok": True, "url": "https://server.example/settings",
+                            "backups": [
+                                {"name": "obyvak", "modified": "2026-09-13T08:15:00Z",
+                                 "firmware": "2.1.0", "secrets": True},
+                                {"name": "kuchyn", "modified": "2026-09-12T19:40:00Z",
+                                 "firmware": "2.1.0", "secrets": False},
+                            ]})
+            elif path == "/api/backup/share/upload":
+                self._json({"ok": True, "name": fields.get("name", ""),
+                            "url": "https://server.example/settings",
+                            "secrets": secrets})
+            elif path == "/api/backup/share/download":
+                self._json({"ok": True, "secrets": True, "webPasswordChanged": False})
+            else:
+                self._json({"ok": True})
             return
         if path == "/api/rss/test":
             # Náhled nechodí na síť; vrátí ukázku ve tvaru, který posílá firmware.

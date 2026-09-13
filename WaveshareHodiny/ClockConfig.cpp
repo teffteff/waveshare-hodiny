@@ -383,8 +383,64 @@ void normalizeColorScale(ClockMetricColorScale &scale) {
   }
 }
 
+// Zapsat do pole bez ukončovací nuly firmware sám neumí, clockConfigCopy vždy
+// ukončuje. Záznam ze zálohy ale přichází zvenčí a neukončený řetězec by se
+// četl za konec pole, takže se konec každého pole vynutí.
+template <size_t N> void terminateText(char (&text)[N]) { text[N - 1] = '\0'; }
+
+void terminateValueSlotTexts(ClockValueSlotConfig &slot) {
+  terminateText(slot.preset);
+  terminateText(slot.name);
+  terminateText(slot.entityId);
+  terminateText(slot.suffix);
+  terminateText(slot.icon);
+}
+
+void terminateConfigTexts(ClockConfig &config) {
+  terminateText(config.homeAssistantUrl);
+  terminateText(config.homeAssistantToken);
+  terminateText(config.weatherEntityId);
+  terminateText(config.sunEntityId);
+  for (ClockSideConfig *side : {&config.leftSide, &config.rightSide}) {
+    terminateText(side->name);
+    terminateText(side->temperatureEntityId);
+    terminateText(side->icon);
+  }
+  for (ClockMetricConfig *metric : {&config.metricA, &config.metricB}) {
+    terminateText(metric->preset);
+    terminateText(metric->name);
+    terminateText(metric->entityId);
+    terminateText(metric->suffix);
+  }
+  terminateText(config.dayNightLightEntityId);
+  terminateText(config.openMeteoCity);
+  for (ClockOpenMeteoSlotConfig &slot : config.openMeteoSlots) {
+    terminateText(slot.value);
+    terminateText(slot.name);
+  }
+  terminateText(config.tmepExportKey);
+  terminateText(config.tmepExportId);
+  for (ClockTmepSlotConfig &slot : config.tmepSlots) {
+    terminateText(slot.sensorId);
+    terminateText(slot.field);
+    terminateText(slot.unit);
+  }
+  for (ClockSideValueConfig *value : {&config.leftValue, &config.rightValue}) {
+    terminateText(value->preset);
+    terminateText(value->suffix);
+  }
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index)
+    terminateValueSlotTexts(clockConfigValueSlot(config, index));
+  terminateText(config.rss.url);
+  terminateText(config.radarStatusTemperatureEntityId);
+  terminateText(config.planes.watchCallsign);
+  terminateText(config.agenda.url);
+  terminateText(config.planesFeedUrl);
+}
+
 void normalizeConfig(ClockConfig &config) {
   config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+  terminateConfigTexts(config);
   clockConfigNormalizeScreenOrder(config.screenOrder);
   config.dayBrightness = constrain(config.dayBrightness, 1, 100);
   config.nightBrightness = constrain(config.nightBrightness, 1, 100);
@@ -772,36 +828,35 @@ struct ConfigRecordV38 {
 static_assert(offsetof(ClockConfig, secondPageSlots) == 6088,
               "Preserve the complete schema 38 record, including padding.");
 
-bool clockConfigLoad(ClockConfig &config) {
-  clockConfigApplyDefaults(config);
-  Preferences preferences;
-  if (!preferences.begin(CONFIG_NAMESPACE, false, CONFIG_PARTITION)) return false;
+namespace {
 
-  // Aktuální i jediný podporovaný migrační záznam sdílejí jeden statický
-  // buffer. Konfigurace je velká a nemá ležet na zásobníku loopTask.
-  static ConfigRecord &record = allocateConfigRecord();
-  record = ConfigRecord{};
-  const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
-  const bool supportedSize = storedSize == sizeof(record) ||
-                             storedSize == sizeof(ConfigRecordV38) ||
-                             storedSize == sizeof(ConfigRecordV37) ||
-                             storedSize == sizeof(ConfigRecordV36) ||
-                             storedSize == sizeof(ConfigRecordV35) ||
-                             storedSize == sizeof(ConfigRecordV34) ||
-                             storedSize == sizeof(ConfigRecordV33) ||
-                             storedSize == sizeof(ConfigRecordV32) ||
-                             storedSize == sizeof(ConfigRecordV31) ||
-                             storedSize == sizeof(ConfigRecordV30) ||
-                             storedSize == sizeof(ConfigRecordV29) ||
-                             storedSize == sizeof(ConfigRecordV28) ||
-                             storedSize == sizeof(ConfigRecordV27) ||
-                             storedSize == sizeof(ConfigRecordV26) ||
-                             storedSize == sizeof(ConfigRecordV155);
-  const bool readComplete =
-      supportedSize && preferences.getBytes(CONFIG_KEY, &record, storedSize) ==
-                           storedSize;
-  preferences.end();
+enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
+bool supportedRecordSize(size_t storedSize) {
+  return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV38) ||
+         storedSize == sizeof(ConfigRecordV37) ||
+         storedSize == sizeof(ConfigRecordV36) ||
+         storedSize == sizeof(ConfigRecordV35) ||
+         storedSize == sizeof(ConfigRecordV34) ||
+         storedSize == sizeof(ConfigRecordV33) ||
+         storedSize == sizeof(ConfigRecordV32) ||
+         storedSize == sizeof(ConfigRecordV31) ||
+         storedSize == sizeof(ConfigRecordV30) ||
+         storedSize == sizeof(ConfigRecordV29) ||
+         storedSize == sizeof(ConfigRecordV28) ||
+         storedSize == sizeof(ConfigRecordV27) ||
+         storedSize == sizeof(ConfigRecordV26) ||
+         storedSize == sizeof(ConfigRecordV155);
+}
+
+// Rozebere záznam ve tvaru, v jakém leží v NVS, včetně všech starších schémat.
+// Totéž potřebuje načtení z paměti i obnova ze zálohy, takže migrace žije na
+// jediném místě. `config` musí na vstupu nést výchozí hodnoty: migrace starších
+// schémat na ně spoléhají u všeho, co tehdy ještě neexistovalo.
+ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
+                                      size_t storedSize, bool readComplete,
+                                      ClockConfig &config) {
   const bool currentRecord =
       readComplete && storedSize == sizeof(record) &&
       record.magic == CONFIG_MAGIC &&
@@ -811,7 +866,7 @@ bool clockConfigLoad(ClockConfig &config) {
   if (currentRecord) {
     config = record.config;
     normalizeConfig(config);
-    return true;
+    return ConfigRecordDecode::Current;
   }
 
   const ConfigRecordV38 &legacyV38 =
@@ -826,7 +881,7 @@ bool clockConfigLoad(ClockConfig &config) {
     memcpy(&config, legacyV38.config, sizeof(legacyV38.config));
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 37 je přesnou předponou schématu 38; adresa zdroje letadel zůstane
@@ -854,7 +909,7 @@ bool clockConfigLoad(ClockConfig &config) {
     config.planesFeedUrl[0] = '\0';
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 36 je přesnou předponou schématu 37; agenda si po zkopírování bajtů
@@ -878,7 +933,7 @@ bool clockConfigLoad(ClockConfig &config) {
     memcpy(&config, legacyV36.config, sizeof(legacyV36.config));
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 35 je přesnou předponou schématu 36; pořadí obrazovek si po
@@ -901,7 +956,7 @@ bool clockConfigLoad(ClockConfig &config) {
     memcpy(&config, legacyV35.config, sizeof(legacyV35.config));
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 34 je přesnou předponou schématu 35; radar letadel si po zkopírování
@@ -924,7 +979,7 @@ bool clockConfigLoad(ClockConfig &config) {
     memcpy(&config, legacyV34.config, sizeof(legacyV34.config));
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 33 je přesnou předponou schématu 34; obrazovka předpovědi si po
@@ -947,7 +1002,7 @@ bool clockConfigLoad(ClockConfig &config) {
     memcpy(&config, legacyV33.config, sizeof(legacyV33.config));
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 32 je přesnou předponou schématu 33; stavový řádek radaru si po
@@ -970,7 +1025,7 @@ bool clockConfigLoad(ClockConfig &config) {
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     applyLegacyRadarStatusLineDefaults(config);
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 31 je přesnou předponou schématu 32; zdroj radaru a legenda si po
@@ -992,7 +1047,7 @@ bool clockConfigLoad(ClockConfig &config) {
     memcpy(&config, legacyV31.config, sizeof(legacyV31.config));
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV30 &legacyV30 =
@@ -1013,7 +1068,7 @@ bool clockConfigLoad(ClockConfig &config) {
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     applyLegacyBottomSlotDefaults(config);
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV29 &legacyV29 =
@@ -1034,7 +1089,7 @@ bool clockConfigLoad(ClockConfig &config) {
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     applyLegacyRssDefaults(config);
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV28 &legacyV28 =
@@ -1055,7 +1110,7 @@ bool clockConfigLoad(ClockConfig &config) {
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     applyLegacyValueSlotDefaults(config);
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV27 &legacyV27 =
@@ -1077,7 +1132,7 @@ bool clockConfigLoad(ClockConfig &config) {
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     applyLegacySideValueDefaults(config);
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV26 &legacyV26 =
@@ -1105,7 +1160,7 @@ bool clockConfigLoad(ClockConfig &config) {
     for (ClockTmepSlotConfig &slot : config.tmepSlots)
       slot = ClockTmepSlotConfig{};
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schema 25 used 0 for Czech and 1 for English. Preserve that explicit
@@ -1125,7 +1180,7 @@ bool clockConfigLoad(ClockConfig &config) {
     for (ClockTmepSlotConfig &slot : config.tmepSlots)
       slot = ClockTmepSlotConfig{};
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schema 24 has the same binary size. The language byte occupied trailing
@@ -1142,7 +1197,7 @@ bool clockConfigLoad(ClockConfig &config) {
     for (ClockTmepSlotConfig &slot : config.tmepSlots)
       slot = ClockTmepSlotConfig{};
     normalizeConfig(config);
-    return clockConfigSave(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV155 &legacy =
@@ -1158,7 +1213,7 @@ bool clockConfigLoad(ClockConfig &config) {
       legacy.schemaVersion == PUBLIC_1_5_5_SCHEMA_VERSION &&
       embeddedSchemaVersion == PUBLIC_1_5_5_SCHEMA_VERSION &&
       legacy.checksum == bytesChecksum(legacy.config, sizeof(legacy.config));
-  if (!validPublic155Record) return clockConfigSave(config);
+  if (!validPublic155Record) return ConfigRecordDecode::Invalid;
 
   memcpy(&config, legacy.config, sizeof(legacy.config));
   config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
@@ -1179,7 +1234,85 @@ bool clockConfigLoad(ClockConfig &config) {
     slot = ClockTmepSlotConfig{};
   config.rss = ClockRssConfig{};
   normalizeConfig(config);
+  return ConfigRecordDecode::Migrated;
+}
+
+}  // namespace
+
+bool clockConfigLoad(ClockConfig &config) {
+  clockConfigApplyDefaults(config);
+  Preferences preferences;
+  if (!preferences.begin(CONFIG_NAMESPACE, false, CONFIG_PARTITION)) return false;
+
+  // Aktuální i jediný podporovaný migrační záznam sdílejí jeden statický
+  // buffer. Konfigurace je velká a nemá ležet na zásobníku loopTask.
+  static ConfigRecord &record = allocateConfigRecord();
+  record = ConfigRecord{};
+  const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
+  const bool supportedSize = supportedRecordSize(storedSize);
+  const bool readComplete =
+      supportedSize && preferences.getBytes(CONFIG_KEY, &record, storedSize) ==
+                           storedSize;
+  preferences.end();
+
+  switch (decodeConfigRecord(record, storedSize, readComplete, config)) {
+    case ConfigRecordDecode::Current:
+      return true;
+    case ConfigRecordDecode::Migrated:
+      return clockConfigSave(config);
+    case ConfigRecordDecode::Invalid:
+      break;
+  }
+  // Nečitelný záznam: platí výchozí hodnoty, které se rovnou uloží.
+  clockConfigApplyDefaults(config);
   return clockConfigSave(config);
+}
+
+size_t clockConfigRecordSize() { return sizeof(ConfigRecord); }
+
+size_t clockConfigEncodeRecord(const ClockConfig &config, uint8_t *output,
+                               size_t capacity) {
+  if (output == nullptr || capacity < sizeof(ConfigRecord)) return 0;
+  // Výstup je obecný buffer bajtů bez zaručeného zarovnání, takže se záznam
+  // skládá ve vlastním a teprve pak kopíruje. Nuly předem, aby zarovnávací
+  // výplň nenesla nic z předchozího obsahu a součet seděl i po přenosu.
+  static ConfigRecord &record = allocateConfigRecord();
+  memset(static_cast<void *>(&record), 0, sizeof(record));
+  record.magic = CONFIG_MAGIC;
+  record.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+  record.config = config;
+  normalizeConfig(record.config);
+  record.checksum = configChecksum(record.config);
+  memcpy(output, &record, sizeof(record));
+  return sizeof(ConfigRecord);
+}
+
+ClockConfigRecordStatus clockConfigDecodeRecord(const uint8_t *bytes,
+                                                size_t size,
+                                                ClockConfig &config) {
+  clockConfigApplyDefaults(config);
+  if (bytes == nullptr || size < 2 * sizeof(uint32_t))
+    return ClockConfigRecordStatus::Invalid;
+  uint32_t magic = 0;
+  uint32_t schemaVersion = 0;
+  memcpy(&magic, bytes, sizeof(magic));
+  memcpy(&schemaVersion, bytes + sizeof(magic), sizeof(schemaVersion));
+  if (magic != CONFIG_MAGIC) return ClockConfigRecordStatus::Invalid;
+  // Novější firmware může mít větší záznam i jiná pole. Starší firmware je
+  // neumí převést zpátky, takže záloha počká na aktualizaci.
+  if (schemaVersion > CLOCK_CONFIG_SCHEMA_VERSION)
+    return ClockConfigRecordStatus::NewerFirmware;
+  if (!supportedRecordSize(size)) return ClockConfigRecordStatus::Invalid;
+
+  static ConfigRecord &record = allocateConfigRecord();
+  record = ConfigRecord{};
+  memcpy(&record, bytes, size);
+  if (decodeConfigRecord(record, size, true, config) ==
+      ConfigRecordDecode::Invalid) {
+    clockConfigApplyDefaults(config);
+    return ClockConfigRecordStatus::Invalid;
+  }
+  return ClockConfigRecordStatus::Ok;
 }
 
 bool clockConfigSave(const ClockConfig &config) {
