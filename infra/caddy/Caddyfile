@@ -21,6 +21,21 @@
 		}
 		reverse_proxy 127.0.0.1:8089
 	}
+	# Zalohy nastaveni hodin (infra/settings). Nesou token Home Assistantu
+	# a heslo webu, takze patri za heslo stejne jako agenda - ale za vlastni:
+	# heslo k agende zna kazde hodiny v adrese a nemelo by stacit na cteni
+	# tokenu. Hash je v /etc/caddy/caddy.env jako SETTINGS_HASH.
+	#
+	# Strop tela je pojistka navic; server sam prijme nejvys 64 kB.
+	handle /settings/* {
+		basic_auth {
+			hodiny {env.SETTINGS_HASH}
+		}
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:8092
+	}
 	# Letadla jsou verejna data z adsb.fi, jen orezana na to, co hodiny ctou;
 	# heslo tu proto nedava smysl. Cizi dotaz stoji jen odpoved z pameti:
 	# server drzi vysledek nekolik sekund a sam od sebe nestahuje nic.

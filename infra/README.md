@@ -49,6 +49,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
 | Server s agendou | 8089, jen loopback | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
 | Přepravčí letadel | 8090, jen loopback | `/opt/planes/serve.py`, `planes-web.service` | `planes/` |
+| Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565 | Minecraft, go2rtc — s hodinami nesouvisí | — |
 
@@ -77,6 +78,7 @@ mění v Nastavení → Systém → Síť.
 ```
 https://$CLOCK_HOST/top.xml      zprávy
 https://$CLOCK_HOST/planes.json  letadla (nepovinné)
+https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
 ```
@@ -107,7 +109,7 @@ problem)“, jedno z těch dvou je zavřené.
 - 8088 — přímý přístup ke kanálu, dnes už jen záloha
 - 8123 — přímý přístup k HA, taky jen záloha
 
-Port **8089 mezi ně nepatří**: server s agendou od 9. 9. 2026 poslouchá jen na
+Porty **8089 a 8092 mezi ně nepatří**: server s agendou od 9. 9. 2026 poslouchá jen na
 `127.0.0.1`, protože jinak by šlo heslo z Caddyfile obejít dotazem přímo na
 něj. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 
@@ -188,17 +190,74 @@ Výměna hesla:
 ```sh
 NEW="$(openssl rand -hex 24)"   # hex schválně: bez : a @ kvůli adrese, bez $ kvůli .env
 ssh … "caddy hash-password --plaintext '$NEW'"
-ssh … "printf 'AGENDA_HASH=%s\n' '<hash>' | sudo install -m 600 /dev/stdin /etc/caddy/caddy.env"
-ssh … "sudo systemctl reload caddy"
+# Jen řádek AGENDA_HASH: caddy.env nese i SETTINGS_HASH a WATCHER_HASH a bez
+# nich by reload Caddy spadl. sed -i zachová práva 600.
+ssh … "sudo sed -i 's|^AGENDA_HASH=.*|AGENDA_HASH=<hash>|' /etc/caddy/caddy.env"
+ssh … "sudo systemctl restart caddy"
 ```
 
-Reload vždy přes `systemctl`, ne přímo `caddy reload`: proměnnou má jen
-prostředí služby. Nakonec se nové heslo opíše do `.env` a do hodin — dokud
+Restart, ne reload: proměnnou z `caddy.env` dostane běžící proces jen při
+startu, takže po reloadu by dál platil starý hash. Nakonec se nové heslo opíše do `.env` a do hodin — dokud
 se nezmění tam, obrazovka s agendou zůstane prázdná a `check-stack.sh` to
 ohlásí.
 
 `tools/check-stack.sh` kontroluje obojí: že bez hesla přijde 401 (jinak by
 agendu četl kdokoli) a že s heslem z `.env` dorazí čerstvý JSON.
+
+## Zálohy nastavení
+
+Hodiny umí uložit celé nastavení na server a jiné hodiny si ho odtud stáhnou
+(záložka **Systém → Záloha a sdílení nastavení**). `settings/serve.py` je jen
+úložiště pojmenovaných souborů: `GET /settings/` vrátí seznam, `GET` a `PUT`
+na `/settings/<název>` jednu zálohu. Mazání schválně chybí – hodiny ho
+nepotřebují a stačí `rm /opt/settings/data/<název>.json`.
+
+**Záloha může nést token Home Assistantu a hash hesla webu**, proto:
+
+- stojí za `basic_auth` v Caddy s **vlastním heslem** (`SETTINGS_HASH`), ne
+  s tím k agendě – to zná každé hodiny, které agendu jen čtou,
+- server poslouchá jen na `127.0.0.1`, port 8092 se nikde neotevírá,
+- název je `[a-z0-9][a-z0-9-]{0,31}`, takže z něj nejde složit cesta,
+- soubory mají práva 600 v adresáři 700, zápis jde přes dočasný soubor
+  a `os.replace`,
+- tělo má strop 64 kB (Caddy i server) a musí to být obálka zálohy hodin,
+- záloh je nejvýš 64, aby se disk nedal zaplnit ani s heslem.
+
+Tokeny a hesla se do zálohy dostanou, jen když je majitel při zálohování potvrdí
+heslem webového nastavení – bez něj hodiny pošlou zálohu bez nich. Firmware
+přijme jen adresu `https://` a přesměrování nenásleduje, aby heslo z adresy
+nešlo jinam.
+
+Zavedení (jednou):
+
+```sh
+set -a; . .env; set +a
+SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+NEW="$(openssl rand -hex 24)"      # hex: bez : a @ kvůli adrese
+HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$NEW'")"
+# Hash se do caddy.env PŘIDÁ, AGENDA_HASH musí zůstat.
+$SSH "$CLOCK_SSH" "printf 'SETTINGS_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
+$SSH "$CLOCK_SSH" 'sudo install -d -o opc -g opc -m 700 /opt/settings /opt/settings/data'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/settings/serve.py infra/settings/settings-web.service "$CLOCK_SSH:/opt/settings/"
+$SSH "$CLOCK_SSH" 'sudo cp /opt/settings/settings-web.service /etc/systemd/system/ \
+    && sudo systemctl daemon-reload && sudo systemctl enable --now settings-web.service'
+```
+
+Pak **`sudo systemctl restart caddy`** – ještě se starým Caddyfile – a teprve
+potom nový Caddyfile (postup v „Nasazení změn z repozitáře“). `{env.…}` čte
+běžící proces Caddy a proměnné z `caddy.env` dostane jen při startu; `reload`
+spouští jen klienta, který konfiguraci předá dál. Bez restartu reload spadne
+na prázdném `SETTINGS_HASH` (stalo se při nasazení 13. 9. 2026) – běžet zůstane
+stará konfigurace, takže se nic nerozbije, ale ani nezapne. Restart na známé
+dobré konfiguraci je bezpečný; certifikáty zůstávají na disku. Nakonec
+`NEW` do kořenového `.env` jako `SETTINGS_PASSWORD`, aby ho četl
+`tools/check-stack.sh`, a do hodin adresa
+`https://hodiny:$NEW@$CLOCK_HOST/settings`.
+
+Výměna hesla je stejná jako u agendy, jen se `sed` nahradí řádek `SETTINGS_HASH`
+– a platí totéž: nový hash se projeví až po `restart`, ne po `reload`. Hodiny si
+novou adresu uloží po prvním úspěšném spojení.
 
 ## Letadla
 
@@ -408,7 +467,12 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
    `agenda.env` s ID kalendářů (práva 600), jednotky do
    `/etc/systemd/system/`, `systemctl enable --now agenda-web.service
    agenda.timer`.
-5. `tools/check-stack.sh --deep`.
+5. Zálohy nastavení (nepovinné): `settings/*` do `/opt/settings/`, adresáře
+   `/opt/settings` a `/opt/settings/data` s právy 700, `SETTINGS_HASH` do
+   `/etc/caddy/caddy.env`, jednotku do `/etc/systemd/system/`, `systemctl
+   enable --now settings-web.service`. Samotné zálohy v `data/` se dají
+   kdykoli znovu nahrát z hodin.
+6. `tools/check-stack.sh --deep`.
 
 **Python na tom stroji:** `python3` je 3.6.8, který nemá `zoneinfo` a tiše
 nainstaluje roky staré verze knihoven. Obě `.venv` se proto stavějí výslovně

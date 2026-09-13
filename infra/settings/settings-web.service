@@ -1,0 +1,27 @@
+[Unit]
+Description=Uloziste zaloh nastaveni pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+Environment=SETTINGS_DATA=/opt/settings/data
+Environment=SETTINGS_PORT=8092
+# Jen pro Caddy na stejnem stroji. Zalohy nesou token Home Assistantu, takze
+# na verejne IP by se basic_auth z Caddyfile dal obejit primym dotazem.
+Environment=SETTINGS_BIND=127.0.0.1
+# Zadny venv: sluzba si vystaci se standardni knihovnou, stejne jako letadla.
+# Interpret je vyslovne 3.11, /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6.
+ExecStart=/usr/bin/python3.11 /opt/settings/serve.py
+# Soubory se zalohami vznikaji s pravy 600 i bez chmod ve skriptu.
+UMask=0077
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
