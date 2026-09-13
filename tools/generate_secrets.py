@@ -14,6 +14,7 @@ OUTPUT_FILE = LOCAL_DIR / "secrets.h"
 FIRMWARE_CONFIG_FILE = LOCAL_DIR / "firmware_config.h"
 HOME_WIFI_KEYS = ("WIFI_SSID", "WIFI_PASSWORD")
 WORK_WIFI_KEYS = ("WIFI_WORK_SSID", "WIFI_WORK_PASSWORD")
+FALLBACK_WIFI_KEYS = ("WIFI_FALLBACK_SSID", "WIFI_FALLBACK_PASSWORD")
 FIRMWARE_KEYS = ("FIRMWARE_SERVER_URL", "FIRMWARE_PROJECT_SLUG")
 PUBLIC_FIRMWARE_CONFIG = {
     "FIRMWARE_SERVER_URL": "https://teffteff.github.io",
@@ -123,6 +124,17 @@ def main() -> None:
         f"#define WIFI_SSID {cpp_string(values[ssid_key])}",
         f"#define WIFI_PASSWORD {cpp_string(values[password_key])}",
     ]
+    # Záložní síť (např. u rodičů) platí pro oba profily; heslo může být prázdné
+    # u otevřené sítě. Shodná s hlavní sítí by jen zdvojila pokusy.
+    fallback_ssid = values.get(FALLBACK_WIFI_KEYS[0], "")
+    has_fallback = bool(fallback_ssid) and fallback_ssid != values[ssid_key]
+    if has_fallback:
+        lines.extend(
+            [
+                f"#define WIFI_FALLBACK_SSID {cpp_string(fallback_ssid)}",
+                f"#define WIFI_FALLBACK_PASSWORD {cpp_string(values.get(FALLBACK_WIFI_KEYS[1], ''))}",
+            ]
+        )
     missing_home_assistant = [
         key for key in HOME_ASSISTANT_KEYS if not values.get(key)
     ]
@@ -158,6 +170,8 @@ def main() -> None:
         print(
             f"Wi-Fi profil {profile} a Home Assistant konfigurace byly připraveny pro sestavení."
         )
+    if has_fallback:
+        print(f"Záložní Wi-Fi {fallback_ssid} byla připravena pro sestavení.")
     if news_url:
         print("Adresa zpravodajského kanálu byla připravena pro sestavení.")
     else:
