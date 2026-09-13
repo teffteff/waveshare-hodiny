@@ -2,7 +2,8 @@
 	# Vsechno na tomhle jmene jde jen pres HTTPS (port 80 jen presmerovava),
 	# takze prohlizec, ktery tu jednou byl, uz se na http:// nezepta a heslo
 	# od Home Assistanta nepujde otevrene ani omylem. Hodiny hlavicku ignoruji.
-	# Bez includeSubDomains: poddomeny sytes.net nejsou nase.
+	# Bez includeSubDomains: nadrazena domena patri poskytovateli dynamicke DNS,
+	# jeji dalsi poddomeny nejsou nase.
 	header Strict-Transport-Security "max-age=31536000"
 	handle /top.xml {
 		reverse_proxy 127.0.0.1:8088
