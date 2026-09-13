@@ -620,7 +620,8 @@ token only for the same server address).
 Backups can be saved to a file, or to your own server and loaded on another
 clock: on the **System** tab enter `https://hodiny:password@server/settings`,
 a backup name and **Save to server**; on the other clock use the same address,
-**Load list** and **Load into this clock**. The server side lives in
+**Load list** and **Load into this clock**. **Delete from server** removes the
+backup selected in the list. The server side lives in
 `infra/settings/`. Older browser backups (version 2) can still be imported.
 
 ## Touchscreen settings

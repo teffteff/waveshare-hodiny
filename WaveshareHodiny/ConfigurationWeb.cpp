@@ -3855,6 +3855,21 @@ void handleSettingsShareDownload() {
   finishBackupApply(outcome);
 }
 
+void handleSettingsShareDelete() {
+  SettingsShareRequest request;
+  request.operation = SettingsShareOperation::Delete;
+  if (!resolveShareUrl(request.url, sizeof(request.url)) ||
+      !readBackupName(request.name, sizeof(request.name)))
+    return;
+  SettingsShareResult result;
+  if (!runSettingsShare(request, result)) return;
+  rememberShareUrl(request.url);
+  String payload = F("{\"ok\":true,\"name\":\"");
+  payload += request.name;
+  payload += F("\"}");
+  sendJson(200, payload);
+}
+
 void handleSettingsShareForget() {
   if (!persistSettingsShareUrl("")) {
     sendError(500, F("Adresu serveru pro zálohy se nepodařilo smazat."));
@@ -4025,6 +4040,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   });
   registerBoundedPost("/api/backup/share/download", []() {
     if (requireConfigurationAccess()) handleSettingsShareDownload();
+  });
+  registerBoundedPost("/api/backup/share/delete", []() {
+    if (requireConfigurationAccess()) handleSettingsShareDelete();
   });
   registerBoundedPost("/api/backup/share/forget", []() {
     if (requireConfigurationAccess()) handleSettingsShareForget();

@@ -208,9 +208,9 @@ agendu četl kdokoli) a že s heslem z `.env` dorazí čerstvý JSON.
 
 Hodiny umí uložit celé nastavení na server a jiné hodiny si ho odtud stáhnou
 (záložka **Systém → Záloha a sdílení nastavení**). `settings/serve.py` je jen
-úložiště pojmenovaných souborů: `GET /settings/` vrátí seznam, `GET` a `PUT`
-na `/settings/<název>` jednu zálohu. Mazání schválně chybí – hodiny ho
-nepotřebují a stačí `rm /opt/settings/data/<název>.json`.
+úložiště pojmenovaných souborů: `GET /settings/` vrátí seznam, `GET`, `PUT` a
+`DELETE` na `/settings/<název>` jednu zálohu čtou, ukládají a mažou. Mazat jde
+z hodin tlačítkem **Smazat ze serveru**, nebo `rm /opt/settings/data/<název>.json`.
 
 **Záloha může nést token Home Assistantu a hash hesla webu**, proto:
 

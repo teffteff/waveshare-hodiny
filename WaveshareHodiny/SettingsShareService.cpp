@@ -60,13 +60,25 @@ String operationUrl(const SettingsShareRequest &request) {
   return url;
 }
 
+bool operationSucceeded(SettingsShareOperation operation, int status) {
+  switch (operation) {
+    case SettingsShareOperation::Upload:
+      return status == HTTP_CODE_OK || status == HTTP_CODE_CREATED;
+    case SettingsShareOperation::Delete:
+      return status == HTTP_CODE_OK || status == HTTP_CODE_NO_CONTENT;
+    default:
+      return status == HTTP_CODE_OK;
+  }
+}
+
 void describeFailure(const SettingsShareRequest &request,
                      SettingsShareResult &result) {
   const int status = result.httpStatus;
   if (status == HTTP_CODE_UNAUTHORIZED || status == HTTP_CODE_FORBIDDEN) {
     setError(result, F("Server odmítl jméno nebo heslo v adrese."));
   } else if (status == HTTP_CODE_NOT_FOUND) {
-    setError(result, request.operation == SettingsShareOperation::Download
+    setError(result, request.operation == SettingsShareOperation::Download ||
+                             request.operation == SettingsShareOperation::Delete
                          ? F("Záloha s tímto názvem na serveru není.")
                          : F("Na zadané adrese server pro zálohy není."));
   } else if (status == HTTP_CODE_PAYLOAD_TOO_LARGE) {
@@ -145,15 +157,17 @@ void settingsShareExecute(const SettingsShareRequest &request,
         result.httpStatus = http.sendRequest(
             "PUT", reinterpret_cast<uint8_t *>(const_cast<char *>(request.body)),
             request.bodyLength);
+      } else if (request.operation == SettingsShareOperation::Delete) {
+        result.httpStatus = http.sendRequest("DELETE");
       } else {
         http.addHeader(F("Accept"), F("application/json"));
         result.httpStatus = http.GET();
       }
-      const bool success = request.operation == SettingsShareOperation::Upload
-                               ? result.httpStatus == HTTP_CODE_OK ||
-                                     result.httpStatus == HTTP_CODE_CREATED
-                               : result.httpStatus == HTTP_CODE_OK;
-      if (success && request.operation != SettingsShareOperation::Upload) {
+      // Upload a Delete tělo odpovědi nepotřebují; stačí stav.
+      const bool readsBody =
+          request.operation == SettingsShareOperation::List ||
+          request.operation == SettingsShareOperation::Download;
+      if (readsBody && result.httpStatus == HTTP_CODE_OK) {
         BufferPrint response(responseBuffer, SETTINGS_SHARE_MAX_RESPONSE_BYTES);
         const int bytesRead =
             httpDownloadBody(http, response, SHARE_RESPONSE_TIMEOUT_MS);
@@ -175,11 +189,7 @@ void settingsShareExecute(const SettingsShareRequest &request,
   esp_crt_bundle_detach(nullptr);
 
   if (bodyFailed) return;
-  const bool success = request.operation == SettingsShareOperation::Upload
-                           ? result.httpStatus == HTTP_CODE_OK ||
-                                 result.httpStatus == HTTP_CODE_CREATED
-                           : result.httpStatus == HTTP_CODE_OK;
-  if (!success) {
+  if (!operationSucceeded(request.operation, result.httpStatus)) {
     describeFailure(request, result);
     return;
   }

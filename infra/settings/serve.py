@@ -4,6 +4,7 @@
   GET  /settings/          seznam zaloh (nazev, cas, firmware, s tajemstvimi?)
   GET  /settings/<nazev>   jedna zaloha tak, jak ji hodiny poslaly
   PUT  /settings/<nazev>   ulozi nebo prepise zalohu
+  DELETE /settings/<nazev> smaze zalohu
 
 Zaloha muze nest token Home Assistantu a heslo webu, takze:
 
@@ -14,8 +15,8 @@ Zaloha muze nest token Home Assistantu a heslo webu, takze:
 - telo ma strop a musi to byt obalka zalohy hodin, ne libovolny soubor,
 - pocet zaloh je omezeny, aby se disk nedal zaplnit ani s heslem.
 
-Mazani tu schvalne neni: hodiny ho nepotrebuji a staci `rm` na serveru.
-Stara zaloha se prepise novou pod stejnym nazvem.
+Stara zaloha se prepise novou pod stejnym nazvem. Mazat smi kdokoli s heslem,
+stejne jako prepsat; ze seznamu zmizi hned, protoze seznam cte adresar.
 """
 from __future__ import annotations
 
@@ -170,10 +171,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, json.dumps({"ok": True, "name": name}).encode())
 
+    def do_DELETE(self):
+        name = self._name()
+        if name is None:
+            self._error(404, "not found")
+            return
+        try:
+            backup_path(name).unlink()
+        except FileNotFoundError:
+            self._error(404, "not found")
+            return
+        except OSError:
+            self._error(500, "delete failed")
+            return
+        self._send(200, json.dumps({"ok": True, "name": name}).encode())
+
     def do_POST(self):
         self._error(405, "method not allowed")
-
-    do_DELETE = do_POST
 
     def log_message(self, *args):  # tise, at neplni journal
         pass
