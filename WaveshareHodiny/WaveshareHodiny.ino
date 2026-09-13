@@ -401,7 +401,7 @@ void applyPlaneRadarState(const ClockConfig &config, bool visible) {
       planesAvailable && visible,
       planesAvailable && config.planes.automaticRotation,
       config.openMeteoLatitude, config.openMeteoLongitude, config.planes,
-      config.planesFeedUrl);
+      config.planesFeedUrl, config.planesMapLabel);
 }
 
 void applyPlaneRadarState(const ClockConfig &config) {
@@ -2711,7 +2711,8 @@ void setup() {
   planeRadarServiceSetActive(false, false, runtimeConfig.openMeteoLatitude,
                              runtimeConfig.openMeteoLongitude,
                              runtimeConfig.planes,
-                             runtimeConfig.planesFeedUrl);
+                             runtimeConfig.planesFeedUrl,
+                             runtimeConfig.planesMapLabel);
   clockDashboardSetSecond(60);
   displayResyncAt = millis() + 2000;
 #if FIRMWARE_RELEASE

@@ -84,6 +84,17 @@ struct AdsbParseOutcome {
 AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
                                    size_t capacity);
 
+// Popisek letadla pod ikonou na mapě.
+//
+// S typeName je to typ vypsaný slovy ("CESSNA 152"), bez něj zkratka typu
+// ("C152"). Mapové písmo je široké a na kruhu je těsno, takže se jméno delší
+// než capacity - 1 znaků zkrátí na celá slova; slovo delší než celý popisek se
+// usekne. Bez typeName, nebo když letadlo žádný typ nehlásí, je to volací
+// značka a bez ní ICAO adresa - popisek tak nikdy nezůstane prázdný, pokud
+// letadlo nese aspoň něco.
+void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,
+                  size_t capacity);
+
 // Vrací kód nouze, kterým letadlo právě vysílá, jinak nullptr.
 const char *adsbEmergencyCode(const AdsbAircraft &aircraft);
 

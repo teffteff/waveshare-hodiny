@@ -119,6 +119,37 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
   return outcome;
 }
 
+void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,
+                  size_t capacity) {
+  if (output == nullptr || capacity == 0) return;
+  output[0] = '\0';
+  const char *source = nullptr;
+  if (typeName) {
+    if (aircraft.description[0] != '\0')
+      source = aircraft.description;
+    else if (aircraft.type[0] != '\0')
+      source = aircraft.type;
+  }
+  if (source == nullptr)
+    source = aircraft.callsign[0] != '\0' ? aircraft.callsign : aircraft.hex;
+
+  const size_t length = strlen(source);
+  if (length < capacity) {
+    memcpy(output, source, length + 1);
+    return;
+  }
+  // Zkrátí se na poslední mezeru, která se ještě vejde. "BOMBARDIER BD-700
+  // Global 7000/7500" tak skončí jako "BOMBARDIER BD-700", ne "...BD-700 G".
+  size_t cut = capacity - 1;
+  if (source[cut] != ' ') {
+    while (cut > 0 && source[cut - 1] != ' ') --cut;
+    if (cut == 0) cut = capacity - 1;
+  }
+  while (cut > 0 && source[cut - 1] == ' ') --cut;
+  memcpy(output, source, cut);
+  output[cut] = '\0';
+}
+
 const char *adsbEmergencyCode(const AdsbAircraft &aircraft) {
   if (aircraft.squawk[0] == '\0') return nullptr;
   if (strcmp(aircraft.squawk, ADSB_SQUAWK_HIJACK) == 0)

@@ -548,11 +548,14 @@ letadlo červeně a přebere řádek s počtem letadel. **Hlídaný let** zadan�
 značkou nebo ICAO adresou dostane zelený kroužek a projde i filtrem výšky.
 
 Klepnutím na letadlo se otevře detail s výškou, rychlostí, traťovým úhlem,
-stoupáním, typem, registrací a trasou letu. Pod zkratkou typu draku stojí ještě
-jeho jméno slovy — pod „A21N“ tedy *AIRBUS A-321neo* —, protože zkratky zná
-nazpaměť málokdo. Veze ho táž odpověď jako polohu, takže se kvůli němu nic
-navíc nestahuje; asi dvacetina letadel ho nemá, protože je server ve své
-databázi letadel nenajde, a pak zůstane stát samotná zkratka. Jednotky se
+stoupáním, typem, registrací a trasou letu. Typ se píše slovy — místo „C152“
+tedy *CESSNA 152* —, protože zkratky zná nazpaměť málokdo, a registrace stojí
+na řádku pod ním. Jméno typu veze táž odpověď jako polohu, takže se kvůli němu
+nic navíc nestahuje; asi dvacetina letadel ho nemá, protože je server ve své
+databázi letadel nenajde, a pak zůstane stát zkratka. Stejné jméno se píše i
+pod ikonu letadla na mapě; v nastavení se dá místo něj zvolit volací značka
+(*OKSCT*, *ROT225P*). Dlouhá jména se na mapě zkrátí na celá slova a letadlo
+bez známého typu dostane volací značku. Jednotky se
 přepínají mezi metrickými a leteckými. Zavírá ho další klepnutí kamkoli. Výběr
 se drží podle ICAO adresy letadla, ne podle pozice v seznamu: ten se staví při
 každém stažení znovu a jeho pořadí není zaručené, takže by panel ukazoval jiné

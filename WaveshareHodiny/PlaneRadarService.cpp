@@ -110,6 +110,9 @@ ClockPlanesConfig requestPlanes;
 // tady proto, že konfigurace přichází z jiné úlohy a smyčka radaru si ji nesmí
 // číst rovnou z ní.
 char requestFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
+// Co se píše pod ikonu letadla (ClockPlaneMapLabel). Na stahování nemá vliv,
+// jeho změna jen překreslí snímek.
+uint8_t requestMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
 // Dosah naposledy přijatý z konfigurace. Přetažení prstem mění jen běžící
 // dosah, ne uložený - a bez téhle pamatováky by ho každé předání konfigurace
 // (návrat na obrazovku, synchronizace času, uložení čehokoli na webu) srazilo
@@ -789,6 +792,7 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   portENTER_CRITICAL(&stateMux);
   strlcpy(selection, selectedHex, sizeof(selection));
   const uint8_t count = aircraftCount;
+  const bool typeNameLabels = requestMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   portEXIT_CRITICAL(&stateMux);
 
   const int selectedIndex = adsbFindByHex(liveList, count, selection);
@@ -855,11 +859,12 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     drawAircraftIcon(x, y, screenTrack, aircraft.hasTrack,
                      altitudeColor(aircraft.altitudeFt, altitudeKnown));
 
-    // Popisek pod ikonou: callsign, nebo ICAO adresa, když ho letadlo nevysílá.
-    // Náhrada žije JEN tady - AdsbAircraft::callsign zůstává schválně prázdný,
-    // protože se posílá do API na trasu a adresa se tam čte jako číslo letu.
-    const char *label =
-        aircraft.callsign[0] != '\0' ? aircraft.callsign : aircraft.hex;
+    // Popisek pod ikonou: typ slovy, nebo callsign - podle nastavení. Náhrady
+    // za chybějící údaj žijí JEN tady - AdsbAircraft::callsign zůstává
+    // schválně prázdný, protože se posílá do API na trasu a adresa se tam čte
+    // jako číslo letu. Osmnáct znaků je 107 px, zhruba třetina šířky kruhu.
+    char label[19];
+    adsbMapLabel(aircraft, typeNameLabels, label, sizeof(label));
     if (label[0] != '\0') {
       const int textWidth = mapTextWidth(label);
       const MapLabelBox box = {x - textWidth / 2 - 2, y + 20, textWidth + 4, 13};
@@ -1304,10 +1309,15 @@ void planeRadarServicePrepareForFirmwareUpdate() {
 void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
                                 float latitude, float longitude,
                                 const ClockPlanesConfig &planes,
-                                const char *feedUrl) {
+                                const char *feedUrl, uint8_t mapLabel) {
   const char *wantedFeedUrl = feedUrl != nullptr ? feedUrl : "";
   bool notify = false;
   portENTER_CRITICAL(&stateMux);
+  if (requestMapLabel != mapLabel) {
+    requestMapLabel = mapLabel;
+    redrawRequested = true;
+    notify = true;
+  }
   const bool wasActive = active;
   // Dosah si služba drží sama, dokud ho někdo nezmění na webu: přetažení prstem
   // mění jen běžící dosah a předání konfigurace ho nesmí srazit zpátky.

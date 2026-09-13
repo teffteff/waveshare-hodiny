@@ -1514,6 +1514,11 @@ void handleGetConfig() {
   result += config.planes.squawkAlert ? F("true") : F("false");
   result += F(",\"planesMetricUnits\":");
   result += config.planes.metricUnits ? F("true") : F("false");
+  result += F(",\"planesMapLabel\":\"");
+  result += config.planesMapLabel == CLOCK_PLANE_MAP_LABEL_CALLSIGN
+                ? F("callsign")
+                : F("type");
+  result += F("\"");
   result += F(",\"planesWatchCallsign\":\"");
   result += jsonEscape(config.planes.watchCallsign);
   result += F("\"");
@@ -2049,6 +2054,13 @@ void handleSaveConfig() {
         server.arg("planesOnlyWithCallsign") == "1";
     config.planes.squawkAlert = server.arg("planesSquawkAlert") == "1";
     config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
+    // Stránka uložená ze starší verze pole neposílá; uložený popisek zůstane.
+    const String planesMapLabel = server.arg("planesMapLabel");
+    if (planesMapLabel == "callsign") {
+      config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_CALLSIGN;
+    } else if (planesMapLabel == "type") {
+      config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
+    }
     clockConfigCopy(config.planes.watchCallsign,
                     sizeof(config.planes.watchCallsign),
                     server.arg("planesWatchCallsign"));

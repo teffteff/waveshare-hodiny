@@ -116,11 +116,11 @@ lv_obj_t *planesDetailPanel = nullptr;
 lv_obj_t *planesDetailTitle = nullptr;
 lv_obj_t *planesDetailClose = nullptr;
 constexpr uint8_t PLANES_DETAIL_ROW_COUNT = 6;
-// Řádek s typem draku. Hned pod ním leží název typu vypsaný slovy, takže se
-// řádky za ním posunou o jeho výšku níž.
+// Řádek s typem letadla. Hned pod ním leží registrace, takže se řádky za ním
+// posunou o její výšku níž.
 constexpr uint8_t PLANES_DETAIL_TYPE_ROW = 4;
 lv_obj_t *planesDetailRows[PLANES_DETAIL_ROW_COUNT] = {};
-lv_obj_t *planesDetailTypeName = nullptr;
+lv_obj_t *planesDetailRegistration = nullptr;
 lv_obj_t *planesDetailRouteFrom = nullptr;
 lv_obj_t *planesDetailRouteTo = nullptr;
 lv_obj_t *planesDetailSignalLost = nullptr;
@@ -3171,20 +3171,20 @@ constexpr int PLANES_CLOCK_OFFSET_Y = -186;
 constexpr int PLANES_STATUS_OFFSET_Y = -158;
 constexpr int PLANES_RANGE_OFFSET_Y = 164;
 constexpr int PLANES_DETAIL_WIDTH = 330;
-// Šest řádků, název typu slovy, dvě řádky trasy a poznámka o ztraceném
+// Šest řádků, registrace, dvě řádky trasy a poznámka o ztraceném
 // signálu. Rohy panelu musí zůstat uvnitř kruhu displeje: 330x310 dává
 // polovinu úhlopříčky 227 px proti poloměru 240 px.
 constexpr int PLANES_DETAIL_HEIGHT = 310;
-// První řádek a rozestup mezi řádky. Název typu stojí na vlastní řádce stejným
+// První řádek a rozestup mezi řádky. Registrace stojí na vlastní řádce stejným
 // písmem jako ostatní údaje, takže si bere výšku písma plus mezeru.
 constexpr int PLANES_DETAIL_ROWS_TOP = 48;
 constexpr int PLANES_DETAIL_ROW_STEP = 24;
-constexpr int PLANES_DETAIL_TYPE_NAME_HEIGHT = 22;
+constexpr int PLANES_DETAIL_REGISTRATION_HEIGHT = 22;
 
-// Kam padne který řádek. Řádky pod typem draku uhýbají názvu typu.
+// Kam padne který řádek. Řádky pod typem letadla uhýbají registraci.
 int planesDetailRowY(uint8_t row) {
   const int shift =
-      row > PLANES_DETAIL_TYPE_ROW ? PLANES_DETAIL_TYPE_NAME_HEIGHT : 0;
+      row > PLANES_DETAIL_TYPE_ROW ? PLANES_DETAIL_REGISTRATION_HEIGHT : 0;
   return PLANES_DETAIL_ROWS_TOP + row * PLANES_DETAIL_ROW_STEP + shift;
 }
 
@@ -3271,18 +3271,20 @@ void createPlanesPage(lv_obj_t *screen) {
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 18, planesDetailRowY(row));
     planesDetailRows[row] = label;
   }
+  // Typ se píše slovy a nejdelší jména z databáze letadel mají přes čtyřicet
+  // znaků, takže řádek dostane pevnou šířku a přeteklý zbytek uzavřou tři
+  // tečky - jinak by text vylezl z panelu ven.
+  lv_obj_set_width(planesDetailRows[PLANES_DETAIL_TYPE_ROW],
+                   PLANES_DETAIL_WIDTH - 36);
+  lv_label_set_long_mode(planesDetailRows[PLANES_DETAIL_TYPE_ROW],
+                         LV_LABEL_LONG_DOT);
 
-  // Název typu slovy pod zkratkou draku. Stejné písmo i barva jako řádek nad
-  // ním: je to plnohodnotný údaj, ne poznámka pod čarou, a menším šedým písmem
-  // se špatně četl. Nejdelší jména z databáze letadel jsou přes čtyřicet znaků,
-  // takže má pevnou šířku a přeteklý zbytek uzavřou tři tečky - jinak by text
-  // vylezl z panelu ven.
-  planesDetailTypeName =
+  // Registrace pod typem. Stejné písmo i barva jako řádek nad ním: je to
+  // plnohodnotný údaj, ne poznámka pod čarou.
+  planesDetailRegistration =
       makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
-  lv_label_set_text(planesDetailTypeName, "");
-  lv_obj_set_width(planesDetailTypeName, PLANES_DETAIL_WIDTH - 36);
-  lv_label_set_long_mode(planesDetailTypeName, LV_LABEL_LONG_DOT);
-  lv_obj_align(planesDetailTypeName, LV_ALIGN_TOP_LEFT, 18,
+  lv_label_set_text(planesDetailRegistration, "");
+  lv_obj_align(planesDetailRegistration, LV_ALIGN_TOP_LEFT, 18,
                planesDetailRowY(PLANES_DETAIL_TYPE_ROW) +
                    PLANES_DETAIL_ROW_STEP);
 
@@ -5629,22 +5631,21 @@ void updatePlanesDetail(const PlaneRadarDetail &detail) {
   }
   lv_label_set_text(planesDetailRows[row++], line);
 
-  // Typ a registrace na jednom řádku. Obojí veze táž odpověď jako polohu, tedy
-  // zadarmo; kterékoli z nich může chybět.
-  if (detail.type[0] != '\0' || detail.registration[0] != '\0') {
-    snprintf(line, sizeof(line), "%s: %s%s%s", english ? "TYPE" : "TYP",
-             detail.type[0] != '\0' ? detail.type : "?",
-             detail.registration[0] != '\0' ? "  " : "",
-             detail.registration);
+  // Typ vypsaný slovy. "C152" pozná málokdo, "CESSNA 152" skoro každý. Server
+  // jméno pošle jen u letadel ze své databáze; když ho nemá, stojí tu aspoň
+  // zkratka. Obojí veze táž odpověď jako polohu, tedy zadarmo.
+  const char *typeText = detail.description[0] != '\0' ? detail.description
+                                                       : detail.type;
+  if (typeText[0] != '\0' || detail.registration[0] != '\0') {
+    snprintf(line, sizeof(line), "%s: %s", english ? "TYPE" : "TYP",
+             typeText[0] != '\0' ? typeText : "?");
   } else {
     line[0] = '\0';
   }
   lv_label_set_text(planesDetailRows[row++], line);
 
-  // Typ vypsaný slovy pod zkratkou. "A21N" pozná málokdo, "AIRBUS A-321neo"
-  // skoro každý. Server jméno pošle jen u letadel ze své databáze; když ho
-  // nemá, zůstane řádek prázdný a nad ním stojí samotná zkratka.
-  lv_label_set_text(planesDetailTypeName, detail.description);
+  // Registrace pod typem, bez nadpisu - "OK-SCT" se pozná samo.
+  lv_label_set_text(planesDetailRegistration, detail.registration);
 
   // Nouzový stav má vlastní řádek, ne náhradní místo po typu: letadlo, které
   // hlásí typ nebo registraci, by o něm jinak neřeklo vůbec nic.

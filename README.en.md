@@ -535,11 +535,15 @@ A **watched flight**, given by callsign or ICAO address, gets a green ring and
 passes the altitude filter as well.
 
 Tapping an aircraft opens a detail with its altitude, speed, ground track,
-climb rate, type, registration and flight route. Under the type code stands the
-type spelled out — *AIRBUS A-321neo* under "A21N" — because few people know the
-codes by heart. It rides in the same response as the position, so nothing extra
-is downloaded for it; about one aircraft in twenty has none, because the server
-does not find it in its aircraft database, and then the code stands alone.
+climb rate, type, registration and flight route. The type is spelled out —
+*CESSNA 152* rather than "C152" — because few people know the codes by heart,
+and the registration sits on the line below it. The type name rides in the same
+response as the position, so nothing extra is downloaded for it; about one
+aircraft in twenty has none, because the server does not find it in its
+aircraft database, and then the code is shown instead. The same name is written
+under each aircraft icon on the map; the settings can switch that label to the
+callsign (*OKSCT*, *ROT225P*). Long names are shortened to whole words on the
+map, and an aircraft without a known type gets its callsign.
 Units switch between metric and aeronautical. Another tap anywhere closes it.
 The selection is keyed on the aircraft's ICAO address rather than its position
 in the list: the list is rebuilt on every fetch and its order is not

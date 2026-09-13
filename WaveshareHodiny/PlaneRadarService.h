@@ -99,10 +99,11 @@ void planeRadarServicePrepareForFirmwareUpdate();
 // feedUrl je nepovinná adresa vlastního zdroje letadel. Prázdná znamená ptát se
 // adsb.fi přímo, tedy chování bez serveru; vyplněná ukazuje na infra/planes,
 // které tutéž odpověď ořeže na to, co firmware opravdu čte.
+// mapLabel je ClockPlaneMapLabel - co se píše pod ikonu letadla.
 void planeRadarServiceSetActive(bool visible, bool backgroundRefresh,
                                 float latitude, float longitude,
                                 const ClockPlanesConfig &planes,
-                                const char *feedUrl);
+                                const char *feedUrl, uint8_t mapLabel);
 void planeRadarServiceSetRedNightMode(bool enabled);
 void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot);
 void planeRadarServiceDiagnostics(PlaneRadarDiagnostics &diagnostics);

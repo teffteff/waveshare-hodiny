@@ -984,7 +984,44 @@ void testSecondValuePagePersistenceAndMigration() {
   assert(loaded.planesFeedUrl[0] == '\0');
 }
 
+void testPlanesMapLabelPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.planesMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME);
+
+  // Schéma 39 popisek nemá; po povýšení firmwaru se píše typ letadla a všechno
+  // před ním zůstane, jak bylo.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.planes.topBearingDeg = 225;
+  clockConfigValueSlot(source, CLOCK_VALUE_SLOT_COUNT - 1).enabled = true;
+  seed(legacyRecord(source, 39, offsetof(ClockConfig, planesMapLabel)));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.planes.topBearingDeg == 225);
+  assert(clockConfigValueSlot(migrated, CLOCK_VALUE_SLOT_COUNT - 1).enabled);
+  assert(migrated.planesMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME);
+
+  migrated.planesMapLabel = CLOCK_PLANE_MAP_LABEL_CALLSIGN;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.planesMapLabel == CLOCK_PLANE_MAP_LABEL_CALLSIGN);
+
+  // Neznámá hodnota se vrátí k výchozímu typu letadla.
+  hostPreferencesReset();
+  ClockConfig wild;
+  clockConfigApplyDefaults(wild);
+  wild.planesMapLabel = 7;
+  assert(clockConfigSave(wild));
+  assert(clockConfigLoad(loaded));
+  assert(loaded.planesMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME);
+}
+
 int main() {
+  testPlanesMapLabelPersistenceAndMigration();
   testSecondValuePagePersistenceAndMigration();
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
