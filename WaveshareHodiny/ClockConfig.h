@@ -561,6 +561,24 @@ bool clockConfigBegin();
 bool clockConfigLoad(ClockConfig &config);
 bool clockConfigSave(const ClockConfig &config);
 void clockConfigApplyDefaults(ClockConfig &config);
+
+// Záloha nese konfiguraci přesně v té podobě, v jaké leží v NVS: se záhlavím,
+// číslem schématu a kontrolním součtem. Tím obsahuje opravdu všechno a starší
+// záznam projde stejnými migracemi jako při načtení z paměti.
+size_t clockConfigRecordSize();
+// Vrací počet zapsaných bajtů, nebo 0, když se záznam do výstupu nevejde.
+size_t clockConfigEncodeRecord(const ClockConfig &config, uint8_t *output,
+                               size_t capacity);
+enum class ClockConfigRecordStatus : uint8_t {
+  Ok,
+  Invalid,
+  // Záznam z firmwaru s vyšším schématem; starší firmware ho převést neumí.
+  NewerFirmware,
+};
+// Při jakémkoli neúspěchu nechá v `config` výchozí hodnoty.
+ClockConfigRecordStatus clockConfigDecodeRecord(const uint8_t *bytes,
+                                                size_t size,
+                                                ClockConfig &config);
 bool clockConfigRadarAvailable(const ClockConfig &config);
 // Obrazovka zpráv se kreslí jen se zapnutým kanálem a vyplněnou adresou.
 bool clockConfigRssAvailable(const ClockConfig &config);

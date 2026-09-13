@@ -244,7 +244,7 @@ Web umožňuje nastavit:
 - pořadí obrazovek v záložce **Obrazovky**: přetažením nebo šipkami,
 - automatické OTA aktualizace a režim webového serveru,
 - volitelné heslo webového nastavení,
-- export/import zálohy, restart, ovládání podsvícení a živou diagnostiku.
+- zálohu celého nastavení do souboru i sdílení mezi hodinami přes vlastní server, restart, ovládání podsvícení a živou diagnostiku.
 
 ### Meteoradar ČHMÚ
 
@@ -614,8 +614,8 @@ kola na dashboardu.
 
 Webové nastavení lze chránit heslem o délce 6 až 20 znaků. Stav bez hesla je
 v záložce **Systém** označený červeně, aktivní ochrana zeleně. Heslo je uložené
-v zařízení jako odvozený hash, nelze je zpětně zobrazit a není součástí
-exportované zálohy.
+v zařízení jako odvozený hash a nelze je zpětně zobrazit. Do zálohy se dostane
+jen tehdy, když ho při zálohování zadáš (viz níže).
 
 ### Diagnostika
 
@@ -628,12 +628,26 @@ Home Assistantu, Open-Meteo a TMEP.cz a u radaru vybrané město, GPS, rozsah, p
 připravených snímků, jejich časové rozpětí, poslední úspěšnou aktualizaci,
 další plánovanou kontrolu, HTTP stav a právě zpracovávaný soubor.
 
-### Záloha konfigurace
+### Záloha a sdílení nastavení
 
-Exportovaná JSON záloha obsahuje vzhled a ID entit, ale neobsahuje Home
-Assistant token, exportní URL TMEP.cz, heslo webu ani secret ovládacího API. Po importu proto může
-být nutné citlivé hodnoty zadat znovu. Restart zařízení uložené nastavení
-nemaže.
+Zálohu skládají přímo hodiny z toho, co mají uložené, takže obsahuje **celé
+nastavení**: všechny hodnoty obou stránek, vzhled, pořadí obrazovek, adresy
+služeb i režim webu. Neobsahuje jen Wi-Fi a secret ovládacího API – ty si každé
+hodiny drží vlastní.
+
+Token Home Assistantu, exportní klíč TMEP.cz, heslo webu a adresu serveru pro
+zálohy záloha nese, **jen když při zálohování zadáš heslo webového nastavení**.
+Bez hesla se z hodin nedají dostat vůbec, takže je nemůže vytáhnout nikdo, kdo
+se jen dostane do stejné sítě. Obnova zálohy bez tokenů ponechá tokeny, které
+cílové hodiny už mají (token Home Assistantu jen při stejné adrese serveru).
+
+Zálohu lze uložit do souboru, nebo na vlastní server a z jiných hodin ji
+stáhnout: v záložce **Systém** zadej adresu ve tvaru
+`https://hodiny:heslo@server/settings`, název zálohy a **Uložit na server**; na
+druhých hodinách stejnou adresu, **Načíst seznam** a **Nahrát do těchto hodin**.
+Adresa musí být `https://` a hodiny si ji zapamatují po prvním úspěšném spojení.
+Serverová část je v `infra/settings/`. Starší zálohy z prohlížeče (verze 2) jde
+pořád importovat. Restart zařízení uložené nastavení nemaže.
 
 ## Nastavení na displeji
 
@@ -732,7 +746,7 @@ vyvolat další podporované akce. URL považuj za přihlašovací údaj: nevkl�
 do screenshotů, veřejných logů ani Git repozitáře.
 
 Secret je uložený v zařízení, ověřuje se konstantním časem a není součástí
-exportované zálohy. Přesný tvar endpointů a příklady požadavků jsou zobrazené
+zálohy – každé hodiny mají vlastní. Přesný tvar endpointů a příklady požadavků jsou zobrazené
 přímo v aktuálním webovém rozhraní firmware.
 
 ## Sestavení ze zdrojů

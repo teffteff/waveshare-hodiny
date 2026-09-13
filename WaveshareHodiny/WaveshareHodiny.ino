@@ -16,6 +16,7 @@
 #include "PlaneRadarService.h"
 #include "AgendaService.h"
 #include "RssService.h"
+#include "SettingsShareService.h"
 #include "ConfigurationWeb.h"
 #include "DayNightLogic.h"
 #include "DisplayDriver.h"
@@ -223,6 +224,16 @@ AgendaProbeRequest agendaProbeRequest;
 volatile bool agendaProbePending = false;
 volatile bool agendaProbeDone = false;
 constexpr uint32_t AGENDA_PROBE_TIMEOUT_MS = 30UL * 1000UL;
+
+// Přenos zálohy nastavení na server a zpět. Potřebuje stejné ověření proti
+// svazku kořenů Mozilly jako agenda, takže ho obstará úloha agendy; web server
+// jen předá žádost a počká. Web server je jednovláknový, takže stačí jediná.
+SettingsShareRequest settingsShareRequest;
+SettingsShareResult settingsShareResult;
+volatile bool settingsSharePending = false;
+volatile bool settingsShareDone = false;
+// Nad součtem stropů přenosu: 10 s čekání na síť, 5 s spojení, 8 s odpověď.
+constexpr uint32_t SETTINGS_SHARE_TIMEOUT_MS = 30UL * 1000UL;
 
 struct RssProbeRequest {
   ClockRssConfig config;
@@ -573,6 +584,44 @@ bool runAgendaProbeFromWeb(const ClockAgendaConfig &config, int &httpStatus,
   httpStatus = agendaProbeRequest.httpStatus;
   if (!agendaProbeRequest.ok) error = agendaProbeRequest.error;
   return agendaProbeRequest.ok;
+}
+
+// Přijme přenos zálohy z web serveru a počká na úlohu agendy. Stejně jako u
+// zkoušky kanálu se mezitím kreslí displej a krmí watchdog smyčky.
+bool runSettingsShareFromWeb(const SettingsShareRequest &request,
+                             SettingsShareResult &result) {
+  result = SettingsShareResult{};
+  if (agendaTaskHandle == nullptr) {
+    strlcpy(result.error, "Úloha pro přenos zálohy neběží.",
+            sizeof(result.error));
+    return false;
+  }
+  if (settingsSharePending || agendaProbePending) {
+    strlcpy(result.error, "Jiný přenos ještě probíhá.", sizeof(result.error));
+    return false;
+  }
+  settingsShareRequest = request;
+  settingsShareDone = false;
+  settingsSharePending = true;
+  xTaskNotifyGive(agendaTaskHandle);
+
+  const unsigned long deadline = millis() + SETTINGS_SHARE_TIMEOUT_MS;
+  while (!settingsShareDone) {
+    if (static_cast<long>(millis() - deadline) >= 0) {
+      // Žádost zůstává rozpracovaná; settingsSharePending pustí další přenos,
+      // až úloha agendy tenhle dokončí.
+      strlcpy(result.error, "Server neodpověděl včas.", sizeof(result.error));
+      return false;
+    }
+    if (!screenshotTransferActive) {
+      clockDashboardLoop();
+      displayDriverLoop();
+    }
+    delay(5);
+    feedLoopWDT();
+  }
+  result = settingsShareResult;
+  return result.ok;
 }
 
 bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
@@ -2284,6 +2333,14 @@ void agendaTask(void *) {
       runPendingAgendaProbe();
       continue;
     }
+    if (settingsSharePending) {
+      settingsShareExecute(settingsShareRequest, settingsShareResult);
+      // Stejné pořadí jako u zkoušky: pending pouští další žádost, takže se
+      // nuluje až po zapsání výsledku.
+      settingsShareDone = true;
+      settingsSharePending = false;
+      continue;
+    }
     copyRuntimeAgendaConfig(config);
     if (WiFi.status() != WL_CONNECTED) {
       nextAgendaRefreshAt = 0;
@@ -2296,7 +2353,7 @@ void agendaTask(void *) {
     if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
                                              : pdMS_TO_TICKS(waitMs)) > 0) {
       // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
-      if (!agendaProbePending) nextAgendaRefreshAt = 0;
+      if (!agendaProbePending && !settingsSharePending) nextAgendaRefreshAt = 0;
     }
   }
 }
@@ -2684,6 +2741,7 @@ void setup() {
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetAgendaTask(agendaTaskHandle);
   configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
+  configurationWebSetSettingsShare(runSettingsShareFromWeb);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
   // stojí stejně zásobníku jako u kanálu zpráv.
   xTaskCreatePinnedToCoreWithCaps(

@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -41,6 +41,7 @@ fi
 FEED_URL="https://${HOST}/top.xml"
 AGENDA_URL="https://${HOST}/agenda.json"
 PLANES_URL="https://${HOST}/planes.json"
+SETTINGS_URL="https://${HOST}/settings/"
 # Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
 # tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
 AGENDA_USER="${AGENDA_USER:-hodiny}"
@@ -166,6 +167,38 @@ print(f"OK {hours:.1f} {count}")
   fi
 fi
 
+# --- zálohy nastavení --------------------------------------------------------
+# Zálohy nesou token Home Assistantu a heslo webu, takže stejně jako u agendy
+# musí bez hesla přijít 401. S heslem z .env (SETTINGS_PASSWORD) se ověří, že
+# server odpovídá seznamem. Prázdný seznam je v pořádku - nikdo nic nezálohoval.
+settings_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$SETTINGS_URL")"
+if [ "$settings_public_code" = "401" ]; then
+  ok "zálohy nastavení jsou bez hesla nedostupné (401)"
+elif [ "$settings_public_code" = "200" ]; then
+  bad "zálohy nastavení bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth, tokeny jsou venku"
+else
+  warn "zálohy nastavení bez hesla vrací '${settings_public_code:-nic}' (služba nasazená? viz infra/README.md)"
+fi
+if [ -n "${SETTINGS_PASSWORD:-}" ]; then
+  settings_curl_config="$(mktemp)"
+  chmod 600 "$settings_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$SETTINGS_PASSWORD" > "$settings_curl_config"
+  settings_body="$(curl -fsS --max-time 20 -K "$settings_curl_config" "$SETTINGS_URL" 2>/dev/null)"
+  rm -f "$settings_curl_config"
+  settings_count="$(printf '%s' "$settings_body" | python3 -c '
+import json, sys
+try:
+    print(len(json.loads(sys.stdin.read())["backups"]))
+except Exception:
+    print("BAD")
+')"
+  if [ "$settings_count" = "BAD" ]; then
+    bad "zálohy nastavení s heslem z .env neodpovídají seznamem (heslo, nebo settings-web.service)"
+  else
+    ok "zálohy nastavení odpovídají, uložených záloh: $settings_count"
+  fi
+fi
+
 # --- letadla -----------------------------------------------------------------
 # Přepravčí letadel je nepovinný: hodiny se bez něj ptají adsb.fi přímo. Když
 # adresa neodpovídá vůbec, je to jen poznámka; když odpoví něčím, co není
@@ -227,7 +260,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service caddy.service; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service settings-web.service caddy.service; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -261,7 +294,7 @@ if [ "$MODE" = "--deep" ]; then
     fi
 
     head_ "Shoda infra/ se serverem"
-    remote_sums="$(ssh_run 'md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service; sudo md5sum /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
+    remote_sums="$(ssh_run 'md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/settings/serve.py /opt/settings/settings-web.service; sudo md5sum /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -272,6 +305,7 @@ if [ "$MODE" = "--deep" ]; then
           /opt/news/*)                    local_path="infra/news/$(basename "$path")" ;;
           /opt/agenda/*)                  local_path="infra/agenda/$(basename "$path")" ;;
           /opt/planes/*)                  local_path="infra/planes/$(basename "$path")" ;;
+          /opt/settings/*)                local_path="infra/settings/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
           *) continue ;;

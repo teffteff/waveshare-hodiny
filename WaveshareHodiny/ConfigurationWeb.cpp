@@ -15,7 +15,9 @@
 
 #include <cmath>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
+#include <time.h>
 
 #include "CompressedPages.h"
 #include "AgendaService.h"
@@ -29,8 +31,10 @@
 #include "FirmwareUpdateService.h"
 #include "HomeAssistantConnectionPolicy.h"
 #include "HttpDownload.h"
+#include "JsonScan.h"
 #include "NetworkCoordinator.h"
 #include "NetworkDiagnostics.h"
+#include "SettingsBackup.h"
 #include "TmepService.h"
 
 namespace {
@@ -306,6 +310,7 @@ TaskHandle_t rssTaskForDiagnostics = nullptr;
 RssProbeCallback rssProbeCallback = nullptr;
 TaskHandle_t agendaTaskForDiagnostics = nullptr;
 AgendaProbeCallback agendaProbeCallback = nullptr;
+SettingsShareCallback settingsShareCallback = nullptr;
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
 bool webActive = false;
 unsigned long webAvailableUntil = 0;
@@ -313,6 +318,11 @@ ConfigurationWebMode selectedWebMode = CONFIGURATION_WEB_ALWAYS;
 constexpr char WEB_PREFS_NAMESPACE[] = "web-mode";
 constexpr char WEB_PREFS_KEY[] = "mode";
 constexpr char CONTROL_PREFS_NAMESPACE[] = "control-api";
+constexpr char SETTINGS_SHARE_PREFS_NAMESPACE[] = "settings-share";
+constexpr char SETTINGS_SHARE_PREFS_KEY[] = "url";
+// Adresa serveru pro sdílení zálohy. Leží mimo ClockConfig, aby nemusela
+// vzniknout další migrace schématu; do zálohy se přidává jako vlastní oddíl.
+char settingsShareUrl[SETTINGS_SHARE_URL_LENGTH] = "";
 constexpr char CONTROL_PREFS_KEY[] = "secret";
 constexpr size_t CONTROL_SECRET_LENGTH = 32;
 String controlSecret;
@@ -334,6 +344,9 @@ struct WebPasswordRecord {
   uint8_t hash[WEB_PASSWORD_HASH_SIZE] = {};
   uint32_t checksum = 0;
 };
+// Záloha nese záznam hesla jako neprůhledný blok pevné délky.
+static_assert(sizeof(WebPasswordRecord) == SETTINGS_BACKUP_WEB_PASSWORD_SIZE,
+              "The backup section must match the stored web password record.");
 
 struct WebSession {
   String token;
@@ -416,12 +429,12 @@ void initializeWebPassword() {
   if (!webPasswordEnabled) webPasswordRecord = WebPasswordRecord{};
 }
 
-bool persistWebPassword(const String &password) {
-  WebPasswordRecord candidate;
-  candidate.magic = WEB_PASSWORD_MAGIC;
-  esp_fill_random(candidate.salt, sizeof(candidate.salt));
-  if (!deriveWebPassword(password, candidate.salt, candidate.hash)) return false;
-  candidate.checksum = webPasswordChecksum(candidate);
+bool validWebPasswordRecord(const WebPasswordRecord &record) {
+  return record.magic == WEB_PASSWORD_MAGIC &&
+         record.checksum == webPasswordChecksum(record);
+}
+
+bool persistWebPasswordRecord(const WebPasswordRecord &candidate) {
   Preferences preferences;
   if (!preferences.begin(WEB_AUTH_PREFS_NAMESPACE, false, "clockcfg"))
     return false;
@@ -433,6 +446,15 @@ bool persistWebPassword(const String &password) {
   webPasswordRecord = candidate;
   webPasswordEnabled = true;
   return true;
+}
+
+bool persistWebPassword(const String &password) {
+  WebPasswordRecord candidate;
+  candidate.magic = WEB_PASSWORD_MAGIC;
+  esp_fill_random(candidate.salt, sizeof(candidate.salt));
+  if (!deriveWebPassword(password, candidate.salt, candidate.hash)) return false;
+  candidate.checksum = webPasswordChecksum(candidate);
+  return persistWebPasswordRecord(candidate);
 }
 
 bool eraseWebPassword() {
@@ -1277,6 +1299,16 @@ bool requireConfigurationAccess() {
   return true;
 }
 
+// Každý špatný pokus o heslo prodlouží čekání, ať jde o přihlášení, nebo
+// o zálohu s tajemstvími - jinak by se heslo dalo hádat přes druhou cestu.
+void registerFailedPasswordAttempt() {
+  if (failedLoginAttempts < 8) ++failedLoginAttempts;
+  const uint8_t exponent = failedLoginAttempts > 5
+                               ? 4
+                               : failedLoginAttempts - 1;
+  loginBlockedUntil = millis() + (1000UL << exponent);
+}
+
 void handleWebLogin() {
   if (!webActive) {
     sendError(423, F("Konfigurace je zamčená. Aktivuj ji na displeji hodin."));
@@ -1296,11 +1328,7 @@ void handleWebLogin() {
     return;
   }
   if (!webPasswordMatches(server.arg("password"))) {
-    if (failedLoginAttempts < 8) ++failedLoginAttempts;
-    const uint8_t exponent = failedLoginAttempts > 5
-                                 ? 4
-                                 : failedLoginAttempts - 1;
-    loginBlockedUntil = millis() + (1000UL << exponent);
+    registerFailedPasswordAttempt();
     sendError(401, F("Heslo není správné."));
     return;
   }
@@ -1382,6 +1410,12 @@ void handleGetConfig() {
                 : F("true");
   result += F(",\"webPasswordConfigured\":");
   result += webPasswordEnabled ? F("true") : F("false");
+  // Adresa serveru pro zálohy nese heslo, takže se na web vrací jen bez něj.
+  result += F(",\"settingsShareConfigured\":");
+  result += settingsShareUrl[0] != '\0' ? F("true") : F("false");
+  result += F(",\"settingsShareUrl\":\"");
+  result += jsonEscape(settingsShareDisplayUrl(settingsShareUrl).c_str());
+  result += '"';
   result += F(",\"dataSource\":\"");
   result += config.dataSource == CLOCK_DATA_SOURCE_HOME_ASSISTANT
                 ? F("home-assistant")
@@ -3303,6 +3337,520 @@ void handleFirmwareInstall() {
            F("{\"ok\":true,\"message\":\"Kontrola a aktualizace byly spuštěny.\"}"));
 }
 
+// --- Záloha nastavení ------------------------------------------------------
+//
+// Zálohu skládá firmware, ne prohlížeč: jen tak nese opravdu všechno, co je
+// uložené, včetně polí, která web neukazuje. Tajemství (token Home Assistantu,
+// exportní klíč TMEP, heslo webu a adresa serveru pro zálohy) se jinak z hodin
+// ven nedostanou vůbec - token se na web nikdy nevrací. Záloha je proto smí
+// nést jen po zadání hesla webového nastavení. Bez hesla by je z hodin vytáhl
+// kdokoli v síti, a to i tak, že by si zálohu poslal na vlastní server.
+
+constexpr char BACKUP_FORMAT[] = "waveshare-hodiny-settings";
+constexpr int BACKUP_ENVELOPE_VERSION = 3;
+// Záloha putuje z prohlížeče po kouscích, protože jedno pole formuláře smí mít
+// nejvýš MAX_POST_VALUE_BYTES. base64url se neescapuje, takže kousek zůstane
+// stejně dlouhý i v těle požadavku.
+constexpr size_t BACKUP_IMPORT_PART_BYTES = 1000;
+constexpr size_t BACKUP_IMPORT_MAX_PARTS =
+    (SETTINGS_BACKUP_MAX_TEXT_BYTES + BACKUP_IMPORT_PART_BYTES - 1) /
+    BACKUP_IMPORT_PART_BYTES;
+constexpr size_t BACKUP_LIST_MAX_ITEMS = 64;
+
+ClockConfig &backupConfigBuffer = clockConfigAllocate();
+uint8_t *backupBytes = nullptr;
+char *backupText = nullptr;
+
+bool ensureBackupBuffers() {
+  if (backupBytes == nullptr) {
+    backupBytes = static_cast<uint8_t *>(heap_caps_malloc(
+        SETTINGS_BACKUP_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (backupText == nullptr) {
+    backupText = static_cast<char *>(heap_caps_malloc(
+        SETTINGS_BACKUP_MAX_TEXT_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  return backupBytes != nullptr && backupText != nullptr;
+}
+
+void initializeSettingsShareUrl() {
+  settingsShareUrl[0] = '\0';
+  Preferences preferences;
+  if (!preferences.begin(SETTINGS_SHARE_PREFS_NAMESPACE, true, "clockcfg"))
+    return;
+  const String stored = preferences.getString(SETTINGS_SHARE_PREFS_KEY, "");
+  preferences.end();
+  if (settingsShareValidUrl(stored.c_str()))
+    clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), stored);
+}
+
+bool persistSettingsShareUrl(const char *url) {
+  if (strcmp(url, settingsShareUrl) == 0) return true;
+  Preferences preferences;
+  if (!preferences.begin(SETTINGS_SHARE_PREFS_NAMESPACE, false, "clockcfg"))
+    return false;
+  const bool saved =
+      url[0] == '\0'
+          ? preferences.remove(SETTINGS_SHARE_PREFS_KEY) ||
+                !preferences.isKey(SETTINGS_SHARE_PREFS_KEY)
+          : preferences.putString(SETTINGS_SHARE_PREFS_KEY, url) == strlen(url);
+  preferences.end();
+  if (saved) clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), url);
+  return saved;
+}
+
+// Zjistí, jestli záloha smí nést tajemství. Prázdné heslo znamená zálohu bez
+// nich; zadané heslo se musí shodovat. Při chybě odešle odpověď a vrátí false.
+bool authorizeBackupSecrets(bool &secrets) {
+  secrets = false;
+  const String password = server.arg("password");
+  if (password.isEmpty()) return true;
+  if (!webPasswordEnabled) {
+    sendError(409, F("Tokeny a hesla smí záloha nést jen s nastaveným heslem "
+                     "webového nastavení."));
+    return false;
+  }
+  if (deadlinePending(loginBlockedUntil)) {
+    sendError(429, F("Příliš mnoho pokusů. Zkus to za chvíli znovu."));
+    return false;
+  }
+  if (!webPasswordMatches(password)) {
+    registerFailedPasswordAttempt();
+    sendError(401, F("Heslo není správné."));
+    return false;
+  }
+  failedLoginAttempts = 0;
+  loginBlockedUntil = 0;
+  secrets = true;
+  return true;
+}
+
+String backupTimestamp() {
+  const time_t now = time(nullptr);
+  // Před synchronizací času by se do zálohy zapsal rok 1970.
+  if (now < 1700000000) return String();
+  tm utc;
+  gmtime_r(&now, &utc);
+  char text[24];
+  strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc);
+  return String(text);
+}
+
+// Poskládá obálku zálohy: JSON s popisem a vlastní zálohou v base64url.
+// Popis je jen pro člověka a pro seznam na serveru; obnova čte výhradně data.
+bool buildBackupEnvelope(bool secrets, String &envelope, String &error) {
+  if (!ensureBackupBuffers()) {
+    error = F("Pro zálohu není dostatek PSRAM.");
+    return false;
+  }
+  // Z NVS, ne z běhové kopie: vývojový build do ní doplňuje adresy z .env,
+  // které v nastavení uložené nejsou.
+  if (!clockConfigLoad(backupConfigBuffer)) {
+    error = F("Nastavení se nepodařilo přečíst z paměti.");
+    return false;
+  }
+  SettingsBackupContent content;
+  content.secrets = secrets;
+  ClockAppearanceConfig activeAppearance;
+  appearanceState(content.appearance, activeAppearance);
+  content.webMode = static_cast<uint8_t>(selectedWebMode);
+  if (secrets) {
+    content.webPasswordPresent = webPasswordEnabled;
+    if (webPasswordEnabled)
+      memcpy(content.webPassword, &webPasswordRecord,
+             sizeof(content.webPassword));
+    clockConfigCopy(content.shareUrl, sizeof(content.shareUrl),
+                    settingsShareUrl);
+  }
+  const size_t size = settingsBackupEncode(backupConfigBuffer, content,
+                                           backupBytes,
+                                           SETTINGS_BACKUP_MAX_BYTES);
+  if (size == 0 ||
+      settingsBackupBase64Encode(backupBytes, size, backupText,
+                                 SETTINGS_BACKUP_MAX_TEXT_BYTES) == 0) {
+    error = F("Záloha se nevešla do paměti.");
+    return false;
+  }
+  if (!envelope.reserve(strlen(backupText) + 256)) {
+    error = F("Na zálohu nezbyla paměť. Zkus to znovu.");
+    return false;
+  }
+  envelope = F("{\"format\":\"");
+  envelope += BACKUP_FORMAT;
+  envelope += F("\",\"version\":");
+  envelope += BACKUP_ENVELOPE_VERSION;
+  envelope += F(",\"firmware\":\"");
+  envelope += jsonEscape(FIRMWARE_VERSION);
+  envelope += F("\",\"schema\":");
+  envelope += CLOCK_CONFIG_SCHEMA_VERSION;
+  envelope += F(",\"secrets\":");
+  envelope += secrets ? F("true") : F("false");
+  const String exportedAt = backupTimestamp();
+  if (!exportedAt.isEmpty()) {
+    envelope += F(",\"exportedAt\":\"");
+    envelope += exportedAt;
+    envelope += '"';
+  }
+  envelope += F(",\"data\":\"");
+  envelope += backupText;
+  envelope += F("\"}");
+  if (!envelope.endsWith("\"}")) {
+    error = F("Na zálohu nezbyla paměť. Zkus to znovu.");
+    return false;
+  }
+  return true;
+}
+
+struct BackupApplyOutcome {
+  bool secrets = false;
+  bool webPasswordChanged = false;
+  ConfigurationWebMode webMode = CONFIGURATION_WEB_ALWAYS;
+};
+
+// Obnoví nastavení z textu zálohy (base64url). Při chybě odešle odpověď
+// a vrátí false; při úspěchu odpověď nechává volajícímu.
+bool applyBackupText(const char *text, size_t length,
+                     BackupApplyOutcome &outcome) {
+  if (!ensureBackupBuffers()) {
+    sendError(503, F("Pro zálohu není dostatek PSRAM."));
+    return false;
+  }
+  size_t size = 0;
+  if (length == 0 ||
+      !settingsBackupBase64Decode(text, length, backupBytes,
+                                  SETTINGS_BACKUP_MAX_BYTES, size)) {
+    sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+    return false;
+  }
+  ClockConfig &incoming = backupConfigBuffer;
+  SettingsBackupContent content;
+  switch (settingsBackupDecode(backupBytes, size, incoming, content)) {
+    case SettingsBackupStatus::Ok:
+      break;
+    case SettingsBackupStatus::Corrupted:
+      sendError(400, F("Záloha je poškozená."));
+      return false;
+    case SettingsBackupStatus::NewerFirmware:
+      sendError(409, F("Záloha pochází z novějšího firmwaru. Nejdřív "
+                       "aktualizuj tyto hodiny."));
+      return false;
+    case SettingsBackupStatus::Malformed:
+    default:
+      sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+      return false;
+  }
+  if (content.webMode > CONFIGURATION_WEB_DISABLED) {
+    sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+    return false;
+  }
+  WebPasswordRecord importedPassword;
+  if (content.webPasswordPresent) {
+    memcpy(&importedPassword, content.webPassword, sizeof(importedPassword));
+    if (!validWebPasswordRecord(importedPassword)) {
+      sendError(400, F("Záloha je poškozená."));
+      return false;
+    }
+  }
+
+  if (!content.secrets) {
+    // Záloha bez tajemství nesmí smazat ta, která tyhle hodiny už mají. Token
+    // ale zůstane jen u stejné adresy Home Assistantu: poslat ho na server,
+    // který zvolila cizí záloha, by byl přesně ten únik, kterému se brání
+    // HomeAssistantConnectionPolicy.
+    const ClockConfig &current = currentConfig();
+    if (normalizedUrl(incoming.homeAssistantUrl) ==
+        normalizedUrl(current.homeAssistantUrl)) {
+      clockConfigCopy(incoming.homeAssistantToken,
+                      sizeof(incoming.homeAssistantToken),
+                      current.homeAssistantToken);
+    }
+    clockConfigCopy(incoming.tmepExportKey, sizeof(incoming.tmepExportKey),
+                    current.tmepExportKey);
+    clockConfigCopy(incoming.tmepExportId, sizeof(incoming.tmepExportId),
+                    current.tmepExportId);
+  }
+
+  if (configSaveCallback == nullptr || !configSaveCallback(incoming, true)) {
+    sendError(500, F("Nastavení se nepodařilo uložit do paměti."));
+    return false;
+  }
+  if (currentAppearanceSaveCallback == nullptr ||
+      !currentAppearanceSaveCallback(content.appearance)) {
+    sendError(500, F("Vzhled hodin se nepodařilo uložit do paměti."));
+    return false;
+  }
+  outcome.webMode = static_cast<ConfigurationWebMode>(content.webMode);
+  if (!persistWebMode(outcome.webMode)) {
+    sendError(500, F("Režim webového serveru se nepodařilo uložit."));
+    return false;
+  }
+  outcome.secrets = content.secrets;
+  if (content.secrets) {
+    // Heslo webu se jen přebírá, nikdy nemaže: záloha s tajemstvími vzniká
+    // jen na hodinách s heslem, takže chybějící oddíl je cizí soubor, ne
+    // přání ochranu vypnout.
+    if (content.webPasswordPresent &&
+        (!webPasswordEnabled ||
+         memcmp(&importedPassword, &webPasswordRecord,
+                sizeof(importedPassword)) != 0)) {
+      if (!persistWebPasswordRecord(importedPassword)) {
+        sendError(500, F("Heslo se nepodařilo uložit do paměti."));
+        return false;
+      }
+      outcome.webPasswordChanged = true;
+    }
+    if (content.shareUrl[0] != '\0' &&
+        !persistSettingsShareUrl(content.shareUrl)) {
+      sendError(500, F("Adresu serveru pro zálohy se nepodařilo uložit."));
+      return false;
+    }
+  }
+  return true;
+}
+
+void finishBackupApply(const BackupApplyOutcome &outcome) {
+  if (outcome.webPasswordChanged) {
+    // Staré relace patřily k jinému heslu. Tomu, kdo obnovu právě provedl,
+    // se vydá nová, aby ho stránka hned neodhlásila.
+    clearWebSessions();
+    issueWebSession();
+  }
+  String payload = F("{\"ok\":true,\"secrets\":");
+  payload += outcome.secrets ? F("true") : F("false");
+  payload += F(",\"webPasswordChanged\":");
+  payload += outcome.webPasswordChanged ? F("true") : F("false");
+  payload += '}';
+  extendWebAvailability();
+  sendJson(200, payload);
+  applyWebMode(outcome.webMode);
+}
+
+void handleBackupExport() {
+  bool secrets = false;
+  if (!authorizeBackupSecrets(secrets)) return;
+  String envelope;
+  String error;
+  if (!buildBackupEnvelope(secrets, envelope, error)) {
+    sendError(503, error);
+    return;
+  }
+  String payload;
+  if (!payload.reserve(envelope.length() + 64)) {
+    sendError(503, F("Na zálohu nezbyla paměť. Zkus to znovu."));
+    return;
+  }
+  payload = F("{\"ok\":true,\"secrets\":");
+  payload += secrets ? F("true") : F("false");
+  payload += F(",\"backup\":");
+  payload += envelope;
+  payload += '}';
+  sendJson(200, payload);
+}
+
+void handleBackupImport() {
+  const long parts = server.arg("parts").toInt();
+  if (parts <= 0 || parts > static_cast<long>(BACKUP_IMPORT_MAX_PARTS) ||
+      !ensureBackupBuffers()) {
+    sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+    return;
+  }
+  // Text se skládá do bufferu v PSRAM; String by rostl po kouscích.
+  size_t length = 0;
+  for (long index = 0; index < parts; ++index) {
+    const String part = server.arg(String(F("part")) + String(index));
+    if (part.isEmpty() ||
+        part.length() >= SETTINGS_BACKUP_MAX_TEXT_BYTES - length) {
+      sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+      return;
+    }
+    memcpy(backupText + length, part.c_str(), part.length());
+    length += part.length();
+  }
+  backupText[length] = '\0';
+  BackupApplyOutcome outcome;
+  if (applyBackupText(backupText, length, outcome)) finishBackupApply(outcome);
+}
+
+// Adresa serveru z formuláře, nebo uložená. Nová se uloží až po úspěšném
+// přenosu, aby se do hodin nedostala adresa s překlepem v hesle.
+bool resolveShareUrl(char *url, size_t capacity) {
+  String requested = server.arg("shareUrl");
+  requested.trim();
+  if (requested.isEmpty()) requested = settingsShareUrl;
+  if (requested.isEmpty()) {
+    sendError(400, F("Doplň adresu serveru pro zálohy."));
+    return false;
+  }
+  if (!settingsShareValidUrl(requested.c_str())) {
+    sendError(400, F("Adresa serveru musí začínat https:// a nesmí obsahovat "
+                     "dotaz ani mezery."));
+    return false;
+  }
+  clockConfigCopy(url, capacity, requested);
+  return true;
+}
+
+bool runSettingsShare(const SettingsShareRequest &request,
+                      SettingsShareResult &result) {
+  if (settingsShareCallback == nullptr) {
+    sendError(503, F("Sdílení zálohy nyní není dostupné."));
+    return false;
+  }
+  if (!settingsShareCallback(request, result)) {
+    sendError(502, result.error[0] != '\0'
+                       ? String(result.error)
+                       : String(F("Server se nepodařilo kontaktovat.")));
+    return false;
+  }
+  return true;
+}
+
+bool readBackupName(char *name, size_t capacity) {
+  String requested = server.arg("name");
+  requested.trim();
+  requested.toLowerCase();
+  if (!settingsBackupValidName(requested.c_str())) {
+    sendError(400, F("Název zálohy smí mít 1 až 32 malých písmen bez "
+                     "diakritiky, číslic a pomlček."));
+    return false;
+  }
+  clockConfigCopy(name, capacity, requested);
+  return true;
+}
+
+void rememberShareUrl(const char *url) {
+  // Neuložená adresa přenos nezkazí; jen ji bude potřeba zadat znovu.
+  persistSettingsShareUrl(url);
+}
+
+void handleSettingsShareList() {
+  SettingsShareRequest request;
+  request.operation = SettingsShareOperation::List;
+  if (!resolveShareUrl(request.url, sizeof(request.url))) return;
+  SettingsShareResult result;
+  if (!runSettingsShare(request, result)) return;
+
+  const char *begin = jsonSkipWhitespace(result.body,
+                                         result.body + result.bodyLength);
+  const char *end = result.body + result.bodyLength;
+  const JsonValue backups = jsonFindMember(begin, end, "backups");
+  if (!backups.isArray()) {
+    sendError(502, F("Na zadané adrese server pro zálohy není."));
+    return;
+  }
+  rememberShareUrl(request.url);
+  String payload;
+  payload.reserve(4096);
+  payload = F("{\"ok\":true,\"url\":\"");
+  payload += jsonEscape(settingsShareDisplayUrl(request.url).c_str());
+  payload += F("\",\"backups\":[");
+  // Položky se skládají znovu, ne přeposílají: do stránky nesmí projít nic,
+  // co server přidá navíc nebo co by nebylo platné jméno.
+  JsonArrayCursor cursor = jsonOpenArray(backups);
+  size_t count = 0;
+  while (count < BACKUP_LIST_MAX_ITEMS && jsonNextItem(cursor)) {
+    char name[SETTINGS_BACKUP_NAME_LENGTH];
+    char modified[32];
+    char firmware[32];
+    jsonCopyTextMember(cursor.itemBegin, cursor.itemEnd, "name", name,
+                       sizeof(name));
+    if (!settingsBackupValidName(name)) continue;
+    jsonCopyTextMember(cursor.itemBegin, cursor.itemEnd, "modified", modified,
+                       sizeof(modified));
+    jsonCopyTextMember(cursor.itemBegin, cursor.itemEnd, "firmware", firmware,
+                       sizeof(firmware));
+    if (count++ > 0) payload += ',';
+    payload += F("{\"name\":\"");
+    payload += name;
+    payload += F("\",\"modified\":\"");
+    payload += jsonEscape(modified);
+    payload += F("\",\"firmware\":\"");
+    payload += jsonEscape(firmware);
+    payload += F("\",\"secrets\":");
+    payload += jsonReadBoolMember(cursor.itemBegin, cursor.itemEnd, "secrets")
+                   ? F("true")
+                   : F("false");
+    payload += '}';
+  }
+  payload += F("]}");
+  sendJson(200, payload);
+}
+
+void handleSettingsShareUpload() {
+  SettingsShareRequest request;
+  request.operation = SettingsShareOperation::Upload;
+  if (!resolveShareUrl(request.url, sizeof(request.url)) ||
+      !readBackupName(request.name, sizeof(request.name)))
+    return;
+  bool secrets = false;
+  if (!authorizeBackupSecrets(secrets)) return;
+  // Záloha s tajemstvími nese i adresu serveru. Nová adresa z formuláře v ní
+  // musí být už teď, jinak by hodiny, které ji stáhnou, dostaly tu starou.
+  char previousUrl[SETTINGS_SHARE_URL_LENGTH];
+  clockConfigCopy(previousUrl, sizeof(previousUrl), settingsShareUrl);
+  clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), request.url);
+  String envelope;
+  String error;
+  const bool built = buildBackupEnvelope(secrets, envelope, error);
+  clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), previousUrl);
+  if (!built) {
+    sendError(503, error);
+    return;
+  }
+  request.body = envelope.c_str();
+  request.bodyLength = envelope.length();
+  SettingsShareResult result;
+  if (!runSettingsShare(request, result)) return;
+  rememberShareUrl(request.url);
+  String payload = F("{\"ok\":true,\"name\":\"");
+  payload += request.name;
+  payload += F("\",\"url\":\"");
+  payload += jsonEscape(settingsShareDisplayUrl(request.url).c_str());
+  payload += F("\",\"secrets\":");
+  payload += secrets ? F("true") : F("false");
+  payload += '}';
+  sendJson(200, payload);
+}
+
+void handleSettingsShareDownload() {
+  SettingsShareRequest request;
+  request.operation = SettingsShareOperation::Download;
+  if (!resolveShareUrl(request.url, sizeof(request.url)) ||
+      !readBackupName(request.name, sizeof(request.name)))
+    return;
+  SettingsShareResult result;
+  if (!runSettingsShare(request, result)) return;
+
+  const char *end = result.body + result.bodyLength;
+  const char *begin = jsonSkipWhitespace(result.body, end);
+  float version = 0;
+  const JsonValue data = jsonFindMember(begin, end, "data");
+  if (!jsonTextMemberEquals(begin, end, "format", BACKUP_FORMAT) ||
+      !jsonReadNumberMember(begin, end, "version", version) ||
+      static_cast<int>(version) != BACKUP_ENVELOPE_VERSION || !data.isString) {
+    sendError(502, F("Server nevrátil zálohu Waveshare Hodiny."));
+    return;
+  }
+  // Adresa se pamatuje dřív než obnova: záloha s tajemstvími ji může přepsat
+  // svou, a ta pak má přednost.
+  rememberShareUrl(request.url);
+  BackupApplyOutcome outcome;
+  if (!applyBackupText(data.contentBegin(),
+                       static_cast<size_t>(data.contentEnd() -
+                                           data.contentBegin()),
+                       outcome))
+    return;
+  finishBackupApply(outcome);
+}
+
+void handleSettingsShareForget() {
+  if (!persistSettingsShareUrl("")) {
+    sendError(500, F("Adresu serveru pro zálohy se nepodařilo smazat."));
+    return;
+  }
+  sendJson(200, F("{\"ok\":true}"));
+}
+
 bool requireAcceptedPostBody() {
   if (server.header("Content-Type").startsWith("multipart/")) {
     sendError(415, F("Formát multipart není podporovaný."));
@@ -3399,6 +3947,7 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   currentAppearanceSaveCallback = appearanceSaveCallback;
   initializeControlSecret();
   initializeWebPassword();
+  initializeSettingsShareUrl();
   server.beginBoundedPostSupport();
   Preferences preferences;
   if (preferences.begin(WEB_PREFS_NAMESPACE, true, "clockcfg")) {
@@ -3449,6 +3998,24 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   });
   registerBoundedPost("/api/rss/test", []() {
     if (requireConfigurationAccess()) handleRssTest();
+  });
+  registerBoundedPost("/api/backup/export", []() {
+    if (requireConfigurationAccess()) handleBackupExport();
+  });
+  registerBoundedPost("/api/backup/import", []() {
+    if (requireConfigurationAccess()) handleBackupImport();
+  });
+  registerBoundedPost("/api/backup/share/list", []() {
+    if (requireConfigurationAccess()) handleSettingsShareList();
+  });
+  registerBoundedPost("/api/backup/share/upload", []() {
+    if (requireConfigurationAccess()) handleSettingsShareUpload();
+  });
+  registerBoundedPost("/api/backup/share/download", []() {
+    if (requireConfigurationAccess()) handleSettingsShareDownload();
+  });
+  registerBoundedPost("/api/backup/share/forget", []() {
+    if (requireConfigurationAccess()) handleSettingsShareForget();
   });
   registerBoundedPost("/api/tmep/remove", []() {
     if (requireConfigurationAccess()) handleTmepRemove();
@@ -3516,7 +4083,19 @@ void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {
   agendaProbeCallback = callback;
 }
 
+void configurationWebSetSettingsShare(SettingsShareCallback callback) {
+  settingsShareCallback = callback;
+}
+
 void configurationWebLoop() {
+  // NetworkClient::connected() v jádře 3.0.7 volá recv() s nulovou délkou,
+  // které u zdravého spojení vrátí 0 a errno nenastaví, a pak se podle errno
+  // rozhoduje. Zůstane-li v něm ENOTCONN nebo ECONNRESET po předchozím
+  // spojení a další požadavek už čeká ve frontě, accept() uspěje, errno
+  // nepřepíše a čerstvé spojení se zahodí nepřečtené - prohlížeč dostane RST.
+  // Stávalo se to u zhruba každého pátého požadavku odeslaného hned po
+  // předchozím. Skutečné odpojení nastaví errno znovu, takže nula nic neskryje.
+  errno = 0;
   server.handleClient();
   if (selectedWebMode == CONFIGURATION_WEB_TIMED &&
       webActive && static_cast<long>(millis() - webAvailableUntil) >= 0) {

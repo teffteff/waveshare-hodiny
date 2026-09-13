@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ClockConfig.h"
+#include "SettingsShareService.h"
 
 using ClockConfigLoadCallback = void (*)(ClockConfig &config);
 using ClockConfigSaveCallback = bool (*)(const ClockConfig &config,
@@ -60,6 +61,11 @@ void configurationWebSetAgendaTask(TaskHandle_t task);
 using AgendaProbeCallback = bool (*)(const ClockAgendaConfig &config,
                                      int &httpStatus, String &error);
 void configurationWebSetAgendaProbe(AgendaProbeCallback callback);
+// Přenos zálohy nastavení na server a zpět. Z téhož důvodu jako zkouška agendy
+// ho provede úloha agendy; skeč schová předání žádosti i čekání na výsledek.
+using SettingsShareCallback = bool (*)(const SettingsShareRequest &request,
+                                       SettingsShareResult &result);
+void configurationWebSetSettingsShare(SettingsShareCallback callback);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();
