@@ -22,6 +22,11 @@ constexpr uint32_t PROVISIONING_TIMEOUT_MS = 30000;
 
 String storedSsid;
 String storedPassword;
+// Optional second network from a development profile, tried in turn with the
+// stored one until either connects. Always empty in release builds.
+String fallbackSsid;
+String fallbackPassword;
+bool useFallback = false;
 String pendingSsid;
 String pendingPassword;
 unsigned long lastWifiAttempt = 0;
@@ -33,6 +38,10 @@ void loadStoredCredentials() {
   // An explicitly selected home/work build profile takes precedence.
   storedSsid = WIFI_SSID;
   storedPassword = WIFI_PASSWORD;
+#ifdef WIFI_FALLBACK_SSID
+  fallbackSsid = WIFI_FALLBACK_SSID;
+  fallbackPassword = WIFI_FALLBACK_PASSWORD;
+#endif
 #else
   // Builds without local credentials can reuse Wi-Fi provisioned by a release.
   storedSsid = "";
@@ -68,7 +77,11 @@ void beginWifiConnection(const String &ssid, const String &password) {
 
 void connectStoredCredentials() {
   if (storedSsid.isEmpty()) return;
-  beginWifiConnection(storedSsid, storedPassword);
+  if (useFallback) {
+    beginWifiConnection(fallbackSsid, fallbackPassword);
+  } else {
+    beginWifiConnection(storedSsid, storedPassword);
+  }
   lastWifiAttempt = millis();
 }
 }  // namespace
@@ -78,6 +91,7 @@ void wifiProvisioningBegin() {
   WiFi.setAutoReconnect(true);
   WiFi.persistent(false);
   loadStoredCredentials();
+  useFallback = false;
   connectStoredCredentials();
 }
 
@@ -113,10 +127,14 @@ void wifiProvisioningLoop() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    // After a drop, auto-reconnect gets a full retry window on the network
+    // that worked before the loop starts alternating again.
+    if (!fallbackSsid.isEmpty()) lastWifiAttempt = millis();
     improvSerialServiceSetProvisioned();
     return;
   }
   if (!storedSsid.isEmpty() && millis() - lastWifiAttempt >= WIFI_RETRY_MS) {
+    if (!fallbackSsid.isEmpty()) useFallback = !useFallback;
     connectStoredCredentials();
   }
 }

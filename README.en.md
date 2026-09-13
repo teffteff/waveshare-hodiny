@@ -710,7 +710,10 @@ arduino-cli lib install PNGdec@1.0.1 --config-file arduino-cli.yaml
 
 `./build.sh` uses the default home credentials from `WIFI_SSID` and
 `WIFI_PASSWORD`. Run `./build.sh work` to use the separate
-`WIFI_WORK_SSID` and `WIFI_WORK_PASSWORD` values.
+`WIFI_WORK_SSID` and `WIFI_WORK_PASSWORD` values. The optional
+`WIFI_FALLBACK_SSID` and `WIFI_FALLBACK_PASSWORD` apply to both profiles: when
+the main network does not connect, the clock alternates between it and the
+fallback every 15 seconds until one of them connects.
 
 Pass a serial port explicitly when needed:
 
@@ -752,6 +755,8 @@ WIFI_SSID=
 WIFI_PASSWORD=
 WIFI_WORK_SSID=
 WIFI_WORK_PASSWORD=
+WIFI_FALLBACK_SSID=
+WIFI_FALLBACK_PASSWORD=
 ```
 
 ### Release build

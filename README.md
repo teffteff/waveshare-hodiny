@@ -785,7 +785,10 @@ ignorovaný soubor `WaveshareHodiny/local/arduino-cli.yaml` ji může přepsat.
 
 `./build.sh` používá výchozí domácí údaje `WIFI_SSID` a `WIFI_PASSWORD`.
 Pracovní profil sestavíš pomocí `./build.sh work`; ten použije samostatné
-hodnoty `WIFI_WORK_SSID` a `WIFI_WORK_PASSWORD`.
+hodnoty `WIFI_WORK_SSID` a `WIFI_WORK_PASSWORD`. Volitelná záložní síť
+`WIFI_FALLBACK_SSID` a `WIFI_FALLBACK_PASSWORD` platí pro oba profily: když se
+hodiny k hlavní síti nepřipojí, střídají ji se záložní každých 15 sekund, dokud
+se jedna z nich nepřipojí.
 
 Volitelný port lze předat explicitně:
 
@@ -827,6 +830,8 @@ WIFI_SSID=
 WIFI_PASSWORD=
 WIFI_WORK_SSID=
 WIFI_WORK_PASSWORD=
+WIFI_FALLBACK_SSID=
+WIFI_FALLBACK_PASSWORD=
 HOME_ASSISTANT_URL=
 HOME_ASSISTANT_TOKEN=
 HA_ENTITY_WEATHER_CODE=

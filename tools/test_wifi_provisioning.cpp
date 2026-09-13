@@ -35,6 +35,18 @@ int main() {
   delay(15000);
   wifiProvisioningLoop();
   assert(WiFi.attempts == 2);
+#ifdef WIFI_FALLBACK_SSID
+  // A profile with a fallback network alternates between both until one works.
+  assert(WiFi.ssid == WIFI_FALLBACK_SSID);
+  assert(WiFi.password == WIFI_FALLBACK_PASSWORD);
+  delay(15000);
+  wifiProvisioningLoop();
+  assert(WiFi.attempts == 3);
+  assert(WiFi.ssid == WIFI_SSID);
+  delay(15000);
+  wifiProvisioningLoop();
+  assert(WiFi.ssid == WIFI_FALLBACK_SSID);
+#endif
   assert(hostshim::store() == before);
   // Open networks have an empty password and must still reconnect.
   preferences.begin("clock-wifi", false);
