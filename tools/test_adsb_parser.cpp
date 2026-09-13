@@ -420,6 +420,24 @@ void testMapLabelPrefersTypeName() {
   assert(strcmp(label, "49d2a1") == 0);
 }
 
+void testMapShortLabelIsTypeCode() {
+  AdsbAircraft aircraft;
+  strcpy(aircraft.callsign, "RYR4TX");
+  strcpy(aircraft.type, "B38M");
+  strcpy(aircraft.description, "BOEING 737 MAX 8");
+  char label[19];
+
+  adsbMapShortLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "B38M") == 0);
+  // Volací značka kratší náhradu nemá.
+  adsbMapShortLabel(aircraft, false, label, sizeof(label));
+  assert(label[0] == '\0');
+  // Bez jména slovy už popisek zkratkou je; znovu ji zkoušet nemá smysl.
+  aircraft.description[0] = '\0';
+  adsbMapShortLabel(aircraft, true, label, sizeof(label));
+  assert(label[0] == '\0');
+}
+
 void testMapLabelShortensOnWords() {
   AdsbAircraft aircraft;
   char label[19];
@@ -449,6 +467,7 @@ void testMapLabelShortensOnWords() {
 int main() {
   testMapLabelPrefersTypeName();
   testMapLabelShortensOnWords();
+  testMapShortLabelIsTypeCode();
   testRealResponse();
   testTrimmedFeedParsesLikeAdsb();
   testGroundTrafficIsDropped();

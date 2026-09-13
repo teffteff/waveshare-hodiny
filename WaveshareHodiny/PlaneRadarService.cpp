@@ -780,11 +780,6 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
 
   MapLabelPlacer placer;
   reserveChromeBands(placer);
-  drawEuropeBorders(context);
-  drawCzechBorder(context);
-  drawCities(context, placer);
-  drawRangeRingsAndCenter();
-  drawCompassMarks();
 
   // Kopie stavu, se kterou se kreslí. Seznam letadel mění jen tahle úloha,
   // takže se nemusí zamykat; výběr a hlídaný let ano.
@@ -799,10 +794,25 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   const char *worstEmergency = nullptr;
   uint8_t worstEmergencySeverity = 0;
   bool watchedSeen = false;
-  uint8_t drawn = 0;
   PlanePoint points[ADSB_MAX_AIRCRAFT];
   uint8_t pointCount = 0;
 
+  // Letadlo, které se na tomhle snímku kreslí, a kam padl jeho popisek.
+  struct PlannedAircraft {
+    uint8_t index;
+    int16_t x;
+    int16_t y;
+    int16_t labelX;
+    int16_t labelY;
+    // 0 bez popisku, 1 popisek z adsbMapLabel(), 2 kratší adsbMapShortLabel().
+    uint8_t labelKind;
+    bool emergency;
+    bool watched;
+  };
+  PlannedAircraft plan[ADSB_MAX_AIRCRAFT];
+  uint8_t planCount = 0;
+
+  // 1. průchod: která letadla jsou vidět.
   for (uint8_t index = 0; index < count; ++index) {
     const AdsbAircraft &aircraft = liveList[index];
     // Nouzový stav a hlídaný let se hledají PŘED filtrem, aby je nastavená
@@ -826,21 +836,80 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     projectInContext(context, aircraft.latitude, aircraft.longitude, x, y);
     if (!insideCircle(x, y, RADAR_RADIUS)) continue;
 
-    points[pointCount].x = static_cast<int16_t>(x);
-    points[pointCount].y = static_cast<int16_t>(y);
+    PlannedAircraft &entry = plan[planCount++];
+    entry.index = index;
+    entry.x = static_cast<int16_t>(x);
+    entry.y = static_cast<int16_t>(y);
+    entry.labelX = 0;
+    entry.labelY = 0;
+    entry.labelKind = 0;
+    entry.emergency = emergency != nullptr;
+    entry.watched = watched;
+  }
+
+  // 2. průchod: popisky letadel. Místo si berou dřív než města - na radaru
+  // letadel jsou to hlavní údaje, a když se o místo dělila s městy, prohrávala
+  // právě letadla. Nejdřív nouze, hlídaný let a vybrané letadlo, pak ostatní.
+  // Když se popisek nevejde k ikoně nikam, zkusí se ještě kratší zkratka typu.
+  //
+  // Náhrady za chybějící údaj žijí JEN v popisku - AdsbAircraft::callsign
+  // zůstává schválně prázdný, protože se posílá do API na trasu a adresa se
+  // tam čte jako číslo letu. Osmnáct znaků je 107 px, zhruba třetina kruhu.
+  char label[19];
+  for (const bool priorityRound : {true, false}) {
+    for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
+      PlannedAircraft &entry = plan[planIndex];
+      const bool priority = entry.emergency || entry.watched ||
+                            static_cast<int>(entry.index) == selectedIndex;
+      if (priority != priorityRound) continue;
+      const AdsbAircraft &aircraft = liveList[entry.index];
+      MapLabelBox box;
+      adsbMapLabel(aircraft, typeNameLabels, label, sizeof(label));
+      if (label[0] != '\0' &&
+          mapPlaceIconLabel(placer, entry.x, entry.y, mapTextWidth(label),
+                            box)) {
+        entry.labelKind = 1;
+      } else {
+        adsbMapShortLabel(aircraft, typeNameLabels, label, sizeof(label));
+        if (label[0] == '\0' ||
+            !mapPlaceIconLabel(placer, entry.x, entry.y, mapTextWidth(label),
+                               box))
+          continue;
+        entry.labelKind = 2;
+      }
+      entry.labelX = static_cast<int16_t>(box.x);
+      entry.labelY = static_cast<int16_t>(box.y);
+    }
+  }
+
+  drawEuropeBorders(context);
+  drawCzechBorder(context);
+  drawCities(context, placer);
+  drawRangeRingsAndCenter();
+  drawCompassMarks();
+
+  // 3. průchod: kreslení letadel nad mapou.
+  for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
+    const PlannedAircraft &entry = plan[planIndex];
+    const AdsbAircraft &aircraft = liveList[entry.index];
+    const int x = entry.x;
+    const int y = entry.y;
+
+    points[pointCount].x = entry.x;
+    points[pointCount].y = entry.y;
     strlcpy(points[pointCount].hex, aircraft.hex, sizeof(points[pointCount].hex));
     ++pointCount;
 
     // Vybrané letadlo dostane bílý kroužek: barva ikony teď nese výšku a
     // azurová seděla příliš blízko modré hladinové.
-    if (static_cast<int>(index) == selectedIndex)
+    if (static_cast<int>(entry.index) == selectedIndex)
       drawMapCircle(pixels, x, y, 16, paletteColor(COLOR_WHITE), 100);
     // Nouze červený kroužek, hlídaný let zelený. Oba širší než výběr, aby byly
     // vidět na první pohled.
-    if (emergency != nullptr) {
+    if (entry.emergency) {
       drawMapCircle(pixels, x, y, 20, paletteColor(COLOR_LOW), 100);
       drawMapCircle(pixels, x, y, 21, paletteColor(COLOR_LOW), 100);
-    } else if (watched) {
+    } else if (entry.watched) {
       drawMapCircle(pixels, x, y, 20, paletteColor(COLOR_WATCHED), 100);
       drawMapCircle(pixels, x, y, 21, paletteColor(COLOR_WATCHED), 100);
     }
@@ -859,25 +928,19 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     drawAircraftIcon(x, y, screenTrack, aircraft.hasTrack,
                      altitudeColor(aircraft.altitudeFt, altitudeKnown));
 
-    // Popisek pod ikonou: typ slovy, nebo callsign - podle nastavení. Náhrady
-    // za chybějící údaj žijí JEN tady - AdsbAircraft::callsign zůstává
-    // schválně prázdný, protože se posílá do API na trasu a adresa se tam čte
-    // jako číslo letu. Osmnáct znaků je 107 px, zhruba třetina šířky kruhu.
-    char label[19];
-    adsbMapLabel(aircraft, typeNameLabels, label, sizeof(label));
-    if (label[0] != '\0') {
-      const int textWidth = mapTextWidth(label);
-      const MapLabelBox box = {x - textWidth / 2 - 2, y + 20, textWidth + 4, 13};
-      if (placer.claim(box)) {
-        const uint16_t labelColor =
-            emergency != nullptr ? COLOR_LOW
-                                 : (watched ? COLOR_WATCHED : COLOR_WHITE);
-        drawMapText(pixels, box.x + 2, box.y + 3, label,
-                    paletteColor(labelColor), 100);
-      }
+    if (entry.labelKind != 0) {
+      if (entry.labelKind == 1)
+        adsbMapLabel(aircraft, typeNameLabels, label, sizeof(label));
+      else
+        adsbMapShortLabel(aircraft, typeNameLabels, label, sizeof(label));
+      const uint16_t labelColor =
+          entry.emergency ? COLOR_LOW
+                          : (entry.watched ? COLOR_WATCHED : COLOR_WHITE);
+      drawMapText(pixels, entry.labelX + 2, entry.labelY + 3, label,
+                  paletteColor(labelColor), 100);
     }
-    ++drawn;
   }
+  const uint8_t drawn = planCount;
 
   drawAltitudeLegend();
   drawRangeDots(planes.rangeIndex);

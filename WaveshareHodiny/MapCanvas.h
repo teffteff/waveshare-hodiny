@@ -73,3 +73,14 @@ struct MapLabelPlacer {
   void reset() { count = 0; }
   bool claim(const MapLabelBox &box);
 };
+
+// Výška obálky popisku u ikony: písmo a nad i pod ním pixel s rezervou.
+constexpr int MAP_ICON_LABEL_HEIGHT = 13;
+
+// Najde místo pro popisek u ikony se středem x, y a zabere ho. Zkouší pod
+// ikonou, nad ní, vpravo a vlevo - v tomhle pořadí, protože pod ikonou ho oko
+// čeká. Jediné pevné místo pod ikonou nechávalo v hustém provozu bez popisku
+// skoro každé druhé letadlo, i když vedle bylo volno. Obálka musí ležet celá
+// na plátně. Vrací false, když se nevešla nikam; nic se pak nezabere.
+bool mapPlaceIconLabel(MapLabelPlacer &placer, int x, int y, int textWidth,
+                       MapLabelBox &box);

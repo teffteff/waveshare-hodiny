@@ -150,6 +150,16 @@ void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,
   output[cut] = '\0';
 }
 
+void adsbMapShortLabel(const AdsbAircraft &aircraft, bool typeName,
+                       char *output, size_t capacity) {
+  if (output == nullptr || capacity == 0) return;
+  output[0] = '\0';
+  if (!typeName || aircraft.description[0] == '\0' || aircraft.type[0] == '\0')
+    return;
+  strncpy(output, aircraft.type, capacity - 1);
+  output[capacity - 1] = '\0';
+}
+
 const char *adsbEmergencyCode(const AdsbAircraft &aircraft) {
   if (aircraft.squawk[0] == '\0') return nullptr;
   if (strcmp(aircraft.squawk, ADSB_SQUAWK_HIJACK) == 0)
