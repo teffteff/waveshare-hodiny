@@ -602,16 +602,24 @@ nevydává, a jeho repozitář nenese bezpečnostní hlášení, takže ho
 
 Zálohy původních souborů z 13. 9. 2026 jsou v `/root/hardening-20260913/`.
 
-**Zbývá udělat ručně:**
+**Home Assistant** běží od 13. 9. 2026 bez `--privileged` (dřív by průnik do
+HA, jediné aplikace vystavené do internetu, znamenal root na celém stroji)
+a vlastník má dvoufaktor (TOTP). Kontejner se zakládá takhle:
 
-- Home Assistant běží s `--privileged` a `--network=host`. Průnik do HA,
-  který je jako jediná aplikace vystavený do internetu, tak znamená root na
-  celém stroji. Kontejner nemá namapované žádné zařízení, takže privileged
-  nejspíš nepotřebuje; znovu vytvořit bez něj ho musí člověk u terminálu.
-- Účet vlastníka HA nemá dvoufaktor (Profil → Zabezpečení → TOTP).
-- SSH klíč je RSA (odtud `+ssh-rsa` ve všech příkazech). Nový ed25519 klíč
-  přidat do `authorized_keys`, přepnout `CLOCK_SSH_KEY` v `.env` a starý
-  klíč z OCI konzole pak odebrat.
+```sh
+sudo docker run -d --name homeassistant --restart=unless-stopped \
+  --network=host -e TZ=Europe/Prague \
+  -v /path/to/your/config:/config \
+  ghcr.io/home-assistant/home-assistant:stable
+```
+
+Hlášku „Missing required permissions for Bluetooth management“ v logu HA je
+možné ignorovat: stroj v cloudu Bluetooth nemá a `NET_ADMIN`/`NET_RAW` se
+kvůli ní přidávat nemají.
+
+**Zbývá (nepovinné):** SSH klíč je RSA (odtud `+ssh-rsa` ve všech příkazech).
+Nový ed25519 klíč přidat do `authorized_keys`, přepnout `CLOCK_SSH_KEY`
+v `.env` a starý klíč z OCI konzole pak odebrat.
 
 ## Kontrola
 
