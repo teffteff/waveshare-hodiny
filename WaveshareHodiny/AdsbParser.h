@@ -95,6 +95,12 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
 void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,
                   size_t capacity);
 
+// Kratší náhrada popisku, když se ten z adsbMapLabel() na mapu nevejde: zkratka
+// typu ("B738") místo jména slovy. Prázdná, když žádná kratší náhrada není -
+// popisek už zkratkou je, nebo se píše volací značka.
+void adsbMapShortLabel(const AdsbAircraft &aircraft, bool typeName,
+                       char *output, size_t capacity);
+
 // Vrací kód nouze, kterým letadlo právě vysílá, jinak nullptr.
 const char *adsbEmergencyCode(const AdsbAircraft &aircraft);
 

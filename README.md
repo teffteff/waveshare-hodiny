@@ -554,8 +554,9 @@ na řádku pod ním. Jméno typu veze táž odpověď jako polohu, takže se kv�
 nic navíc nestahuje; asi dvacetina letadel ho nemá, protože je server ve své
 databázi letadel nenajde, a pak zůstane stát zkratka. Stejné jméno se píše i
 pod ikonu letadla na mapě; v nastavení se dá místo něj zvolit volací značka
-(*OKSCT*, *ROT225P*). Dlouhá jména se na mapě zkrátí na celá slova a letadlo
-bez známého typu dostane volací značku. Jednotky se
+(*OKSCT*, *ROT225P*). Dlouhá jména se na mapě zkrátí na celá slova. Popisek se
+zkouší pod ikonou, nad ní, vpravo a vlevo; když se jméno nevejde nikam, zkusí
+se zkratka typu. Letadlo bez známého typu dostane volací značku. Jednotky se
 přepínají mezi metrickými a leteckými. Zavírá ho další klepnutí kamkoli. Výběr
 se drží podle ICAO adresy letadla, ne podle pozice v seznamu: ten se staví při
 každém stažení znovu a jeho pořadí není zaručené, takže by panel ukazoval jiné

@@ -543,7 +543,9 @@ aircraft in twenty has none, because the server does not find it in its
 aircraft database, and then the code is shown instead. The same name is written
 under each aircraft icon on the map; the settings can switch that label to the
 callsign (*OKSCT*, *ROT225P*). Long names are shortened to whole words on the
-map, and an aircraft without a known type gets its callsign.
+map. The label is tried below the icon, above it, to the right and to the left;
+when the name fits nowhere, the type code is tried. An aircraft without a known
+type gets its callsign.
 Units switch between metric and aeronautical. Another tap anywhere closes it.
 The selection is keyed on the aircraft's ICAO address rather than its position
 in the list: the list is rebuilt on every fetch and its order is not

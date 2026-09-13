@@ -219,9 +219,51 @@ void testLabelPlacerCapacity() {
   assert(placer.count == MAP_LABEL_CAPACITY);
 }
 
+void testIconLabelTriesOtherSides() {
+  MapLabelPlacer placer;
+  MapLabelBox box;
+  // Volno: popisek jde pod ikonu, na střed.
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box));
+  assert(box.x == 208 && box.y == 260 && box.width == 64 &&
+         box.height == MAP_ICON_LABEL_HEIGHT);
+
+  // Pod ikonou obsazeno - nad ní.
+  placer.reset();
+  assert(placer.claim({0, 255, 480, 30}));
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box));
+  assert(box.y == 207);
+
+  // Pod i nad obsazeno - vpravo, pak vlevo.
+  placer.reset();
+  assert(placer.claim({0, 255, 480, 30}));
+  assert(placer.claim({0, 200, 480, 20}));
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box));
+  assert(box.x == 256 && box.y == 234);
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box));
+  assert(box.x == 160 && box.y == 234);
+
+  // Všechny čtyři strany zabrané: nic se nezabere.
+  const size_t claimed = placer.count;
+  assert(!mapPlaceIconLabel(placer, 240, 240, 60, box));
+  assert(placer.count == claimed);
+}
+
+void testIconLabelStaysOnCanvas() {
+  MapLabelPlacer placer;
+  MapLabelBox box;
+  // U levého okraje by popisek pod ikonou vylezl z plátna, takže jde vpravo.
+  assert(mapPlaceIconLabel(placer, 10, 240, 60, box));
+  assert(box.x == 26 && box.y == 234);
+  // Dole pod ikonou není místo, jde nad ni.
+  assert(mapPlaceIconLabel(placer, 240, 470, 60, box));
+  assert(box.y == 437);
+}
+
 }  // namespace
 
 int main() {
+  testIconLabelTriesOtherSides();
+  testIconLabelStaysOnCanvas();
   testBlendEndpoints();
   testPixelClipping();
   testLines();
