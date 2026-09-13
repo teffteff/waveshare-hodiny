@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -207,10 +207,34 @@ fi
 # Dotaz jde na Brno a padesát námořních mil, tedy na to, na co se ptají hodiny.
 # Prázdná obloha je legitimní odpověď (v noci nad menším městem), takže se
 # nepočítá počet letadel, jen tvar odpovědi.
-planes_body="$(curl -fsS --max-time 25 "${PLANES_URL}?lat=49.1951&lon=16.6068&dist=50.0" 2>/dev/null)"
-if [ -z "$planes_body" ]; then
-  warn "letadla na $PLANES_URL neodpovídají (nepovinná služba, hodiny umí i adsb.fi přímo)"
+#
+# Od 13. 9. 2026 jsou letadla za heslem (PLANES_HASH). Data jsou veřejná, heslo
+# brání tomu, aby si cizí přes server čerpal limit adsb.fi. Bez hesla proto
+# musí přijít 401, stejně jako u agendy.
+PLANES_QUERY="lat=49.1951&lon=16.6068&dist=50.0"
+planes_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "${PLANES_URL}?${PLANES_QUERY}")"
+if [ "$planes_public_code" = "401" ]; then
+  ok "letadla jsou bez hesla nedostupná (401)"
+elif [ "$planes_public_code" = "200" ]; then
+  bad "letadla bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth, adsb.fi se dá čerpat přes nás"
 else
+  warn "letadla bez hesla vrací '${planes_public_code:-nic}' (nepovinná služba, hodiny umí i adsb.fi přímo)"
+fi
+
+planes_body=""
+if [ -z "${PLANES_PASSWORD:-}" ]; then
+  warn "v .env chybí PLANES_PASSWORD, obsah letadel se nekontroluje"
+else
+  planes_curl_config="$(mktemp)"
+  chmod 600 "$planes_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$PLANES_PASSWORD" > "$planes_curl_config"
+  planes_body="$(curl -fsS --max-time 25 -K "$planes_curl_config" "${PLANES_URL}?${PLANES_QUERY}" 2>/dev/null)"
+  rm -f "$planes_curl_config"
+  if [ -z "$planes_body" ]; then
+    warn "letadla na $PLANES_URL s heslem z .env neodpovídají (heslo, nebo planes-web.service)"
+  fi
+fi
+if [ -n "$planes_body" ]; then
   planes_report="$(printf '%s' "$planes_body" | python3 -c '
 import json, sys
 try:

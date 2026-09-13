@@ -36,10 +36,19 @@
 		}
 		reverse_proxy 127.0.0.1:8092
 	}
-	# Letadla jsou verejna data z adsb.fi, jen orezana na to, co hodiny ctou;
-	# heslo tu proto nedava smysl. Cizi dotaz stoji jen odpoved z pameti:
-	# server drzi vysledek nekolik sekund a sam od sebe nestahuje nic.
+	# Letadla jsou verejna data z adsb.fi, takze heslo tu nechrani obsah, ale
+	# stroj: server stahuje z adsb.fi a api.adsb.lol pro libovolnou polohu
+	# a volaci znacku, pod nasi IP a User-Agentem s odkazem na repozitar.
+	# Kdo by se ho ptal na ruzne polohy, mine cache a vycerpa limit
+	# adsb.fi na IP - a radar na hodinach zustane prazdny.
+	#
+	# Heslo je vlastni (PLANES_HASH), ne to od agendy: adresa letadel se opisuje
+	# do vic hodin a nemela by stacit na cteni kalendare. Firmware ho posila
+	# stejne jako u agendy, z adresy https://hodiny:heslo@host/planes.json.
 	handle /planes.json {
+		basic_auth {
+			hodiny {env.PLANES_HASH}
+		}
 		reverse_proxy 127.0.0.1:8090
 	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
