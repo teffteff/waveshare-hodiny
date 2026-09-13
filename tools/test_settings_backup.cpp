@@ -58,6 +58,7 @@ void fillEverything(ClockConfig &config) {
                   "https://example.test/planes.json");
   config.planes.enabled = true;
   config.planes.topBearingDeg = 123;
+  config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_CALLSIGN;
   config.screenOrder[0] = CLOCK_SCREEN_AGENDA;
   config.screenOrder[5] = CLOCK_SCREEN_CLOCK;
   // Poslední slot druhé stránky i s ikonou a barvou, které web neukazuje -
@@ -179,6 +180,7 @@ void testBackupWithoutSecretsLeavesThemOut() {
   assert(strcmp(restored.agenda.url,
                 "https://hodiny:pw@example.test/agenda.json") == 0);
   assert(restored.planes.topBearingDeg == 123);
+  assert(restored.planesMapLabel == CLOCK_PLANE_MAP_LABEL_CALLSIGN);
   assert(restoredContent.appearance.style == CLOCK_STYLE_VALUES);
 }
 
@@ -272,6 +274,8 @@ void testOlderSchemaRecordIsMigrated() {
                 "https://hodiny:pw@example.test/agenda.json") == 0);
   assert(restored.planes.topBearingDeg == 123);
   assert(!clockConfigValueSlot(restored, CLOCK_VALUE_SLOT_COUNT - 1).enabled);
+  // Popisek letadel přišel až se schématem 40, takže je výchozí.
+  assert(restored.planesMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME);
 }
 
 // Záloha je vstup zvenčí. Neukončený řetězec by se četl za konec pole, takže

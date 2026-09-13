@@ -527,6 +527,8 @@ void normalizeConfig(ClockConfig &config) {
   config.planes.displaySeconds =
       constrain(config.planes.displaySeconds, 10, 3600);
   if (config.planes.topBearingDeg >= 360) config.planes.topBearingDeg = 0;
+  if (config.planesMapLabel > CLOCK_PLANE_MAP_LABEL_CALLSIGN)
+    config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   config.planes.altitudeMaxFt =
       constrain(config.planes.altitudeMaxFt, static_cast<uint16_t>(0),
                 CLOCK_PLANE_ALTITUDE_CEILING_FT);
@@ -828,12 +830,22 @@ struct ConfigRecordV38 {
 static_assert(offsetof(ClockConfig, secondPageSlots) == 6088,
               "Preserve the complete schema 38 record, including padding.");
 
+struct ConfigRecordV39 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[offsetof(ClockConfig, planesMapLabel)];
+  uint32_t checksum;
+};
+static_assert(offsetof(ClockConfig, planesMapLabel) == 8716,
+              "Preserve the complete schema 39 record, including padding.");
+
 namespace {
 
 enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV39) ||
          storedSize == sizeof(ConfigRecordV38) ||
          storedSize == sizeof(ConfigRecordV37) ||
          storedSize == sizeof(ConfigRecordV36) ||
@@ -867,6 +879,23 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 39 je přesnou předponou schématu 40; popisek letadel si po
+  // zkopírování bajtů podrží výchozí název typu.
+  const ConfigRecordV39 &legacyV39 =
+      *reinterpret_cast<const ConfigRecordV39 *>(&record);
+  uint32_t embeddedSchemaV39 = 0;
+  if (readComplete && storedSize == sizeof(legacyV39))
+    memcpy(&embeddedSchemaV39, legacyV39.config, sizeof(embeddedSchemaV39));
+  if (readComplete && storedSize == sizeof(legacyV39) &&
+      legacyV39.magic == CONFIG_MAGIC && legacyV39.schemaVersion == 39 &&
+      embeddedSchemaV39 == 39 &&
+      legacyV39.checksum == bytesChecksum(legacyV39.config, sizeof(legacyV39.config))) {
+    memcpy(&config, legacyV39.config, sizeof(legacyV39.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   const ConfigRecordV38 &legacyV38 =

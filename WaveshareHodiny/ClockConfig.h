@@ -88,7 +88,10 @@ constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 12;
 // clock keeps asking adsb.fi directly - an upgrade never redirects the radar to
 // a server the owner has not named.
 // Schema 39 appends nine independent slots for the swipe-only second values page.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 39;
+// Schema 40 appends what the aircraft radar writes under each aircraft. The
+// schema 39 prefix stays byte-for-byte unchanged and the label starts at the
+// aircraft type name.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 40;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -307,6 +310,15 @@ constexpr size_t CLOCK_PLANE_CALLSIGN_LENGTH = 16;
 // Nad tuhle výšku už nic nelétá, takže horní mez filtru znamená "vypnuto".
 constexpr uint16_t CLOCK_PLANE_ALTITUDE_CEILING_FT = 60000;
 
+// Popisek pod ikonou letadla na mapě. Nula je název typu, takže ho dostane i
+// záznam, jehož nové pole přišlo vynulované.
+enum ClockPlaneMapLabel : uint8_t {
+  // "CESSNA 152" - typ vypsaný slovy, bez něj zkratka typu.
+  CLOCK_PLANE_MAP_LABEL_TYPE_NAME = 0,
+  // "OKSCT", "ROT225P" - volací značka, bez ní ICAO adresa.
+  CLOCK_PLANE_MAP_LABEL_CALLSIGN = 1,
+};
+
 // Obrazovka s agendou z kalendáře. Hodiny do Googlu nechodí: čtou malý JSON
 // z vlastního serveru, který kalendáře přečte, sloučí a předžvýká - viz
 // infra/agenda/. Proto tu není ani token, ani ID kalendáře, jen adresa.
@@ -462,6 +474,10 @@ struct ClockConfig {
   char planesFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
   // Appended after the complete schema 38 prefix; disabled on upgrade.
   ClockValueSlotConfig secondPageSlots[CLOCK_VALUE_PAGE_SLOT_COUNT];
+  // Pole schématu 40 leží až za druhou stránkou hodnot, aby schéma 39 zůstalo
+  // přesnou předponou. Patří k radaru letadel, ale do ClockPlanesConfig se ze
+  // stejného důvodu jako planesFeedUrl přidat nedá. Drží ClockPlaneMapLabel.
+  uint8_t planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -531,6 +547,17 @@ static_assert(CLOCK_CONFIG_SCHEMA_37_SIZE == 5896 &&
                   offsetof(ClockConfig, agenda) + sizeof(ClockAgendaConfig) ==
                       5894,
               "Schema 38 must preserve the complete schema 37 prefix.");
+
+// Schéma 39 končilo polem slotů, které jsou zarovnané na čtyři bajty stejně
+// jako celá ClockConfig, takže za nimi žádná koncová výplň nebyla a velikost
+// schématu 39 je přesně offset popisku letadel.
+static_assert(offsetof(ClockConfig, planesMapLabel) ==
+                      offsetof(ClockConfig, secondPageSlots) +
+                          sizeof(ClockValueSlotConfig) *
+                              CLOCK_VALUE_PAGE_SLOT_COUNT &&
+                  offsetof(ClockConfig, planesMapLabel) % alignof(ClockConfig) ==
+                      0,
+              "Schema 40 must preserve the complete schema 39 prefix.");
 
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot

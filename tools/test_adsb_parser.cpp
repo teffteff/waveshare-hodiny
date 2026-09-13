@@ -391,9 +391,64 @@ void testTruncatedPayloadIsRejectedWhole() {
   assert(outcome.count == 0);
 }
 
+void testMapLabelPrefersTypeName() {
+  AdsbAircraft aircraft;
+  strcpy(aircraft.callsign, "OKSCT");
+  strcpy(aircraft.hex, "49d2a1");
+  strcpy(aircraft.type, "C152");
+  strcpy(aircraft.registration, "OK-SCT");
+  strcpy(aircraft.description, "CESSNA 152");
+  char label[19];
+
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "CESSNA 152") == 0);
+  adsbMapLabel(aircraft, false, label, sizeof(label));
+  assert(strcmp(label, "OKSCT") == 0);
+
+  // Bez jména z databáze zbývá zkratka, bez typu vůbec volací značka a bez
+  // ní adresa - popisek nezmizí jen proto, že server letadlo nezná.
+  aircraft.description[0] = '\0';
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "C152") == 0);
+  aircraft.type[0] = '\0';
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "OKSCT") == 0);
+  aircraft.callsign[0] = '\0';
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "49d2a1") == 0);
+  adsbMapLabel(aircraft, false, label, sizeof(label));
+  assert(strcmp(label, "49d2a1") == 0);
+}
+
+void testMapLabelShortensOnWords() {
+  AdsbAircraft aircraft;
+  char label[19];
+
+  // Přesně osmnáct znaků se vejde celé.
+  strcpy(aircraft.description, "BOEING 737-800 MAX");
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "BOEING 737-800 MAX") == 0);
+
+  strcpy(aircraft.description, "EMBRAER ERJ-190-100 LR");
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "EMBRAER") == 0);
+
+  // Mezera hned za posledním znakem, který se vejde, nechá obě slova před ní.
+  strcpy(aircraft.description, "BOMBARDIER BD-700 Global 7000/7500");
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "BOMBARDIER BD-700") == 0);
+
+  // Slovo delší než celý popisek se usekne, jinak by nezbylo nic.
+  strcpy(aircraft.description, "SUPERLONGMANUFACTURERNAME X");
+  adsbMapLabel(aircraft, true, label, sizeof(label));
+  assert(strcmp(label, "SUPERLONGMANUFACTU") == 0);
+}
+
 }  // namespace
 
 int main() {
+  testMapLabelPrefersTypeName();
+  testMapLabelShortensOnWords();
   testRealResponse();
   testTrimmedFeedParsesLikeAdsb();
   testGroundTrafficIsDropped();
