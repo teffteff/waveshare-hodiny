@@ -2008,7 +2008,11 @@ void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot) {
                                           : nullptr;
   snapshot.generation = generation;
   snapshot.completedAnimationCycles = completedAnimationCycles;
-  snapshot.loading = loading;
+  // Podkladová mapa se ukáže dřív, než úloha stahování vůbec rozjede, takže
+  // se za načítání počítá i požadavek, který na ni teprve čeká. Jinak by pod
+  // mapou na okamžik stálo, že radar nemá snímek.
+  snapshot.loading = loading || (active && (reloadRequested ||
+                                            rebuildFromCacheRequested));
   snapshot.ready = ready;
   snapshot.fullPreparationInProgress = fullPreparationInProgress;
   snapshot.latestFrame =
