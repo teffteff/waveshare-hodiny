@@ -204,14 +204,14 @@ fi
 # adresa neodpovídá vůbec, je to jen poznámka; když odpoví něčím, co není
 # seznam letadel, je to chyba - obrazovka by zůstala prázdná.
 #
-# Dotaz jde na Brno a padesát námořních mil, tedy na to, na co se ptají hodiny.
+# Dotaz jde na Ondřejov a padesát námořních mil, tedy na to, na co se ptají hodiny.
 # Prázdná obloha je legitimní odpověď (v noci nad menším městem), takže se
 # nepočítá počet letadel, jen tvar odpovědi.
 #
 # Od 13. 9. 2026 jsou letadla za heslem (PLANES_HASH). Data jsou veřejná, heslo
 # brání tomu, aby si cizí přes server čerpal limit adsb.fi. Bez hesla proto
 # musí přijít 401, stejně jako u agendy.
-PLANES_QUERY="lat=49.1951&lon=16.6068&dist=50.0"
+PLANES_QUERY="lat=49.90461&lon=14.7842&dist=50.0"
 planes_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "${PLANES_URL}?${PLANES_QUERY}")"
 if [ "$planes_public_code" = "401" ]; then
   ok "letadla jsou bez hesla nedostupná (401)"

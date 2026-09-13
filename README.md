@@ -140,7 +140,7 @@ Produkční firmware obsluhuje Improv Serial na obou konektorech.
    tlačítkem **Otestovat připojení** ověř spojení.
 6. Uprav vzhled, radar a jas a zvol **Uložit změny**.
 
-Nová konfigurace používá Open-Meteo, polohu Brno a pohled meteoradaru na celou
+Nová konfigurace používá Open-Meteo, polohu Ondřejov (Praha-východ) a pohled meteoradaru na celou
 Českou republiku. Home Assistant není pro základní provoz povinný.
 
 ## Zdroje dat

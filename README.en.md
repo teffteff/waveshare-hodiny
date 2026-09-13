@@ -128,7 +128,7 @@ USB connector. Production firmware handles Improv Serial on both transports.
    the connection.
 6. Configure the dashboard, radar and brightness and save the changes.
 
-A clean configuration uses Open-Meteo, Brno as the location and the full Czech
+A clean configuration uses Open-Meteo, Ondřejov (Prague-East) as the location and the full Czech
 Republic radar view. Home Assistant is optional.
 
 ## Data sources

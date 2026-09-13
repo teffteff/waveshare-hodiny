@@ -89,9 +89,9 @@ def stub_config() -> dict:
     return {
         "dataSource": "home-assistant",
         "language": "cs",
-        "openMeteoCity": "Brno",
-        "openMeteoLatitude": 49.1951,
-        "openMeteoLongitude": 16.6068,
+        "openMeteoCity": "Ondřejov · Praha-východ · Středočeský kraj · Česko",
+        "openMeteoLatitude": 49.90461,
+        "openMeteoLongitude": 14.7842,
         "openMeteoCountry": "CZ",
         "openMeteoSlots": [
             {"value": "temperature_2m", "name": "TEPLOTA", "color": "#4CCBEC"},

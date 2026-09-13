@@ -420,9 +420,9 @@ struct ClockConfig {
   uint8_t nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
   uint8_t timeFont = CLOCK_TIME_FONT_BARLOW;
   uint8_t dataSource = CLOCK_DATA_SOURCE_OPEN_METEO;
-  char openMeteoCity[CLOCK_OPEN_METEO_CITY_LENGTH] = "Brno";
-  float openMeteoLatitude = 49.1951f;
-  float openMeteoLongitude = 16.6068f;
+  char openMeteoCity[CLOCK_OPEN_METEO_CITY_LENGTH] = "Ondřejov · Praha-východ · Středočeský kraj · Česko";
+  float openMeteoLatitude = 49.90461f;
+  float openMeteoLongitude = 14.7842f;
   ClockOpenMeteoSlotConfig openMeteoSlots[4];
   uint8_t timeColonEffect = CLOCK_TIME_COLON_STEADY;
   bool showLeadingHourZero = true;
