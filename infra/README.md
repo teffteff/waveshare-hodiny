@@ -91,7 +91,7 @@ mění v Nastavení → Systém → Síť.
 
 ```
 https://$CLOCK_HOST/top.xml      zprávy
-https://$CLOCK_HOST/planes.json  letadla (nepovinné)
+https://hodiny:$PLANES_PASSWORD@$CLOCK_HOST/planes.json  letadla (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -123,9 +123,9 @@ problem)“, jedno z těch dvou je zavřené.
 - 8088 — přímý přístup ke kanálu, dnes už jen záloha
 - 8123 — přímý přístup k HA, taky jen záloha
 
-Porty **8089 a 8092 mezi ně nepatří**: server s agendou od 9. 9. 2026 poslouchá jen na
-`127.0.0.1`, protože jinak by šlo heslo z Caddyfile obejít dotazem přímo na
-něj. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
+Porty **8089, 8090 a 8092 mezi ně nepatří**: servery s agendou, letadly
+a zálohami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 
 Certifikát vydává Let's Encrypt přes tls-alpn-01, obnovuje ho Caddy sám.
 Neúspěšné pokusy jsou limitované (~5/h), takže **restartovat Caddy kvůli
@@ -345,14 +345,56 @@ když se někdo zeptá**, a odpověď pár sekund drží v paměti. Víc hodin v
 domácnosti tak sdílí jedno stažení a adsb.fi dostane dotazů míň, ne víc.
 Po neúspěchu se ještě minutu půjčuje ta poslední povedená.
 
-Heslo tady nedává smysl — jsou to veřejná data — a cizí dotaz stojí jen
-odpověď z paměti. Kdyby přece jen bylo potřeba, přidá se `basic_auth` do
-`caddy/Caddyfile` úplně stejně jako u agendy a do hodin se napíše adresa
-s heslem.
-
 V hodinách je pole **Vlastní zdroj letadel** na záložce Letadla. Prázdné
 znamená ptát se adsb.fi přímo, takže obrazovka funguje i bez serveru — a po
 povýšení firmwaru zůstane prázdné, aby se radar sám od sebe nepřesměroval.
+
+### Heslo k letadlům
+
+Od 13. 9. 2026 je `/planes.json` za `basic_auth` s **vlastním heslem**
+(`PLANES_HASH`). Neschovává obsah — jsou to veřejná data — ale stroj. Server
+stahuje z adsb.fi a api.adsb.lol pro **libovolnou** polohu a volací značku,
+pod naší IP a s User-Agentem, který odkazuje na repozitář. Cache klíčuje podle
+polohy, takže kdo se ptá na mnoho různých míst, projde pokaždé až k adsb.fi
+a vyčerpá jeho limit na IP. Radar na hodinách pak zůstane prázdný. Jméno stroje
+je přitom veřejné (Certificate Transparency, viz heslo k agendě).
+
+Heslo je jiné než u agendy, protože adresa letadel se opisuje do víc hodin
+a neměla by stačit na čtení kalendáře. **Firmware se neměnil**: `HTTPClient`
+si heslo vezme z adresy stejně jako u agendy a platí i pro dotaz na trasu,
+který jde na tutéž adresu.
+
+| | |
+|---|---|
+| Uživatel | `hodiny`, natvrdo v `caddy/Caddyfile` |
+| Hash hesla | `/etc/caddy/caddy.env` jako `PLANES_HASH` |
+| Heslo | kořenový `.env` jako `PLANES_PASSWORD` a celá adresa jako `PLANES_URL` |
+| Hodiny | záložka **Letadla**, pole **Vlastní zdroj letadel** |
+
+Zavedení (jednou). **Pořadí je důležité:** hodiny dostanou adresu s heslem
+dřív, než ho Caddy začne chtít. Caddy bez `basic_auth` hlavičku `Authorization`
+ignoruje, takže radar mezitím běží dál; opačné pořadí by ho na tu dobu vypnulo.
+
+1. Heslo do kořenového `.env` (`PLANES_PASSWORD`, `PLANES_URL`) a adresu
+   `https://hodiny:$PLANES_PASSWORD@$CLOCK_HOST/planes.json` do **všech** hodin,
+   které vlastní zdroj letadel používají.
+2. Hash na server a restart Caddy — ještě se starým Caddyfile (proč restart,
+   viz „Zálohy nastavení“):
+
+   ```sh
+   set -a; . .env; set +a
+   SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+   HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$PLANES_PASSWORD'")"
+   # Hash se do caddy.env PŘIDÁ, ostatní řádky musí zůstat.
+   $SSH "$CLOCK_SSH" "printf 'PLANES_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
+   $SSH "$CLOCK_SSH" 'sudo systemctl restart caddy'
+   ```
+
+3. Nový Caddyfile podle „Nasazení změn z repozitáře“.
+4. `tools/check-stack.sh --deep`: bez hesla 401, s heslem seznam letadel.
+
+Výměna hesla je stejná jako u agendy, jen se `sed` nahradí řádek `PLANES_HASH`
+a nová adresa se opíše do hodin.
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
