@@ -671,4 +671,9 @@ odmítne spustit s `203/EXEC Permission denied`. Léčí to `restorecon -v
 longer available to new users“), Gemini 3.x odmítá `thinking_config.
 thinking_budget=0` s 400. Proto se používá alias `gemini-flash-latest` a žádná
 konfigurace thinkingu se neposílá. Přetížení (503) je běžné, každý model se
-zkouší dvakrát a pak se jde na záložní.
+zkouší dvakrát a pak se jde na záložní. Vyčerpaná kvóta (429) se neopakuje
+a jde se rovnou na další model; ten si běh pamatuje a na zbylé polohy ho už
+nezkouší. Free tier má u `gemini-flash-latest` jen **20 dotazů denně** (běh
+je jeden společný výběr plus jeden za polohu, osm běhů denně to přečerpá
+kolem poledne), `gemini-flash-lite-latest` 500. Ráno proto vybírá Flash
+a zbytek dne Lite. Limity jsou vidět v AI Studiu na stránce Usage.

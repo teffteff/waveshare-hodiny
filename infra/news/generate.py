@@ -88,8 +88,10 @@ MAX_AGE_HOURS = float(os.environ.get("NEWS_MAX_AGE_HOURS", "24"))
 # vejde kolem sta znaků, delší titulek utne LVGL třemi tečkami.
 MAX_TITLE_CHARS = 90
 MODEL = os.environ.get("NEWS_MODEL", "gemini-flash-latest")
-# Když je hlavní model přetížený (503), zkusí se po řadě další. Aliasy „latest“
-# se nezastarají, pinovaný 3.6 je záloha.
+# Když je hlavní model přetížený (503) nebo mu došla kvóta (429), zkusí se po
+# řadě další. Aliasy „latest“ se nezastarají, pinovaný 3.6 je záloha. Na free
+# tieru má Flash 20 dotazů denně a Flash Lite 500, takže po vyčerpání Flash
+# jede zbytek dne Lite.
 FALLBACK_MODELS = [
     m.strip()
     for m in os.environ.get(
@@ -103,6 +105,10 @@ FALLBACK_MODELS = [
 # kanálu. Proto tři pojistky: sportovní rubriky se modelu vůbec nenabídnou
 # (podle adresy článku a kategorie), prompt sport výslovně vylučuje a volby,
 # které model sám označí za sport, se zahodí.
+# Modely, kterým v tomhle běhu došla kvóta. Běh volá model jednou pro společný
+# výběr a jednou za každou polohu; bez paměti by každé volání znovu narazilo na
+# tentýž 429 a ubralo z limitu dotazů za minutu.
+EXHAUSTED_MODELS: set[str] = set()
 SPORT_PATH_SEGMENTS = {"sport", "sporty", "sports"}
 SPORT_CATEGORIES = {"sport", "sporty", "sports"}
 
@@ -251,8 +257,12 @@ def choose(items: list[dict], location: Location | None = None) -> list[Pick]:
     )
     # Model bývá občas přetížený (503). Zkusí se hlavní model dvakrát, pak
     # postupně záložní modely, takže výpadek jednoho fondu výběr nezastaví.
+    # Vyčerpaná kvóta (429) se neopakuje: do konce běhu (a u denního limitu do
+    # půlnoci tichomořského času) by stejně nepomohlo, jde se rovnou dál.
     last_error: Exception | None = None
     for model_name in [MODEL, *[m for m in FALLBACK_MODELS if m != MODEL]]:
+        if model_name in EXHAUSTED_MODELS:
+            continue
         for attempt in range(2):
             try:
                 response = client.models.generate_content(
@@ -265,6 +275,13 @@ def choose(items: list[dict], location: Location | None = None) -> list[Pick]:
             except genai_errors.ServerError as error:  # 5xx včetně 503 UNAVAILABLE
                 last_error = error
                 time.sleep(4)
+            except genai_errors.ClientError as error:
+                if error.code != 429:  # špatný klíč nebo dotaz: jiný model nepomůže
+                    raise
+                print(f"{model_name}: kvota vycerpana, zkousim dalsi model")
+                EXHAUSTED_MODELS.add(model_name)
+                last_error = error
+                break
     raise RuntimeError(f"Model nedostupny po nekolika pokusech: {last_error}")
 
 
