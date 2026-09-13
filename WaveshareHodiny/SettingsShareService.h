@@ -17,7 +17,7 @@ constexpr size_t SETTINGS_SHARE_MESSAGE_LENGTH = 96;
 // Obálka zálohy má kolem 13 kB, seznam s desítkami položek pár kilobajtů.
 constexpr size_t SETTINGS_SHARE_MAX_RESPONSE_BYTES = 32 * 1024;
 
-enum class SettingsShareOperation : uint8_t { List, Upload, Download };
+enum class SettingsShareOperation : uint8_t { List, Upload, Download, Delete };
 
 struct SettingsShareRequest {
   SettingsShareOperation operation = SettingsShareOperation::List;

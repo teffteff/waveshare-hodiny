@@ -649,6 +649,7 @@ Zálohu lze uložit do souboru, nebo na vlastní server a z jiných hodin ji
 stáhnout: v záložce **Systém** zadej adresu ve tvaru
 `https://hodiny:heslo@server/settings`, název zálohy a **Uložit na server**; na
 druhých hodinách stejnou adresu, **Načíst seznam** a **Nahrát do těchto hodin**.
+Zálohu vybranou v seznamu odstraní ze serveru **Smazat ze serveru**.
 Adresa musí být `https://` a hodiny si ji zapamatují po prvním úspěšném spojení.
 Serverová část je v `infra/settings/`. Starší zálohy z prohlížeče (verze 2) jde
 pořád importovat. Restart zařízení uložené nastavení nemaže.
