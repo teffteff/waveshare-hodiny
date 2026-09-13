@@ -41,8 +41,8 @@ constexpr size_t SETTINGS_BACKUP_MAX_TEXT_BYTES =
     (SETTINGS_BACKUP_MAX_BYTES + 2) / 3 * 4 + 1;
 
 struct SettingsBackupContent {
-  // Záloha nese token Home Assistantu, exportní klíč TMEP, heslo webu
-  // a adresu serveru pro sdílení. Bez příznaku jsou pole v konfiguraci
+  // Záloha nese token Home Assistantu, exportní klíč TMEP, heslo k soukromým
+  // kalendářům agendy, heslo webu a adresu serveru pro sdílení. Bez příznaku jsou pole v konfiguraci
   // prázdná a oddíly s heslem a adresou chybí.
   bool secrets = false;
   ClockAppearanceConfig appearance;

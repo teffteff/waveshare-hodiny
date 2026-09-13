@@ -210,9 +210,41 @@ void testTruncationKeepsUtf8Intact() {
   assert(copied("Sokol", 2) == "S");
 }
 
+// Server s výběrem kalendářů: schovaný kalendář drží v "calendars" prázdné
+// místo, aby se nepřebarvily ostatní, a "available" nese všechny včetně
+// soukromého pro výběr na webu.
+void testCalendarSelection() {
+  const char *const payload =
+      "{\"generated\":\"2026-09-13T10:00:00+02:00\","
+      "\"calendars\":[\"Neumannovi\",\"\",\"Já\"],"
+      "\"available\":[{\"name\":\"Neumannovi\",\"private\":false},"
+      "{\"name\":\"Adámek\",\"private\":false},"
+      "{\"name\":\"Já\",\"private\":true}],"
+      "\"count\":1,\"items\":[{\"day\":\"DNES\",\"date\":\"2026-09-13\","
+      "\"time\":\"09:00\",\"title\":\"Tajné\",\"cal\":2}]}";
+  AgendaFeed feed;
+  assert(agendaParseFeed(payload, strlen(payload), AGENDA_MAX_ITEMS, feed)
+             .status == AgendaParseStatus::Ok);
+  assert(feed.calendarCount == 3);
+  assert(std::string(feed.calendars[1]).empty());
+  assert(std::string(feed.calendars[2]) == "Já");
+  assert(feed.availableCount == 3);
+  assert(std::string(feed.available[1]) == "Adámek");
+  assert(!feed.availablePrivate[0] && !feed.availablePrivate[1]);
+  assert(feed.availablePrivate[2]);
+  assert(feed.items[0].calendar == 2);
+
+  // Opakované rozebrání do téhož feedu nesmí nechat výběr z předchozí odpovědi.
+  assert(agendaParseFeed(REAL_RESPONSE, strlen(REAL_RESPONSE), AGENDA_MAX_ITEMS,
+                         feed).status == AgendaParseStatus::Ok);
+  assert(feed.availableCount == 0);
+  assert(feed.calendarCount == 2);
+}
+
 }  // namespace
 
 int main() {
+  testCalendarSelection();
   testRealResponse();
   testFeedWithoutCalendarNames();
   testCalendarNamesAreCapped();

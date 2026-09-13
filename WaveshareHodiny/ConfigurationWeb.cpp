@@ -1130,6 +1130,36 @@ String normalizedUrl(String url) {
   return url;
 }
 
+// Kalendáře, které agenda zná, pro výběr na webu: [{"name":"…","private":true}].
+void appendAgendaCalendarsJson(String &result,
+                               const AgendaAvailableCalendars &calendars) {
+  result += '[';
+  for (size_t index = 0; index < calendars.count; ++index) {
+    if (index > 0) result += ',';
+    result += F("{\"name\":\"");
+    result += jsonEscape(calendars.names[index]);
+    result += F("\",\"private\":");
+    result += calendars.isPrivate[index] ? F("true") : F("false");
+    result += '}';
+  }
+  result += ']';
+}
+
+// Maska schovaných kalendářů z formuláře. Prázdná nebo neplatná hodnota
+// vrací false a volající nechá uloženou masku beze změny.
+bool parseAgendaHiddenMask(const String &value, uint32_t &mask) {
+  if (value.isEmpty() || value.length() > 10) return false;
+  uint64_t parsed = 0;
+  for (size_t index = 0; index < value.length(); ++index) {
+    const char digit = value[index];
+    if (digit < '0' || digit > '9') return false;
+    parsed = parsed * 10 + static_cast<uint64_t>(digit - '0');
+  }
+  if (parsed > UINT32_MAX) return false;
+  mask = static_cast<uint32_t>(parsed);
+  return true;
+}
+
 const char *normalizedRoomIcon(const String &icon) {
   static const char *icons[] = {"weather", "home", "living-room", "bedroom",
                                 "kitchen", "none"};
@@ -1476,14 +1506,24 @@ void handleGetConfig() {
   result += config.agenda.enabled ? F("true") : F("false");
   result += F(",\"agendaUrl\":\"");
   result += jsonEscape(config.agenda.url);
-  result += F("\",\"agendaItemCount\":");
-  result += config.agenda.itemCount;
-  result += F(",\"agendaRefreshMinutes\":");
+  result += F("\",\"agendaRefreshMinutes\":");
   result += config.agenda.refreshMinutes;
   result += F(",\"agendaDisplaySeconds\":");
   result += config.agenda.displaySeconds;
   result += F(",\"agendaAutomaticRotation\":");
   result += config.agenda.automaticRotation ? F("true") : F("false");
+  result += F(",\"agendaHiddenCalendars\":");
+  result += config.agendaCalendars.hiddenMask;
+  // Heslo samo se nevrací nikdy, stejně jako token Home Assistantu.
+  result += F(",\"agendaPrivateKeyConfigured\":");
+  result += config.agendaCalendars.privateKey[0] == '\0' ? F("false")
+                                                         : F("true");
+  {
+    AgendaAvailableCalendars calendars;
+    agendaServiceAvailableCalendars(calendars);
+    result += F(",\"agendaCalendars\":");
+    appendAgendaCalendarsJson(result, calendars);
+  }
   result += F(",\"forecastEnabled\":");
   result += config.forecast.enabled ? F("true") : F("false");
   result += F(",\"forecastAirQuality\":");
@@ -1932,12 +1972,6 @@ void handleSaveConfig() {
       sendError(400, F("Pro zapnutou agendu doplň její adresu."));
       return;
     }
-    const int agendaItemCount = server.arg("agendaItemCount").toInt();
-    if (agendaItemCount < CLOCK_AGENDA_MIN_ITEMS ||
-        agendaItemCount > CLOCK_AGENDA_MAX_ITEMS) {
-      sendError(400, F("Počet událostí musí být od 3 do 12."));
-      return;
-    }
     const int agendaRefreshMinutes = server.arg("agendaRefreshMinutes").toInt();
     if (agendaRefreshMinutes < 5 || agendaRefreshMinutes > 120) {
       sendError(400, F("Interval obnovy agendy musí být od 5 do 120 minut."));
@@ -1948,9 +1982,46 @@ void handleSaveConfig() {
       sendError(400, F("Doba zobrazení agendy musí být od 10 do 3600 sekund."));
       return;
     }
+    const String agendaPrivateKey = server.arg("agendaPrivateKey");
+    if (!agendaPrivateKey.isEmpty() &&
+        (agendaPrivateKey.length() >= CLOCK_AGENDA_PRIVATE_KEY_LENGTH ||
+         !clockConfigAgendaPrivateKeyValid(agendaPrivateKey.c_str()))) {
+      sendError(400, F("Heslo k soukromým kalendářům smí mít nejvýš 63 znaků "
+                       "bez diakritiky."));
+      return;
+    }
+    uint32_t agendaHiddenMask = config.agendaCalendars.hiddenMask;
+    if (server.hasArg("agendaHiddenCalendars") &&
+        !parseAgendaHiddenMask(server.arg("agendaHiddenCalendars"),
+                               agendaHiddenMask)) {
+      sendError(400, F("Výběr kalendářů agendy není platný."));
+      return;
+    }
+    const bool clearPrivateKey = server.arg("agendaPrivateKeyClear") == "1";
+    // Uložené heslo patří serveru, kterému bylo zadané. Po změně adresy by
+    // odešlo jinam, takže se zahodí, pokud s adresou nepřišlo nové.
+    const bool agendaUrlChanged =
+        normalizedUrl(agendaUrl) != normalizedUrl(config.agenda.url);
+    const bool keepsPrivateKey =
+        !clearPrivateKey && (!agendaUrlChanged || !agendaPrivateKey.isEmpty());
+    const bool hasPrivateKey =
+        keepsPrivateKey && (!agendaPrivateKey.isEmpty() ||
+                            config.agendaCalendars.privateKey[0] != '\0');
+    if (hasPrivateKey && !agendaUrl.startsWith("https://")) {
+      sendError(400, F("Soukromé kalendáře vyžadují adresu agendy https://."));
+      return;
+    }
     config.agenda.enabled = agendaEnabled;
     clockConfigCopy(config.agenda.url, sizeof(config.agenda.url), agendaUrl);
-    config.agenda.itemCount = static_cast<uint8_t>(agendaItemCount);
+    config.agendaCalendars.hiddenMask = agendaHiddenMask;
+    if (!keepsPrivateKey) {
+      memset(config.agendaCalendars.privateKey, 0,
+             sizeof(config.agendaCalendars.privateKey));
+    } else if (!agendaPrivateKey.isEmpty()) {
+      clockConfigCopy(config.agendaCalendars.privateKey,
+                      sizeof(config.agendaCalendars.privateKey),
+                      agendaPrivateKey);
+    }
     config.agenda.refreshMinutes = static_cast<uint8_t>(agendaRefreshMinutes);
     config.agenda.displaySeconds = static_cast<uint16_t>(agendaDisplaySeconds);
     config.agenda.automaticRotation =
@@ -2442,15 +2513,35 @@ void handleAgendaTest() {
     return;
   }
   clockConfigCopy(probe.url, sizeof(probe.url), url);
-  const int requestedCount = server.arg("agendaItemCount").toInt();
-  probe.itemCount = static_cast<uint8_t>(
-      requestedCount >= CLOCK_AGENDA_MIN_ITEMS &&
-              requestedCount <= CLOCK_AGENDA_MAX_ITEMS
-          ? requestedCount
-          : 8);
+  ClockAgendaCalendarsConfig calendars;
+  if (server.hasArg("agendaHiddenCalendars") &&
+      !parseAgendaHiddenMask(server.arg("agendaHiddenCalendars"),
+                             calendars.hiddenMask)) {
+    sendError(400, F("Výběr kalendářů agendy není platný."));
+    return;
+  }
+  const String typedKey = server.arg("agendaPrivateKey");
+  if (!typedKey.isEmpty()) {
+    if (typedKey.length() >= CLOCK_AGENDA_PRIVATE_KEY_LENGTH ||
+        !clockConfigAgendaPrivateKeyValid(typedKey.c_str())) {
+      sendError(400, F("Heslo k soukromým kalendářům smí mít nejvýš 63 znaků "
+                       "bez diakritiky."));
+      return;
+    }
+    clockConfigCopy(calendars.privateKey, sizeof(calendars.privateKey),
+                    typedKey);
+  } else if (server.arg("agendaPrivateKeyClear") != "1") {
+    // Uložené heslo jen na tutéž adresu, na kterou bylo zadané - zkouška cizí
+    // adresy ho nesmí vynést ven.
+    const ClockConfig &stored = currentConfig();
+    if (normalizedUrl(url) == normalizedUrl(stored.agenda.url)) {
+      clockConfigCopy(calendars.privateKey, sizeof(calendars.privateKey),
+                      stored.agendaCalendars.privateKey);
+    }
+  }
   int httpStatus = 0;
   String error;
-  if (!agendaProbeCallback(probe, httpStatus, error)) {
+  if (!agendaProbeCallback(probe, calendars, httpStatus, error)) {
     sendError(502, error.isEmpty() ? String(F("Agendu se nepodařilo načíst."))
                                    : error);
     return;
@@ -2463,6 +2554,8 @@ void handleAgendaTest() {
   // majitel z toho pozná, že adresa i sdílení kalendáře fungují.
   result = F("{\"ok\":true,\"count\":");
   result += status.count;
+  result += F(",\"calendars\":");
+  appendAgendaCalendarsJson(result, status.calendars);
   result += F(",\"items\":[");
   struct ItemContext {
     String *result;
@@ -3580,6 +3673,14 @@ bool applyBackupText(const char *text, size_t length,
                     current.tmepExportKey);
     clockConfigCopy(incoming.tmepExportId, sizeof(incoming.tmepExportId),
                     current.tmepExportId);
+    // Heslo k soukromým kalendářům platí totéž co pro token: jen na stejný
+    // server agendy.
+    if (normalizedUrl(incoming.agenda.url) ==
+        normalizedUrl(current.agenda.url)) {
+      clockConfigCopy(incoming.agendaCalendars.privateKey,
+                      sizeof(incoming.agendaCalendars.privateKey),
+                      current.agendaCalendars.privateKey);
+    }
   }
 
   if (configSaveCallback == nullptr || !configSaveCallback(incoming, true)) {

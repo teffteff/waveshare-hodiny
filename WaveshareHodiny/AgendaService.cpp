@@ -131,6 +131,32 @@ void copyMessage(char *destination, const String &value) {
   strlcpy(destination, value.c_str(), AGENDA_MESSAGE_LENGTH);
 }
 
+void copyAvailable(AgendaAvailableCalendars &target, const AgendaFeed &feed) {
+  target.count = feed.availableCount;
+  for (size_t index = 0; index < feed.availableCount; ++index) {
+    strlcpy(target.names[index], feed.available[index],
+            AGENDA_CALENDAR_NAME_LENGTH);
+    target.isPrivate[index] = feed.availablePrivate[index];
+  }
+}
+
+// Adresa i s výběrem kalendářů. Parametr se připojí za případný dotaz, který
+// už v adrese je, aby šla použít i adresa s vlastními parametry.
+String requestUrl(const char *url, uint32_t hiddenMask) {
+  String result(url);
+  if (hiddenMask == 0) return result;
+  result += strchr(url, '?') == nullptr ? '?' : '&';
+  result += F("hide=");
+  bool first = true;
+  for (uint8_t index = 0; index < 32; ++index) {
+    if ((hiddenMask & (1UL << index)) == 0) continue;
+    if (!first) result += ',';
+    first = false;
+    result += index;
+  }
+  return result;
+}
+
 }  // namespace
 
 void agendaServiceBegin() {
@@ -166,6 +192,19 @@ bool agendaServiceStatus(AgendaStatus &status) {
   return true;
 }
 
+bool agendaServiceAvailableCalendars(AgendaAvailableCalendars &calendars) {
+  calendars = AgendaAvailableCalendars{};
+  if (agendaMutex == nullptr ||
+      xSemaphoreTake(agendaMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+    return false;
+  }
+  if (agendaCache != nullptr && agendaCache->ready) {
+    copyAvailable(calendars, agendaCache->feed);
+  }
+  xSemaphoreGive(agendaMutex);
+  return true;
+}
+
 bool agendaServiceProbeStatus(AgendaProbeStatus &status) {
   status = AgendaProbeStatus{};
   if (agendaMutex == nullptr ||
@@ -175,6 +214,7 @@ bool agendaServiceProbeStatus(AgendaProbeStatus &status) {
   if (agendaCache != nullptr && agendaCache->probeReady) {
     status.ready = true;
     status.count = agendaCache->probe.count;
+    copyAvailable(status.calendars, agendaCache->probe);
   }
   xSemaphoreGive(agendaMutex);
   return true;
@@ -220,6 +260,7 @@ bool agendaServiceVisitProbeItems(AgendaItemVisitor visitor, void *context) {
 // rozebraná agenda uloží: běžné stažení převezme obrazovka, zkouška zůstane
 // stranou v probe, aby zkoušená adresa nepřepsala zobrazené události.
 static bool agendaServiceDownload(const ClockAgendaConfig &config,
+                                  const ClockAgendaCalendarsConfig &calendars,
                                   NetworkDiagnosticKind diagnosticKind,
                                   bool probeOnly, int &httpStatus,
                                   String &error) {
@@ -232,6 +273,13 @@ static bool agendaServiceDownload(const ClockAgendaConfig &config,
   const bool secure = strncmp(config.url, "https://", 8) == 0;
   if (!secure && strncmp(config.url, "http://", 7) != 0) {
     error = F("Adresa musí začínat http:// nebo https://.");
+    return false;
+  }
+  const bool sendKey = calendars.privateKey[0] != '\0';
+  // Heslo k soukromým kalendářům se hlavičkou posílá hned, bez výzvy serveru.
+  // Po http:// by šlo po drátě otevřeně, stejně jako heslo v adrese.
+  if (sendKey && !secure) {
+    error = F("Soukromé kalendáře vyžadují adresu https://.");
     return false;
   }
 
@@ -296,7 +344,8 @@ static bool agendaServiceDownload(const ClockAgendaConfig &config,
     WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
                                 : plainClient;
     httpDownloadPrepare(http);
-    if (http.begin(client, config.url)) {
+    if (http.begin(client, requestUrl(config.url, calendars.hiddenMask))) {
+      if (sendKey) http.addHeader(F("X-Agenda-Key"), calendars.privateKey);
       httpStatus = http.GET();
       if (httpStatus == HTTP_CODE_OK) {
         const int declaredSize = http.getSize();
@@ -332,6 +381,12 @@ static bool agendaServiceDownload(const ClockAgendaConfig &config,
   if (error.isEmpty() && httpStatus != HTTP_CODE_OK) {
     if (httpStatus == HTTP_CODE_NOT_FOUND) {
       error = F("Na zadané adrese agenda není.");
+    } else if (httpStatus == HTTP_CODE_UNAUTHORIZED) {
+      error = F("Server odmítl heslo v adrese agendy.");
+    } else if (httpStatus == HTTP_CODE_FORBIDDEN) {
+      // 403 posílá serve.py jen kvůli heslu k soukromým kalendářům; heslo
+      // v adrese hlídá Caddy a to odpovídá 401.
+      error = F("Heslo k soukromým kalendářům nesedí.");
     } else if (httpStatus == HTTP_CODE_SERVICE_UNAVAILABLE) {
       // 503 posílá serve.py, dokud generátor poprvé nedoběhl.
       error = F("Server agendu ještě nepřipravil.");
@@ -344,7 +399,7 @@ static bool agendaServiceDownload(const ClockAgendaConfig &config,
   if (error.isEmpty()) {
     const AgendaParseOutcome outcome =
         agendaParseFeed(reinterpret_cast<const char *>(buffer), payloadLength,
-                        config.itemCount, parsed);
+                        AGENDA_MAX_ITEMS, parsed);
     if (outcome.status == AgendaParseStatus::NotJson) {
       error = F("Odpověď serveru není JSON.");
     } else if (outcome.status == AgendaParseStatus::MissingArray) {
@@ -407,15 +462,18 @@ static bool agendaServiceDownload(const ClockAgendaConfig &config,
 }
 
 bool agendaServiceFetch(const ClockAgendaConfig &config,
+                        const ClockAgendaCalendarsConfig &calendars,
                         NetworkDiagnosticKind diagnosticKind, int &httpStatus,
                         String &error) {
-  return agendaServiceDownload(config, diagnosticKind, false, httpStatus,
-                               error);
+  return agendaServiceDownload(config, calendars, diagnosticKind, false,
+                               httpStatus, error);
 }
 
-bool agendaServiceProbe(const ClockAgendaConfig &config, int &httpStatus,
-                        String &error) {
-  return agendaServiceDownload(config, NetworkDiagnosticKind::AgendaTest, true,
+bool agendaServiceProbe(const ClockAgendaConfig &config,
+                        const ClockAgendaCalendarsConfig &calendars,
+                        int &httpStatus, String &error) {
+  return agendaServiceDownload(config, calendars,
+                               NetworkDiagnosticKind::AgendaTest, true,
                                httpStatus, error);
 }
 

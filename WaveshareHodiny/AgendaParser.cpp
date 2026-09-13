@@ -258,6 +258,8 @@ AgendaParseOutcome agendaParseFeed(const char *payload, size_t length,
                                    size_t maximumItems, AgendaFeed &feed) {
   AgendaParseOutcome outcome;
   feed.count = 0;
+  feed.calendarCount = 0;
+  feed.availableCount = 0;
   if (payload == nullptr || length == 0) return outcome;
 
   const char *begin = jsonSkipWhitespace(payload, payload + length);
@@ -285,6 +287,23 @@ AgendaParseOutcome agendaParseFeed(const char *payload, size_t length,
                      feed.calendars[feed.calendarCount],
                      AGENDA_CALENDAR_NAME_LENGTH);
       ++feed.calendarCount;
+    }
+  }
+
+  const JsonValue available = jsonFindMember(begin, end, "available");
+  if (available.isArray()) {
+    JsonArrayCursor entries = jsonOpenArray(available);
+    while (feed.availableCount < AGENDA_MAX_CALENDARS && jsonNextItem(entries)) {
+      const JsonValue name =
+          jsonFindMember(entries.itemBegin, entries.itemEnd, "name");
+      if (!name.isString) continue;
+      const size_t index = feed.availableCount;
+      agendaCopyText(name.contentBegin(),
+                     static_cast<size_t>(name.contentEnd() - name.contentBegin()),
+                     feed.available[index], AGENDA_CALENDAR_NAME_LENGTH);
+      feed.availablePrivate[index] =
+          jsonReadBoolMember(entries.itemBegin, entries.itemEnd, "private");
+      ++feed.availableCount;
     }
   }
 

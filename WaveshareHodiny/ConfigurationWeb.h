@@ -59,6 +59,7 @@ void configurationWebSetAgendaTask(TaskHandle_t task);
 // obstará úloha agendy, protože zásobník smyčky na ověření proti svazku
 // kořenů Mozilly nestačí.
 using AgendaProbeCallback = bool (*)(const ClockAgendaConfig &config,
+                                     const ClockAgendaCalendarsConfig &calendars,
                                      int &httpStatus, String &error);
 void configurationWebSetAgendaProbe(AgendaProbeCallback callback);
 // Přenos zálohy nastavení na server a zpět. Z téhož důvodu jako zkouška agendy

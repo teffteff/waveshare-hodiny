@@ -430,14 +430,25 @@ Nahoře jsou hodiny a venkovní teplota, stejná řádka jako na předpovědi
 a radaru. Dole je legenda: jméno každého kalendáře ve své barvě. Tou barvou je
 obarvený i čas u události, takže se pozná, ze kterého kalendáře je, bez popisku
 u každého řádku. V červené noční paletě se barvy slévají do jedné a rozlišuje
-jen legenda — jiná barva než červená by rozbila noční vidění.
+jen legenda — jiná barva než červená by rozbila noční vidění. Když se celá
+jména kalendářů do legendy nevejdou, zkrátí se všechna na čtyři znaky a `..`.
 
 **Do Googlu chodí server, ne hodiny.** Hodiny čtou hotový seznam z adresy, kterou
 zadáš v záložce **Agenda** — typicky `https://tvuj-server.example.net/agenda.json`.
 Server kalendáře přečte přes servisní účet, sloučí je, rozbalí opakované
 události a složí i popisky dnů, takže ve firmwaru nezůstala žádná datumová
-aritmetika a v hodinách žádný token. Které kalendáře se ukážou, se proto
-nastavuje na serveru; návod i zdrojové soubory jsou v [infra/](infra/README.md).
+aritmetika a v hodinách žádný token. Které kalendáře server čte, se nastavuje
+na serveru; návod i zdrojové soubory jsou v [infra/](infra/README.md).
+
+**Které z nich hodiny ukážou, vybereš v záložce Agenda.** Seznam kalendářů
+se objeví po prvním načtení agendy nebo po tlačítku **Vyzkoušet agendu**.
+Schovaný kalendář server do odpovědi vůbec nepošle a ostatní si podrží svou
+barvu. **Soukromý kalendář** jde zapnout jen s heslem: ověřuje ho server,
+hodiny ho posílají v hlavičce `X-Agenda-Key` a bez něj soukromé události
+nedostanou — ani do náhledu na webu. Heslo v adrese agendy na to nestačí,
+protože adresu vidí každý, kdo otevře nastavení hodin. Uložené heslo web
+nikdy neukáže, do zálohy se dostane jen s tajemstvími a po změně adresy agendy
+se zahodí, aby neodešlo na jiný server.
 
 **Adresa smí nést i heslo.** Agenda je na rozdíl od zpráv soukromá, takže
 u referenčního serveru stojí za HTTP basic auth a do hodin se zadává ve tvaru
@@ -446,10 +457,10 @@ tomu nedělá nic zvláštního: přihlášení si z adresy vytáhne `HTTPClient
 přiloží ho k požadavku sám. Adresa pak ale musí být `https://` — na `http://`
 by heslo šlo po drátě otevřeně.
 
-Zobrazit lze 3 až 12 událostí; výchozí je 8. Seznam začíná pod hlavičkou a
-roste dolů. Každý den navíc si vezme jeden řádek na svou hlavičku, takže se
-při dlouhém výhledu poslední události nevejdou a obrazovka je vynechá — řádek
-přes legendu by byl horší než o událost méně. Tlačítko
+Agenda ukáže tolik událostí, kolik se na displej vejde. Seznam začíná pod
+hlavičkou a roste dolů; každý den si vezme navíc řádek na svou hlavičku. Když
+poslední zobrazený den pokračuje za okrajem, jeho poslední řádek nahradí tři
+tečky. Den, ze kterého by zbyla jen hlavička, se nezobrazí vůbec. Tlačítko
 **Vyzkoušet agendu** adresu stáhne ještě před uložením a ukáže, co se objeví na
 displeji.
 

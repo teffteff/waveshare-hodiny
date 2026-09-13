@@ -1020,7 +1020,53 @@ void testPlanesMapLabelPersistenceAndMigration() {
   assert(loaded.planesMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME);
 }
 
+void testAgendaCalendarsPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.agendaCalendars.hiddenMask == 0);
+  assert(defaults.agendaCalendars.privateKey[0] == '\0');
+
+  // Schéma 40 výběr kalendářů nemá; po povýšení se ukáže všechno jako dosud
+  // a žádné heslo se neobjeví ani z bajtů koncové výplně.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.planesMapLabel = CLOCK_PLANE_MAP_LABEL_CALLSIGN;
+  source.agenda.enabled = true;
+  seed(legacyRecord(source, 40, CLOCK_CONFIG_SCHEMA_40_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.planesMapLabel == CLOCK_PLANE_MAP_LABEL_CALLSIGN);
+  assert(migrated.agenda.enabled);
+  assert(migrated.agendaCalendars.hiddenMask == 0);
+  assert(migrated.agendaCalendars.privateKey[0] == '\0');
+
+  migrated.agendaCalendars.hiddenMask = 0b101;
+  clockConfigCopy(migrated.agendaCalendars.privateKey,
+                  sizeof(migrated.agendaCalendars.privateKey), "tajne heslo!");
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.agendaCalendars.hiddenMask == 0b101);
+  assert(strcmp(loaded.agendaCalendars.privateKey, "tajne heslo!") == 0);
+
+  // Heslo míří do HTTP hlavičky, takže řídicí znak z poškozeného záznamu ho
+  // zahodí celé.
+  hostPreferencesReset();
+  ClockConfig wild;
+  clockConfigApplyDefaults(wild);
+  clockConfigCopy(wild.agendaCalendars.privateKey,
+                  sizeof(wild.agendaCalendars.privateKey), "a\r\nX-Evil: 1");
+  assert(clockConfigSave(wild));
+  assert(clockConfigLoad(loaded));
+  assert(loaded.agendaCalendars.privateKey[0] == '\0');
+  assert(clockConfigAgendaPrivateKeyValid(""));
+  assert(!clockConfigAgendaPrivateKeyValid("heslo\xc3\xa1"));
+}
+
 int main() {
+  testAgendaCalendarsPersistenceAndMigration();
   testPlanesMapLabelPersistenceAndMigration();
   testSecondValuePagePersistenceAndMigration();
   testEmptyStorageUsesDefaults();

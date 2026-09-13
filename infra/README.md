@@ -134,11 +134,20 @@ opakování nemá smysl** — sám si počká.
 ## Agenda z Google Kalendáře
 
 `generate.py` čte kalendáře přes **servisní účet** Google Cloudu, ne přes
-uživatelský OAuth, a každých 15 minut zapíše `agenda.json` do
-`/opt/agenda/www/`. Odpověď má kolem kilobajtu a nese hotové řetězce: popisek
-dne, čas, titulek a index kalendáře. Časová zóna, expanze opakovaných událostí
+uživatelský OAuth, a každých 15 minut zapíše snímek všech událostí na týden
+dopředu do `/opt/agenda/www/events.json` (práva 600). Odpověď `/agenda.json`
+z něj skládá `serve.py` až při dotazu (logika je ve `feed.py`), protože každé
+hodiny chtějí jiný výběr kalendářů. Nese hotové řetězce: popisek dne, čas,
+titulek a index kalendáře. Časová zóna, expanze opakovaných událostí
 i skládání popisků se dělají tady, aby ve firmwaru nezůstala žádná datumová
 aritmetika.
+
+Adresa servisního účtu, se kterou se kalendáře sdílejí, je v jeho klíči jako
+`client_email`:
+
+```sh
+ssh … "sudo -u opc grep client_email /opt/agenda/key.json"
+```
 
 Přístup nedávají role v Cloudu, ale **sdílení kalendáře s adresou účtu**
 (`…@…iam.gserviceaccount.com`) ve webovém rozhraní Kalendáře, oprávnění
@@ -160,7 +169,10 @@ Dvě pasti, které stály čas:
 
 Kalendáře se vypisují v `AGENDA_CALENDARS` v `/opt/agenda/agenda.env` (práva
 600). **Pořadí je významné:** index kalendáře v tom seznamu si hodiny berou
-jako barvu, kterou událost odliší. Klíč účtu leží v `/opt/agenda/key.json`,
+jako barvu, kterou událost odliší, a pamatují si podle něj i to, které kalendáře
+majitel ve webovém rozhraní schoval (`?hide=1,2` v dotazu). Nový kalendář proto
+patří na konec seznamu. Za svislítkem může stát jméno do legendy, které přepíše
+to z Googlu: `id|Jméno`. Klíč účtu leží v `/opt/agenda/key.json`,
 práva 600, v adresáři s právy 700. Ani jeden soubor nepatří do repozitáře.
 
 Účet i klíč vznikly v projektu `gen-lang-client-…`, tedy v tom, který Googlu
@@ -170,6 +182,38 @@ sdílejí jeden projekt.
 Prázdná agenda je **legitimní stav** — kalendář prostě nemusí nic mít. Proto ji
 `check-stack.sh` hlásí jako `warn`, ne jako `FAIL`, na rozdíl od prázdného
 kanálu se zprávami, kde prázdno vždycky znamená rozbitý běh.
+
+### Soukromé kalendáře
+
+Kalendář v `AGENDA_PRIVATE_CALENDARS` dostanou jen hodiny, které pošlou heslo
+v hlavičce `X-Agenda-Key`. Heslo k agendě v adrese na to nestačí: adresu vidí
+každý, kdo otevře webové rozhraní hodin. Soukromé kalendáře dostanou indexy až
+za veřejnými, takže jejich přidání nepřebarví ty stávající.
+
+`serve.py` porovnává heslo s otiskem `AGENDA_PRIVATE_HASH` (PBKDF2-SHA256) ze
+stejného `agenda.env`, který proto čte i `agenda-web.service`. Bez hlavičky se
+soukromé kalendáře jen vynechají; se špatným heslem odpoví 403, aby se chyba
+ukázala ve webovém rozhraní hodin. Po deseti špatných pokusech za čtvrt hodiny
+neodemkne soukromé kalendáře nikomu, ani se správným heslem, dokud okno
+neuplyne.
+
+Přidání soukromého kalendáře:
+
+1. V Google Kalendáři na webu (mobilní aplikace to neumí): **Nastavení →
+   Nastavení mých kalendářů → kalendář → Sdílet s konkrétními lidmi → Přidat
+   lidi** → adresa servisního účtu, oprávnění „Zobrazit všechny podrobnosti
+   události". ID kalendáře je o kus níž v sekci **Integrovat kalendář**;
+   u hlavního kalendáře účtu je to přímo e-mailová adresa.
+2. Otisk hesla (heslo jen tisknutelné ASCII, nejvýš 63 znaků — jde v HTTP
+   hlavičce):
+   ```sh
+   ssh -t … "/opt/agenda/.venv/bin/python /opt/agenda/serve.py --hash"
+   ```
+3. Do `/opt/agenda/agenda.env` přidat
+   `AGENDA_PRIVATE_CALENDARS=id|Jméno` a vypsaný `AGENDA_PRIVATE_HASH=…`,
+   pak `sudo systemctl restart agenda-web.service && sudo systemctl start
+   agenda.service`.
+4. V hodinách v záložce **Agenda** zapnout kalendář a zadat heslo.
 
 ## Heslo k agendě
 
@@ -477,7 +521,7 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
    a `pydantic`, `news.env.example` → `news.env` s klíčem (práva 600),
    jednotky do `/etc/systemd/system/`, `systemctl enable --now news-web.service
    news.timer`.
-4. Agenda: `agenda/*.py` do `/opt/agenda/` (práva adresáře 700), `.venv`
+4. Agenda: `agenda/*.py` (včetně `feed.py`) do `/opt/agenda/` (práva adresáře 700), `.venv`
    s `google-auth` a `requests` postavené **`/usr/bin/python3.11`**, klíč
    servisního účtu do `key.json` (práva 600), `agenda.env.example` →
    `agenda.env` s ID kalendářů (práva 600), jednotky do

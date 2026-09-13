@@ -1,3 +1,4 @@
+#include "AgendaLayout.h"
 #include "AgendaParser.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
@@ -142,6 +143,9 @@ bool agendaRowStartsDay[CLOCK_AGENDA_MAX_ITEMS] = {};
 // indexu by se po návratu do dne slily do jedné barvy.
 uint8_t agendaRowCalendar[CLOCK_AGENDA_MAX_ITEMS] = {};
 uint8_t agendaVisibleItemCount = 0;
+// Řádek, který místo události nese tři tečky, protože poslední zobrazený den
+// pokračuje za okrajem. -1 = žádný. Drží se kvůli přebarvení v noční paletě.
+int agendaEllipsisRow = -1;
 size_t agendaCalendarCount = 0;
 char agendaCalendarNames[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 lv_obj_t *rssHeaderLabel = nullptr;
@@ -2572,14 +2576,23 @@ constexpr int AGENDA_DAY_GAP = 7;
 // to, co pojme další události.
 constexpr int AGENDA_HEADER_Y = -196;
 constexpr int AGENDA_LEGEND_Y = 186;
-// Svislý pás mezi hlavičkou a legendou. Co se do něj nevejde, se neukáže -
-// řádek přes legendu je horší než o událost méně. Při deseti událostech a
-// čtyřech hlavičkách dnů zbývá ještě rezerva, takže se vejde i nejhorší případ.
+// Svislý pás mezi hlavičkou a legendou. Plní se, dokud je místo; co se do něj
+// nevejde, se neukáže - řádek přes legendu je horší než o událost méně. Pravidla
+// pro useknutý poslední den jsou v AgendaLayout.h.
 constexpr int AGENDA_BLOCK_TOP = -172;
 constexpr int AGENDA_BLOCK_HEIGHT = 345;
 // Celodenní událost nemá čas; pomlčka drží sloupec, aby názvy začínaly pod
 // sebou i pod ní.
 constexpr char AGENDA_ALL_DAY_MARK[] = "-";
+// Poslední řádek dne, který pokračuje za okrajem. Písmo nemá znak …, takže tři
+// obyčejné tečky.
+constexpr char AGENDA_MORE_MARK[] = "...";
+// Šířka, do které se legenda musí vejít. Label je široký 300 px, ale kruh má
+// na spodním okraji písma (y = 195) tětivu jen 280 px a text nemá sahat až na
+// hranu displeje.
+constexpr int AGENDA_LEGEND_MAX_WIDTH = 260;
+// Kolik znaků jména zůstane v legendě, když se celá jména nevejdou.
+constexpr size_t AGENDA_LEGEND_SHORT_NAME_CHARACTERS = 4;
 constexpr size_t AGENDA_COLOR_TAG_LENGTH = 8;
 
 int agendaLineHeight() { return lv_font_get_line_height(&clock_czech_16); }
@@ -2589,13 +2602,21 @@ int agendaDayHeight() { return lv_font_get_line_height(&clock_czech_14); }
 // se jednotlivé kalendáře od sebe poznají bez popisku u každé události. V noční
 // červené paletě se barvy slévají do jedné, protože jiná než červená by rozbila
 // noční vidění - legenda tam proto nese jen jména.
+//
+// Barvy jsou vybrané na odstín, ne podle ciferníku: oranžová a zelená ciferníku
+// mají na panelu podobný jas i nádech do žluta a vedle sebe v agendě splývaly.
+// Azurová, oranžová a purpurová leží na barevném kruhu daleko od sebe; zelená
+// zbývá až pro čtvrtý kalendář. Čistá červená chybí schválně - patří chybám
+// a noční paletě.
+const lv_color_t AGENDA_COLOR_MAGENTA = LV_COLOR_MAKE(240, 98, 230);
+
 lv_color_t agendaCalendarColor(uint8_t calendar) {
   if (redNightVisualEnabled()) return COLOR_ERROR;
   switch (calendar) {
     case 0: return COLOR_OUTSIDE;
     case 1: return COLOR_ROOM;
-    case 2: return COLOR_AIR;
-    default: return COLOR_HUMIDITY;
+    case 2: return AGENDA_COLOR_MAGENTA;
+    default: return COLOR_AIR;
   }
 }
 
@@ -2616,28 +2637,18 @@ void agendaAppendEscaped(String &target, const char *text) {
   }
 }
 
-// Kolik řádků se do pásu vejde i s hlavičkami dnů. Vrací počet událostí, ne
-// výšku: rozvržení podle něj rovnou ví, kde přestat.
-uint8_t agendaFittingItemCount(uint8_t count) {
-  const int lineHeight = agendaLineHeight();
-  const int dayHeight = agendaDayHeight();
-  int total = 0;
-  for (uint8_t index = 0; index < count; ++index) {
-    int next = total + lineHeight + AGENDA_ROW_GAP;
-    if (agendaRowStartsDay[index]) next += dayHeight + AGENDA_DAY_GAP;
-    if (next > AGENDA_BLOCK_HEIGHT) return index;
-    total = next;
-  }
-  return count;
-}
-
 // Rozmístí řádky do mřížky. Volá se až po naplnění všech řádků, protože dřív
 // není známo, kde jsou hranice dnů, a řádek s hlavičkou je o její výšku vyšší.
 void layoutAgendaItems() {
   if (agendaPage == nullptr) return;
   const int lineHeight = agendaLineHeight();
   const int dayHeight = agendaDayHeight();
-  const uint8_t visible = agendaFittingItemCount(agendaVisibleItemCount);
+  const AgendaLayoutResult fitted = agendaLayout(
+      agendaRowStartsDay, agendaVisibleItemCount,
+      AgendaLayoutMetrics{lineHeight, dayHeight, AGENDA_ROW_GAP, AGENDA_DAY_GAP,
+                          AGENDA_BLOCK_HEIGHT});
+  const uint8_t visible = fitted.visible;
+  agendaEllipsisRow = fitted.ellipsis ? visible - 1 : -1;
   // Seznam začíná pod hlavičkou, ne uprostřed kruhu. Vystředěný blok nechával
   // nahoře i dole mezeru a při krátké agendě vypadal, že se na obrazovku víc
   // nevejde - přitom místo bylo. Takhle roste dolů do prázdna, jako hodiny na
@@ -2669,7 +2680,14 @@ void layoutAgendaItems() {
                  AGENDA_RADIUS + cursorY);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS + titleLeft,
                  AGENDA_RADIUS + cursorY);
-    setObjectVisible(time, true);
+    const bool moreMark = static_cast<int>(index) == agendaEllipsisRow;
+    if (moreMark) {
+      // Titulek se přepíše natrvalo; další stažení ho nastaví znovu, protože
+      // rozvržení běží až po naplnění všech řádků.
+      lv_label_set_text(title, AGENDA_MORE_MARK);
+      setTextColor(title, redNightVisualEnabled() ? COLOR_ERROR : COLOR_MUTED);
+    }
+    setObjectVisible(time, !moreMark);
     setObjectVisible(title, true);
     cursorY += lineHeight + AGENDA_ROW_GAP;
   }
@@ -2677,23 +2695,46 @@ void layoutAgendaItems() {
 
 // Legenda: jméno každého kalendáře ve své barvě, na jednom řádku. Bez ní barva
 // času nic neříká - a odznak s tečkou nejde, písmo žádnou nemá.
-void updateAgendaLegendLabel() {
-  if (agendaLegendLabel == nullptr) return;
-  if (agendaCalendarCount == 0) {
-    setObjectVisible(agendaLegendLabel, false);
-    return;
-  }
+//
+// Kalendář, který v odpovědi není (schovaný nebo zamčený), má prázdné jméno a
+// v legendě se vynechá; ostatní si podrží barvu podle svého indexu. Když se
+// celá jména na kruh nevejdou, zkrátí se všechna na čtyři znaky a "..".
+String composeAgendaLegend(bool abbreviate) {
   String text;
   text.reserve(AGENDA_MAX_CALENDARS *
                (AGENDA_CALENDAR_NAME_LENGTH + AGENDA_COLOR_TAG_LENGTH + 4));
+  bool first = true;
   for (size_t index = 0; index < agendaCalendarCount; ++index) {
-    if (index > 0) text += "   ";
+    const char *name = agendaCalendarNames[index];
+    if (name[0] == '\0') continue;
+    if (!first) text += "   ";
+    first = false;
     char tag[AGENDA_COLOR_TAG_LENGTH + 1];
     agendaBuildColorTag(tag, agendaCalendarColor(static_cast<uint8_t>(index)));
     text += tag;
-    agendaAppendEscaped(text, agendaCalendarNames[index]);
+    char shortName[AGENDA_CALENDAR_NAME_LENGTH];
+    if (abbreviate) {
+      agendaAbbreviateName(name, AGENDA_LEGEND_SHORT_NAME_CHARACTERS, shortName,
+                           sizeof(shortName));
+      name = shortName;
+    }
+    agendaAppendEscaped(text, name);
     text += '#';
   }
+  return text;
+}
+
+void updateAgendaLegendLabel() {
+  if (agendaLegendLabel == nullptr) return;
+  String text = composeAgendaLegend(false);
+  if (text.isEmpty()) {
+    setObjectVisible(agendaLegendLabel, false);
+    return;
+  }
+  // Recolor značky se do šířky nepočítají, stejně jako při kreslení.
+  const lv_coord_t width = lv_txt_get_width(
+      text.c_str(), text.length(), &clock_czech_14, 0, LV_TEXT_FLAG_RECOLOR);
+  if (width > AGENDA_LEGEND_MAX_WIDTH) text = composeAgendaLegend(true);
   lv_label_set_text(agendaLegendLabel, text.c_str());
   setObjectVisible(agendaLegendLabel, true);
 }
@@ -2802,8 +2843,10 @@ void applyAgendaColors() {
       setTextColor(agendaDayLabels[index], redNight ? COLOR_ERROR : COLOR_MUTED);
     }
     if (agendaTitleLabels[index] != nullptr) {
+      const bool moreMark = static_cast<int>(index) == agendaEllipsisRow;
       setTextColor(agendaTitleLabels[index],
-                   redNight ? COLOR_ERROR : COLOR_TEXT);
+                   redNight ? COLOR_ERROR
+                            : (moreMark ? COLOR_MUTED : COLOR_TEXT));
     }
     // Čas nese barvu kalendáře, takže se přebarvuje podle uloženého indexu, ne
     // paušálně - jinak by se po návratu z noci všechny slily do jedné.
@@ -5892,6 +5935,7 @@ void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
   if (agendaPage == nullptr) return;
   if (count > CLOCK_AGENDA_MAX_ITEMS) count = CLOCK_AGENDA_MAX_ITEMS;
   agendaVisibleItemCount = count;
+  agendaEllipsisRow = -1;
   for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
     agendaRowStartsDay[index] = false;
   }

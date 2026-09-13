@@ -11,6 +11,9 @@ Environment=AGENDA_PORT=8089
 # Jen pro Caddy na stejnem stroji. Kdyby server visel na verejne IP, dal by
 # se basic_auth z Caddyfile obejit primym dotazem na port 8089.
 Environment=AGENDA_BIND=127.0.0.1
+# Kvuli AGENDA_PRIVATE_HASH, otisku hesla k soukromym kalendarum. Stejny soubor
+# jako u generatoru, aby heslo i seznam soukromych kalendaru lezely spolu.
+EnvironmentFile=/opt/agenda/agenda.env
 ExecStart=/opt/agenda/.venv/bin/python /opt/agenda/serve.py
 Restart=on-failure
 RestartSec=5
