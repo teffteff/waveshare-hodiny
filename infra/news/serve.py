@@ -97,4 +97,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"news-web na portu {PORT}, nejvys {MAX_LOCATIONS} poloh", file=sys.stderr)
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    ThreadingHTTPServer((os.environ.get("NEWS_BIND", "127.0.0.1"), PORT),
+                        Handler).serve_forever()

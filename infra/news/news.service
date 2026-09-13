@@ -5,7 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=opc
+# Stejny uzivatel jako news-web: oba sdileji www/ a registr poloh. Generator
+# cte RSS z internetu, takze nesmi byt opc se sudo a SSH klicem. news.env patri
+# rootovi (600); systemd ho nacte jeste pred prepnutim na uzivatele.
+User=news
+Group=news
 EnvironmentFile=/opt/news/news.env
 ExecStart=/opt/news/.venv/bin/python /opt/news/generate.py
 Nice=10
@@ -17,3 +21,4 @@ TimeoutStartSec=900
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+ProtectHome=true

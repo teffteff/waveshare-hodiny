@@ -5,7 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=opc
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Kod patri rootovi,
+# sluzba zapisuje jen do data/.
+User=settings
+Group=settings
 Environment=SETTINGS_DATA=/opt/settings/data
 Environment=SETTINGS_PORT=8092
 # Jen pro Caddy na stejnem stroji. Zalohy nesou token Home Assistantu, takze

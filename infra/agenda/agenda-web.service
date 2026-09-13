@@ -5,7 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=opc
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Kod a .venv patri
+# rootovi, sluzba cte jen www/.
+User=agenda
+Group=agenda
 Environment=AGENDA_WWW=/opt/agenda/www
 Environment=AGENDA_PORT=8089
 # Jen pro Caddy na stejnem stroji. Kdyby server visel na verejne IP, dal by
@@ -13,6 +16,7 @@ Environment=AGENDA_PORT=8089
 Environment=AGENDA_BIND=127.0.0.1
 # Kvuli AGENDA_PRIVATE_HASH, otisku hesla k soukromym kalendarum. Stejny soubor
 # jako u generatoru, aby heslo i seznam soukromych kalendaru lezely spolu.
+# Soubor patri rootovi (600), systemd ho nacte pred prepnutim na uzivatele.
 EnvironmentFile=/opt/agenda/agenda.env
 ExecStart=/opt/agenda/.venv/bin/python /opt/agenda/serve.py
 Restart=on-failure
