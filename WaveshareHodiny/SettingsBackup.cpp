@@ -4,6 +4,9 @@
 
 namespace {
 constexpr uint8_t BACKUP_MAGIC[4] = {'W', 'H', 'S', 'B'};
+// Verze formátu se nezvyšuje: jiná verze obnovu odmítne, takže by přestaly
+// platit všechny dosavadní zálohy. Nový obsah přijde jako nový oddíl, který
+// starší firmware přeskočí.
 constexpr uint8_t BACKUP_VERSION = 1;
 constexpr uint8_t BACKUP_FLAG_SECRETS = 0x01;
 constexpr size_t BACKUP_HEADER_SIZE = 8;
@@ -21,6 +24,12 @@ enum SectionTag : uint16_t {
 // Vzhled leží v NVS po jednotlivých klíčích, ne jako struktura, takže se ani
 // tady nekopíruje paměť: pole mají pevné pořadí a velikost nezávislou na
 // překladači.
+//
+// Tahle délka je navždy nejmenší, kterou obnova přijme - tolik zapisuje
+// první firmware se zálohou. Nové pole vzhledu se připíše za ni, zapíše se
+// delší oddíl a čtení nového pole se podmíní délkou; kratší oddíl ze starší
+// zálohy pak nové pole nechá výchozí. Zvednout tuhle hodnotu by staré zálohy
+// odmítlo jako neplatné.
 constexpr size_t APPEARANCE_SIZE = 26;
 
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
@@ -127,6 +136,129 @@ void readAppearance(const uint8_t *data, ClockAppearanceConfig &appearance) {
   appearance.monochromeWeatherIconColor = readU32(data + 22) & 0xFFFFFF;
 }
 
+// Každé pole ClockConfig v pořadí, v jakém leží, s částí, ke které patří.
+// Pole sahá až k začátku dalšího, takže s ním jde i jeho zarovnávací výplň.
+// Uprostřed záznamu nic přibýt nemůže (hlídají to předpony schémat
+// v ClockConfig.h); nové pole na konci shodí static_assert níže, dokud se
+// sem nezapíše s částí, kam patří.
+struct ConfigField {
+  size_t offset;
+  uint8_t part;
+};
+
+#define CONFIG_FIELD(name, part) {offsetof(ClockConfig, name), part}
+constexpr uint8_t PART_CONNECTION = SETTINGS_BACKUP_PART_CONNECTION;
+constexpr uint8_t PART_VALUES = SETTINGS_BACKUP_PART_VALUES;
+constexpr uint8_t PART_SCREENS = SETTINGS_BACKUP_PART_SCREENS;
+constexpr uint8_t PART_DISPLAY = SETTINGS_BACKUP_PART_DISPLAY;
+constexpr uint8_t PART_SYSTEM = SETTINGS_BACKUP_PART_SYSTEM;
+
+constexpr ConfigField CONFIG_FIELDS[] = {
+    CONFIG_FIELD(homeAssistantUrl, PART_CONNECTION),
+    CONFIG_FIELD(homeAssistantToken, PART_CONNECTION),
+    CONFIG_FIELD(weatherEntityId, PART_VALUES),
+    CONFIG_FIELD(sunEntityId, PART_DISPLAY),
+    CONFIG_FIELD(leftSide, PART_VALUES),
+    CONFIG_FIELD(rightSide, PART_VALUES),
+    CONFIG_FIELD(metricA, PART_VALUES),
+    CONFIG_FIELD(metricB, PART_VALUES),
+    CONFIG_FIELD(metricAColorScale, PART_VALUES),
+    CONFIG_FIELD(metricBColorScale, PART_VALUES),
+    CONFIG_FIELD(timeColor, PART_DISPLAY),
+    CONFIG_FIELD(dateColor, PART_DISPLAY),
+    CONFIG_FIELD(leftWeatherIconColor, PART_VALUES),
+    CONFIG_FIELD(rightWeatherIconColor, PART_VALUES),
+    CONFIG_FIELD(animatedWeatherIcons, PART_DISPLAY),
+    CONFIG_FIELD(weatherIconStyle, PART_DISPLAY),
+    CONFIG_FIELD(dayBrightness, PART_DISPLAY),
+    CONFIG_FIELD(nightBrightness, PART_DISPLAY),
+    CONFIG_FIELD(automaticDayNight, PART_DISPLAY),
+    CONFIG_FIELD(sunsetOffsetMinutes, PART_DISPLAY),
+    CONFIG_FIELD(automaticFirmwareUpdate, PART_SYSTEM),
+    CONFIG_FIELD(secondRingEnabled, PART_DISPLAY),
+    CONFIG_FIELD(secondEffect, PART_DISPLAY),
+    CONFIG_FIELD(sunriseOffsetMinutes, PART_DISPLAY),
+    CONFIG_FIELD(secondRingBackgroundColor, PART_DISPLAY),
+    CONFIG_FIELD(secondRingBackgroundBrightness, PART_DISPLAY),
+    CONFIG_FIELD(secondRingBackgroundDotSize, PART_DISPLAY),
+    CONFIG_FIELD(secondDotSize, PART_DISPLAY),
+    CONFIG_FIELD(secondDotColor, PART_DISPLAY),
+    CONFIG_FIELD(secondDotBrightness, PART_DISPLAY),
+    CONFIG_FIELD(dayNightLightEntityId, PART_DISPLAY),
+    CONFIG_FIELD(nightVisualMode, PART_DISPLAY),
+    CONFIG_FIELD(timeFont, PART_DISPLAY),
+    CONFIG_FIELD(dataSource, PART_CONNECTION),
+    CONFIG_FIELD(openMeteoCity, PART_CONNECTION),
+    CONFIG_FIELD(openMeteoLatitude, PART_CONNECTION),
+    CONFIG_FIELD(openMeteoLongitude, PART_CONNECTION),
+    CONFIG_FIELD(openMeteoSlots, PART_VALUES),
+    CONFIG_FIELD(timeColonEffect, PART_DISPLAY),
+    CONFIG_FIELD(showLeadingHourZero, PART_DISPLAY),
+    CONFIG_FIELD(dateFormat, PART_DISPLAY),
+    CONFIG_FIELD(radarRadiusKm, PART_SCREENS),
+    CONFIG_FIELD(radarFrameCount, PART_SCREENS),
+    CONFIG_FIELD(automaticRadarRotation, PART_SCREENS),
+    CONFIG_FIELD(clockDisplaySeconds, PART_SCREENS),
+    CONFIG_FIELD(radarDisplaySeconds, PART_SCREENS),
+    CONFIG_FIELD(radarMapOpacity, PART_SCREENS),
+    CONFIG_FIELD(radarPauseSeconds, PART_SCREENS),
+    CONFIG_FIELD(language, PART_SYSTEM),
+    CONFIG_FIELD(openMeteoCountry, PART_CONNECTION),
+    CONFIG_FIELD(tmepExportKey, PART_CONNECTION),
+    CONFIG_FIELD(tmepExportId, PART_CONNECTION),
+    CONFIG_FIELD(tmepSlots, PART_VALUES),
+    CONFIG_FIELD(leftValue, PART_VALUES),
+    CONFIG_FIELD(rightValue, PART_VALUES),
+    CONFIG_FIELD(leftValueColorScale, PART_VALUES),
+    CONFIG_FIELD(rightValueColorScale, PART_VALUES),
+    CONFIG_FIELD(slots, PART_VALUES),
+    CONFIG_FIELD(rss, PART_SCREENS),
+    CONFIG_FIELD(bottomSlot, PART_VALUES),
+    CONFIG_FIELD(radarSource, PART_SCREENS),
+    CONFIG_FIELD(radarLegend, PART_SCREENS),
+    CONFIG_FIELD(radarStatusLine, PART_SCREENS),
+    CONFIG_FIELD(radarStatusTemperatureEntityId, PART_SCREENS),
+    CONFIG_FIELD(forecast, PART_SCREENS),
+    CONFIG_FIELD(planes, PART_SCREENS),
+    CONFIG_FIELD(screenOrder, PART_SCREENS),
+    CONFIG_FIELD(agenda, PART_SCREENS),
+    CONFIG_FIELD(planesFeedUrl, PART_SCREENS),
+    CONFIG_FIELD(secondPageSlots, PART_VALUES),
+    CONFIG_FIELD(planesMapLabel, PART_SCREENS),
+    CONFIG_FIELD(agendaCalendars, PART_SCREENS),
+};
+#undef CONFIG_FIELD
+
+constexpr size_t CONFIG_FIELD_COUNT = sizeof(CONFIG_FIELDS) / sizeof(CONFIG_FIELDS[0]);
+
+constexpr bool configFieldsInOrder() {
+  for (size_t index = 1; index < CONFIG_FIELD_COUNT; ++index) {
+    if (CONFIG_FIELDS[index].offset <= CONFIG_FIELDS[index - 1].offset)
+      return false;
+  }
+  return true;
+}
+
+static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
+              "The part table must list ClockConfig fields in layout order.");
+static_assert(offsetof(ClockConfig, agendaCalendars) +
+                      sizeof(ClockAgendaCalendarsConfig) ==
+                  sizeof(ClockConfig),
+              "A new ClockConfig field needs a backup part in CONFIG_FIELDS.");
+
+struct PartName {
+  const char *name;
+  uint8_t part;
+};
+
+constexpr PartName PART_NAMES[] = {
+    {"connection", SETTINGS_BACKUP_PART_CONNECTION},
+    {"values", SETTINGS_BACKUP_PART_VALUES},
+    {"screens", SETTINGS_BACKUP_PART_SCREENS},
+    {"display", SETTINGS_BACKUP_PART_DISPLAY},
+    {"system", SETTINGS_BACKUP_PART_SYSTEM},
+};
+
 constexpr char BASE64_URL[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -146,6 +278,51 @@ void settingsBackupStripSecrets(ClockConfig &config) {
   memset(config.tmepExportId, 0, sizeof(config.tmepExportId));
   memset(config.agendaCalendars.privateKey, 0,
          sizeof(config.agendaCalendars.privateKey));
+}
+
+void settingsBackupKeepCurrentParts(ClockConfig &incoming,
+                                    const ClockConfig &current, uint8_t parts) {
+  if ((parts & SETTINGS_BACKUP_PARTS_ALL) == SETTINGS_BACKUP_PARTS_ALL) return;
+  auto *target = reinterpret_cast<uint8_t *>(&incoming);
+  const auto *source = reinterpret_cast<const uint8_t *>(&current);
+  for (size_t index = 0; index < CONFIG_FIELD_COUNT; ++index) {
+    const ConfigField &field = CONFIG_FIELDS[index];
+    if ((parts & field.part) != 0) continue;
+    const size_t end = index + 1 < CONFIG_FIELD_COUNT
+                           ? CONFIG_FIELDS[index + 1].offset
+                           : sizeof(ClockConfig);
+    memcpy(target + field.offset, source + field.offset, end - field.offset);
+  }
+}
+
+bool settingsBackupParseParts(const char *text, uint8_t &parts) {
+  parts = 0;
+  if (text == nullptr || *text == '\0') {
+    parts = SETTINGS_BACKUP_PARTS_ALL;
+    return true;
+  }
+  const char *cursor = text;
+  while (true) {
+    const char *comma = strchr(cursor, ',');
+    const size_t length =
+        comma != nullptr ? static_cast<size_t>(comma - cursor) : strlen(cursor);
+    bool known = false;
+    for (const PartName &entry : PART_NAMES) {
+      if (strlen(entry.name) == length &&
+          strncmp(cursor, entry.name, length) == 0) {
+        parts |= entry.part;
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      parts = 0;
+      return false;
+    }
+    if (comma == nullptr) break;
+    cursor = comma + 1;
+  }
+  return parts != 0;
 }
 
 size_t settingsBackupEncode(ClockConfig &config,

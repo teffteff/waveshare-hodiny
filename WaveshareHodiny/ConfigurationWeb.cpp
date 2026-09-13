@@ -3608,13 +3608,24 @@ bool buildBackupEnvelope(bool secrets, String &envelope, String &error) {
 
 struct BackupApplyOutcome {
   bool secrets = false;
+  bool partial = false;
   bool webPasswordChanged = false;
   ConfigurationWebMode webMode = CONFIGURATION_WEB_ALWAYS;
 };
 
-// Obnoví nastavení z textu zálohy (base64url). Při chybě odešle odpověď
-// a vrátí false; při úspěchu odpověď nechává volajícímu.
-bool applyBackupText(const char *text, size_t length,
+// Části zálohy, které má obnova převzít (SettingsBackupPart). Bez parametru
+// všechno, jako dřív. Při chybě odešle odpověď a vrátí false.
+bool readBackupParts(uint8_t &parts) {
+  if (settingsBackupParseParts(server.arg("include").c_str(), parts))
+    return true;
+  sendError(400, F("Vyber, co se má ze zálohy obnovit."));
+  return false;
+}
+
+// Obnoví nastavení z textu zálohy (base64url). Převezme jen části v `parts`,
+// zbytek nechá, jak ho mají tyto hodiny. Při chybě odešle odpověď a vrátí
+// false; při úspěchu odpověď nechává volajícímu.
+bool applyBackupText(const char *text, size_t length, uint8_t parts,
                      BackupApplyOutcome &outcome) {
   if (!ensureBackupBuffers()) {
     sendError(503, F("Pro zálohu není dostatek PSRAM."));
@@ -3657,12 +3668,18 @@ bool applyBackupText(const char *text, size_t length,
     }
   }
 
+  const ClockConfig &current = currentConfig();
+  // Nevybrané části zůstanou tyto - včetně tokenu a hesla agendy, které k nim
+  // patří, takže je výběr nepřenese k cizí adrese.
+  settingsBackupKeepCurrentParts(incoming, current, parts);
+  const bool restoreDisplay = (parts & SETTINGS_BACKUP_PART_DISPLAY) != 0;
+  const bool restoreSystem = (parts & SETTINGS_BACKUP_PART_SYSTEM) != 0;
+
   if (!content.secrets) {
     // Záloha bez tajemství nesmí smazat ta, která tyhle hodiny už mají. Token
     // ale zůstane jen u stejné adresy Home Assistantu: poslat ho na server,
     // který zvolila cizí záloha, by byl přesně ten únik, kterému se brání
     // HomeAssistantConnectionPolicy.
-    const ClockConfig &current = currentConfig();
     if (normalizedUrl(incoming.homeAssistantUrl) ==
         normalizedUrl(current.homeAssistantUrl)) {
       clockConfigCopy(incoming.homeAssistantToken,
@@ -3687,18 +3704,23 @@ bool applyBackupText(const char *text, size_t length,
     sendError(500, F("Nastavení se nepodařilo uložit do paměti."));
     return false;
   }
-  if (currentAppearanceSaveCallback == nullptr ||
-      !currentAppearanceSaveCallback(content.appearance)) {
+  if (restoreDisplay && (currentAppearanceSaveCallback == nullptr ||
+                         !currentAppearanceSaveCallback(content.appearance))) {
     sendError(500, F("Vzhled hodin se nepodařilo uložit do paměti."));
     return false;
   }
-  outcome.webMode = static_cast<ConfigurationWebMode>(content.webMode);
-  if (!persistWebMode(outcome.webMode)) {
-    sendError(500, F("Režim webového serveru se nepodařilo uložit."));
-    return false;
+  outcome.partial =
+      (parts & SETTINGS_BACKUP_PARTS_ALL) != SETTINGS_BACKUP_PARTS_ALL;
+  outcome.webMode = selectedWebMode;
+  if (restoreSystem) {
+    outcome.webMode = static_cast<ConfigurationWebMode>(content.webMode);
+    if (!persistWebMode(outcome.webMode)) {
+      sendError(500, F("Režim webového serveru se nepodařilo uložit."));
+      return false;
+    }
   }
   outcome.secrets = content.secrets;
-  if (content.secrets) {
+  if (content.secrets && restoreSystem) {
     // Heslo webu se jen přebírá, nikdy nemaže: záloha s tajemstvími vzniká
     // jen na hodinách s heslem, takže chybějící oddíl je cizí soubor, ne
     // přání ochranu vypnout.
@@ -3730,6 +3752,8 @@ void finishBackupApply(const BackupApplyOutcome &outcome) {
   }
   String payload = F("{\"ok\":true,\"secrets\":");
   payload += outcome.secrets ? F("true") : F("false");
+  payload += F(",\"partial\":");
+  payload += outcome.partial ? F("true") : F("false");
   payload += F(",\"webPasswordChanged\":");
   payload += outcome.webPasswordChanged ? F("true") : F("false");
   payload += '}';
@@ -3761,6 +3785,8 @@ void handleBackupExport() {
 }
 
 void handleBackupImport() {
+  uint8_t include = 0;
+  if (!readBackupParts(include)) return;
   const long parts = server.arg("parts").toInt();
   if (parts <= 0 || parts > static_cast<long>(BACKUP_IMPORT_MAX_PARTS) ||
       !ensureBackupBuffers()) {
@@ -3781,7 +3807,8 @@ void handleBackupImport() {
   }
   backupText[length] = '\0';
   BackupApplyOutcome outcome;
-  if (applyBackupText(backupText, length, outcome)) finishBackupApply(outcome);
+  if (applyBackupText(backupText, length, include, outcome))
+    finishBackupApply(outcome);
 }
 
 // Adresa serveru z formuláře, nebo uložená. Nová se uloží až po úspěšném
@@ -3928,8 +3955,10 @@ void handleSettingsShareUpload() {
 void handleSettingsShareDownload() {
   SettingsShareRequest request;
   request.operation = SettingsShareOperation::Download;
+  uint8_t include = 0;
   if (!resolveShareUrl(request.url, sizeof(request.url)) ||
-      !readBackupName(request.name, sizeof(request.name)))
+      !readBackupName(request.name, sizeof(request.name)) ||
+      !readBackupParts(include))
     return;
   SettingsShareResult result;
   if (!runSettingsShare(request, result)) return;
@@ -3951,7 +3980,7 @@ void handleSettingsShareDownload() {
   if (!applyBackupText(data.contentBegin(),
                        static_cast<size_t>(data.contentEnd() -
                                            data.contentBegin()),
-                       outcome))
+                       include, outcome))
     return;
   finishBackupApply(outcome);
 }

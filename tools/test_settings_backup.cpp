@@ -358,9 +358,147 @@ void testNamesAndUrls() {
          String("https://example.test/a@b"));
 }
 
+// Import jen hodnot na hodiny s jiným připojením: hodnoty přijdou ze zálohy,
+// připojení, obrazovky, vzhled i systém zůstanou tyto.
+void testSelectedPartsKeepTheRest() {
+  ClockConfig incoming;
+  fillEverything(incoming);
+  ClockConfig current;
+  clockConfigApplyDefaults(current);
+  clockConfigCopy(current.homeAssistantUrl, sizeof(current.homeAssistantUrl),
+                  "http://other-ha.local:8123");
+  clockConfigCopy(current.homeAssistantToken,
+                  sizeof(current.homeAssistantToken), "other-token");
+  clockConfigCopy(current.openMeteoCity, sizeof(current.openMeteoCity),
+                  "Ostrava");
+  current.dayBrightness = 12;
+  current.language = CLOCK_LANGUAGE_CZECH;
+
+  settingsBackupKeepCurrentParts(incoming, current,
+                                 SETTINGS_BACKUP_PART_VALUES);
+
+  const ClockValueSlotConfig &slot =
+      clockConfigValueSlot(incoming, CLOCK_VALUE_SLOT_COUNT - 1);
+  assert(slot.enabled);
+  assert(strcmp(slot.entityId, "sensor.last") == 0);
+  assert(slot.color == 0x123456);
+  assert(strcmp(incoming.homeAssistantUrl, "http://other-ha.local:8123") == 0);
+  assert(strcmp(incoming.homeAssistantToken, "other-token") == 0);
+  assert(strcmp(incoming.openMeteoCity, "Ostrava") == 0);
+  assert(incoming.dataSource == current.dataSource);
+  assert(incoming.dayBrightness == 12);
+  assert(incoming.timeFont == current.timeFont);
+  assert(incoming.language == CLOCK_LANGUAGE_CZECH);
+  assert(!incoming.planes.enabled);
+  assert(incoming.agenda.url[0] == '\0');
+  assert(incoming.agendaCalendars.privateKey[0] == '\0');
+  assert(memcmp(incoming.screenOrder, current.screenOrder,
+                sizeof(current.screenOrder)) == 0);
+  assert(incoming.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+
+  // Všechny části dohromady nemění nic.
+  ClockConfig full;
+  fillEverything(full);
+  ClockConfig expected = full;
+  settingsBackupKeepCurrentParts(full, current, SETTINGS_BACKUP_PARTS_ALL);
+  assert(memcmp(&full, &expected, sizeof(full)) == 0);
+}
+
+// Každý bajt konfigurace za schemaVersion patří právě jedné části, jinak by
+// ho výběr buď nikdy nepřenesl, nebo přenesl i s cizí částí.
+void testEveryConfigByteHasOnePart() {
+  static constexpr uint8_t PARTS[] = {
+      SETTINGS_BACKUP_PART_CONNECTION, SETTINGS_BACKUP_PART_VALUES,
+      SETTINGS_BACKUP_PART_SCREENS, SETTINGS_BACKUP_PART_DISPLAY,
+      SETTINGS_BACKUP_PART_SYSTEM};
+  uint8_t combined = 0;
+  for (uint8_t part : PARTS) combined |= part;
+  assert(combined == SETTINGS_BACKUP_PARTS_ALL);
+
+  std::vector<uint8_t> owners(sizeof(ClockConfig), 0);
+  ClockConfig incoming;
+  ClockConfig current;
+  for (uint8_t part : PARTS) {
+    memset(static_cast<void *>(&incoming), 0xAA, sizeof(incoming));
+    memset(static_cast<void *>(&current), 0x55, sizeof(current));
+    settingsBackupKeepCurrentParts(incoming, current, part);
+    const auto *bytes = reinterpret_cast<const uint8_t *>(&incoming);
+    for (size_t index = 0; index < sizeof(ClockConfig); ++index) {
+      if (bytes[index] == 0xAA) ++owners[index];
+    }
+  }
+  for (size_t index = 0; index < sizeof(uint32_t); ++index)
+    assert(owners[index] == sizeof(PARTS) / sizeof(PARTS[0]));
+  for (size_t index = sizeof(uint32_t); index < sizeof(ClockConfig); ++index)
+    assert(owners[index] == 1);
+}
+
+void testPartNames() {
+  uint8_t parts = 0;
+  assert(settingsBackupParseParts("", parts));
+  assert(parts == SETTINGS_BACKUP_PARTS_ALL);
+  assert(settingsBackupParseParts(nullptr, parts));
+  assert(parts == SETTINGS_BACKUP_PARTS_ALL);
+  assert(settingsBackupParseParts("values", parts));
+  assert(parts == SETTINGS_BACKUP_PART_VALUES);
+  assert(settingsBackupParseParts("connection,values,screens,display,system",
+                                  parts));
+  assert(parts == SETTINGS_BACKUP_PARTS_ALL);
+  assert(settingsBackupParseParts("display,display", parts));
+  assert(parts == SETTINGS_BACKUP_PART_DISPLAY);
+  assert(!settingsBackupParseParts("values,wifi", parts));
+  assert(parts == 0);
+  assert(!settingsBackupParseParts("values,", parts));
+  assert(!settingsBackupParseParts(",", parts));
+  assert(!settingsBackupParseParts("value", parts));
+}
+
+// Novější firmware smí vzhled prodloužit. Starší firmware delší oddíl přečte
+// a nové pole přeskočí, novější přečte starší kratší oddíl.
+void testLongerAppearanceSectionIsRead() {
+  ClockConfig source;
+  fillEverything(source);
+  std::vector<uint8_t> backup = encode(source, fullContent());
+  const size_t sectionHeader = RECORD_OFFSET + clockConfigRecordSize();
+  assert(backup[sectionHeader] == 2 && backup[sectionHeader + 1] == 0);
+  assert(backup[sectionHeader + 2] == 26 && backup[sectionHeader + 3] == 0);
+  backup[sectionHeader + 2] = 30;
+  const uint8_t extra[] = {1, 2, 3, 4};
+  backup.insert(backup.begin() + sectionHeader + 4 + 26, extra, extra + 4);
+  resealBackup(backup);
+
+  ClockConfig restored;
+  SettingsBackupContent content;
+  assert(settingsBackupDecode(backup.data(), backup.size(), restored,
+                              content) == SettingsBackupStatus::Ok);
+  assert(content.appearance.style == CLOCK_STYLE_VALUES);
+  assert(content.appearance.monochromeWeatherIconColor == 0x556677);
+  assert(content.webMode == 2);
+}
+
+// Neznámý oddíl z novějšího firmwaru se přeskočí.
+void testUnknownSectionIsSkipped() {
+  ClockConfig source;
+  fillEverything(source);
+  std::vector<uint8_t> backup = encode(source, fullContent());
+  const uint8_t unknown[] = {0x34, 0x12, 3, 0, 'x', 'y', 'z'};
+  backup.insert(backup.end() - 4, unknown, unknown + sizeof(unknown));
+  resealBackup(backup);
+  ClockConfig restored;
+  SettingsBackupContent content;
+  assert(settingsBackupDecode(backup.data(), backup.size(), restored,
+                              content) == SettingsBackupStatus::Ok);
+  assert(strcmp(restored.homeAssistantToken, "secret-ha-token") == 0);
+}
+
 }  // namespace
 
 int main() {
+  testSelectedPartsKeepTheRest();
+  testEveryConfigByteHasOnePart();
+  testPartNames();
+  testLongerAppearanceSectionIsRead();
+  testUnknownSectionIsSkipped();
   testFullBackupCarriesEverything();
   testBackupWithoutSecretsLeavesThemOut();
   testCorruptedBackupIsRejected();

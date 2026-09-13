@@ -204,6 +204,14 @@ PREVIEW_AGENDA_KEY = "tajne"
 
 # Záloha pro náhled. Data nejsou skutečná záloha; firmware by je odmítl, ale
 # stránce stačí tvar obálky.
+BACKUP_PART_COUNT = 5
+
+
+def partial_restore(fields: dict) -> bool:
+    include = fields.get("include", "")
+    return bool(include) and len(set(include.split(","))) < BACKUP_PART_COUNT
+
+
 PREVIEW_BACKUP = {
     "format": "waveshare-hodiny-settings",
     "version": 3,
@@ -292,8 +300,11 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "secrets": secrets,
                             "backup": {**PREVIEW_BACKUP, "secrets": secrets}})
             elif path == "/api/backup/import":
-                print(f"POST {path}: {fields.get('parts')} kousků", flush=True)
-                self._json({"ok": True, "secrets": False, "webPasswordChanged": False})
+                print(f"POST {path}: {fields.get('parts')} kousků, "
+                      f"obnovit {fields.get('include') or 'vše'}", flush=True)
+                self._json({"ok": True, "secrets": False,
+                            "partial": partial_restore(fields),
+                            "webPasswordChanged": False})
             elif path == "/api/backup/share/list":
                 self._json({"ok": True, "url": "https://server.example/settings",
                             "backups": [
@@ -307,7 +318,11 @@ class PreviewHandler(BaseHTTPRequestHandler):
                             "url": "https://server.example/settings",
                             "secrets": secrets})
             elif path == "/api/backup/share/download":
-                self._json({"ok": True, "secrets": True, "webPasswordChanged": False})
+                print(f"POST {path}: obnovit {fields.get('include') or 'vše'}",
+                      flush=True)
+                self._json({"ok": True, "secrets": True,
+                            "partial": partial_restore(fields),
+                            "webPasswordChanged": False})
             else:
                 self._json({"ok": True})
             return
