@@ -5,18 +5,26 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=opc
+# Vlastni uzivatel, ne opc: opc ma sudo bez hesla a SSH klic. Kod a .venv
+# patri rootovi, sluzba smi zapisovat jen do www/ a state/.
+User=news
+Group=news
 Environment=NEWS_WWW=/opt/news/www
 Environment=NEWS_PORT=8088
+# Jen pro Caddy na stejnem stroji, stejne jako agenda, letadla a zalohy. Port
+# 8088 neni otevreny ani v OCI, ani ve firewalld; tohle je pojistka navic.
+Environment=NEWS_BIND=127.0.0.1
 # Registr poloh sdileny s generate.py. news.env se sem schvalne nenacita, aby
 # proces na verejne IP neznal klic k modelu; kdo zmeni strop poloh v news.env,
-# musi ho zmenit i tady.
+# musi ho zmenit i tady. news.env je navic rootuv (600), takze ho sluzba
+# neprecte ani jako soubor.
 Environment=NEWS_STATE=/opt/news/state/locations
 Environment=NEWS_MAX_LOCATIONS=4
 ExecStart=/opt/news/.venv/bin/python /opt/news/serve.py
 Restart=on-failure
 RestartSec=5
-# Sluzba posloucha na verejne IP, takze dostane stejne mantinely jako Caddy.
+# Sluzba zpracovava dotazy z internetu (pres Caddy), takze dostane stejne
+# mantinely jako Caddy.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

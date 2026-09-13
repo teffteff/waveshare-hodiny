@@ -5,7 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=opc
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Sluzba nic nezapisuje,
+# kod patri rootovi.
+User=planes
+Group=planes
 Environment=PLANES_PORT=8090
 # Jen pro Caddy na stejnem stroji. Sluzba chodi ven na adsb.fi, takze na
 # verejne IP by z ni byl otevreny prevypravec pro kohokoli.

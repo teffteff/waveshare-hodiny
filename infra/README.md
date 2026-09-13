@@ -45,13 +45,13 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 |---|---|---|---|
 | Caddy (HTTPS proxy) | 80, 443 | `/etc/caddy/Caddyfile`, `/etc/caddy/caddy.env`, `/etc/systemd/system/caddy.service` | `caddy/` |
 | Generátor zpráv | — | `/opt/news/generate.py`, `news.service` + `news.timer` | `news/` |
-| Server se zprávami | 8088 | `/opt/news/serve.py`, `locations.py`, `news-web.service`, registr poloh v `/opt/news/state/locations/` | `news/` |
+| Server se zprávami | 8088, jen loopback | `/opt/news/serve.py`, `locations.py`, `news-web.service`, registr poloh v `/opt/news/state/locations/` | `news/` |
 | Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
 | Server s agendou | 8089, jen loopback | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
 | Přepravčí letadel | 8090, jen loopback | `/opt/planes/serve.py`, `planes-web.service` | `planes/` |
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
-| Ostatní | 25565 | Minecraft, go2rtc — s hodinami nesouvisí | — |
+| Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
 Generátor jede na **Google Gemini**, ne na Claude: `.venv` s `google-genai`,
 klíč `GEMINI_API_KEY` v `/opt/news/news.env` (práva 600). Timer pouští výběr
@@ -121,13 +121,16 @@ Musí být otevřené **na dvou místech** — v OCI (security list dané VCN) i
 `firewalld` na stroji. Když ACME hlásí „Timeout during connect (likely firewall
 problem)“, jedno z těch dvou je zavřené.
 
+- 22 — SSH, jen klíčem, hlídá ho fail2ban (viz „Zabezpečení stroje“)
 - 80, 443 — Caddy a obnova certifikátu. **Bez nich certifikát tiše vyprší.**
-- 8088 — přímý přístup ke kanálu, dnes už jen záloha
-- 8123 — přímý přístup k HA, taky jen záloha
+- 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
-Porty **8089, 8090 a 8092 mezi ně nepatří**: servery s agendou, letadly
+Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
+8090 a 8092 mezi ně nepatří**: servery se zprávami, agendou, letadly
 a zálohami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
+Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
+ve `firewalld` otevřený není; ven chodí jen přes Caddy.
 
 Certifikát vydává Let's Encrypt přes tls-alpn-01, obnovuje ho Caddy sám.
 Neúspěšné pokusy jsou limitované (~5/h), takže **restartovat Caddy kvůli
@@ -148,7 +151,7 @@ Adresa servisního účtu, se kterou se kalendáře sdílejí, je v jeho klíči
 `client_email`:
 
 ```sh
-ssh … "sudo -u opc grep client_email /opt/agenda/key.json"
+ssh … "sudo grep client_email /opt/agenda/key.json"
 ```
 
 Přístup nedávají role v Cloudu, ale **sdílení kalendáře s adresou účtu**
@@ -209,7 +212,7 @@ Přidání soukromého kalendáře:
 2. Otisk hesla (heslo jen tisknutelné ASCII, nejvýš 63 znaků — jde v HTTP
    hlavičce):
    ```sh
-   ssh -t … "/opt/agenda/.venv/bin/python /opt/agenda/serve.py --hash"
+   ssh -t … "sudo -u agenda /opt/agenda/.venv/bin/python /opt/agenda/serve.py --hash"
    ```
 3. Do `/opt/agenda/agenda.env` přidat
    `AGENDA_PRIVATE_CALENDARS=id|Jméno` a vypsaný `AGENDA_PRIVATE_HASH=…`,
@@ -297,10 +300,13 @@ NEW="$(openssl rand -hex 24)"      # hex: bez : a @ kvůli adrese
 HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$NEW'")"
 # Hash se do caddy.env PŘIDÁ, AGENDA_HASH musí zůstat.
 $SSH "$CLOCK_SSH" "printf 'SETTINGS_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
-$SSH "$CLOCK_SSH" 'sudo install -d -o opc -g opc -m 700 /opt/settings /opt/settings/data'
+$SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/settings --shell /sbin/nologin settings \
+    && sudo install -d -o root -g settings -m 750 /opt/settings \
+    && sudo install -d -o settings -g settings -m 700 /opt/settings/data'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
-    infra/settings/serve.py infra/settings/settings-web.service "$CLOCK_SSH:/opt/settings/"
-$SSH "$CLOCK_SSH" 'sudo cp /opt/settings/settings-web.service /etc/systemd/system/ \
+    infra/settings/serve.py infra/settings/settings-web.service "$CLOCK_SSH:"
+$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py settings-web.service /opt/settings/ \
+    && sudo cp /opt/settings/settings-web.service /etc/systemd/system/ \
     && sudo systemctl daemon-reload && sudo systemctl enable --now settings-web.service'
 ```
 
@@ -498,14 +504,21 @@ co `--deep` ohlásí jako rozjeté. Po commitu:
 ```sh
 set -a; . .env; set +a          # načte CLOCK_HOST, CLOCK_SSH, CLOCK_SSH_KEY
 SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+$SSH "$CLOCK_SSH" 'mkdir -p news-deploy'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     infra/news/generate.py infra/news/serve.py infra/news/locations.py \
     infra/news/news.service infra/news/news.timer infra/news/news-web.service \
-    "$CLOCK_SSH:/opt/news/"
-$SSH "$CLOCK_SSH" 'sudo cp /opt/news/news*.service /opt/news/news.timer \
+    "$CLOCK_SSH:news-deploy/"
+$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 news-deploy/* /opt/news/ && rm -r news-deploy \
+    && sudo cp /opt/news/news*.service /opt/news/news.timer \
     /etc/systemd/system/ && sudo systemctl daemon-reload \
     && sudo systemctl restart news-web.service && sudo systemctl start news.service'
 ```
+
+Soubory jdou nejdřív do domovského adresáře `opc` a na místo je dá `sudo
+install` jako rootovy: adresáře v `/opt` od 13. 9. 2026 `opc` nepatří (viz
+„Zabezpečení stroje“), takže přímé `scp` do nich skončí na právech. Agenda se
+nasazuje stejně, do `/opt/agenda/`.
 
 Letadla jsou první služba bez `.venv`: vystačí si se standardní knihovnou.
 Jednotka volá **`/usr/bin/python3.11`**, ne `python3` — ten je na Oracle Linuxu 8
@@ -513,10 +526,12 @@ pořád ještě 3.6 a ta neumí ani `from __future__ import annotations`. Poprv�
 potřeba založit adresář a jednotku povolit:
 
 ```sh
-$SSH "$CLOCK_SSH" 'sudo install -d -o opc -g opc /opt/planes'
+$SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/planes --shell /sbin/nologin planes \
+    && sudo install -d -o root -g planes -m 750 /opt/planes'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
-    infra/planes/serve.py infra/planes/planes-web.service "$CLOCK_SSH:/opt/planes/"
-$SSH "$CLOCK_SSH" 'sudo cp /opt/planes/planes-web.service /etc/systemd/system/ \
+    infra/planes/serve.py infra/planes/planes-web.service "$CLOCK_SSH:"
+$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py planes-web.service /opt/planes/ \
+    && sudo cp /opt/planes/planes-web.service /etc/systemd/system/ \
     && sudo systemctl daemon-reload \
     && sudo systemctl enable --now planes-web.service'
 ```
@@ -543,6 +558,61 @@ ve dvou místech: kopie v `/opt/news/` je ta, kterou porovnává `--deep`, běho
 je v `/etc/systemd/system/`. Po Caddyfile stačí `sudo systemctl reload caddy`.
 Nakonec `tools/check-stack.sh --deep` — musí projít beze zbytku.
 
+## Zabezpečení stroje
+
+Stav k 13. 9. 2026. Zvenčí jsou otevřené jen porty z oddílu „Porty“.
+
+**Každá služba má svého uživatele.** Dřív všechno běželo pod `opc`, který má
+sudo bez hesla a SSH klíč; chyba v libovolné službě (generátor zpráv čte RSS
+z internetu) by tak mohla skončit rootem. `NoNewPrivileges` sice sudo blokuje,
+ale služba mohla přepsat kód ostatních nebo `~opc/.ssh/authorized_keys`.
+Dnes platí:
+
+| Adresář | Vlastník | Služba smí zapisovat |
+|---|---|---|
+| `/opt/news` | `root:news` 750 | `www/`, `state/` (`news`) |
+| `/opt/agenda` | `root:agenda` 750 | `www/` (`agenda`); `key.json` je `agenda` 400 |
+| `/opt/planes` | `root:planes` 750 | nic |
+| `/opt/settings` | `root:settings` 750 | `data/` (`settings`) |
+
+Kód a `.venv` patří rootovi, takže je služba nezmění. `news.env`
+a `agenda.env` jsou rootovy (600): systemd je načte do prostředí ještě před
+přepnutím na uživatele, ale jako soubor je služba nepřečte. Python kvůli tomu
+nemůže zapsat `__pycache__` vedle kódu, což nevadí. `/opt/watch` (jiný
+projekt) má uživatele `watch` odjakživa.
+
+**SSH:** jen klíčem, `PermitRootLogin no`, `X11Forwarding no`. Pokusů
+o přihlášení chodilo kolem 38 000 týdně, takže běží **fail2ban** s jailem
+`sshd` (`/etc/fail2ban/jail.d/sshd.local`: 5 pokusů za 10 min, ban hodina
+a s každým opakováním déle, nejvýš týden). Balíky jsou z `ol8_developer_EPEL`,
+který zůstává **vypnutý** a zapnul se jen pro tu instalaci
+(`dnf --enablerepo=ol8_developer_EPEL`); aktualizace fail2ban tedy nepřijdou
+samy. Odbanování: `sudo fail2ban-client set sshd unbanip <IP>`.
+
+**Aktualizace:** `dnf-automatic.timer` denně instaluje bezpečnostní opravy
+(`upgrade_type = security` v `/etc/dnf/automatic.conf`), sám nerestartuje.
+Jádro za běhu záplatuje Ksplice (`autoinstall = yes`
+v `/etc/uptrack/uptrack.conf`). Docker CE je 26.1.3: pro EL8 Docker novější
+nevydává, a jeho repozitář nenese bezpečnostní hlášení, takže ho
+`dnf updateinfo` ani `dnf-automatic` nevidí.
+
+**Vypnuto:** `rpcbind` (port 111, nic ho nepoužívalo).
+
+**Caddy** posílá `Strict-Transport-Security`, bez `includeSubDomains`.
+
+Zálohy původních souborů z 13. 9. 2026 jsou v `/root/hardening-20260913/`.
+
+**Zbývá udělat ručně:**
+
+- Home Assistant běží s `--privileged` a `--network=host`. Průnik do HA,
+  který je jako jediná aplikace vystavený do internetu, tak znamená root na
+  celém stroji. Kontejner nemá namapované žádné zařízení, takže privileged
+  nejspíš nepotřebuje; znovu vytvořit bez něj ho musí člověk u terminálu.
+- Účet vlastníka HA nemá dvoufaktor (Profil → Zabezpečení → TOTP).
+- SSH klíč je RSA (odtud `+ssh-rsa` ve všech příkazech). Nový ed25519 klíč
+  přidat do `authorized_keys`, přepnout `CLOCK_SSH_KEY` v `.env` a starý
+  klíč z OCI konzole pak odebrat.
+
 ## Kontrola
 
 ```sh
@@ -555,7 +625,10 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
 
 ## Obnova serveru
 
-1. Nový stroj, otevřít 80/443 v OCI i ve `firewalld`.
+1. Nový stroj, otevřít 80/443 v OCI i ve `firewalld`. Uživatelé služeb:
+   `for u in news agenda planes settings; do sudo useradd --system
+   --no-create-home --home-dir /opt/$u --shell /sbin/nologin $u; done`
+   a vlastnictví podle tabulky v „Zabezpečení stroje“.
 2. Caddy: binárku do `/usr/bin/caddy`, `caddy/Caddyfile` do `/etc/caddy/`
    (s dosazenou doménou), `caddy/caddy.service` do `/etc/systemd/system/`,
    uživatel `caddy`, `HOME=/var/lib/caddy`. `caddy.env.example` →
