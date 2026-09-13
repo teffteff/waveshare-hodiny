@@ -2,6 +2,7 @@
 
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <lvgl.h>
 #include <WiFiClientSecure.h>
 #include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
@@ -514,6 +515,97 @@ bool drawCity(const RenderContext &context, MapLabelPlacer &placer,
   return true;
 }
 
+// Popisky letadel píše Montserrat 12 místo drobného pixelového písma 5x7:
+// verzálky mají 9 px místo 7 a hladké hrany, takže se typ nebo volací znak dá
+// přečíst i z dálky. Města a legenda zůstávají pixelové, aby letadla vynikla.
+//
+// Radar kreslí ve vlastní úloze, zatímco LVGL tentýž font používá na hlavní
+// obrazovce. Font si při hledání znaku zapisuje poslední nalezený do cache,
+// takže radar dostane kopii fontu s vlastní cache - sdílená by mohla občas
+// podstrčit cizí znak. Bitmapy jsou nekomprimované a jen se čtou.
+struct PlaneLabelFont {
+  lv_font_fmt_txt_glyph_cache_t cache;
+  lv_font_fmt_txt_dsc_t dsc;
+  lv_font_t font;
+  int capHeight;
+};
+
+// Volá se jen z úlohy radaru, takže líná inicializace nepotřebuje zámek.
+const PlaneLabelFont &planeLabelFont() {
+  static PlaneLabelFont labelFont = {};
+  static bool initialized = false;
+  if (!initialized) {
+    labelFont.dsc =
+        *static_cast<const lv_font_fmt_txt_dsc_t *>(lv_font_montserrat_12.dsc);
+    labelFont.dsc.cache = &labelFont.cache;
+    labelFont.font = lv_font_montserrat_12;
+    labelFont.font.dsc = &labelFont.dsc;
+    lv_font_glyph_dsc_t glyph;
+    labelFont.capHeight =
+        lv_font_get_glyph_dsc(&labelFont.font, &glyph, 'H', 0)
+            ? glyph.box_h + glyph.ofs_y
+            : MAP_CANVAS_GLYPH_HEIGHT;
+    initialized = true;
+  }
+  return labelFont;
+}
+
+// Obálka popisku: verzálky a nad i pod nimi tři pixely, stejně jako u
+// pixelového písma.
+int planeLabelHeight() { return planeLabelFont().capHeight + 6; }
+
+uint32_t planeLabelLetter(char character) {
+  return static_cast<uint32_t>(toupper(static_cast<unsigned char>(character)));
+}
+
+int planeLabelWidth(const char *text) {
+  const lv_font_t &font = planeLabelFont().font;
+  int width = 0;
+  for (size_t index = 0; text[index] != '\0'; ++index) {
+    lv_font_glyph_dsc_t glyph;
+    const uint32_t next =
+        text[index + 1] != '\0' ? planeLabelLetter(text[index + 1]) : 0;
+    if (lv_font_get_glyph_dsc(&font, &glyph, planeLabelLetter(text[index]),
+                              next))
+      width += glyph.adv_w;
+  }
+  return width;
+}
+
+// Text VELKÝMI písmeny s horní hranou verzálek na y.
+void drawPlaneLabel(int x, int y, const char *text, uint16_t color) {
+  const PlaneLabelFont &labelFont = planeLabelFont();
+  const int baseline = y + labelFont.capHeight;
+  int penX = x;
+  for (size_t index = 0; text[index] != '\0'; ++index) {
+    const uint32_t letter = planeLabelLetter(text[index]);
+    const uint32_t next =
+        text[index + 1] != '\0' ? planeLabelLetter(text[index + 1]) : 0;
+    lv_font_glyph_dsc_t glyph;
+    if (!lv_font_get_glyph_dsc(&labelFont.font, &glyph, letter, next)) continue;
+    const uint8_t *bitmap =
+        glyph.bpp == 4 ? lv_font_get_glyph_bitmap(&labelFont.font, letter)
+                       : nullptr;
+    if (bitmap != nullptr) {
+      const int left = penX + glyph.ofs_x;
+      const int top = baseline - glyph.ofs_y - glyph.box_h;
+      // 4 bity na pixel, řádky za sebou bez zarovnání na celé bajty.
+      for (int row = 0; row < glyph.box_h; ++row) {
+        for (int column = 0; column < glyph.box_w; ++column) {
+          const size_t bit =
+              static_cast<size_t>(row * glyph.box_w + column) * 4;
+          const uint8_t coverage =
+              (bitmap[bit >> 3] >> ((bit & 4) != 0 ? 0 : 4)) & 0x0f;
+          if (coverage != 0)
+            setMapPixel(pixels, left + column, top + row, color,
+                        static_cast<uint8_t>(coverage * 100 / 15));
+        }
+      }
+    }
+    penX += glyph.adv_w;
+  }
+}
+
 // Čím dál je pohled, tím méně měst se vejde, aby zůstala vidět letadla.
 void drawCities(const RenderContext &context, MapLabelPlacer &placer) {
   const bool fullNames = context.rangeKm <= 25.0f;
@@ -854,7 +946,8 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   //
   // Náhrady za chybějící údaj žijí JEN v popisku - AdsbAircraft::callsign
   // zůstává schválně prázdný, protože se posílá do API na trasu a adresa se
-  // tam čte jako číslo letu. Osmnáct znaků je 107 px, zhruba třetina kruhu.
+  // tam čte jako číslo letu. Osmnáct znaků je v Montserratu 12
+  // kolem 150 px, zhruba třetina kruhu.
   char label[19];
   for (const bool priorityRound : {true, false}) {
     for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
@@ -866,14 +959,15 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
       MapLabelBox box;
       adsbMapLabel(aircraft, typeNameLabels, label, sizeof(label));
       if (label[0] != '\0' &&
-          mapPlaceIconLabel(placer, entry.x, entry.y, mapTextWidth(label),
-                            box)) {
+          mapPlaceIconLabel(placer, entry.x, entry.y, planeLabelWidth(label),
+                            box, planeLabelHeight())) {
         entry.labelKind = 1;
       } else {
         adsbMapShortLabel(aircraft, typeNameLabels, label, sizeof(label));
         if (label[0] == '\0' ||
-            !mapPlaceIconLabel(placer, entry.x, entry.y, mapTextWidth(label),
-                               box))
+            !mapPlaceIconLabel(placer, entry.x, entry.y,
+                               planeLabelWidth(label), box,
+                               planeLabelHeight()))
           continue;
         entry.labelKind = 2;
       }
@@ -936,8 +1030,8 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
       const uint16_t labelColor =
           entry.emergency ? COLOR_LOW
                           : (entry.watched ? COLOR_WATCHED : COLOR_WHITE);
-      drawMapText(pixels, entry.labelX + 2, entry.labelY + 3, label,
-                  paletteColor(labelColor), 100);
+      drawPlaneLabel(entry.labelX + 2, entry.labelY + 3, label,
+                     paletteColor(labelColor));
     }
   }
   const uint8_t drawn = planCount;

@@ -285,20 +285,17 @@ bool MapLabelPlacer::claim(const MapLabelBox &box) {
 }
 
 bool mapPlaceIconLabel(MapLabelPlacer &placer, int x, int y, int textWidth,
-                       MapLabelBox &box) {
+                       MapLabelBox &box, int height) {
   // Svisle mimo kroužek nouze (poloměr 21), vodorovně těsněji: text vedle
   // ikony je nízký a do kroužku zasáhne jen rohem.
   constexpr int VERTICAL_GAP = 20;
   constexpr int HORIZONTAL_GAP = 16;
   const int width = textWidth + 4;
   const MapLabelBox candidates[] = {
-      {x - width / 2, y + VERTICAL_GAP, width, MAP_ICON_LABEL_HEIGHT},
-      {x - width / 2, y - VERTICAL_GAP - MAP_ICON_LABEL_HEIGHT, width,
-       MAP_ICON_LABEL_HEIGHT},
-      {x + HORIZONTAL_GAP, y - MAP_ICON_LABEL_HEIGHT / 2, width,
-       MAP_ICON_LABEL_HEIGHT},
-      {x - HORIZONTAL_GAP - width, y - MAP_ICON_LABEL_HEIGHT / 2, width,
-       MAP_ICON_LABEL_HEIGHT},
+      {x - width / 2, y + VERTICAL_GAP, width, height},
+      {x - width / 2, y - VERTICAL_GAP - height, width, height},
+      {x + HORIZONTAL_GAP, y - height / 2, width, height},
+      {x - HORIZONTAL_GAP - width, y - height / 2, width, height},
   };
   for (const MapLabelBox &candidate : candidates) {
     if (candidate.x < 0 || candidate.y < 0 ||

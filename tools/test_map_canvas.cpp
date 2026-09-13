@@ -259,11 +259,24 @@ void testIconLabelStaysOnCanvas() {
   assert(box.y == 437);
 }
 
+void testIconLabelCustomHeight() {
+  MapLabelPlacer placer;
+  MapLabelBox box;
+  // Vyšší písmo: pod ikonou stejná mezera, nad ní se obálka posune o svou výšku.
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box, 15));
+  assert(box.y == 260 && box.height == 15);
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box, 15));
+  assert(box.y == 205);
+  assert(mapPlaceIconLabel(placer, 240, 240, 60, box, 15));
+  assert(box.x == 256 && box.y == 233);
+}
+
 }  // namespace
 
 int main() {
   testIconLabelTriesOtherSides();
   testIconLabelStaysOnCanvas();
+  testIconLabelCustomHeight();
   testBlendEndpoints();
   testPixelClipping();
   testLines();

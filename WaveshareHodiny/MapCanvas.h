@@ -82,5 +82,6 @@ constexpr int MAP_ICON_LABEL_HEIGHT = 13;
 // čeká. Jediné pevné místo pod ikonou nechávalo v hustém provozu bez popisku
 // skoro každé druhé letadlo, i když vedle bylo volno. Obálka musí ležet celá
 // na plátně. Vrací false, když se nevešla nikam; nic se pak nezabere.
+// Výšku obálky předá, kdo píše jiným písmem než pixelovým.
 bool mapPlaceIconLabel(MapLabelPlacer &placer, int x, int y, int textWidth,
-                       MapLabelBox &box);
+                       MapLabelBox &box, int height = MAP_ICON_LABEL_HEIGHT);
