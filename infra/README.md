@@ -110,8 +110,10 @@ dělat ve zdrojáku, ze kterého se sype build. Do hodin se opíše jednou ručn
 v záložce **Agenda**; v `.env` leží jako `AGENDA_URL` jen proto, aby se
 nemuselo pamatovat, a `AGENDA_PASSWORD` z něj čte `tools/check-stack.sh`.
 
-Firmware kvůli HTTPS měnit netřeba: RSS používá celý CA bundle, Home Assistant
-připnutý ISRG Root X1 a Let's Encrypt se do něj řetězí.
+Firmware kvůli HTTPS měnit netřeba: RSS používá celý CA bundle a Let's Encrypt
+se do něj řetězí. Home Assistant certifikát **neověřuje vůbec**
+(`setInsecure()`), aby fungoval i místní server se self-signed certifikátem —
+token je tak chráněný jen před odposlechem, ne před podvrženým serverem.
 
 ## Porty
 
