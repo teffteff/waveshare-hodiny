@@ -168,6 +168,14 @@ def stub_config() -> dict:
         "rssRefreshMinutes": 10,
         "rssDisplaySeconds": 20,
         "rssAutomaticRotation": False,
+        "agendaEnabled": True,
+        "agendaUrl": "https://hodiny:heslo@server.example/agenda.json",
+        "agendaRefreshMinutes": 15,
+        "agendaDisplaySeconds": 20,
+        "agendaAutomaticRotation": False,
+        "agendaHiddenCalendars": 0,
+        "agendaPrivateKeyConfigured": False,
+        "agendaCalendars": PREVIEW_AGENDA_CALENDARS,
         "forecastEnabled": True,
         "forecastAirQuality": True,
         "forecastDayCount": 3,
@@ -182,6 +190,16 @@ def stub_config() -> dict:
         "settingsShareConfigured": False,
         "settingsShareUrl": "",
     }
+
+
+# Kalendáře agendy tak, jak je firmware převezme z odpovědi serveru.
+PREVIEW_AGENDA_CALENDARS = [
+    {"name": "Neumannovi", "private": False},
+    {"name": "Adámek", "private": False},
+    {"name": "Martin", "private": True},
+]
+# Heslo k soukromým kalendářům, které náhled přijme při zkoušce agendy.
+PREVIEW_AGENDA_KEY = "tajne"
 
 
 # Záloha pro náhled. Data nejsou skutečná záloha; firmware by je odmítl, ale
@@ -292,6 +310,29 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "secrets": True, "webPasswordChanged": False})
             else:
                 self._json({"ok": True})
+            return
+        if path == "/api/agenda/test":
+            fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+            print(f"POST {path}: {fields}", flush=True)
+            key = fields.get("agendaPrivateKey", "")
+            if key and key != PREVIEW_AGENDA_KEY:
+                self._json({"ok": False,
+                            "message": "Heslo k soukromým kalendářům nesedí."}, 502)
+                return
+            hidden = int(fields.get("agendaHiddenCalendars") or 0)
+            unlocked = key == PREVIEW_AGENDA_KEY
+            items = [
+                {"day": "DNES", "time": "18:00", "title": "Popelnice", "calendar": 0},
+                {"day": "", "time": "19:00", "title": "Plavání", "calendar": 1},
+                {"day": "ZÍTRA", "time": "08:00", "title": "Tajná schůzka", "calendar": 2},
+            ]
+            shown = [
+                item for item in items
+                if not hidden >> item["calendar"] & 1
+                and (unlocked or not PREVIEW_AGENDA_CALENDARS[item["calendar"]]["private"])
+            ]
+            self._json({"ok": True, "count": len(shown),
+                        "calendars": PREVIEW_AGENDA_CALENDARS, "items": shown})
             return
         if path == "/api/rss/test":
             # Náhled nechodí na síť; vrátí ukázku ve tvaru, který posílá firmware.

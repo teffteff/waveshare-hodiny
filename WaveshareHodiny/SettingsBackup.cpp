@@ -144,6 +144,8 @@ void settingsBackupStripSecrets(ClockConfig &config) {
   memset(config.homeAssistantToken, 0, sizeof(config.homeAssistantToken));
   memset(config.tmepExportKey, 0, sizeof(config.tmepExportKey));
   memset(config.tmepExportId, 0, sizeof(config.tmepExportId));
+  memset(config.agendaCalendars.privateKey, 0,
+         sizeof(config.agendaCalendars.privateKey));
 }
 
 size_t settingsBackupEncode(ClockConfig &config,

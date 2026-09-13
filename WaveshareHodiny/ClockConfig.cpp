@@ -436,6 +436,7 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.planes.watchCallsign);
   terminateText(config.agenda.url);
   terminateText(config.planesFeedUrl);
+  terminateText(config.agendaCalendars.privateKey);
 }
 
 void normalizeConfig(ClockConfig &config) {
@@ -514,6 +515,11 @@ void normalizeConfig(ClockConfig &config) {
   config.agenda.refreshMinutes = constrain(config.agenda.refreshMinutes, 5, 120);
   config.agenda.displaySeconds =
       constrain(config.agenda.displaySeconds, 10, 3600);
+  // Heslo míří do HTTP hlavičky. Cokoli mimo tisknutelné ASCII by hlavičku
+  // rozbilo, takže poškozený záznam heslo raději zahodí.
+  if (!clockConfigAgendaPrivateKeyValid(config.agendaCalendars.privateKey))
+    memset(config.agendaCalendars.privateKey, 0,
+           sizeof(config.agendaCalendars.privateKey));
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -603,6 +609,14 @@ bool clockConfigRssAvailable(const ClockConfig &config) {
 
 bool clockConfigForecastAvailable(const ClockConfig &config) {
   return config.forecast.enabled;
+}
+
+bool clockConfigAgendaPrivateKeyValid(const char *key) {
+  if (key == nullptr) return false;
+  for (const char *cursor = key; *cursor != '\0'; ++cursor) {
+    if (*cursor < 0x20 || *cursor > 0x7E) return false;
+  }
+  return strlen(key) < CLOCK_AGENDA_PRIVATE_KEY_LENGTH;
 }
 
 bool clockConfigAgendaAvailable(const ClockConfig &config) {
@@ -839,12 +853,20 @@ struct ConfigRecordV39 {
 static_assert(offsetof(ClockConfig, planesMapLabel) == 8716,
               "Preserve the complete schema 39 record, including padding.");
 
+struct ConfigRecordV40 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_40_SIZE];
+  uint32_t checksum;
+};
+
 namespace {
 
 enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV40) ||
          storedSize == sizeof(ConfigRecordV39) ||
          storedSize == sizeof(ConfigRecordV38) ||
          storedSize == sizeof(ConfigRecordV37) ||
@@ -879,6 +901,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 40 je přesnou předponou schématu 41; výběr kalendářů agendy si po
+  // zkopírování bajtů podrží výchozí hodnoty, tedy nic schovaného a žádné
+  // heslo k soukromým kalendářům.
+  const ConfigRecordV40 &legacyV40 =
+      *reinterpret_cast<const ConfigRecordV40 *>(&record);
+  uint32_t embeddedSchemaV40 = 0;
+  if (readComplete && storedSize == sizeof(legacyV40))
+    memcpy(&embeddedSchemaV40, legacyV40.config, sizeof(embeddedSchemaV40));
+  if (readComplete && storedSize == sizeof(legacyV40) &&
+      legacyV40.magic == CONFIG_MAGIC && legacyV40.schemaVersion == 40 &&
+      embeddedSchemaV40 == 40 &&
+      legacyV40.checksum == bytesChecksum(legacyV40.config, sizeof(legacyV40.config))) {
+    memcpy(&config, legacyV40.config, sizeof(legacyV40.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 39 je přesnou předponou schématu 40; popisek letadel si po

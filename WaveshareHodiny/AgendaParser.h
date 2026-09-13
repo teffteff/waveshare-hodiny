@@ -8,7 +8,9 @@
 // PlaneRadarService.
 //
 // Odpověď /agenda.json má tvar
-//   {"generated":"2026-09-09T14:56:39+02:00","calendars":["Neumannovi","Adámek"],
+//   {"generated":"2026-09-09T14:56:39+02:00","calendars":["Neumannovi","","Já"],
+//    "available":[{"name":"Neumannovi","private":false},
+//                 {"name":"Adámek","private":false},{"name":"Já","private":true}],
 //    "count":12,"items":[
 //     {"day":"DNES","date":"2026-09-09","time":"18:00","title":"Popelnice","cal":0},
 //     {"day":"","date":"","time":"20:00","title":"Svoz","cal":1}]}
@@ -18,11 +20,17 @@
 // datumová aritmetika. Klíč "date" se schválně nečte - na displeji ho nic
 // nepoužívá a ve formátu je proto, aby si firmware mohl popisky dnů někdy
 // přeložit sám, aniž by se musel měnit server.
+//
+// "calendars" drží index kalendáře stejný bez ohledu na výběr, protože podle
+// něj se barví: kalendář, který v odpovědi není, tam má prázdné jméno.
+// "available" jsou všechny kalendáře, které server zná, i ty schované - web
+// hodin z nich skládá výběr.
 
-// Strop pro jednu rozebranou agendu. Server jich ve výchozím stavu posílá
-// dvanáct; rezerva navíc drží parser nezávislý na ClockConfig, aby šel
-// testovat na počítači.
-constexpr size_t AGENDA_MAX_ITEMS = 12;
+// Strop pro jednu rozebranou agendu. Server posílá víc, displej ale pojme
+// nejvýš čtrnáct událostí; o dvě víc stačí, aby rozvržení poznalo, jestli
+// poslední zobrazený den pokračuje. Shoduje se s CLOCK_AGENDA_MAX_ITEMS, jen
+// parser na ClockConfig nezávisí, aby šel testovat na počítači.
+constexpr size_t AGENDA_MAX_ITEMS = 16;
 // "DNES", "ZÍTRA" nebo "pá 11.9.". Í je v UTF-8 dvoubajtové, proto víc bajtů
 // než znaků.
 constexpr size_t AGENDA_DAY_LENGTH = 24;
@@ -62,6 +70,11 @@ struct AgendaFeed {
   // s AgendaItem::calendar, takže legenda i časy dostanou stejnou barvu.
   size_t calendarCount = 0;
   char calendars[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
+  // Všechny kalendáře serveru včetně schovaných a zamčených, pro výběr na webu.
+  // Starší server pole neposílá; výběr pak na webu chybí.
+  size_t availableCount = 0;
+  char available[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
+  bool availablePrivate[AGENDA_MAX_CALENDARS] = {};
 };
 
 enum class AgendaParseStatus : uint8_t {

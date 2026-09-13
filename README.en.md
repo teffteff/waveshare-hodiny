@@ -406,15 +406,28 @@ forecast and radar screens carry. Along the bottom is a legend: each calendar's
 name in its own colour. That colour also tints the time of every event, so you
 can tell which calendar an event came from without a label on each row. In the
 red night palette the colours merge into one and only the legend distinguishes
-them, because anything but red would spoil night vision.
+them, because anything but red would spoil night vision. When the full calendar
+names do not fit into the legend, all of them are shortened to four characters
+and `..`.
 
 **The server talks to Google, the clock does not.** The clock reads a finished
 list from an address you enter in the **Agenda** tab, typically
 `https://your-server.example.net/agenda.json`. The server reads the calendars
 through a service account, merges them, expands recurring events and even builds
 the day labels, so no date arithmetic is left in the firmware and no token is
-stored on the clock. Which calendars appear is therefore configured on the
+stored on the clock. Which calendars the server reads is configured on the
 server; the setup and the source files live in [infra/](infra/README.md).
+
+**Which of them the clock shows is chosen on the Agenda tab.** The calendar list
+appears after the agenda loads for the first time or after **Test the agenda**.
+A hidden calendar is not sent by the server at all, and the others keep their
+colours. **A private calendar** can only be switched on with a password: the
+server checks it, the clock sends it in the `X-Agenda-Key` header, and without it
+the private events never reach the clock, not even the preview on the web page.
+The password inside the agenda address is not enough for that, because anyone who
+opens the clock settings can see the address. The stored password is never shown
+by the web page, goes into a backup only together with the other secrets, and is
+dropped when the agenda address changes so it is never sent to another server.
 
 **The address may carry a password.** The agenda, unlike the news feed, is
 private, so on the reference server it sits behind HTTP basic auth and is
@@ -423,10 +436,11 @@ firmware does nothing special for that: `HTTPClient` takes the credentials out
 of the address and sends them itself. The address must then be `https://`, as
 on `http://` the password would travel in the clear.
 
-Between 3 and 12 events can be shown, 8 by default. The list starts below the
-header and grows downwards. Every extra day takes one line for its heading, so
-with a longer horizon the last events do not fit and the screen leaves them out
-— a row running over the legend would be worse than one event fewer. The **Test the
+The agenda shows as many events as fit on the display. The list starts below the
+header and grows downwards; every day takes one extra line for its heading. When
+the last day shown continues past the edge, its last line is replaced by three
+dots. A day that would be left with nothing but its heading is not shown at all.
+The **Test the
 agenda** button downloads the address before you save and shows what will appear
 on the display.
 

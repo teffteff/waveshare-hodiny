@@ -54,6 +54,9 @@ void fillEverything(ClockConfig &config) {
   config.agenda.enabled = true;
   clockConfigCopy(config.agenda.url, sizeof(config.agenda.url),
                   "https://hodiny:pw@example.test/agenda.json");
+  config.agendaCalendars.hiddenMask = 0b10;
+  clockConfigCopy(config.agendaCalendars.privateKey,
+                  sizeof(config.agendaCalendars.privateKey), "agenda-private-key");
   clockConfigCopy(config.planesFeedUrl, sizeof(config.planesFeedUrl),
                   "https://example.test/planes.json");
   config.planes.enabled = true;
@@ -129,6 +132,8 @@ void testFullBackupCarriesEverything() {
   assert(expectedRecord == restoredRecord);
   assert(strcmp(restored.homeAssistantToken, "secret-ha-token") == 0);
   assert(strcmp(restored.tmepExportKey, "tmep-key") == 0);
+  assert(strcmp(restored.agendaCalendars.privateKey, "agenda-private-key") == 0);
+  assert(restored.agendaCalendars.hiddenMask == 0b10);
   assert(strcmp(clockConfigValueSlot(restored, CLOCK_VALUE_SLOT_COUNT - 1).icon,
                 "kitchen") == 0);
 
@@ -164,6 +169,7 @@ void testBackupWithoutSecretsLeavesThemOut() {
   const std::string bytes(backup.begin(), backup.end());
   assert(bytes.find("secret-ha-token") == std::string::npos);
   assert(bytes.find("tmep-key") == std::string::npos);
+  assert(bytes.find("agenda-private-key") == std::string::npos);
   assert(bytes.find("/settings") == std::string::npos);
 
   ClockConfig restored;

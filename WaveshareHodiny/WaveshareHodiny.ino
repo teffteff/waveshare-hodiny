@@ -216,6 +216,7 @@ void copyRuntimeConfig(ClockConfig &destination) {
 // Web server je jednovláknový, takže stačí jediná žádost.
 struct AgendaProbeRequest {
   ClockAgendaConfig config;
+  ClockAgendaCalendarsConfig calendars;
   int httpStatus = 0;
   bool ok = false;
   char error[AGENDA_MESSAGE_LENGTH] = "";
@@ -252,13 +253,16 @@ constexpr uint32_t RSS_PROBE_TIMEOUT_MS = 30UL * 1000UL;
 // Úloha agendy si stejně jako kanál zpráv nebere celou ClockConfig, aby
 // nepotřebovala další pětikilobajtový buffer ani ho neměla na zásobníku vedle
 // TLS.
-void copyRuntimeAgendaConfig(ClockAgendaConfig &destination) {
+void copyRuntimeAgendaConfig(ClockAgendaConfig &destination,
+                             ClockAgendaCalendarsConfig &calendars) {
   if (runtimeConfigMutex == nullptr) {
     destination = runtimeConfig.agenda;
+    calendars = runtimeConfig.agendaCalendars;
     return;
   }
   xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
   destination = runtimeConfig.agenda;
+  calendars = runtimeConfig.agendaCalendars;
   xSemaphoreGive(runtimeConfigMutex);
 }
 
@@ -555,8 +559,9 @@ void handleRssVisibility(bool visible) {
 // Přijme zkoušku kanálu z web serveru a počká na úlohu kanálu, která ji
 // provede. Čeká se po malých krocích a mezi nimi se krmí watchdog smyčky:
 // stahování smí trvat přes dvacet sekund, což je jeho mez.
-bool runAgendaProbeFromWeb(const ClockAgendaConfig &config, int &httpStatus,
-                           String &error) {
+bool runAgendaProbeFromWeb(const ClockAgendaConfig &config,
+                           const ClockAgendaCalendarsConfig &calendars,
+                           int &httpStatus, String &error) {
   error = "";
   if (agendaTaskHandle == nullptr) {
     error = F("Úloha agendy neběží.");
@@ -567,6 +572,7 @@ bool runAgendaProbeFromWeb(const ClockAgendaConfig &config, int &httpStatus,
     return false;
   }
   agendaProbeRequest.config = config;
+  agendaProbeRequest.calendars = calendars;
   agendaProbeRequest.httpStatus = 0;
   agendaProbeRequest.ok = false;
   agendaProbeRequest.error[0] = '\0';
@@ -2277,9 +2283,11 @@ int weatherCodeForState(const String &state) {
 // výrazně víc zásobníku než jeden připnutý kořen.
 // Vrací, za jak dlouho je další pokus, nebo 0, když se agenda nepoužívá.
 unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
+                                  const ClockAgendaCalendarsConfig &calendars,
                                   unsigned long &nextAgendaRefreshAt,
                                   char *lastFetchedUrl,
-                                  size_t lastFetchedUrlSize) {
+                                  size_t lastFetchedUrlSize,
+                                  ClockAgendaCalendarsConfig &lastCalendars) {
   if (!(config.enabled && config.url[0] != '\0')) {
     if (lastFetchedUrl[0] != '\0') {
       // Agenda se vypnula nebo se jí vymazala adresa; staré události nesmí
@@ -2290,10 +2298,17 @@ unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
     nextAgendaRefreshAt = 0;
     return 0;
   }
-  if (strcmp(lastFetchedUrl, config.url) != 0) {
-    // Jiný server: zahodíme události z toho původního a stáhneme hned.
+  const bool calendarsChanged =
+      lastCalendars.hiddenMask != calendars.hiddenMask ||
+      strcmp(lastCalendars.privateKey, calendars.privateKey) != 0;
+  if (strcmp(lastFetchedUrl, config.url) != 0 || calendarsChanged) {
+    // Jiný server nebo jiný výběr kalendářů: zahodíme staré události a
+    // stáhneme hned. U výběru je to důležité kvůli soukromému kalendáři -
+    // po odebrání hesla nesmí jeho události zůstat na displeji do dalšího
+    // úspěšného stažení, které se třeba vůbec nepovede.
     if (lastFetchedUrl[0] != '\0') agendaServiceClear();
     strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
+    lastCalendars = calendars;
     nextAgendaRefreshAt = 0;
   }
   const unsigned long now = millis();
@@ -2303,8 +2318,9 @@ unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
   }
   int httpStatus = 0;
   String error;
-  const bool ok = agendaServiceFetch(
-      config, NetworkDiagnosticKind::AgendaRuntime, httpStatus, error);
+  const bool ok = agendaServiceFetch(config, calendars,
+                                    NetworkDiagnosticKind::AgendaRuntime,
+                                    httpStatus, error);
   const unsigned long interval =
       ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
          : AGENDA_RETRY_MS;
@@ -2318,7 +2334,8 @@ void runPendingAgendaProbe() {
   int httpStatus = 0;
   String error;
   const bool ok =
-      agendaServiceProbe(agendaProbeRequest.config, httpStatus, error);
+      agendaServiceProbe(agendaProbeRequest.config,
+                         agendaProbeRequest.calendars, httpStatus, error);
   agendaProbeRequest.httpStatus = httpStatus;
   agendaProbeRequest.ok = ok;
   strlcpy(agendaProbeRequest.error, error.c_str(),
@@ -2333,6 +2350,8 @@ void agendaTask(void *) {
   unsigned long nextAgendaRefreshAt = 0;
   char lastAgendaUrl[CLOCK_AGENDA_URL_LENGTH] = "";
   ClockAgendaConfig config;
+  ClockAgendaCalendarsConfig calendars;
+  ClockAgendaCalendarsConfig lastCalendars;
   for (;;) {
     // Zkouška z webu má přednost, stejně jako u kanálu zpráv.
     if (agendaProbePending) {
@@ -2347,14 +2366,15 @@ void agendaTask(void *) {
       settingsSharePending = false;
       continue;
     }
-    copyRuntimeAgendaConfig(config);
+    copyRuntimeAgendaConfig(config, calendars);
     if (WiFi.status() != WL_CONNECTED) {
       nextAgendaRefreshAt = 0;
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
       continue;
     }
-    const unsigned long waitMs = maintainAgendaFetch(
-        config, nextAgendaRefreshAt, lastAgendaUrl, sizeof(lastAgendaUrl));
+    const unsigned long waitMs =
+        maintainAgendaFetch(config, calendars, nextAgendaRefreshAt,
+                            lastAgendaUrl, sizeof(lastAgendaUrl), lastCalendars);
     // Vypnutá agenda nemá kdy pokračovat sama; probudí ji až uložení nastavení.
     if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
                                              : pdMS_TO_TICKS(waitMs)) > 0) {

@@ -40,11 +40,20 @@ struct AgendaStatus {
   char calendars[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 };
 
+// Kalendáře, které server zná, pro výběr na webu. Zvlášť od AgendaStatus, aby
+// je smyčka displeje nekopírovala při každém průchodu.
+struct AgendaAvailableCalendars {
+  size_t count = 0;
+  char names[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
+  bool isPrivate[AGENDA_MAX_CALENDARS] = {};
+};
+
 // Přehled poslední zkoušky adresy z webu. Odděleně od AgendaStatus, protože
 // zkouška se schválně nedotýká toho, co je právě na displeji.
 struct AgendaProbeStatus {
   bool ready = false;
   size_t count = 0;
+  AgendaAvailableCalendars calendars;
 };
 
 void agendaServiceBegin();
@@ -52,19 +61,27 @@ void agendaServiceBegin();
 // nesmí prázdnotu vydávat za "kalendář nic nemá". Zkusí to při dalším průchodu
 // smyčkou.
 bool agendaServiceStatus(AgendaStatus &status);
+// Kalendáře z posledního úspěšného stažení. Vrací false, když zámek nebyl volný.
+bool agendaServiceAvailableCalendars(AgendaAvailableCalendars &calendars);
 // Projde uložené události pod zámkem. Vrací false, když zámek nebyl volný.
 bool agendaServiceVisitItems(AgendaItemVisitor visitor, void *context);
 // Stáhne a rozebere agendu do mezipaměti obrazovky. Ověření proti svazku
 // kořenů Mozilly stojí přes 16 kB zásobníku, takže se volá výhradně z úlohy
 // agendy, nikdy ze smyčky displeje ani z web serveru.
+//
+// Schované kalendáře jdou serveru jako ?hide=, heslo k soukromým v hlavičce
+// X-Agenda-Key. O tom, co v odpovědi bude, rozhoduje server: hodiny nikdy
+// nedostanou soukromý kalendář, ke kterému nemají heslo.
 bool agendaServiceFetch(const ClockAgendaConfig &config,
+                        const ClockAgendaCalendarsConfig &calendars,
                         NetworkDiagnosticKind diagnosticKind, int &httpStatus,
                         String &error);
 // Zkouška adresy pro web. Stahuje a rozebírá stejně jako agendaServiceFetch,
 // ale výsledek ukládá stranou, aby zkoušená adresa nepřepsala to, co hodiny
 // právě ukazují.
-bool agendaServiceProbe(const ClockAgendaConfig &config, int &httpStatus,
-                        String &error);
+bool agendaServiceProbe(const ClockAgendaConfig &config,
+                        const ClockAgendaCalendarsConfig &calendars,
+                        int &httpStatus, String &error);
 bool agendaServiceProbeStatus(AgendaProbeStatus &status);
 bool agendaServiceVisitProbeItems(AgendaItemVisitor visitor, void *context);
 // Zahodí mezipaměť i stahovací buffer. Volá se, když se agenda vypne nebo

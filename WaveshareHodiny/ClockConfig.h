@@ -34,14 +34,15 @@ constexpr size_t CLOCK_PLANES_FEED_URL_LENGTH = 192;
 // po dvou řádcích titulku; při šesti zbývá na titulek řádek jediný.
 constexpr uint8_t CLOCK_RSS_MIN_ITEMS = 3;
 constexpr uint8_t CLOCK_RSS_MAX_ITEMS = 6;
-// Agenda kreslí jeden řádek na událost plus hlavičku dne, takže se jí na kruh
-// vejde víc než zpráv, které zabírají dva až tři řádky. Strop se rovná tomu,
-// kolik jich posílá server: dvanáct událostí se třemi hlavičkami dnů je 339 px
-// z 345, které pás mezi hlavičkou a legendou nabízí. Se čtyřmi hlavičkami se
-// poslední nevejde a rozvržení ji zahodí, což je pořád lepší než ji nabídnout
-// a nevykreslit.
+// Agenda kreslí jeden řádek na událost plus hlavičku dne a plní pás mezi
+// hlavičkou a legendou, dokud je místo. Do 345 px se vejde nejvýš čtrnáct
+// událostí pod jedinou hlavičkou; strop o dvě víc drží v zásobě událost, podle
+// které rozvržení pozná, jestli poslední zobrazený den pokračuje.
 constexpr uint8_t CLOCK_AGENDA_MIN_ITEMS = 3;
-constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 12;
+constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 16;
+// Heslo k soukromým kalendářům. Hodiny ho posílají v HTTP hlavičce, takže jen
+// tisknutelné ASCII, nejvýš 63 znaků.
+constexpr size_t CLOCK_AGENDA_PRIVATE_KEY_LENGTH = 64;
 // Schema 20 is the public 1.5.5 baseline. Schema 24 added CHMI radar settings
 // plus automatic clock/radar rotation. Schema 25 added the persistent UI
 // language; schema 26 distinguishes an as-yet unselected language and uses
@@ -91,7 +92,11 @@ constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 12;
 // Schema 40 appends what the aircraft radar writes under each aircraft. The
 // schema 39 prefix stays byte-for-byte unchanged and the label starts at the
 // aircraft type name.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 40;
+// Schema 41 appends which agenda calendars the owner hid and the key that
+// unlocks private calendars on the agenda server. The schema 40 prefix stays
+// byte-for-byte unchanged; nothing is hidden and no key is stored on upgrade,
+// so the agenda keeps showing exactly the calendars it showed before.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 41;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -336,6 +341,19 @@ struct ClockAgendaConfig {
   char url[CLOCK_AGENDA_URL_LENGTH] = "";
 };
 
+// Výběr kalendářů agendy. Leží mimo ClockAgendaConfig ze stejného důvodu jako
+// planesFeedUrl: ta je uprostřed záznamu a cokoli v ní by posunulo zbytek.
+struct ClockAgendaCalendarsConfig {
+  // Bit n = kalendář s indexem n na serveru se nezobrazí. Maska schovaných,
+  // ne zobrazených, aby nula po migraci znamenala "všechny jako dosud" a nový
+  // kalendář přidaný na serveru se objevil bez zásahu v hodinách.
+  uint32_t hiddenMask = 0;
+  // Heslo k soukromým kalendářům. Ověřuje ho server, hodiny ho jen posílají;
+  // bez něj server soukromé kalendáře vynechá. Web ho nikdy nevrací a záloha
+  // ho nese jen s tajemstvími.
+  char privateKey[CLOCK_AGENDA_PRIVATE_KEY_LENGTH] = "";
+};
+
 struct ClockPlanesConfig {
   bool enabled = false;
   // Zapojení do automatické rotace, stejně jako u radaru, zpráv a předpovědi.
@@ -478,6 +496,10 @@ struct ClockConfig {
   // přesnou předponou. Patří k radaru letadel, ale do ClockPlanesConfig se ze
   // stejného důvodu jako planesFeedUrl přidat nedá. Drží ClockPlaneMapLabel.
   uint8_t planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
+  // Pole schématu 41. Struktura je zarovnaná na čtyři bajty, takže začíná
+  // přesně za koncovou výplní schématu 40 a žádný nejistý bajt výplně na ni
+  // nedopadne.
+  ClockAgendaCalendarsConfig agendaCalendars;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -559,6 +581,15 @@ static_assert(offsetof(ClockConfig, planesMapLabel) ==
                       0,
               "Schema 40 must preserve the complete schema 39 prefix.");
 
+// Schéma 40 končilo jediným bajtem popisku letadel, který ClockConfig dorovnala
+// na čtyři bajty. Výběr kalendářů je zarovnaný stejně, takže začíná přesně na
+// konci uloženého záznamu schématu 40.
+constexpr size_t CLOCK_CONFIG_SCHEMA_40_SIZE = offsetof(ClockConfig, agendaCalendars);
+
+static_assert(CLOCK_CONFIG_SCHEMA_40_SIZE == 8720 &&
+                  alignof(ClockAgendaCalendarsConfig) == alignof(ClockConfig),
+              "Schema 41 must preserve the complete schema 40 prefix.");
+
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
 // je kvůli migraci uložený zvlášť.
@@ -617,8 +648,11 @@ bool clockConfigForecastAvailable(const ClockConfig &config);
 // souřadnice bere ze stejného místa jako meteoradar a předpověď.
 bool clockConfigPlanesAvailable(const ClockConfig &config);
 // Agenda se kreslí jen se zapnutou obrazovkou a vyplněnou adresou, stejně jako
-// zprávy. Kalendáře vybírá server, hodiny o nich nevědí.
+// zprávy. Které kalendáře server zná, ví hodiny až z jeho odpovědi.
 bool clockConfigAgendaAvailable(const ClockConfig &config);
+// Heslo k soukromým kalendářům jde do HTTP hlavičky: jen tisknutelné ASCII
+// a nejvýš CLOCK_AGENDA_PRIVATE_KEY_LENGTH - 1 znaků. Prázdné je platné.
+bool clockConfigAgendaPrivateKeyValid(const char *key);
 // Obrazovka na dané pozici v pořadí střídání. Mimo rozsah vrací ciferník,
 // který je jediná obrazovka, kterou vypnout nejde.
 uint8_t clockConfigScreenAt(const ClockConfig &config, uint8_t position);
