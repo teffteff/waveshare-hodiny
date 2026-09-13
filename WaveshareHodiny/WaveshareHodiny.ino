@@ -237,6 +237,7 @@ constexpr uint32_t SETTINGS_SHARE_TIMEOUT_MS = 30UL * 1000UL;
 
 struct RssProbeRequest {
   ClockRssConfig config;
+  RssLocation location;
   int httpStatus = 0;
   bool ok = false;
   char error[RSS_MESSAGE_LENGTH] = "";
@@ -263,14 +264,16 @@ void copyRuntimeAgendaConfig(ClockAgendaConfig &destination) {
 
 // Úloha kanálu zpráv si nebere celou ClockConfig, aby nepotřebovala další
 // pětikilobajtový buffer ani ho neměla na zásobníku vedle TLS.
-void copyRuntimeRssConfig(ClockRssConfig &destination) {
-  if (runtimeConfigMutex == nullptr) {
-    destination = runtimeConfig.rss;
-    return;
-  }
-  xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
-  destination = runtimeConfig.rss;
-  xSemaphoreGive(runtimeConfigMutex);
+// Poloha jde s ní, protože adresa kanálu si ji může vyžádat značkami
+// {city}, {lat} a {lon}.
+void copyRuntimeRssConfig(ClockRssConfig *destination, RssLocation &location) {
+  if (runtimeConfigMutex != nullptr)
+    xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
+  if (destination != nullptr) *destination = runtimeConfig.rss;
+  strlcpy(location.city, runtimeConfig.openMeteoCity, sizeof(location.city));
+  location.latitude = runtimeConfig.openMeteoLatitude;
+  location.longitude = runtimeConfig.openMeteoLongitude;
+  if (runtimeConfigMutex != nullptr) xSemaphoreGive(runtimeConfigMutex);
 }
 
 // Úloha předpovědi si bere jen to, na čem stojí její stahování: souřadnice,
@@ -636,6 +639,9 @@ bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
     return false;
   }
   rssProbeRequest.config = config;
+  // Zkouška bere uloženou polohu, ne tu z formuláře: kanál pak na hodinách
+  // ukáže totéž, co zkouška.
+  copyRuntimeRssConfig(nullptr, rssProbeRequest.location);
   rssProbeRequest.httpStatus = 0;
   rssProbeRequest.ok = false;
   rssProbeRequest.error[0] = '\0';
@@ -2362,9 +2368,16 @@ void agendaTask(void *) {
 // zásobník je vyměřený na TLS s jedním připnutým kořenem a na parsování JSON,
 // kdežto ověření proti svazku kořenů Mozilly potřebuje výrazně víc.
 // Vrací, za jak dlouho je další pokus, nebo 0, když se kanál nepoužívá.
+bool sameRssLocation(const RssLocation &left, const RssLocation &right) {
+  return strcmp(left.city, right.city) == 0 &&
+         left.latitude == right.latitude && left.longitude == right.longitude;
+}
+
 unsigned long maintainRssFetch(const ClockRssConfig &config,
+                               const RssLocation &location,
                                unsigned long &nextRssRefreshAt,
-                               char *lastFetchedUrl, size_t lastFetchedUrlSize) {
+                               char *lastFetchedUrl, size_t lastFetchedUrlSize,
+                               RssLocation &lastLocation) {
   if (!(config.enabled && config.url[0] != '\0')) {
     if (lastFetchedUrl[0] != '\0') {
       // Kanál se vypnul nebo se mu vymazala adresa; staré zprávy nesmí zůstat.
@@ -2374,10 +2387,15 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
     nextRssRefreshAt = 0;
     return 0;
   }
-  if (strcmp(lastFetchedUrl, config.url) != 0) {
+  // Nová poloha se počítá jako jiný zdroj jen u adresy, která ji nese; jinak
+  // by přesun hodin zbytečně smazal a znovu stáhl tentýž kanál.
+  const bool usesLocation = strchr(config.url, '{') != nullptr;
+  if (strcmp(lastFetchedUrl, config.url) != 0 ||
+      (usesLocation && !sameRssLocation(lastLocation, location))) {
     // Jiný zdroj: zahodíme zprávy z toho původního a stáhneme hned.
     if (lastFetchedUrl[0] != '\0') rssServiceClear();
     strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
+    lastLocation = location;
     nextRssRefreshAt = 0;
   }
   const unsigned long now = millis();
@@ -2387,8 +2405,9 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
   }
   int httpStatus = 0;
   String error;
-  const bool ok = rssServiceFetch(config, NetworkDiagnosticKind::RssRuntime,
-                                  httpStatus, error);
+  const bool ok = rssServiceFetch(config, location,
+                                  NetworkDiagnosticKind::RssRuntime, httpStatus,
+                                  error);
   const unsigned long interval =
       ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
          : RSS_RETRY_MS;
@@ -2401,7 +2420,8 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
 void runPendingRssProbe() {
   int httpStatus = 0;
   String error;
-  const bool ok = rssServiceProbe(rssProbeRequest.config, httpStatus, error);
+  const bool ok = rssServiceProbe(rssProbeRequest.config,
+                                  rssProbeRequest.location, httpStatus, error);
   rssProbeRequest.httpStatus = httpStatus;
   rssProbeRequest.ok = ok;
   strlcpy(rssProbeRequest.error, error.c_str(),
@@ -2415,7 +2435,9 @@ void runPendingRssProbe() {
 void rssTask(void *) {
   unsigned long nextRssRefreshAt = 0;
   char lastRssUrl[CLOCK_RSS_URL_LENGTH] = "";
+  RssLocation lastRssLocation;
   ClockRssConfig config;
+  RssLocation location;
   for (;;) {
     // Zkouška z webu má přednost. Běží tady právě proto, že ověření proti
     // svazku kořenů Mozilly se do zásobníku smyčky displeje nevejde.
@@ -2423,14 +2445,15 @@ void rssTask(void *) {
       runPendingRssProbe();
       continue;
     }
-    copyRuntimeRssConfig(config);
+    copyRuntimeRssConfig(&config, location);
     if (WiFi.status() != WL_CONNECTED) {
       nextRssRefreshAt = 0;
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
       continue;
     }
-    const unsigned long waitMs = maintainRssFetch(
-        config, nextRssRefreshAt, lastRssUrl, sizeof(lastRssUrl));
+    const unsigned long waitMs =
+        maintainRssFetch(config, location, nextRssRefreshAt, lastRssUrl,
+                         sizeof(lastRssUrl), lastRssLocation);
     // Vypnutý kanál nemá kdy pokračovat sám; probudí ho až uložení nastavení.
     if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
                                              : pdMS_TO_TICKS(waitMs)) > 0) {
