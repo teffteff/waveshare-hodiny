@@ -131,7 +131,9 @@ Produkční firmware obsluhuje Improv Serial na obou konektorech.
 1. Nainstaluj firmware a nastav Wi-Fi přes Improv Serial.
 2. Počkej na připojení; na displeji se zobrazí IP adresa a stavové ikony.
 3. Otevři `http://waveshare-hodiny.local/`. Pokud mDNS v síti nefunguje,
-   použij IP adresu z nastavení na displeji.
+   použij IP adresu z nastavení na displeji. Máš-li v jedné síti víc hodin,
+   dej každým vlastní název v záložce **Systém → Název zařízení v síti**;
+   hodiny pak najdeš na `http://<název>.local/`.
 4. V záložce **Zdroj a poloha** vyber Open-Meteo s TMEP.cz nebo Home Assistant
    a vyhledej město. Poloha je společná pro počasí Open-Meteo i meteoradar.
 5. Při použití Home Assistantu zadej jeho adresu a long-lived access token a
@@ -933,7 +935,9 @@ Co na něm běží, jak se obnovuje a na co si dát pozor popisuje
 - použij IP adresu z nastavení zařízení,
 - pokud je zvolený časově omezený nebo vypnutý režim webu, otevři nastavení
   dlouhým stiskem kdekoliv na hodinách nebo meteoradaru,
-- zkontroluj, že klient i zařízení jsou ve stejné dosažitelné síti.
+- zkontroluj, že klient i zařízení jsou ve stejné dosažitelné síti,
+- víc hodin se stejným názvem se o adresu přetahuje a pozdější dostane
+  `waveshare-hodiny-2.local`; pojmenuj je v **Systém → Název zařízení v síti**.
 
 Samostatná stránka `http://<IP-adresa>/diagnostics` zůstává dostupná i při
 zamčeném konfiguračním webu.

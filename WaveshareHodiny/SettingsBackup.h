@@ -22,8 +22,9 @@
 // starší přestal zálohu číst.
 //
 // Co v záloze schválně není: Wi-Fi (bez ní se k hodinám nejde dostat, a leží
-// v jiném oddílu flash) a secret ovládacího API - ten je identitou konkrétních
-// hodin, na kterou míří automatizace, ne nastavením ke sdílení.
+// v jiném oddílu flash), secret ovládacího API a název v síti (DeviceName.h) -
+// obojí je identitou konkrétních hodin, na kterou míří automatizace a
+// záložky v prohlížeči, ne nastavením ke sdílení.
 
 constexpr size_t SETTINGS_SHARE_URL_LENGTH = 192;
 // Název zálohy na serveru včetně ukončovací nuly: malá písmena, číslice a
@@ -74,6 +75,37 @@ SettingsBackupStatus settingsBackupDecode(const uint8_t *data, size_t size,
 
 // Vymaže z konfigurace to, co se bez hesla ze zařízení nesmí dostat ven.
 void settingsBackupStripSecrets(ClockConfig &config);
+
+// Části nastavení, které jde při obnově vybrat zvlášť. Záloha nese vždycky
+// všechno; o tom, co z ní hodiny převezmou, se rozhoduje až při importu, takže
+// jeden soubor poslouží k úplnému klonu i k přenesení jen hodnot na hodiny
+// s jiným připojením. Wi-Fi v záloze není nikdy, výběr se jí netýká.
+enum SettingsBackupPart : uint8_t {
+  // Zdroj dat, Home Assistant s tokenem, TMEP.cz a poloha hodin.
+  SETTINGS_BACKUP_PART_CONNECTION = 0x01,
+  // Hodnoty na obrazovce hodin: strany, měřené hodnoty, obě stránky mřížky,
+  // sloty Open-Meteo a TMEP i entita počasí pro jejich ikonu.
+  SETTINGS_BACKUP_PART_VALUES = 0x02,
+  // Předpověď, meteoradar, letadla, zprávy, agenda a pořadí a střídání
+  // obrazovek.
+  SETTINGS_BACKUP_PART_SCREENS = 0x04,
+  // Vzhled hodin, barvy, fonty, vteřiny, ikony počasí, jas a režim den/noc.
+  SETTINGS_BACKUP_PART_DISPLAY = 0x08,
+  // Jazyk, automatická aktualizace, režim webu, heslo webu a server záloh.
+  SETTINGS_BACKUP_PART_SYSTEM = 0x10,
+};
+constexpr uint8_t SETTINGS_BACKUP_PARTS_ALL = 0x1F;
+
+// Vrátí do `incoming` hodnoty z `current` u všech částí konfigurace, které
+// v `parts` nejsou. Vzhled, režim webu, heslo a server záloh leží mimo
+// ClockConfig a o ty se stará volající.
+void settingsBackupKeepCurrentParts(ClockConfig &incoming,
+                                    const ClockConfig &current, uint8_t parts);
+
+// Čárkami oddělené názvy částí z webu ("connection,values,..."). Prázdný text
+// znamená všechno, aby starší stránka a skripty obnovovaly jako dřív. Vrací
+// false u neznámého názvu nebo prázdného výběru.
+bool settingsBackupParseParts(const char *text, uint8_t &parts);
 
 // base64url bez doplnění: nepotřebuje escapovat v JSONu ani ve formuláři.
 // Vrací délku textu bez nuly, nebo 0, když se nevejde.

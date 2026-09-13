@@ -119,7 +119,9 @@ USB connector. Production firmware handles Improv Serial on both transports.
 1. Install the firmware and provision Wi-Fi through Improv Serial.
 2. Wait for the device to connect; its IP address appears in the settings screen.
 3. Open `http://waveshare-hodiny.local/`. Use the displayed IP address if mDNS
-   is unavailable on your network.
+   is unavailable on your network. With several clocks on one network, give
+   each its own name under **System → Device network name**; the clock is then
+   reachable at `http://<name>.local/`.
 4. Select Open-Meteo with TMEP.cz or Home Assistant and search for the device
    location.
 5. For Home Assistant, enter its URL and a long-lived access token, then test
@@ -807,7 +809,9 @@ protocol. Use the repository script with the currently verified serial port:
 ## Troubleshooting
 
 - If `waveshare-hodiny.local` does not open, use the IP address shown on the
-  device and check whether the web server is enabled.
+  device and check whether the web server is enabled. Clocks sharing a name
+  compete for it and the later one becomes `waveshare-hodiny-2.local`; name
+  them under **System → Device network name**.
 - If the Home Assistant test fails, verify the URL, token, network reachability
   and entity IDs.
 - A persistent `--` means the value is missing, unavailable or not numeric.
