@@ -121,6 +121,35 @@ void clockDashboardSetForecast(const WeatherForecastData &forecast);
 // Dokud předpověď nedorazila, drží obrazovku hláška. Text si obrazovka skládá
 // sama, aby se přepnutím jazyka přeložil i on.
 void clockDashboardSetForecastFailed(bool failed);
+// --- Slunce a Měsíc ---------------------------------------------------------
+// Časy jsou unixové sekundy; 0 znamená, že daný den událost nenastane.
+struct ClockSkyData {
+  bool valid = false;
+  int64_t sunrise = 0;
+  int64_t sunset = 0;
+  // Občanské svítání a soumrak: střed Slunce 6° pod obzorem.
+  int64_t civilDawn = 0;
+  int64_t civilDusk = 0;
+  // Bez východu i západu rozhoduje, jestli je polární den, nebo noc.
+  bool sunUpAllDay = false;
+  int dayLengthMinutes = 0;
+  int64_t moonrise = 0;
+  int64_t moonset = 0;
+  float moonPhase = 0.0f;
+  float moonIllumination = 0.0f;
+  int64_t nextFullMoon = 0;
+  int64_t nextNewMoon = 0;
+  // Na jižní polokouli svítí dorůstající Měsíc zleva.
+  bool southernHemisphere = false;
+};
+
+bool clockDashboardSkyVisible();
+void clockDashboardSetSkyVisible(bool visible);
+// Vypnutá obrazovka se do rotace ani pod gesto nepustí a její stránka vzniká
+// až při prvním zapnutí.
+void clockDashboardSetSkyAvailable(bool available);
+void clockDashboardSetSky(const ClockSkyData &data);
+
 // --- Radar letadel ----------------------------------------------------------
 bool clockDashboardPlanesVisible();
 void clockDashboardSetPlanesVisible(bool visible);
@@ -151,6 +180,9 @@ void clockDashboardSetFirmwareUpdateBlack(bool black);
 void clockDashboardSetFirmwareUpdateCountdown(uint8_t seconds);
 void clockDashboardSetWebActive(bool active);
 void clockDashboardSetWifiConnected(bool connected);
+// Blesky v kruhu výstrahy. Ciferník ukáže blesk se vzdáleností nejbližšího
+// úderu v řadě stavových ikon; neaktivní výstraha ho schová.
+void clockDashboardSetLightningAlert(bool active, float nearestKm);
 void clockDashboardSetWebMode(uint8_t mode);
 void clockDashboardApplyConfiguration(const ClockConfig &config);
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance);
@@ -169,4 +201,4 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                                     bool latestFrame,
                                     uint8_t currentFrameNumber,
                                     uint8_t animationFrameCount,
-                                    uint16_t displayedRadiusKm);
+                                    uint16_t displayedRadiusKm, bool mapOnly);

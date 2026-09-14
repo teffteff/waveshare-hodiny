@@ -1,0 +1,27 @@
+[Unit]
+Description=Prevypravec realtime blesku z LightningMaps pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Sluzba nic nezapisuje,
+# udery drzi jen v pameti, kod patri rootovi.
+User=lightning
+Group=lightning
+Environment=LIGHTNING_PORT=8093
+# Jen pro Caddy na stejnem stroji. Data Blitzortung se nesmi dal zverejnovat,
+# takze na verejne IP by z toho byla verejna kopie jejich dat bez hesla.
+Environment=LIGHTNING_BIND=127.0.0.1
+# Zadny venv: WebSocket klient je napsany nad standardni knihovnou.
+# Interpret je vyslovne 3.11, /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6.
+ExecStart=/usr/bin/python3.11 /opt/lightning/serve.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

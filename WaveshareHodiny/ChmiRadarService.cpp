@@ -18,6 +18,7 @@
 #include "ClockConfig.h"
 #include "CzechMapData.h"
 #include "EuropeMapData.h"
+#include "LightningService.h"
 #include "MapCanvas.h"
 #include "RainViewerSource.h"
 #include "NetworkCoordinator.h"
@@ -87,8 +88,21 @@ bool showBaseMapRequested = false;
 bool restartAnimationRequested = false;
 bool redNightMode = false;
 bool legendEnabled = true;
+// Bez srážek radar nestahuje a do bufferu kreslí jen podkladovou mapu.
+bool precipitationEnabled = true;
 uint8_t radarSource = CLOCK_RADAR_SOURCE_CHMI;
 bool nightVisualRedrawRequested = false;
+// Blesky přes radar. Údery kreslí úloha radaru do každého snímku znovu podle
+// skutečného času, ne podle času snímku: animace ukazuje minulé srážky, ale
+// stáří úderu se má počítat od teď.
+bool lightningOverlayEnabled = false;
+float lightningAlarmLatitude = 0.0f;
+float lightningAlarmLongitude = 0.0f;
+uint8_t lightningAlarmRadiusKm = 10;
+uint8_t lightningAlarmMinutes = 10;
+LightningStroke *overlayStrokes = nullptr;
+uint32_t overlayGeneration = 0;
+unsigned long overlayDrawnAt = 0;
 size_t animationFrameCount = 0;
 int displayedFrame = -1;
 uint32_t generation = 0;
@@ -709,8 +723,9 @@ void drawMapOverlay(uint16_t *buffer, float markerLatitude,
   constexpr uint16_t borderColor = 0xbdf7;
   constexpr uint16_t cityColor = 0x07ff;
 
+  // Stupnice vysvětluje barvy srážek; bez nich by jen zabírala místo.
   portENTER_CRITICAL(&stateMux);
-  const bool showLegend = legendEnabled;
+  const bool showLegend = legendEnabled && precipitationEnabled;
   portEXIT_CRITICAL(&stateMux);
 
   // Stupnice zabírá kus levé strany, proto do seznamu obsazených míst vstupuje
@@ -756,6 +771,155 @@ void drawDisplayRing(uint16_t *buffer) {
     const int y = centerY + lroundf(sinf(angle) * 238.0f);
     if (x >= 0 && x < CHMI_RADAR_WIDTH && y >= 0 && y < CHMI_RADAR_HEIGHT)
       buffer[y * CHMI_RADAR_WIDTH + x] = gray;
+  }
+}
+
+// --- Blesky -------------------------------------------------------------------
+constexpr size_t OVERLAY_STROKE_CAPACITY = 2048;
+// Hranice stáří barev: čerstvý úder bílý, pak žlutá, oranžová a červená.
+constexpr uint32_t STROKE_WHITE_SECONDS = 2 * 60;
+constexpr uint32_t STROKE_YELLOW_SECONDS = 5 * 60;
+constexpr uint32_t STROKE_ORANGE_SECONDS = 10 * 60;
+constexpr uint32_t STROKE_RED_SECONDS = 20 * 60;
+// Snímek, který se nehýbe (pauza na konci animace nebo jediný snímek), se
+// kvůli stárnutí úderů překreslí aspoň takhle často.
+constexpr unsigned long OVERLAY_REFRESH_MS = 30000;
+constexpr int DISPLAY_RADIUS_PX = 236;
+
+// V noční paletě by údery prošly převodem srážek a splynuly by s červeným
+// deštěm do tmavé skvrny. Dostanou proto vlastní světle červené odstíny: jas
+// zůstane v pořadí podle stáří, jen se posune k bílé, aby byl úder vidět
+// i přes nejsilnější srážky.
+uint16_t overlayColor(uint16_t color, bool nightVisual) {
+  if (!nightVisual) return color;
+  const int red = (color >> 11) * 255 / 31;
+  const int green = ((color >> 5) & 0x3F) * 255 / 63;
+  const int blue = (color & 0x1F) * 255 / 31;
+  const int luminance = (red * 3 + green * 6 + blue) / 10;
+  const int tint = luminance / 2;
+  return static_cast<uint16_t>((0x1F << 11) | ((tint * 63 / 255) << 5) |
+                               (tint * 31 / 255));
+}
+
+// Poloha v pixelech displeje s desetinnou přesností. Celočíselná projekce
+// map stačí, ale při rozsahu 25 km je jeden zdrojový pixel ČHMÚ přes deset
+// pixelů displeje a údery by se skládaly do mřížky.
+bool projectStroke(const RadarProjection &projection, float latitude,
+                   float longitude, int &x, int &y) {
+  if (projection.rainViewer) {
+    rainViewerProject(latitude, longitude, x, y);
+  } else {
+    const float sourceX = (longitude - LON_LEFT) * (imageWidth - 1) /
+                          (LON_RIGHT - LON_LEFT);
+    const float top = mercatorY(LAT_TOP);
+    const float bottom = mercatorY(LAT_BOTTOM);
+    const float sourceY =
+        (top - mercatorY(latitude)) * (imageHeight - 1) / (top - bottom);
+    x = lroundf((sourceX - projection.cropX1) * CHMI_RADAR_WIDTH /
+                (projection.cropX2 - projection.cropX1 + 1));
+    y = lroundf((sourceY - projection.cropY1) * CHMI_RADAR_HEIGHT /
+                (projection.cropY2 - projection.cropY1 + 1));
+  }
+  const int dx = x - CHMI_RADAR_WIDTH / 2;
+  const int dy = y - CHMI_RADAR_HEIGHT / 2;
+  return dx * dx + dy * dy <= DISPLAY_RADIUS_PX * DISPLAY_RADIUS_PX;
+}
+
+void drawStroke(uint16_t *buffer, int x, int y, uint32_t ageSeconds,
+                bool nightVisual) {
+  constexpr uint16_t shadow = 0x0000;
+  if (ageSeconds <= STROKE_WHITE_SECONDS) {
+    // Čerstvý úder jako malý blesk se stínem, aby byl vidět i přes žlutou
+    // a červenou srážku. Je jen devět pixelů vysoký: husté bouřkové buňky by
+    // jinak splynuly do svislých pruhů.
+    const uint16_t color = overlayColor(0xFFFF, nightVisual);
+    drawMapLine(buffer, x + 3, y - 4, x, y - 1, shadow, 100);
+    drawMapLine(buffer, x, y - 1, x + 2, y - 1, shadow, 100);
+    drawMapLine(buffer, x + 2, y - 1, x - 1, y + 5, shadow, 100);
+    drawMapLine(buffer, x + 2, y - 5, x - 1, y - 2, color, 100);
+    drawMapLine(buffer, x - 1, y - 2, x + 1, y - 2, color, 100);
+    drawMapLine(buffer, x + 1, y - 2, x - 2, y + 4, color, 100);
+    return;
+  }
+  // Starší údery jsou jen křížky: blesk opakovaný stokrát by z bouřkové linie
+  // udělal umělé čárkované sloupce. Velikost s věkem ubývá.
+  const uint16_t color = overlayColor(
+      ageSeconds <= STROKE_YELLOW_SECONDS   ? 0xFF00
+      : ageSeconds <= STROKE_ORANGE_SECONDS ? 0xFC00
+                                            : 0xF945,
+      nightVisual);
+  const int arm = ageSeconds <= STROKE_ORANGE_SECONDS ? 2 : 1;
+  setMapPixel(buffer, x + 1, y + 1, shadow, 100);
+  for (int offset = -arm; offset <= arm; ++offset) {
+    setMapPixel(buffer, x + offset, y, color, 100);
+    setMapPixel(buffer, x, y + offset, color, 100);
+  }
+}
+
+// Kreslí se až po mapě a srážkách. Obrys displeje už ve snímku je; údery se
+// ořezávají pár pixelů před ním, aby přes něj nepřečuhovaly.
+void drawLightningOverlay(uint16_t *buffer, const RadarProjection &projection,
+                          bool nightVisual) {
+  portENTER_CRITICAL(&stateMux);
+  const bool enabled = lightningOverlayEnabled;
+  const float alarmLatitude = lightningAlarmLatitude;
+  const float alarmLongitude = lightningAlarmLongitude;
+  const uint8_t alarmRadiusKm = lightningAlarmRadiusKm;
+  const uint8_t alarmMinutes = lightningAlarmMinutes;
+  portEXIT_CRITICAL(&stateMux);
+  overlayDrawnAt = millis();
+  overlayGeneration = lightningServiceGeneration();
+  const time_t now = time(nullptr);
+  if (!enabled || now < VALID_TIME_THRESHOLD) return;
+  if (overlayStrokes == nullptr) {
+    overlayStrokes = static_cast<LightningStroke *>(heap_caps_malloc(
+        OVERLAY_STROKE_CAPACITY * sizeof(LightningStroke),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (overlayStrokes == nullptr) return;
+  }
+  const uint32_t nowSeconds = static_cast<uint32_t>(now);
+  const size_t count = lightningServiceCopyStrokes(
+      overlayStrokes, OVERLAY_STROKE_CAPACITY, nowSeconds - STROKE_RED_SECONDS);
+
+  // Kruh výstrahy jen tehdy, když v něm opravdu blýská. Stálý kruh by na
+  // mapě jen překážel a na celé republice by měl pár pixelů.
+  LightningProximity proximity;
+  if (lightningServiceProximity(alarmLatitude, alarmLongitude, alarmRadiusKm,
+                                alarmMinutes * 60U, proximity) &&
+      proximity.count > 0) {
+    int centerX = 0;
+    int centerY = 0;
+    int edgeX = 0;
+    int edgeY = 0;
+    projectStroke(projection, alarmLatitude, alarmLongitude, centerX, centerY);
+    projectStroke(projection, alarmLatitude + alarmRadiusKm / 111.32f,
+                  alarmLongitude, edgeX, edgeY);
+    const int radius = abs(edgeY - centerY);
+    const uint16_t red = overlayColor(0xF800, nightVisual);
+    if (radius >= 3) {
+      drawMapCircle(buffer, centerX, centerY, radius, red, 100);
+      drawMapCircle(buffer, centerX, centerY, radius + 1, red, 60);
+    }
+  }
+
+  // Od nejstarších k nejnovějším, aby čerstvý úder ležel navrch.
+  constexpr uint32_t bands[] = {STROKE_RED_SECONDS, STROKE_ORANGE_SECONDS,
+                                STROKE_YELLOW_SECONDS, STROKE_WHITE_SECONDS};
+  for (size_t band = 0; band < 4; ++band) {
+    const uint32_t upper = bands[band];
+    const uint32_t lower = band + 1 < 4 ? bands[band + 1] : 0;
+    for (size_t index = 0; index < count; ++index) {
+      const LightningStroke &stroke = overlayStrokes[index];
+      const uint32_t age = stroke.epochSeconds >= nowSeconds
+                               ? 0
+                               : nowSeconds - stroke.epochSeconds;
+      if (age > upper || (lower > 0 && age <= lower)) continue;
+      int x = 0;
+      int y = 0;
+      if (!projectStroke(projection, stroke.latitude, stroke.longitude, x, y))
+        continue;
+      drawStroke(buffer, x, y, age, nightVisual);
+    }
   }
 }
 
@@ -809,6 +973,8 @@ bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
   drawMapOverlay(target, latitude, longitude, radiusKm, projection,
                  mapOpacityValue);
   drawDisplayRing(target);
+  // Denními barvami: noční paleta se na celý snímek použije až potom.
+  drawLightningOverlay(target, projection, false);
   portENTER_CRITICAL(&stateMux);
   const bool nightVisual = redNightMode;
   portEXIT_CRITICAL(&stateMux);
@@ -1606,6 +1772,10 @@ bool showPreparedFrame(size_t index, unsigned long now) {
                      preparedFrames[index] != nullptr &&
                      preparedFrameRevisions[index] == requestRevision;
   const bool nightVisual = redNightMode;
+  const float latitude = centerLatitude;
+  const float longitude = centerLongitude;
+  const uint16_t radiusKm = centerRadiusKm;
+  const bool overlay = lightningOverlayEnabled;
   portEXIT_CRITICAL(&stateMux);
   if (!valid) return false;
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;
@@ -1614,6 +1784,15 @@ bool showPreparedFrame(size_t index, unsigned long now) {
   for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
     target[pixel] = nightVisual ? nightRadarColor(source[pixel])
                                 : rgb332ToRgb565(source[pixel]);
+  if (overlay) {
+    // Rozměr kompozice se nastavuje při dekódování; snímek z cache ho zná.
+    if (imageWidth <= 0 || imageHeight <= 0) {
+      imageWidth = RADAR_SOURCE_WIDTH;
+      imageHeight = RADAR_SOURCE_HEIGHT;
+    }
+    drawLightningOverlay(
+        target, currentProjection(latitude, longitude, radiusKm), nightVisual);
+  }
   portENTER_CRITICAL(&stateMux);
   if (!active || index >= animationFrameCount || !preparedFrameReady[index] ||
       preparedFrameRevisions[index] != requestRevision) {
@@ -1677,6 +1856,22 @@ void advanceAnimation(unsigned long now) {
   }
 }
 
+// Snímek, který právě stojí - pauza na konci animace nebo jediný snímek -,
+// by nové údery ani jejich stárnutí neukázal, dokud se animace nerozběhne.
+void refreshLightningOverlay(unsigned long now) {
+  portENTER_CRITICAL(&stateMux);
+  const bool standing = visible && ready && lightningOverlayEnabled &&
+                        displayedFrame >= 0 &&
+                        (animationPause || animationFrameCount <= 1);
+  const int frame = displayedFrame;
+  portEXIT_CRITICAL(&stateMux);
+  if (!standing) return;
+  if (lightningServiceGeneration() == overlayGeneration &&
+      now - overlayDrawnAt < OVERLAY_REFRESH_MS)
+    return;
+  showPreparedFrame(static_cast<size_t>(frame), now);
+}
+
 void radarTask(void *) {
   while (true) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
@@ -1708,7 +1903,38 @@ void radarTask(void *) {
     restartAnimation = restartAnimationRequested;
     redrawNightVisual = nightVisualRedrawRequested;
     frameToRedraw = displayedFrame;
+    const bool mapOnly = !precipitationEnabled;
+    const bool isVisible = visible;
+    const bool overlay = lightningOverlayEnabled;
+    if (mapOnly) {
+      // Požadavky na stažení a animaci se jen zahodí; zapnutí srážek zvýší
+      // revizi a naplánuje nové stažení samo.
+      reloadRequested = false;
+      rebuildFromCacheRequested = false;
+      restartAnimationRequested = false;
+    }
     portEXIT_CRITICAL(&stateMux);
+    if (mapOnly) {
+      // Mapa bez srážek stojí, takže se překreslí jednou po vypnutí srážek
+      // (i skrytá, aby ji rotace našla hotovou) a pak jen kvůli novým úderům
+      // nebo jejich stárnutí, a to jen když je radar vidět.
+      const bool overlayStale =
+          overlay && (lightningServiceGeneration() != overlayGeneration ||
+                      now - overlayDrawnAt >= OVERLAY_REFRESH_MS);
+      if (showBase || redrawNightVisual || frameToRedraw != -2 ||
+          (isVisible && overlayStale)) {
+        const bool shown = showBaseMap(latitude, longitude, radiusKm,
+                                       mapOpacityValue, revision);
+        portENTER_CRITICAL(&stateMux);
+        if (revision == requestRevision) {
+          showBaseMapRequested = false;
+          nightVisualRedrawRequested = false;
+        }
+        portEXIT_CRITICAL(&stateMux);
+        if (shown) setStatus(false, "Srážky vypnuté");
+      }
+      continue;
+    }
     if (showBase) {
       showBaseMap(latitude, longitude, radiusKm, mapOpacityValue, revision);
       portENTER_CRITICAL(&stateMux);
@@ -1797,6 +2023,7 @@ void radarTask(void *) {
       continue;
     }
     advanceAnimation(now);
+    refreshLightningOverlay(now);
   }
 }
 }  // namespace
@@ -1881,7 +2108,7 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
                                uint16_t radiusKm, uint8_t frameCount,
                                uint8_t mapOpacityValue,
                                uint8_t pauseSecondsValue, bool showLegend,
-                               uint8_t source) {
+                               bool showPrecipitation, uint8_t source) {
   frameCount = constrain(frameCount, static_cast<uint8_t>(1),
                          static_cast<uint8_t>(MAX_ANIMATION_FRAME_COUNT));
   mapOpacityValue = constrain(mapOpacityValue, static_cast<uint8_t>(0),
@@ -1896,7 +2123,8 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
       fabsf(centerLatitude - latitude) > 0.00001f ||
       fabsf(centerLongitude - longitude) > 0.00001f ||
       centerRadiusKm != radiusKm || mapOpacity != mapOpacityValue ||
-      legendEnabled != showLegend || radarSource != source;
+      legendEnabled != showLegend || radarSource != source ||
+      precipitationEnabled != showPrecipitation;
   // Změna zdroje zahazuje i stažená PNG: kompozice ČHMÚ a dlaždice
   // RainVieweru spolu nemají nic společného.
   const bool sourceChanged = radarSource != source;
@@ -1939,6 +2167,7 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
   mapOpacity = mapOpacityValue;
   pauseSeconds = pauseSecondsValue;
   legendEnabled = showLegend;
+  precipitationEnabled = showPrecipitation;
   radarSource = source;
   if (sourceChanged) cachedPngCount = 0;
   if (!requestedEnabled && wasEnabled) {
@@ -1989,6 +2218,34 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
   if (requestedEnabled && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
+void chmiRadarServiceSetLightning(bool overlay, float alarmLatitude,
+                                  float alarmLongitude, uint8_t alarmRadiusKm,
+                                  uint8_t alarmMinutes) {
+  portENTER_CRITICAL(&stateMux);
+  lightningOverlayEnabled = overlay;
+  lightningAlarmLatitude = alarmLatitude;
+  lightningAlarmLongitude = alarmLongitude;
+  lightningAlarmRadiusKm = alarmRadiusKm;
+  lightningAlarmMinutes = alarmMinutes;
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void chmiRadarViewCircle(float latitude, float longitude, uint16_t radiusKm,
+                         float &centerLatitude, float &centerLongitude,
+                         float &viewRadiusKm) {
+  if (radiusKm == 0) {
+    centerLatitude = WHOLE_COUNTRY_LATITUDE;
+    centerLongitude = WHOLE_COUNTRY_LONGITUDE;
+    viewRadiusKm = WHOLE_COUNTRY_RADIUS_KM;
+    return;
+  }
+  centerLatitude = latitude;
+  centerLongitude = longitude;
+  // RainViewer volí přiblížení po mocninách dvou a ukáže až o polovinu víc,
+  // než kolik je nastaveno.
+  viewRadiusKm = radiusKm * 1.5f;
+}
+
 void chmiRadarServiceSetRedNightMode(bool enabled) {
   portENTER_CRITICAL(&stateMux);
   if (redNightMode == enabled) {
@@ -2025,6 +2282,17 @@ void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot) {
   snapshot.rainViewerSource = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
   strlcpy(snapshot.frameTime, frameTime, sizeof(snapshot.frameTime));
   strlcpy(snapshot.message, statusMessage, sizeof(snapshot.message));
+  snapshot.mapOnly = !precipitationEnabled;
+  if (snapshot.mapOnly) {
+    // Staré snímky i rozběhnuté stahování s mapou nemají nic společného.
+    snapshot.loading = false;
+    snapshot.fullPreparationInProgress = false;
+    snapshot.ready = displayedFrame == -2;
+    snapshot.latestFrame = false;
+    snapshot.currentFrameNumber = 0;
+    snapshot.animationFrameCount = 0;
+    snapshot.frameTime[0] = '\0';
+  }
   portEXIT_CRITICAL(&stateMux);
   // Efektivní poloměr si drží modul RainVieweru; čte se mimo kritickou sekci,
   // protože ho zapisuje jen úloha radaru při přepočtu mřížky.

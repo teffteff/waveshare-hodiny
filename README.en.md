@@ -68,13 +68,22 @@ changes the system text and verbal date shown on the display.
 - an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by
   altitude, 10 to 100 km ranges, an altitude filter, emergency squawk alerts,
   a watched flight and an aircraft detail with the flight route from adsb.lol,
+- realtime lightning from the Blitzortung network (LightningMaps.org) through
+  your own server: strokes on the radar coloured by age and an alert on the
+  clock face when lightning strikes within a set radius (see `infra/README.md`),
+- a sun and moon screen: rise and set times of both, civil dawn and dusk, day
+  length, moon phase and illumination and the next full and new moon, computed
+  on the device,
 - two additional values such as CO₂, VOC, particulate matter, humidity,
   pressure or battery level,
 - eight independent values on the VALUES face, each with its own name, Home
   Assistant entity, unit, precision and color scale,
 - personal TMEP.cz sensors as an optional extension to Open-Meteo values,
 - custom units, decimal precision and smooth color scales,
-- independent day and night brightness with manual or automatic switching,
+- independent day and night brightness with manual or automatic switching; with
+  Open-Meteo the sunrise and sunset are computed on the device, so the switch
+  happens on the minute even without a network, with Home Assistant it follows
+  the sun entity,
 - dots, line and comet seconds effects,
 - password-protectable web configuration, backup import/export and diagnostics,
 - initial Wi-Fi provisioning through Improv Serial on either USB-C connector,
@@ -602,8 +611,10 @@ hard color thresholds. The two values use independent scales.
 
 ### Day/night mode and seconds
 
-Day and night brightness are independent. Automatic mode uses Open-Meteo sunrise
-and sunset for the selected location or a Home Assistant sun entity. Optional
+Day and night brightness are independent. With the Open-Meteo source, automatic
+mode uses sunrise and sunset computed on the device for the selected location,
+so it switches on the minute and keeps working when the network is down; with
+Home Assistant it follows the selected sun entity. Optional
 offsets adjust both transitions. With automation disabled, a short tap on either
 the clock or radar switches the day and night appearance.
 

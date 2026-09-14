@@ -936,12 +936,14 @@ void testScreenOrderRoundTripAndNormalization() {
   assert(clockConfigLoad(repaired));
   assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
   assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
-  // Agenda přežila z výchozího pořadí na šestém místě, takže se doplňuje až
-  // za ni; teprve pak přijdou obrazovky, které v poli vůbec nebyly.
+  // Agenda a Slunce s Měsícem přežily z výchozího pořadí na šestém a sedmém
+  // místě, takže se doplňuje až za ně; teprve pak přijdou obrazovky, které
+  // v poli vůbec nebyly.
   assert(repaired.screenOrder[2] == CLOCK_SCREEN_AGENDA);
-  assert(repaired.screenOrder[3] == CLOCK_SCREEN_CLOCK);
-  assert(repaired.screenOrder[4] == CLOCK_SCREEN_RADAR);
-  assert(repaired.screenOrder[5] == CLOCK_SCREEN_FORECAST);
+  assert(repaired.screenOrder[3] == CLOCK_SCREEN_SKY);
+  assert(repaired.screenOrder[4] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrder[5] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrder[6] == CLOCK_SCREEN_FORECAST);
   for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
        index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
     assert(repaired.screenOrder[index] == CLOCK_SCREEN_ORDER_UNUSED);
@@ -1066,10 +1068,86 @@ void testAgendaCalendarsPersistenceAndMigration() {
   assert(!clockConfigAgendaPrivateKeyValid("heslo\xc3\xa1"));
 }
 
+void testLightningAndSkyPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.lightning.enabled && defaults.lightning.url[0] == '\0');
+  assert(!clockConfigLightningAvailable(defaults));
+  assert(!clockConfigSkyAvailable(defaults));
+
+  // Schéma 41 blesky ani obrazovku Slunce a Měsíce nezná. Po povýšení zůstane
+  // obojí vypnuté a obrazovka se zařadí na konec cyklu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.agendaCalendars.hiddenMask = 0b11;
+  source.screenOrder[0] = CLOCK_SCREEN_RADAR;
+  source.screenOrder[1] = CLOCK_SCREEN_CLOCK;
+  source.screenOrder[6] = CLOCK_SCREEN_ORDER_UNUSED;
+  seed(legacyRecord(source, 41, CLOCK_CONFIG_SCHEMA_41_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.agendaCalendars.hiddenMask == 0b11);
+  assert(!migrated.lightning.enabled && migrated.lightning.url[0] == '\0');
+  assert(migrated.lightning.alarmRadiusKm == 10);
+  assert(!migrated.sky.enabled);
+  assert(migrated.screenOrder[0] == CLOCK_SCREEN_RADAR);
+  assert(migrated.screenOrder[1] == CLOCK_SCREEN_CLOCK);
+  assert(migrated.screenOrder[6] == CLOCK_SCREEN_SKY);
+  assert(migrated.screenOrder[7] == CLOCK_SCREEN_ORDER_UNUSED);
+
+  migrated.lightning.enabled = true;
+  clockConfigCopy(migrated.lightning.url, sizeof(migrated.lightning.url),
+                  "https://hodiny:heslo@example.test/lightning.json");
+  migrated.lightning.alarmRadiusKm = 200;
+  migrated.lightning.alarmMinutes = 0;
+  migrated.sky.enabled = true;
+  migrated.sky.displaySeconds = 1;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(clockConfigLightningAvailable(loaded));
+  assert(clockConfigSkyAvailable(loaded));
+  assert(loaded.lightning.alarmRadiusKm == CLOCK_LIGHTNING_MAX_ALARM_KM);
+  assert(loaded.lightning.alarmMinutes == CLOCK_LIGHTNING_MIN_ALARM_MINUTES);
+  assert(loaded.sky.displaySeconds == 10);
+}
+
+void testRadarPrecipitationPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.radarPrecipitation);
+
+  // Schéma 42 má stejnou velikost; vypínač srážek ležel v jeho koncové výplni,
+  // takže nula tam po povýšení nesmí srážky vypnout.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.lightning.enabled = true;
+  source.radarLegend = false;
+  source.radarPrecipitation = false;
+  seed(legacyRecord(source, 42, CLOCK_CONFIG_SCHEMA_42_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.lightning.enabled);
+  assert(!migrated.radarLegend);
+  assert(migrated.radarPrecipitation);
+
+  migrated.radarPrecipitation = false;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(!loaded.radarPrecipitation);
+}
+
 int main() {
+  testRadarPrecipitationPersistenceAndMigration();
   testAgendaCalendarsPersistenceAndMigration();
   testPlanesMapLabelPersistenceAndMigration();
   testSecondValuePagePersistenceAndMigration();
+  testLightningAndSkyPersistenceAndMigration();
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
   testSchema27MigrationKeepsStoredValues();

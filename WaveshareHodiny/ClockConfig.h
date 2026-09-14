@@ -43,6 +43,15 @@ constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 16;
 // Heslo k soukromým kalendářům. Hodiny ho posílají v HTTP hlavičce, takže jen
 // tisknutelné ASCII, nejvýš 63 znaků.
 constexpr size_t CLOCK_AGENDA_PRIVATE_KEY_LENGTH = 64;
+// Adresa serveru blesků i se jménem a heslem pro basic_auth.
+constexpr size_t CLOCK_LIGHTNING_URL_LENGTH = 192;
+// Kruh výstrahy. Pod kilometr to nemá smysl kvůli přesnosti lokalizace
+// úderu, nad padesát už to není "bouřka u nás".
+constexpr uint8_t CLOCK_LIGHTNING_MIN_ALARM_KM = 1;
+constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_KM = 50;
+// Okno výstrahy v minutách; server drží údery půl hodiny.
+constexpr uint8_t CLOCK_LIGHTNING_MIN_ALARM_MINUTES = 5;
+constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // Schema 20 is the public 1.5.5 baseline. Schema 24 added CHMI radar settings
 // plus automatic clock/radar rotation. Schema 25 added the persistent UI
 // language; schema 26 distinguishes an as-yet unselected language and uses
@@ -96,11 +105,19 @@ constexpr size_t CLOCK_AGENDA_PRIVATE_KEY_LENGTH = 64;
 // unlocks private calendars on the agenda server. The schema 40 prefix stays
 // byte-for-byte unchanged; nothing is hidden and no key is stored on upgrade,
 // so the agenda keeps showing exactly the calendars it showed before.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 41;
+// Schema 42 appends realtime lightning from the owner's server and the sun and
+// moon screen, the seventh entry of the screen order. The schema 41 prefix
+// stays byte-for-byte unchanged; lightning starts off without an address and
+// the screen starts disabled, so an upgrade neither contacts a new server nor
+// adds a screen to the rotation.
+// Schema 43 appends a switch for the precipitation layer of the radar. It lands
+// in the trailing padding of schema 42, so both records have the same size and
+// only the schema number tells them apart; the layer starts on after upgrade.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 43;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
-constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 6;
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 7;
 
 // Kolik bajtů pořadí zabírá v konfiguraci. Schválně víc, než kolik je dnes
 // obrazovek: pole leží na konci schématu 37, takže dokud se do rezervy vejde
@@ -119,6 +136,7 @@ enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_FORECAST = 3,
   CLOCK_SCREEN_PLANES = 4,
   CLOCK_SCREEN_AGENDA = 5,
+  CLOCK_SCREEN_SKY = 6,
 };
 
 enum ClockLanguage : uint8_t {
@@ -354,6 +372,29 @@ struct ClockAgendaCalendarsConfig {
   char privateKey[CLOCK_AGENDA_PRIVATE_KEY_LENGTH] = "";
 };
 
+// Realtime blesky. Hodiny s LightningMaps nemluví samy: trvalé spojení drží
+// vlastní server z infra/lightning a hodiny se ho jen ptají. Bez adresy proto
+// funkce nejde zapnout.
+struct ClockLightningConfig {
+  bool enabled = false;
+  // Údery na meteoradaru, obarvené podle stáří.
+  bool radarOverlay = true;
+  // Upozornění na ciferníku, když blýská v kruhu výstrahy.
+  bool clockAlert = true;
+  uint8_t alarmRadiusKm = 10;
+  uint8_t alarmMinutes = 10;
+  char url[CLOCK_LIGHTNING_URL_LENGTH] = "";
+};
+
+// Obrazovka se Sluncem a Měsícem. Počítá se na zařízení z polohy, takže nemá
+// adresu ani interval stahování.
+struct ClockSkyConfig {
+  bool enabled = false;
+  // Zapojení do automatické rotace, stejně jako u ostatních obrazovek.
+  bool automaticRotation = false;
+  uint16_t displaySeconds = 20;
+};
+
 struct ClockPlanesConfig {
   bool enabled = false;
   // Zapojení do automatické rotace, stejně jako u radaru, zpráv a předpovědi.
@@ -477,7 +518,7 @@ struct ClockConfig {
       CLOCK_SCREEN_CLOCK,  CLOCK_SCREEN_RADAR,
       CLOCK_SCREEN_RSS,    CLOCK_SCREEN_FORECAST,
       CLOCK_SCREEN_PLANES, CLOCK_SCREEN_AGENDA,
-      CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED};
+      CLOCK_SCREEN_SKY,    CLOCK_SCREEN_ORDER_UNUSED};
   // Pole schématu 37 leží až za pořadím obrazovek, aby schéma 36 zůstalo
   // přesnou předponou.
   ClockAgendaConfig agenda;
@@ -500,6 +541,15 @@ struct ClockConfig {
   // přesně za koncovou výplní schématu 40 a žádný nejistý bajt výplně na ni
   // nedopadne.
   ClockAgendaCalendarsConfig agendaCalendars;
+  // Pole schématu 42. Výběr kalendářů je zarovnaný na čtyři bajty a jeho
+  // velikost je jejich násobkem, takže blesky začínají přesně na konci
+  // uloženého záznamu schématu 41.
+  ClockLightningConfig lightning;
+  ClockSkyConfig sky;
+  // Pole schématu 43. Srážková vrstva meteoradaru; bez ní radar nic nestahuje
+  // a ukazuje jen mapu, případně s blesky. Leží v koncové výplni schématu 42,
+  // takže migrace ho po zkopírování bajtů musí nastavit sama.
+  bool radarPrecipitation = true;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -590,6 +640,22 @@ static_assert(CLOCK_CONFIG_SCHEMA_40_SIZE == 8720 &&
                   alignof(ClockAgendaCalendarsConfig) == alignof(ClockConfig),
               "Schema 41 must preserve the complete schema 40 prefix.");
 
+constexpr size_t CLOCK_CONFIG_SCHEMA_41_SIZE = offsetof(ClockConfig, lightning);
+
+static_assert(CLOCK_CONFIG_SCHEMA_41_SIZE ==
+                      CLOCK_CONFIG_SCHEMA_40_SIZE +
+                          sizeof(ClockAgendaCalendarsConfig) &&
+                  CLOCK_CONFIG_SCHEMA_41_SIZE % alignof(ClockConfig) == 0,
+              "Schema 42 must preserve the complete schema 41 prefix.");
+
+// Schéma 42 končilo obrazovkou Slunce a Měsíce a dorovnáním na čtyři bajty.
+constexpr size_t CLOCK_CONFIG_SCHEMA_42_SIZE =
+    (offsetof(ClockConfig, radarPrecipitation) + alignof(ClockConfig) - 1) /
+    alignof(ClockConfig) * alignof(ClockConfig);
+
+static_assert(CLOCK_CONFIG_SCHEMA_42_SIZE == sizeof(ClockConfig),
+              "Schema 43 must keep the size of schema 42.");
+
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
 // je kvůli migraci uložený zvlášť.
@@ -650,6 +716,10 @@ bool clockConfigPlanesAvailable(const ClockConfig &config);
 // Agenda se kreslí jen se zapnutou obrazovkou a vyplněnou adresou, stejně jako
 // zprávy. Které kalendáře server zná, ví hodiny až z jeho odpovědi.
 bool clockConfigAgendaAvailable(const ClockConfig &config);
+// Blesky potřebují zapnutí i adresu serveru, stejně jako agenda.
+bool clockConfigLightningAvailable(const ClockConfig &config);
+// Slunce a Měsíc se počítají z polohy, takže stačí zapnutá obrazovka.
+bool clockConfigSkyAvailable(const ClockConfig &config);
 // Heslo k soukromým kalendářům jde do HTTP hlavičky: jen tisknutelné ASCII
 // a nejvýš CLOCK_AGENDA_PRIVATE_KEY_LENGTH - 1 znaků. Prázdné je platné.
 bool clockConfigAgendaPrivateKeyValid(const char *key);

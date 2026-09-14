@@ -226,6 +226,11 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     CONFIG_FIELD(secondPageSlots, PART_VALUES),
     CONFIG_FIELD(planesMapLabel, PART_SCREENS),
     CONFIG_FIELD(agendaCalendars, PART_SCREENS),
+    // Adresa serveru blesků nese heslo stejně jako adresa zdroje letadel a
+    // stejně jako ona patří k obrazovkám: záloha ji má přenést do dalších hodin.
+    CONFIG_FIELD(lightning, PART_SCREENS),
+    CONFIG_FIELD(sky, PART_SCREENS),
+    CONFIG_FIELD(radarPrecipitation, PART_SCREENS),
 };
 #undef CONFIG_FIELD
 
@@ -241,8 +246,10 @@ constexpr bool configFieldsInOrder() {
 
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
-static_assert(offsetof(ClockConfig, agendaCalendars) +
-                      sizeof(ClockAgendaCalendarsConfig) ==
+// Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
+static_assert((offsetof(ClockConfig, radarPrecipitation) + sizeof(bool) +
+               alignof(ClockConfig) - 1) /
+                      alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),
               "A new ClockConfig field needs a backup part in CONFIG_FIELDS.");
 
