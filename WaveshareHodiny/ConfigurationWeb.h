@@ -67,6 +67,12 @@ void configurationWebSetAgendaProbe(AgendaProbeCallback callback);
 using SettingsShareCallback = bool (*)(const SettingsShareRequest &request,
                                        SettingsShareResult &result);
 void configurationWebSetSettingsShare(SettingsShareCallback callback);
+// Pomalý výpočet (odvození klíče šifrované zálohy) mimo smyčku. Skeč ho
+// předá vlastní úloze a mezitím kreslí displej a krmí watchdog smyčky. Vrací
+// false, jen když se práce vůbec nespustila; `work` pak neproběhla.
+using BackgroundWorkCallback = bool (*)(void (*work)(void *context),
+                                        void *context);
+void configurationWebSetBackgroundWork(BackgroundWorkCallback callback);
 // Uživatel změnil název hodin v síti (DeviceName.h). Volá se po odeslání
 // odpovědi, s už uloženým názvem.
 using DeviceNameChangedCallback = void (*)(const char *name);

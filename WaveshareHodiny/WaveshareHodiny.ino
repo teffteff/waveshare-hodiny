@@ -646,6 +646,50 @@ bool runSettingsShareFromWeb(const SettingsShareRequest &request,
   return result.ok;
 }
 
+// Odvození klíče šifrované zálohy trvá sekundy. Přímo ve web serveru by po
+// tu dobu stál displej, proto ho počítá vlastní úloha a smyčka mezitím kreslí
+// a krmí watchdog, stejně jako při přenosu zálohy. Úloha vznikne při první
+// záloze a pak jen čeká; zásobník leží v PSRAM.
+TaskHandle_t backgroundWorkTaskHandle = nullptr;
+void (*backgroundWork)(void *) = nullptr;
+void *backgroundWorkContext = nullptr;
+volatile bool backgroundWorkDone = false;
+
+void backgroundWorkTask(void *) {
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (backgroundWork != nullptr) backgroundWork(backgroundWorkContext);
+    backgroundWorkDone = true;
+  }
+}
+
+// Volá se jen ze smyčky (web server), takže dvě práce naráz nepřijdou. Čeká
+// bez limitu: práce je omezená (SETTINGS_BACKUP_KDF_MAX_ITERATIONS) a její
+// kontext leží na zásobníku volajícího, takže odejít dřív by nešlo.
+bool runBackgroundWorkFromWeb(void (*work)(void *), void *context) {
+  if (backgroundWorkTaskHandle == nullptr &&
+      xTaskCreatePinnedToCoreWithCaps(
+          backgroundWorkTask, "web-work", 6144, nullptr, 1,
+          &backgroundWorkTaskHandle, 0,
+          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    backgroundWorkTaskHandle = nullptr;
+    return false;
+  }
+  backgroundWork = work;
+  backgroundWorkContext = context;
+  backgroundWorkDone = false;
+  xTaskNotifyGive(backgroundWorkTaskHandle);
+  while (!backgroundWorkDone) {
+    if (!screenshotTransferActive) {
+      clockDashboardLoop();
+      displayDriverLoop();
+    }
+    delay(5);
+    feedLoopWDT();
+  }
+  return true;
+}
+
 bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
                         String &error) {
   httpStatus = 0;
@@ -3058,6 +3102,7 @@ void setup() {
   configurationWebSetAgendaTask(agendaTaskHandle);
   configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
   configurationWebSetSettingsShare(runSettingsShareFromWeb);
+  configurationWebSetBackgroundWork(runBackgroundWorkFromWeb);
   configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
   // stojí stejně zásobníku jako u kanálu zpráv.

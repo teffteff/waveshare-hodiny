@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Uloziste zaloh nastaveni hodin: seznam, stazeni a ulozeni pod nazvem.
 
-  GET  /settings/          seznam zaloh (nazev, cas, firmware, s tajemstvimi?)
+  GET  /settings/          seznam zaloh (nazev, cas, firmware, tajemstvi,
+                           sifrovana?)
   GET  /settings/<nazev>   jedna zaloha tak, jak ji hodiny poslaly
-  PUT  /settings/<nazev>   ulozi nebo prepise zalohu
+  PUT  /settings/<nazev>   ulozi nebo prepise zalohu; jen sifrovanou
   DELETE /settings/<nazev> smaze zalohu
 
-Zaloha muze nest token Home Assistantu a heslo webu, takze:
+Zaloha muze nest token Home Assistantu a heslo webu. Od verze obalky 4 je
+zasifrovana heslem zalohy, ktere server nikdy nevidi (AES-256-GCM, klic
+z PBKDF2 ve firmwaru). Nesifrovanou verzi 3 ze starsich hodin server od
+14. 9. 2026 neprijme: nesla tokeny jen v base64. Seznam a stazeni ji dal
+umi, kdyby nejaka na disku zbyla, aby se dala najit a smazat. I tak:
 
 - posloucha jen na 127.0.0.1 a heslo resi basic_auth v Caddy, stejne jako
   u agendy; primy dotaz na port by heslo obesel,
@@ -37,8 +42,14 @@ NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 MAX_BODY_BYTES = 64 * 1024
 MAX_BACKUPS = 64
 FORMAT = "waveshare-hodiny-settings"
-VERSION = 3
+PLAIN_VERSION = 3
+ENCRYPTED_VERSION = 4
 DATA_TEXT = re.compile(r"^[A-Za-z0-9_-]+$")
+# Popis sifrovane obalky; stejne meze jako settingsBackupParseEnvelope().
+SALT_TEXT = re.compile(r"^[0-9a-fA-F]{32}$")
+NONCE_TEXT = re.compile(r"^[0-9a-fA-F]{24}$")
+MIN_ITERATIONS = 10_000
+MAX_ITERATIONS = 100_000
 
 
 def backup_path(name: str) -> Path:
@@ -46,12 +57,28 @@ def backup_path(name: str) -> Path:
 
 
 def valid_envelope(payload: object) -> bool:
-    return (
+    if not (
         isinstance(payload, dict)
         and payload.get("format") == FORMAT
-        and payload.get("version") == VERSION
+        and payload.get("version") in (PLAIN_VERSION, ENCRYPTED_VERSION)
         and isinstance(payload.get("data"), str)
         and DATA_TEXT.match(payload["data"]) is not None
+    ):
+        return False
+    if payload["version"] == PLAIN_VERSION:
+        return True
+    # Server obsah neotevre; hlida jen, ze jde o obalku, kterou hodiny prectou.
+    iterations = payload.get("iterations")
+    return (
+        payload.get("cipher") == "AES-256-GCM"
+        and payload.get("kdf") == "PBKDF2-SHA256"
+        and type(iterations) is int
+        and MIN_ITERATIONS <= iterations <= MAX_ITERATIONS
+        and isinstance(payload.get("salt"), str)
+        and SALT_TEXT.match(payload["salt"]) is not None
+        and isinstance(payload.get("nonce"), str)
+        and NONCE_TEXT.match(payload["nonce"]) is not None
+        and isinstance(payload.get("secrets"), bool)
     )
 
 
@@ -69,6 +96,7 @@ def describe(path: Path) -> dict | None:
         "modified": modified.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "firmware": firmware if isinstance(firmware, str) else "",
         "secrets": payload.get("secrets") is True,
+        "encrypted": payload["version"] == ENCRYPTED_VERSION,
         "size": path.stat().st_size,
     }
 
@@ -148,6 +176,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not valid_envelope(payload):
             self._error(400, "not a clock settings backup")
+            return
+        if payload["version"] != ENCRYPTED_VERSION:
+            self._error(400, "unencrypted backups are not accepted; "
+                             "update the clock firmware")
             return
 
         target = backup_path(name)
