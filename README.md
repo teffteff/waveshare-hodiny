@@ -687,14 +687,25 @@ Bez hesla se z hodin nedají dostat vůbec, takže je nemůže vytáhnout nikdo,
 se jen dostane do stejné sítě. Obnova zálohy bez tokenů ponechá tokeny, které
 cílové hodiny už mají (token Home Assistantu jen při stejné adrese serveru).
 
+Každá záloha je **zašifrovaná heslem zálohy** (8–64 znaků, AES-256-GCM, klíč
+z PBKDF2-SHA256). Soubor `.whbackup` ani záloha na serveru bez něj nejdou
+přečíst, a to ani s přístupem k serveru. Hodiny si heslo nepamatují: při obnově
+ho zadáš znovu, a když ho zapomeneš, záloha je ztracená. Tlačítko
+**Vygenerovat silné heslo** vytvoří náhodné heslo, které si ulož třeba do
+správce hesel. Popis zálohy (verze firmwaru, čas, zda nese tokeny) zůstává
+čitelný kvůli seznamu na serveru, ale je chráněný spolu s daty, takže ho nejde
+nepozorovaně změnit. Heslo webu tedy rozhoduje, co záloha smí nést, heslo zálohy
+chrání soubor, když už z hodin odešel. Zálohu jde ověřit a otevřít i bez hodin:
+`BACKUP_PASSWORD='…' node tools/decrypt_settings_backup.mjs zaloha.whbackup`.
+
 Zálohu lze uložit do souboru, nebo na vlastní server a z jiných hodin ji
 stáhnout: v záložce **Systém** zadej adresu ve tvaru
 `https://hodiny:heslo@server/settings`, název zálohy a **Uložit na server**; na
 druhých hodinách stejnou adresu, **Načíst seznam** a **Nahrát do těchto hodin**.
 Zálohu vybranou v seznamu odstraní ze serveru **Smazat ze serveru**.
 Adresa musí být `https://` a hodiny si ji zapamatují po prvním úspěšném spojení.
-Serverová část je v `infra/settings/`. Starší zálohy z prohlížeče (verze 2) jde
-pořád importovat. Restart zařízení uložené nastavení nemaže.
+Serverová část je v `infra/settings/`. Starší nešifrované zálohy (verze 2 a 3)
+jde pořád importovat. Restart zařízení uložené nastavení nemaže.
 
 ## Nastavení na displeji
 

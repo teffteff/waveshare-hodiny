@@ -43,6 +43,17 @@ run_test home_assistant_connection_policy || failures=$((failures + 1))
 run_test clock_config "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))
 run_test value_slot_form "$FIRMWARE_DIR/ConfigurationForm.cpp" "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))
 run_test settings_backup "$FIRMWARE_DIR/SettingsBackup.cpp" "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))
+# Šifrování zálohy potřebuje mbedTLS 3 stejně jako firmware (brew install mbedtls@3).
+MBEDTLS_DIR="${MBEDTLS_DIR:-$(brew --prefix mbedtls@3 2>/dev/null)}"
+if [[ -n "$MBEDTLS_DIR" && -f "$MBEDTLS_DIR/include/mbedtls/gcm.h" ]]; then
+  run_test settings_backup_crypto "$FIRMWARE_DIR/SettingsBackupCrypto.cpp" \
+    "$FIRMWARE_DIR/SettingsBackup.cpp" "$FIRMWARE_DIR/ClockConfig.cpp" \
+    "$FIRMWARE_DIR/JsonScan.cpp" -I "$MBEDTLS_DIR/include" \
+    "$MBEDTLS_DIR/lib/libmbedcrypto.a" || failures=$((failures + 1))
+else
+  printf '%-24s %s\n' settings_backup_crypto "CHYBÍ mbedTLS 3 (MBEDTLS_DIR)"
+  failures=$((failures + 1))
+fi
 run_test rss_parser "$FIRMWARE_DIR/RssParser.cpp" || failures=$((failures + 1))
 run_test clock_namedays "$FIRMWARE_DIR/ClockNamedays.cpp" || failures=$((failures + 1))
 run_test http_body_reader "$FIRMWARE_DIR/HttpBodyReader.cpp" || failures=$((failures + 1))

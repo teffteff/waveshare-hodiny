@@ -288,6 +288,13 @@ z hodin tlačítkem **Smazat ze serveru**, nebo `rm /opt/settings/data/<název>.
 - tělo má strop 64 kB (Caddy i server) a musí to být obálka zálohy hodin,
 - záloh je nejvýš 64, aby se disk nedal zaplnit ani s heslem.
 
+Od firmwaru s obálkou verze 4 je každá záloha zašifrovaná heslem zálohy
+(AES-256-GCM, klíč z PBKDF2-SHA256 ve firmwaru), které server nikdy nevidí;
+čitelný zůstává jen autentizovaný popis pro seznam (`"encrypted": true`).
+Server obsah neotevírá, kontroluje jen tvar obálky a meze iterací (10 000 až
+100 000). Nešifrovanou zálohu verze 3 od 14. 9. 2026 odmítne (400), takže
+hodiny se starším firmwarem na server neuloží nic, dokud se neaktualizují.
+
 Tokeny a hesla se do zálohy dostanou, jen když je majitel při zálohování potvrdí
 heslem webového nastavení – bez něj hodiny pošlou zálohu bez nich. Firmware
 přijme jen adresu `https://` a přesměrování nenásleduje, aby heslo z adresy

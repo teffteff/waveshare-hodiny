@@ -659,12 +659,25 @@ while backing up; otherwise they never leave the device. Restoring a backup
 without them keeps the tokens the target clock already has (the Home Assistant
 token only for the same server address).
 
+Every backup is **encrypted with a backup password** (8–64 characters,
+AES-256-GCM with a PBKDF2-SHA256 key). Neither the `.whbackup` file nor the copy
+on the server can be read without it, even with access to the server. The clock
+does not remember the password: you enter it again when restoring, and a
+forgotten password means a lost backup. **Generate a strong password** creates a
+random one to keep in a password manager. The backup description (firmware
+version, time, whether it carries tokens) stays readable for the server list but
+is authenticated together with the data, so it cannot be altered unnoticed. The
+web password decides what a backup may carry; the backup password protects the
+file once it has left the clock. A backup can be checked and opened without a
+clock: `BACKUP_PASSWORD='…' node tools/decrypt_settings_backup.mjs backup.whbackup`.
+
 Backups can be saved to a file, or to your own server and loaded on another
 clock: on the **System** tab enter `https://hodiny:password@server/settings`,
 a backup name and **Save to server**; on the other clock use the same address,
 **Load list** and **Load into this clock**. **Delete from server** removes the
 backup selected in the list. The server side lives in
-`infra/settings/`. Older browser backups (version 2) can still be imported.
+`infra/settings/`. Older unencrypted backups (versions 2 and 3) can still be
+imported.
 
 ## Touchscreen settings
 
@@ -850,7 +863,8 @@ protocol. Use the repository script with the currently verified serial port:
 
 - Public releases contain no Wi-Fi credentials.
 - Home Assistant tokens are stored locally and are not returned by the API.
-- Backups omit tokens, passwords and the control API secret.
+- Backups are encrypted with a backup password; tokens and passwords are
+  included only after confirming the web password, the control API secret never.
 - OTA uses HTTPS and verifies the application image before activation.
 - The configuration web server is intended for a trusted local network.
 - Do not publish control URLs, credentials, `.env` files or generated secret

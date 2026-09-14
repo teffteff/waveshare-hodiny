@@ -38,6 +38,7 @@
 #include "NetworkDiagnostics.h"
 #include "DeviceName.h"
 #include "SettingsBackup.h"
+#include "SettingsBackupCrypto.h"
 #include "TmepService.h"
 
 namespace {
@@ -314,6 +315,7 @@ RssProbeCallback rssProbeCallback = nullptr;
 TaskHandle_t agendaTaskForDiagnostics = nullptr;
 AgendaProbeCallback agendaProbeCallback = nullptr;
 SettingsShareCallback settingsShareCallback = nullptr;
+BackgroundWorkCallback backgroundWorkCallback = nullptr;
 DeviceNameChangedCallback deviceNameChangedCallback = nullptr;
 char deviceName[DEVICE_NAME_LENGTH] = "";
 constexpr unsigned long WEB_AVAILABILITY_MS = 10UL * 60UL * 1000UL;
@@ -3590,20 +3592,30 @@ void handleFirmwareInstall() {
 // ven nedostanou vůbec - token se na web nikdy nevrací. Záloha je proto smí
 // nést jen po zadání hesla webového nastavení. Bez hesla by je z hodin vytáhl
 // kdokoli v síti, a to i tak, že by si zálohu poslal na vlastní server.
+//
+// Heslo webu tedy rozhoduje, CO záloha smí nést. Heslo zálohy (od obálky 4,
+// SettingsBackupCrypto.h) chrání soubor, KDYŽ už z hodin odešel - na disku,
+// v e-mailu i na serveru. Hodiny ho nikam neukládají a bez něj zálohu
+// neotevřou ani samy.
 
 constexpr char BACKUP_FORMAT[] = "waveshare-hodiny-settings";
-constexpr int BACKUP_ENVELOPE_VERSION = 3;
-// Záloha putuje z prohlížeče po kouscích, protože jedno pole formuláře smí mít
-// nejvýš MAX_POST_VALUE_BYTES. base64url se neescapuje, takže kousek zůstane
-// stejně dlouhý i v těle požadavku.
-constexpr size_t BACKUP_IMPORT_PART_BYTES = 1000;
-constexpr size_t BACKUP_IMPORT_MAX_PARTS =
-    (SETTINGS_BACKUP_MAX_TEXT_BYTES + BACKUP_IMPORT_PART_BYTES - 1) /
-    BACKUP_IMPORT_PART_BYTES;
+constexpr size_t BACKUP_MAX_SEALED_BYTES =
+    SETTINGS_BACKUP_MAX_BYTES + SETTINGS_BACKUP_TAG_SIZE;
+// Celá obálka: base64 zapečetěných dat a popis kolem nich.
+constexpr size_t BACKUP_MAX_ENVELOPE_BYTES =
+    (BACKUP_MAX_SEALED_BYTES + 2) / 3 * 4 + 1024;
+// Soubor zálohy putuje z prohlížeče po kouscích, protože jedno pole formuláře
+// smí mít nejvýš MAX_POST_VALUE_BYTES. Stránka kousky krájí podle délky po
+// zakódování, takže každý nese aspoň třetinu toho; strop počtu jen omezuje
+// smyčku skládání.
+constexpr size_t BACKUP_IMPORT_MAX_PARTS = 128;
 constexpr size_t BACKUP_LIST_MAX_ITEMS = 64;
 
 ClockConfig &backupConfigBuffer = clockConfigAllocate();
+// Otevřená záloha i s tokeny. Po každém použití se maže.
 uint8_t *backupBytes = nullptr;
+uint8_t *backupSealed = nullptr;
+// Text obálky: base64 při exportu, složený soubor při importu.
 char *backupText = nullptr;
 
 bool ensureBackupBuffers() {
@@ -3611,11 +3623,73 @@ bool ensureBackupBuffers() {
     backupBytes = static_cast<uint8_t *>(heap_caps_malloc(
         SETTINGS_BACKUP_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
+  if (backupSealed == nullptr) {
+    backupSealed = static_cast<uint8_t *>(heap_caps_malloc(
+        BACKUP_MAX_SEALED_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
   if (backupText == nullptr) {
     backupText = static_cast<char *>(heap_caps_malloc(
-        SETTINGS_BACKUP_MAX_TEXT_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        BACKUP_MAX_ENVELOPE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  return backupBytes != nullptr && backupText != nullptr;
+  return backupBytes != nullptr && backupSealed != nullptr &&
+         backupText != nullptr;
+}
+
+void wipeBackupBuffers() {
+  settingsBackupZeroize(backupBytes, SETTINGS_BACKUP_MAX_BYTES);
+  settingsBackupZeroize(backupSealed, BACKUP_MAX_SEALED_BYTES);
+  // Soubor verze 3 z importu nese tajemství jen v base64.
+  settingsBackupZeroize(backupText, BACKUP_MAX_ENVELOPE_BYTES);
+  settingsBackupZeroize(&backupConfigBuffer, sizeof(backupConfigBuffer));
+}
+
+// Heslo zálohy z formuláře, ověřené a zkopírované mimo String.
+struct BackupPassword {
+  char text[SETTINGS_BACKUP_PASSWORD_MAX_BYTES + 1] = "";
+  size_t length = 0;
+  ~BackupPassword() { settingsBackupZeroize(text, sizeof(text)); }
+};
+
+// Při chybě odešle odpověď a vrátí false.
+bool readBackupPassword(BackupPassword &password) {
+  String value = server.arg("backupPassword");
+  const bool valid =
+      settingsBackupPasswordValid(value.c_str(), value.length());
+  if (valid) {
+    memcpy(password.text, value.c_str(), value.length());
+    password.length = value.length();
+    password.text[password.length] = '\0';
+  }
+  if (value.length() > 0)
+    settingsBackupZeroize(const_cast<char *>(value.c_str()), value.length());
+  if (!valid) {
+    sendError(400, F("Zadej heslo zálohy: 8 až 64 znaků."));
+    return false;
+  }
+  return true;
+}
+
+struct BackupKeyJob {
+  const BackupPassword *password = nullptr;
+  const uint8_t *salt = nullptr;
+  uint32_t iterations = 0;
+  uint8_t key[SETTINGS_BACKUP_KEY_SIZE] = {};
+  bool ok = false;
+  ~BackupKeyJob() { settingsBackupZeroize(key, sizeof(key)); }
+};
+
+void deriveBackupKey(void *context) {
+  auto *job = static_cast<BackupKeyJob *>(context);
+  job->ok = settingsBackupDeriveKey(job->password->text, job->password->length,
+                                    job->salt, job->iterations, job->key);
+}
+
+// Odvození trvá sekundy, proto běží mimo smyčku, když to skeč umí.
+bool runBackupKeyJob(BackupKeyJob &job) {
+  if (backgroundWorkCallback == nullptr ||
+      !backgroundWorkCallback(deriveBackupKey, &job))
+    deriveBackupKey(&job);
+  return job.ok;
 }
 
 void initializeSettingsShareUrl() {
@@ -3681,9 +3755,10 @@ String backupTimestamp() {
   return String(text);
 }
 
-// Poskládá obálku zálohy: JSON s popisem a vlastní zálohou v base64url.
-// Popis je jen pro člověka a pro seznam na serveru; obnova čte výhradně data.
-bool buildBackupEnvelope(bool secrets, String &envelope, String &error) {
+// Poskládá šifrovanou obálku zálohy (SettingsBackupCrypto.h). Popis je
+// čitelný pro seznam na serveru, ale autentizovaný spolu s daty.
+bool buildBackupEnvelopeUnwiped(bool secrets, const BackupPassword &password,
+                                String &envelope, String &error) {
   if (!ensureBackupBuffers()) {
     error = F("Pro zálohu není dostatek PSRAM.");
     return false;
@@ -3710,33 +3785,78 @@ bool buildBackupEnvelope(bool secrets, String &envelope, String &error) {
   const size_t size = settingsBackupEncode(backupConfigBuffer, content,
                                            backupBytes,
                                            SETTINGS_BACKUP_MAX_BYTES);
-  if (size == 0 ||
-      settingsBackupBase64Encode(backupBytes, size, backupText,
-                                 SETTINGS_BACKUP_MAX_TEXT_BYTES) == 0) {
+  if (size == 0) {
     error = F("Záloha se nevešla do paměti.");
     return false;
   }
-  if (!envelope.reserve(strlen(backupText) + 256)) {
+
+  SettingsBackupEnvelope header;
+  header.version = SETTINGS_BACKUP_ENVELOPE_ENCRYPTED;
+  settingsBackupCopyLabel(header.firmware, sizeof(header.firmware),
+                          FIRMWARE_VERSION);
+  header.schema = CLOCK_CONFIG_SCHEMA_VERSION;
+  header.secrets = secrets;
+  settingsBackupCopyLabel(header.exportedAt, sizeof(header.exportedAt),
+                          backupTimestamp().c_str());
+  header.iterations = SETTINGS_BACKUP_KDF_ITERATIONS;
+  esp_fill_random(header.salt, sizeof(header.salt));
+  esp_fill_random(header.nonce, sizeof(header.nonce));
+  char associatedData[SETTINGS_BACKUP_ASSOCIATED_DATA_LENGTH];
+  const size_t associatedLength = settingsBackupAssociatedData(
+      header, associatedData, sizeof(associatedData));
+  BackupKeyJob job;
+  job.password = &password;
+  job.salt = header.salt;
+  job.iterations = header.iterations;
+  const size_t sealedSize =
+      associatedLength > 0 && runBackupKeyJob(job)
+          ? settingsBackupSeal(job.key, header.nonce, associatedData,
+                               associatedLength, backupBytes, size,
+                               backupSealed, BACKUP_MAX_SEALED_BYTES)
+          : 0;
+  if (sealedSize == 0) {
+    error = F("Zálohu se nepodařilo zašifrovat.");
+    return false;
+  }
+  if (settingsBackupBase64Encode(backupSealed, sealedSize, backupText,
+                                 BACKUP_MAX_ENVELOPE_BYTES) == 0) {
+    error = F("Záloha se nevešla do paměti.");
+    return false;
+  }
+  if (!envelope.reserve(strlen(backupText) + 512)) {
     error = F("Na zálohu nezbyla paměť. Zkus to znovu.");
     return false;
   }
+  char salt[SETTINGS_BACKUP_SALT_SIZE * 2 + 1];
+  char nonce[SETTINGS_BACKUP_NONCE_SIZE * 2 + 1];
+  settingsBackupHexEncode(header.salt, sizeof(header.salt), salt, sizeof(salt));
+  settingsBackupHexEncode(header.nonce, sizeof(header.nonce), nonce,
+                          sizeof(nonce));
+  // Pole v přesně tomhle tvaru čte settingsBackupParseEnvelope; firmware
+  // a čas smí mít jen znaky, které JSON neescapuje.
   envelope = F("{\"format\":\"");
   envelope += BACKUP_FORMAT;
   envelope += F("\",\"version\":");
-  envelope += BACKUP_ENVELOPE_VERSION;
+  envelope += header.version;
   envelope += F(",\"firmware\":\"");
-  envelope += jsonEscape(FIRMWARE_VERSION);
+  envelope += header.firmware;
   envelope += F("\",\"schema\":");
-  envelope += CLOCK_CONFIG_SCHEMA_VERSION;
+  envelope += header.schema;
   envelope += F(",\"secrets\":");
   envelope += secrets ? F("true") : F("false");
-  const String exportedAt = backupTimestamp();
-  if (!exportedAt.isEmpty()) {
+  if (header.exportedAt[0] != '\0') {
     envelope += F(",\"exportedAt\":\"");
-    envelope += exportedAt;
+    envelope += header.exportedAt;
     envelope += '"';
   }
-  envelope += F(",\"data\":\"");
+  envelope += F(",\"cipher\":\"AES-256-GCM\",\"kdf\":\"PBKDF2-SHA256\","
+                "\"iterations\":");
+  envelope += header.iterations;
+  envelope += F(",\"salt\":\"");
+  envelope += salt;
+  envelope += F("\",\"nonce\":\"");
+  envelope += nonce;
+  envelope += F("\",\"data\":\"");
   envelope += backupText;
   envelope += F("\"}");
   if (!envelope.endsWith("\"}")) {
@@ -3746,7 +3866,16 @@ bool buildBackupEnvelope(bool secrets, String &envelope, String &error) {
   return true;
 }
 
+bool buildBackupEnvelope(bool secrets, const BackupPassword &password,
+                         String &envelope, String &error) {
+  const bool built =
+      buildBackupEnvelopeUnwiped(secrets, password, envelope, error);
+  wipeBackupBuffers();
+  return built;
+}
+
 struct BackupApplyOutcome {
+  bool encrypted = false;
   bool secrets = false;
   bool partial = false;
   bool webPasswordChanged = false;
@@ -3762,26 +3891,88 @@ bool readBackupParts(uint8_t &parts) {
   return false;
 }
 
-// Obnoví nastavení z textu zálohy (base64url). Převezme jen části v `parts`,
+// Otevře obálku zálohy do backupBytes. Verze 3 je jen base64, verze 4 se
+// dešifruje heslem zálohy z formuláře. Při chybě odešle odpověď a vrátí false.
+bool openBackupEnvelope(const char *begin, const char *end,
+                        SettingsBackupEnvelope &envelope, size_t &size) {
+  size = 0;
+  switch (settingsBackupParseEnvelope(begin, end, envelope)) {
+    case SettingsBackupEnvelopeStatus::Ok:
+      break;
+    case SettingsBackupEnvelopeStatus::UnsupportedVersion:
+      sendError(409, F("Záloha pochází z novějšího firmwaru. Nejdřív "
+                       "aktualizuj tyto hodiny."));
+      return false;
+    case SettingsBackupEnvelopeStatus::Malformed:
+    default:
+      sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+      return false;
+  }
+  if (envelope.version == SETTINGS_BACKUP_ENVELOPE_PLAIN) {
+    if (!settingsBackupBase64Decode(envelope.data, envelope.dataLength,
+                                    backupBytes, SETTINGS_BACKUP_MAX_BYTES,
+                                    size)) {
+      sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+      return false;
+    }
+    return true;
+  }
+
+  BackupPassword password;
+  if (!readBackupPassword(password)) return false;
+  size_t sealedSize = 0;
+  char associatedData[SETTINGS_BACKUP_ASSOCIATED_DATA_LENGTH];
+  const size_t associatedLength = settingsBackupAssociatedData(
+      envelope, associatedData, sizeof(associatedData));
+  if (associatedLength == 0 ||
+      !settingsBackupBase64Decode(envelope.data, envelope.dataLength,
+                                  backupSealed, BACKUP_MAX_SEALED_BYTES,
+                                  sealedSize)) {
+    sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
+    return false;
+  }
+  BackupKeyJob job;
+  job.password = &password;
+  job.salt = envelope.salt;
+  job.iterations = envelope.iterations;
+  if (!runBackupKeyJob(job)) {
+    sendError(503, F("Zálohu se nepodařilo dešifrovat."));
+    return false;
+  }
+  if (!settingsBackupOpen(job.key, envelope.nonce, associatedData,
+                          associatedLength, backupSealed, sealedSize,
+                          backupBytes, SETTINGS_BACKUP_MAX_BYTES, size)) {
+    sendError(401, F("Heslo zálohy není správné, nebo je soubor poškozený."));
+    return false;
+  }
+  return true;
+}
+
+// Obnoví nastavení z textu obálky zálohy. Převezme jen části v `parts`,
 // zbytek nechá, jak ho mají tyto hodiny. Při chybě odešle odpověď a vrátí
 // false; při úspěchu odpověď nechává volajícímu.
-bool applyBackupText(const char *text, size_t length, uint8_t parts,
-                     BackupApplyOutcome &outcome) {
+bool applyBackupEnvelopeUnwiped(const char *begin, const char *end,
+                                uint8_t parts, BackupApplyOutcome &outcome) {
   if (!ensureBackupBuffers()) {
     sendError(503, F("Pro zálohu není dostatek PSRAM."));
     return false;
   }
+  SettingsBackupEnvelope envelope;
   size_t size = 0;
-  if (length == 0 ||
-      !settingsBackupBase64Decode(text, length, backupBytes,
-                                  SETTINGS_BACKUP_MAX_BYTES, size)) {
-    sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
-    return false;
-  }
+  if (!openBackupEnvelope(begin, end, envelope, size)) return false;
   ClockConfig &incoming = backupConfigBuffer;
   SettingsBackupContent content;
   switch (settingsBackupDecode(backupBytes, size, incoming, content)) {
     case SettingsBackupStatus::Ok:
+      // Popis šifrované obálky je autentizovaný; nesouhlas s vnitřkem by
+      // znamenal chybu při jejím skládání, ne cizí zásah.
+      if (envelope.version == SETTINGS_BACKUP_ENVELOPE_ENCRYPTED &&
+          envelope.secrets != content.secrets) {
+        sendError(400, F("Záloha je poškozená."));
+        return false;
+      }
+      outcome.encrypted =
+          envelope.version == SETTINGS_BACKUP_ENVELOPE_ENCRYPTED;
       break;
     case SettingsBackupStatus::Corrupted:
       sendError(400, F("Záloha je poškozená."));
@@ -3883,6 +4074,13 @@ bool applyBackupText(const char *text, size_t length, uint8_t parts,
   return true;
 }
 
+bool applyBackupEnvelope(const char *begin, const char *end, uint8_t parts,
+                         BackupApplyOutcome &outcome) {
+  const bool applied = applyBackupEnvelopeUnwiped(begin, end, parts, outcome);
+  wipeBackupBuffers();
+  return applied;
+}
+
 void finishBackupApply(const BackupApplyOutcome &outcome) {
   if (outcome.webPasswordChanged) {
     // Staré relace patřily k jinému heslu. Tomu, kdo obnovu právě provedl,
@@ -3890,7 +4088,9 @@ void finishBackupApply(const BackupApplyOutcome &outcome) {
     clearWebSessions();
     issueWebSession();
   }
-  String payload = F("{\"ok\":true,\"secrets\":");
+  String payload = F("{\"ok\":true,\"encrypted\":");
+  payload += outcome.encrypted ? F("true") : F("false");
+  payload += F(",\"secrets\":");
   payload += outcome.secrets ? F("true") : F("false");
   payload += F(",\"partial\":");
   payload += outcome.partial ? F("true") : F("false");
@@ -3903,11 +4103,13 @@ void finishBackupApply(const BackupApplyOutcome &outcome) {
 }
 
 void handleBackupExport() {
+  BackupPassword password;
+  if (!readBackupPassword(password)) return;
   bool secrets = false;
   if (!authorizeBackupSecrets(secrets)) return;
   String envelope;
   String error;
-  if (!buildBackupEnvelope(secrets, envelope, error)) {
+  if (!buildBackupEnvelope(secrets, password, envelope, error)) {
     sendError(503, error);
     return;
   }
@@ -3933,12 +4135,13 @@ void handleBackupImport() {
     sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
     return;
   }
-  // Text se skládá do bufferu v PSRAM; String by rostl po kouscích.
+  // Celý soubor zálohy se skládá do bufferu v PSRAM; String by rostl po
+  // kouscích.
   size_t length = 0;
   for (long index = 0; index < parts; ++index) {
     const String part = server.arg(String(F("part")) + String(index));
     if (part.isEmpty() ||
-        part.length() >= SETTINGS_BACKUP_MAX_TEXT_BYTES - length) {
+        part.length() >= BACKUP_MAX_ENVELOPE_BYTES - length) {
       sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
       return;
     }
@@ -3947,7 +4150,7 @@ void handleBackupImport() {
   }
   backupText[length] = '\0';
   BackupApplyOutcome outcome;
-  if (applyBackupText(backupText, length, include, outcome))
+  if (applyBackupEnvelope(backupText, backupText + length, include, outcome))
     finishBackupApply(outcome);
 }
 
@@ -4050,6 +4253,10 @@ void handleSettingsShareList() {
     payload += jsonReadBoolMember(cursor.itemBegin, cursor.itemEnd, "secrets")
                    ? F("true")
                    : F("false");
+    payload += F(",\"encrypted\":");
+    payload += jsonReadBoolMember(cursor.itemBegin, cursor.itemEnd, "encrypted")
+                   ? F("true")
+                   : F("false");
     payload += '}';
   }
   payload += F("]}");
@@ -4062,6 +4269,8 @@ void handleSettingsShareUpload() {
   if (!resolveShareUrl(request.url, sizeof(request.url)) ||
       !readBackupName(request.name, sizeof(request.name)))
     return;
+  BackupPassword password;
+  if (!readBackupPassword(password)) return;
   bool secrets = false;
   if (!authorizeBackupSecrets(secrets)) return;
   // Záloha s tajemstvími nese i adresu serveru. Nová adresa z formuláře v ní
@@ -4071,7 +4280,7 @@ void handleSettingsShareUpload() {
   clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), request.url);
   String envelope;
   String error;
-  const bool built = buildBackupEnvelope(secrets, envelope, error);
+  const bool built = buildBackupEnvelope(secrets, password, envelope, error);
   clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), previousUrl);
   if (!built) {
     sendError(503, error);
@@ -4105,11 +4314,7 @@ void handleSettingsShareDownload() {
 
   const char *end = result.body + result.bodyLength;
   const char *begin = jsonSkipWhitespace(result.body, end);
-  float version = 0;
-  const JsonValue data = jsonFindMember(begin, end, "data");
-  if (!jsonTextMemberEquals(begin, end, "format", BACKUP_FORMAT) ||
-      !jsonReadNumberMember(begin, end, "version", version) ||
-      static_cast<int>(version) != BACKUP_ENVELOPE_VERSION || !data.isString) {
+  if (!jsonTextMemberEquals(begin, end, "format", BACKUP_FORMAT)) {
     sendError(502, F("Server nevrátil zálohu Waveshare Hodiny."));
     return;
   }
@@ -4117,11 +4322,7 @@ void handleSettingsShareDownload() {
   // svou, a ta pak má přednost.
   rememberShareUrl(request.url);
   BackupApplyOutcome outcome;
-  if (!applyBackupText(data.contentBegin(),
-                       static_cast<size_t>(data.contentEnd() -
-                                           data.contentBegin()),
-                       include, outcome))
-    return;
+  if (!applyBackupEnvelope(begin, end, include, outcome)) return;
   finishBackupApply(outcome);
 }
 
@@ -4386,6 +4587,10 @@ void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {
 
 void configurationWebSetSettingsShare(SettingsShareCallback callback) {
   settingsShareCallback = callback;
+}
+
+void configurationWebSetBackgroundWork(BackgroundWorkCallback callback) {
+  backgroundWorkCallback = callback;
 }
 
 void configurationWebSetDeviceNameChanged(DeviceNameChangedCallback callback) {
