@@ -360,8 +360,9 @@ shown on the clock and amber marks the saved default. The preview becomes
 persistent only after saving the configuration. A range selected on the device
 is temporary and the saved web value is restored after a restart.
 
-Automatic rotation is disabled by default and provides separate clock, radar
-news and forecast durations; only the screens you enable take part in it, and a screen
+Automatic rotation is disabled by default. Each screen joins it with a switch on
+its own tab, where it also has its own duration; the shared clock duration is set
+on the **Screens** tab. Only the screens you enable take part in it, and a screen
 opened by hand stays until the next gesture. The radar duration is a minimum:
 an animation already in progress, including its final pause, always completes
 before the clock returns. After a

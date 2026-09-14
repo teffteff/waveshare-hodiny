@@ -82,8 +82,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
     input::placeholder{color:#778189}
     .hint{display:block;color:var(--muted);font-size:13px;line-height:1.4;margin-top:7px}.hint a{color:var(--cyan);text-underline-offset:2px}
     .token-state{color:var(--green)}
-    .actions-inline{display:flex;align-items:end;height:100%}.tmep-actions{gap:10px;flex-wrap:wrap}.tmep-example{display:block;margin-top:7px;overflow-wrap:anywhere}.tmep-example code{color:var(--text);font-size:12px}
-    .connection-action,.field-action{align-items:flex-start;padding-top:25px}
+    .actions-inline{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;padding-top:25px}.button-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tmep-example{display:block;margin-top:7px;overflow-wrap:anywhere}.tmep-example code{color:var(--text);font-size:12px}
     button{min-height:46px;border-radius:var(--radius);border:1px solid var(--cyan);background:transparent;color:var(--cyan);font-weight:700;padding:0 20px;cursor:pointer;transition:background .16s,color .16s,opacity .16s}
     button:hover{background:rgba(76,203,236,.1)}button:disabled{opacity:.5;cursor:wait}
     .primary{background:var(--cyan);color:#092028;border-color:var(--cyan);min-width:190px}.primary:hover{background:#71d7f0}
@@ -108,8 +107,9 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
     .footer{position:sticky;bottom:14px;z-index:9;display:flex;align-items:center;gap:20px;margin-top:28px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:rgba(23,28,32,.96);box-shadow:0 14px 34px rgba(0,0,0,.34);backdrop-filter:blur(12px)}.footer .primary{display:none}.feedback{font-size:14px;color:var(--muted)}.feedback.success{color:var(--green)}.feedback.error{color:var(--error)}.hint.success{color:var(--green)}.hint.error{color:var(--error)}.feedback.dirty{color:var(--amber)}
     .loading-state{min-height:240px;display:grid;place-items:center;text-align:center}.loading-state h2{margin:0 0 8px}.loading-state p{margin:0;color:var(--muted)}.loading-state button{margin-top:22px}
     .hidden{display:none!important}
+    .grid>p{margin:0}
     @media(max-width:980px){.metric-grid{grid-template-columns:1fr}.icon-choices{grid-template-columns:repeat(3,minmax(0,1fr))}.firmware-grid{grid-template-columns:1fr 1fr}.firmware-actions{padding-top:0}}
-    @media(max-width:760px){main{width:min(100% - 32px,620px);padding:8px 0 44px}h1{font-size:26px}.header-save{display:none!important}header{min-height:62px;padding:8px 0}.tab-nav{position:sticky;top:62px;display:flex;overflow-x:auto;margin:3px -16px 28px;padding:0 16px;border-left:0;border-right:0;border-radius:0;box-shadow:none;scrollbar-width:none}.tab-nav::-webkit-scrollbar{display:none}.tab-button{min-width:138px;border-right:0}.tab-button::after{left:12px;right:12px}.tab-panel{min-height:0}.metric,.display-panel>section,.system-panel>section{padding:20px 16px}section{padding-bottom:25px;margin-bottom:25px}.grid{grid-template-columns:1fr;gap:17px}.grid>*{grid-column:1}.connection-action,.field-action{padding-top:0}.actions-inline button{width:100%}.radar-range-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.diagnostics-link{grid-template-columns:auto minmax(0,1fr) auto}.diagnostics-icon{grid-column:1;grid-row:1}.diagnostics-copy{grid-column:2;grid-row:1}.diagnostics-arrow{grid-column:3;grid-row:1}.diagnostics-values{grid-column:2/4;grid-row:2;justify-content:flex-start;flex-wrap:wrap}.footer{bottom:8px;align-items:stretch;flex-direction:column}.footer .primary{display:block}.primary{width:100%}.feedback{text-align:center}.metric-grid{grid-template-columns:1fr}.metric-fields{grid-template-columns:1fr 1fr}.metric-fields .wide{grid-column:span 2}.advanced-band,.seconds-group{padding:16px}}
+    @media(max-width:760px){main{width:min(100% - 32px,620px);padding:8px 0 44px}h1{font-size:26px}.header-save{display:none!important}header{min-height:62px;padding:8px 0}.tab-nav{position:sticky;top:62px;display:flex;overflow-x:auto;margin:3px -16px 28px;padding:0 16px;border-left:0;border-right:0;border-radius:0;box-shadow:none;scrollbar-width:none}.tab-nav::-webkit-scrollbar{display:none}.tab-button{min-width:138px;border-right:0}.tab-button::after{left:12px;right:12px}.tab-panel{min-height:0}.metric,.display-panel>section,.system-panel>section{padding:20px 16px}section{padding-bottom:25px;margin-bottom:25px}.grid{grid-template-columns:1fr;gap:17px}.grid>*{grid-column:1}.actions-inline{padding-top:0}.actions-inline button,.button-row button{width:100%}.radar-range-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.diagnostics-link{grid-template-columns:auto minmax(0,1fr) auto}.diagnostics-icon{grid-column:1;grid-row:1}.diagnostics-copy{grid-column:2;grid-row:1}.diagnostics-arrow{grid-column:3;grid-row:1}.diagnostics-values{grid-column:2/4;grid-row:2;justify-content:flex-start;flex-wrap:wrap}.footer{bottom:8px;align-items:stretch;flex-direction:column}.footer .primary{display:block}.primary{width:100%}.feedback{text-align:center}.metric-grid{grid-template-columns:1fr}.metric-fields{grid-template-columns:1fr 1fr}.metric-fields .wide{grid-column:span 2}.advanced-band,.seconds-group{padding:16px}}
     @media(max-width:760px){.device-tools{align-items:stretch;flex-direction:column}.device-actions{display:grid;grid-template-columns:1fr 1fr}.device-actions button{padding:0 12px}.device-actions .danger{grid-column:span 2}.password-action-column{padding-top:0}.icon-choices{grid-template-columns:repeat(3,minmax(0,1fr))}.clock-style-layout{grid-template-columns:1fr}.clock-style-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:430px){main{width:calc(100% - 28px)}header{gap:10px}.header-main h1{font-size:21px}.header-actions{gap:8px}.language-button{width:42px;min-width:42px}.tab-nav{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}.metric-fields,.firmware-grid{grid-template-columns:1fr}.metric-fields>* , .metric-fields .wide{grid-column:1}.firmware-actions button{width:100%}.color-point,.color-point:first-child{grid-template-columns:minmax(0,1fr) 82px 46px}.color-point:first-child::after{content:""}.color-scale-actions{align-items:stretch;flex-direction:column}.color-scale-add{width:100%}.icon-choices{grid-template-columns:repeat(2,minmax(0,1fr))}.switch-row{border:1px solid #505a61;border-radius:var(--radius);padding:0 12px}.switch-row .field-label{margin:0}}
   </style>
@@ -141,8 +141,8 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       <h2>Home Assistant</h2>
       <div class="grid">
         <div class="span-4"><label for="haUrl">Adresa Home Assistantu</label><input id="haUrl" name="haUrl" type="url" placeholder="http://homeassistant.local:8123" autocomplete="url"></div>
-        <div class="span-5"><label for="haToken">Long-lived access token</label><input id="haToken" name="haToken" type="password" placeholder="Zadej nový token" autocomplete="new-password"><span class="hint token-state" id="tokenState">Token zatím není uložen</span></div>
-        <div class="span-3 actions-inline connection-action tmep-actions"><button type="button" id="testConnection">Otestovat připojení</button><button type="button" id="loadHaEntities">Načíst entity</button></div>
+        <div class="span-4"><label for="haToken">Long-lived access token</label><input id="haToken" name="haToken" type="password" placeholder="Zadej nový token" autocomplete="new-password"><span class="hint token-state" id="tokenState">Token zatím není uložen</span></div>
+        <div class="span-4 actions-inline"><button type="button" id="testConnection">Otestovat připojení</button><button type="button" id="loadHaEntities">Načíst entity</button></div>
       </div>
       <p class="hint" id="haFeedback">Ověření zkontroluje adresu a token; token se po uložení už nezobrazí.</p>
       <p class="hint" id="haEntityFeedback">Políčka s ID entity nabídnou seznam po kliknutí na šipku; entity se načtou samy, tímto tlačítkem se dají jen obnovit. Ručně zadané ID zůstává platné.</p>
@@ -151,7 +151,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       <h2>TMEP.cz</h2>
       <div class="grid">
         <div class="span-7"><label for="tmepExportUrl">Exportní URL</label><input id="tmepExportUrl" name="tmepExportUrl" type="url" placeholder="Vlož celý exportní odkaz z TMEP.cz" autocomplete="off" spellcheck="false"><span class="hint token-state" id="tmepKeyState">Exportní URL zatím není uložená</span></div>
-        <div class="span-5 actions-inline connection-action tmep-actions"><button type="button" id="testTmep">Ověřit a načíst čidla</button><button class="danger hidden" type="button" id="removeTmep">Odebrat TMEP.cz</button></div>
+        <div class="span-5 actions-inline"><button type="button" id="testTmep">Ověřit a načíst čidla</button><button class="danger hidden" type="button" id="removeTmep">Odebrat TMEP.cz</button></div>
         <div class="span-12"><span class="hint" id="tmepFeedback">Vlož URL ze sekce „Rozšířený JSON – se všemi čidly“. Po ověření se hodnoty TMEP objeví přímo ve výběrech hodnot počasí.</span><span class="hint tmep-example">Příklad: <code>https://tmep.cz/vystup-json.php?id=11746&amp;export_key=XXXXXXXXsd&amp;extended=1&amp;all=1</code></span></div>
       </div>
     </section>
@@ -159,7 +159,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       <h2>Poloha zařízení</h2>
       <div class="grid">
         <div class="span-7"><label for="openMeteoCity">Město</label><input id="openMeteoCity" name="openMeteoCity" maxlength="63" value="Ondřejov · Praha-východ · Středočeský kraj · Česko" placeholder="Ondřejov"><input id="openMeteoLatitude" name="openMeteoLatitude" type="hidden"><input id="openMeteoLongitude" name="openMeteoLongitude" type="hidden"><input id="openMeteoCountry" name="openMeteoCountry" type="hidden" value="CZ"><span class="hint">Poloha určuje střed meteoradaru a při zdroji Open-Meteo také místo pro počasí.</span></div>
-        <div class="span-5 actions-inline field-action"><button type="button" id="findOpenMeteoCity">Vyhledat město</button></div>
+        <div class="span-5 actions-inline"><button type="button" id="findOpenMeteoCity">Vyhledat město</button></div>
         <div class="span-12"><span class="hint token-state" id="openMeteoFeedback">Výchozí lokalita: Ondřejov, Česko</span></div>
         <div class="location-results hidden" id="openMeteoLocationResults"></div>
       </div>
@@ -187,40 +187,44 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
           <div class="span-4"><label for="forecastDayCount">Počet dní</label><input id="forecastDayCount" name="forecastDayCount" type="number" min="0" max="4" step="1" value="3"><span class="hint">0 až 4 dny pod hodinovou částí. Každý ubraný den je jedna hodina navíc.</span></div>
           <div class="span-4"><label for="forecastRefreshMinutes">Obnovovat každých</label><input id="forecastRefreshMinutes" name="forecastRefreshMinutes" type="number" min="10" max="180" step="1" value="30"><span class="hint">Počet minut mezi stažením předpovědi.</span></div>
           <div class="span-12"><div class="switch-row"><span class="field-label">Zapojit předpověď do automatického střídání</span><label class="switch" aria-label="Zapojit předpověď do automatického střídání"><input id="forecastAutomaticRotation" name="forecastAutomaticRotation" type="checkbox"><span></span></label></div><span class="hint">Po vypnutí zůstane obrazovka dostupná podržením prstu na displeji.</span></div>
-          <div class="span-4 hidden" id="forecastRotationSettings"><label for="forecastDisplaySeconds">Předpověď zobrazit</label><input id="forecastDisplaySeconds" name="forecastDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Meteoradar.</span></div>
+          <div class="span-4 hidden" id="forecastRotationSettings"><label for="forecastDisplaySeconds">Předpověď zobrazit</label><input id="forecastDisplaySeconds" name="forecastDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Obrazovky.</span></div>
         </div>
       </div>
     </section>
     </div>
     <div class="tab-panel hidden" id="tab-radar" role="tabpanel" data-tab-panel="radar">
     <section>
-      <h2>Meteoradar ČHMÚ</h2>
-      <p class="feedback error hidden" id="radarUnavailable">Meteoradar ČHMÚ je dostupný pouze pro lokality v České republice.</p>
-      <div class="grid" id="radarSettingsContent">
-        <div class="span-12">
-          <span class="field-label">Rozsah meteoradaru</span>
-          <input id="radarRadiusKm" name="radarRadiusKm" type="hidden" value="0">
-          <div class="radar-range-grid" id="radarRangeButtons">
-            <button class="radar-range-button" type="button" data-radar-radius="25">25 km</button>
-            <button class="radar-range-button" type="button" data-radar-radius="50">50 km</button>
-            <button class="radar-range-button" type="button" data-radar-radius="100">100 km</button>
-            <button class="radar-range-button" type="button" data-radar-radius="200">200 km</button>
-            <button class="radar-range-button" type="button" data-radar-radius="0">ČR</button>
-          </div>
-          <div class="radar-range-legend hint"><span><i class="radar-range-dot"></i>Právě zobrazený rozsah</span><span><i class="radar-range-dot saved"></i>Uložený výchozí rozsah</span></div>
-          <span class="hint" id="radarRangeFeedback">Načítám stav rozsahu…</span>
-        </div>
-        <div class="span-4"><label for="radarFrameCount">Počet snímků</label><input id="radarFrameCount" name="radarFrameCount" type="number" min="1" max="15" step="1" value="6"><span class="hint">1 = statický snímek, 2 až 15 = animace.</span></div>
-        <div class="span-4"><label for="radarPauseSeconds">Pauza animace</label><input id="radarPauseSeconds" name="radarPauseSeconds" type="number" min="0" max="30" step="1" value="5"><span class="hint">0 = bez pauzy, maximálně 30 sekund.</span></div>
-        <div class="span-4"><label for="radarMapOpacity">Viditelnost mapy</label><div class="range-row"><input id="radarMapOpacity" name="radarMapOpacity" type="range" min="0" max="100" step="1" value="100"><output id="radarMapOpacityValue">100 %</output></div><span class="hint">0 % mapu skryje, radarové srážky zůstanou viditelné.</span></div>
-        <div class="span-12"><span class="field-label">Vrstvy na mapě</span><span class="hint">Co se kreslí přes podkladovou mapu. Každou vrstvu jde vypnout zvlášť.</span></div>
-        <div class="span-4"><div class="switch-row"><span class="field-label">Srážky</span><label class="switch" aria-label="Srážky"><input id="radarPrecipitation" name="radarPrecipitation" type="checkbox"><span></span></label></div><span class="hint">Snímky meteoradaru. Po vypnutí hodiny radar vůbec nestahují a ukazují jen mapu, případně s blesky.</span></div>
-        <div class="span-4"><div class="switch-row"><span class="field-label">Blesky</span><label class="switch" aria-label="Blesky na meteoradaru"><input id="lightningRadarOverlay" name="lightningRadarOverlay" type="checkbox"><span></span></label></div><span class="hint">Barva podle stáří: do 2 minut bílý blesk, do 5 žlutá, do 10 oranžová, do 20 červená.</span><span class="hint hidden" id="lightningOverlayUnavailable">Nejdřív zapni blesky v sekci níže.</span></div>
-        <div class="span-4"><div class="switch-row"><span class="field-label">Stupnice intenzity</span><label class="switch" aria-label="Stupnice intenzity"><input id="radarLegend" name="radarLegend" type="checkbox"><span></span></label></div><span class="hint">Šest odstínů s odrazivostí v dBZ a srážkami v mm/h u levého okraje. Zabírá kus mapy; po vypnutí se místo vrátí popiskům měst.</span><span class="hint hidden" id="radarLegendUnavailable">Bez srážek se stupnice nekreslí.</span></div>
-        <div class="span-12"><div class="switch-row"><span class="field-label">Čas a venkovní teplota</span><label class="switch" aria-label="Čas a venkovní teplota"><input id="radarStatusLine" name="radarStatusLine" type="checkbox"><span></span></label></div><span class="hint">Řádek hned pod ukazatelem obrazovek. Na radar se tak dá kouknout, aniž by ses musel přepínat zpátky na hodiny.</span></div>
-        <div class="span-6 ha-only"><label for="radarStatusTemperatureEntity">Entita venkovní teploty</label><input id="radarStatusTemperatureEntity" name="radarStatusTemperatureEntityId" placeholder="sensor.venkovni_teplota"><span class="hint">Teplota do řádku nad mapou. Se zdrojem Open-Meteo se bere z předpovědi pro nastavené město, s Home Assistantem si ji musíš vybrat sám.</span></div>
+      <h2>Meteoradar</h2>
+      <div class="grid">
         <div class="span-6"><label for="radarSource">Zdroj srážek</label><select id="radarSource" name="radarSource"><option value="chmi">ČHMÚ (jen Česko)</option><option value="rainviewer">RainViewer (Evropa)</option></select><span class="hint">ČHMÚ je nad Českem ostřejší, ale za hranicemi nemá data. RainViewer pokrývá Evropu a je zdarma, jen hrubší; jeho přiblížení jde po mocninách dvou, takže popisek ukáže poloměr, který opravdu vyšel.</span></div>
-        <div class="span-12"><span class="field-label">Obnovování</span><span class="hint">Nový snímek se kontroluje každých 5 minut. Střed mapy vychází z polohy v záložce Zdroj a poloha.</span></div>
+        <p class="span-12 feedback error hidden" id="radarUnavailable">Meteoradar ČHMÚ je dostupný pouze pro lokality v České republice. Mimo Česko zvol zdroj srážek RainViewer.</p>
+        <div class="span-12 grid" id="radarSettingsContent">
+          <div class="span-12">
+            <span class="field-label">Rozsah meteoradaru</span>
+            <input id="radarRadiusKm" name="radarRadiusKm" type="hidden" value="0">
+            <div class="radar-range-grid" id="radarRangeButtons">
+              <button class="radar-range-button" type="button" data-radar-radius="25">25 km</button>
+              <button class="radar-range-button" type="button" data-radar-radius="50">50 km</button>
+              <button class="radar-range-button" type="button" data-radar-radius="100">100 km</button>
+              <button class="radar-range-button" type="button" data-radar-radius="200">200 km</button>
+              <button class="radar-range-button" type="button" data-radar-radius="0">ČR</button>
+            </div>
+            <div class="radar-range-legend hint"><span><i class="radar-range-dot"></i>Právě zobrazený rozsah</span><span><i class="radar-range-dot saved"></i>Uložený výchozí rozsah</span></div>
+            <span class="hint" id="radarRangeFeedback">Načítám stav rozsahu…</span>
+          </div>
+          <div class="span-4"><label for="radarFrameCount">Počet snímků</label><input id="radarFrameCount" name="radarFrameCount" type="number" min="1" max="15" step="1" value="6"><span class="hint">1 = statický snímek, 2 až 15 = animace.</span></div>
+          <div class="span-4"><label for="radarPauseSeconds">Pauza animace</label><input id="radarPauseSeconds" name="radarPauseSeconds" type="number" min="0" max="30" step="1" value="5"><span class="hint">0 = bez pauzy, maximálně 30 sekund.</span></div>
+          <div class="span-4"><label for="radarMapOpacity">Viditelnost mapy</label><div class="range-row"><input id="radarMapOpacity" name="radarMapOpacity" type="range" min="0" max="100" step="1" value="100"><output id="radarMapOpacityValue">100 %</output></div><span class="hint">0 % mapu skryje, radarové srážky zůstanou viditelné.</span></div>
+          <div class="span-12"><span class="field-label">Vrstvy na mapě</span><span class="hint">Co se kreslí přes podkladovou mapu. Každou vrstvu jde vypnout zvlášť.</span></div>
+          <div class="span-4"><div class="switch-row"><span class="field-label">Srážky</span><label class="switch" aria-label="Srážky"><input id="radarPrecipitation" name="radarPrecipitation" type="checkbox"><span></span></label></div><span class="hint">Snímky meteoradaru. Po vypnutí hodiny radar vůbec nestahují a ukazují jen mapu, případně s blesky.</span></div>
+          <div class="span-4"><div class="switch-row"><span class="field-label">Blesky</span><label class="switch" aria-label="Blesky na meteoradaru"><input id="lightningRadarOverlay" name="lightningRadarOverlay" type="checkbox"><span></span></label></div><span class="hint">Barva podle stáří: do 2 minut bílý blesk, do 5 žlutá, do 10 oranžová, do 20 červená.</span><span class="hint hidden" id="lightningOverlayUnavailable">Nejdřív zapni blesky v sekci níže.</span></div>
+          <div class="span-4"><div class="switch-row"><span class="field-label">Stupnice intenzity</span><label class="switch" aria-label="Stupnice intenzity"><input id="radarLegend" name="radarLegend" type="checkbox"><span></span></label></div><span class="hint">Šest odstínů s odrazivostí v dBZ a srážkami v mm/h u levého okraje. Zabírá kus mapy; po vypnutí se místo vrátí popiskům měst.</span><span class="hint hidden" id="radarLegendUnavailable">Bez srážek se stupnice nekreslí.</span></div>
+          <div class="span-12"><div class="switch-row"><span class="field-label">Čas a venkovní teplota</span><label class="switch" aria-label="Čas a venkovní teplota"><input id="radarStatusLine" name="radarStatusLine" type="checkbox"><span></span></label></div><span class="hint">Řádek hned pod ukazatelem obrazovek. Na radar se tak dá kouknout, aniž by ses musel přepínat zpátky na hodiny.</span></div>
+          <div class="span-6 ha-only"><label for="radarStatusTemperatureEntity">Entita venkovní teploty</label><input id="radarStatusTemperatureEntity" name="radarStatusTemperatureEntityId" placeholder="sensor.venkovni_teplota"><span class="hint">Teplota do řádku nad mapou. Se zdrojem Open-Meteo se bere z předpovědi pro nastavené město, s Home Assistantem si ji musíš vybrat sám.</span></div>
+          <div class="span-12"><div class="switch-row"><span class="field-label">Zapojit meteoradar do automatického střídání</span><label class="switch" aria-label="Zapojit meteoradar do automatického střídání"><input id="automaticRadarRotation" name="automaticRadarRotation" type="checkbox"><span></span></label></div><span class="hint">Po vypnutí zůstane obrazovka dostupná podržením prstu na displeji.</span></div>
+          <div class="span-4 hidden" id="radarRotationSettings"><label for="radarDisplaySeconds">Meteoradar zobrazit</label><input id="radarDisplaySeconds" name="radarDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Minimální počet sekund. Rozběhnutá animace se vždy dokončí včetně koncové pauzy.</span></div>
+          <div class="span-12"><span class="field-label">Obnovování</span><span class="hint">Nový snímek se kontroluje každých 5 minut. Střed mapy vychází z polohy v záložce Obecné.</span></div>
+        </div>
       </div>
     </section>
     <section>
@@ -337,7 +341,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
           <div class="span-6"><div class="switch-row"><span class="field-label">Metrické jednotky v detailu</span><label class="switch" aria-label="Metrické jednotky v detailu"><input id="planesMetricUnits" name="planesMetricUnits" type="checkbox"><span></span></label></div><span class="hint">Zapnuto metry a km/h, vypnuto stopy a uzly.</span></div>
           <div class="span-6"><label for="planesMapLabel">Popisek u letadla na mapě</label><select id="planesMapLabel" name="planesMapLabel"><option value="type">Typ letadla (CESSNA 152)</option><option value="callsign">Volací značka (OKSCT)</option></select><span class="hint">Když typ letadla není známý, ukáže se volací značka. Dlouhé názvy se zkrátí na celá slova.</span></div>
           <div class="span-12"><div class="switch-row"><span class="field-label">Zapojit letadla do automatického střídání</span><label class="switch" aria-label="Zapojit letadla do automatického střídání"><input id="planesAutomaticRotation" name="planesAutomaticRotation" type="checkbox"><span></span></label></div><span class="hint">Po vypnutí zůstane obrazovka dostupná podržením prstu na displeji.</span></div>
-          <div class="span-4 hidden" id="planesRotationSettings"><label for="planesDisplaySeconds">Letadla zobrazit</label><input id="planesDisplaySeconds" name="planesDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Meteoradar.</span></div>
+          <div class="span-4 hidden" id="planesRotationSettings"><label for="planesDisplaySeconds">Letadla zobrazit</label><input id="planesDisplaySeconds" name="planesDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Obrazovky.</span></div>
           <div class="span-12"><span class="field-label">Výběr letadla</span><span class="hint">Klepnutím na letadlo se otevře detail s výškou, rychlostí, typem a trasou letu. Zavírá ho další klepnutí kamkoli.</span></div>
         </div>
       </div>
@@ -358,7 +362,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
           <div class="span-12"><span class="field-label">Počet událostí</span><span class="hint">Agenda ukáže tolik událostí, kolik se na displej vejde. Když poslední den pokračuje za okrajem, jeho poslední řádek nahradí tři tečky.</span></div>
           <div class="span-4"><label for="agendaRefreshMinutes">Obnovovat každých</label><input id="agendaRefreshMinutes" name="agendaRefreshMinutes" type="number" min="5" max="120" step="1" value="15"><span class="hint">Počet minut mezi stažením. Server agendu přepočítává po čtvrthodině, takže častěji nemá co přinést.</span></div>
           <div class="span-12"><div class="switch-row"><span class="field-label">Zapojit agendu do automatického střídání</span><label class="switch" aria-label="Zapojit agendu do automatického střídání"><input id="agendaAutomaticRotation" name="agendaAutomaticRotation" type="checkbox"><span></span></label></div><span class="hint">Po vypnutí zůstane obrazovka dostupná podržením prstu na displeji.</span></div>
-          <div class="span-4 hidden" id="agendaRotationSettings"><label for="agendaDisplaySeconds">Agendu zobrazit</label><input id="agendaDisplaySeconds" name="agendaDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Meteoradar.</span></div>
+          <div class="span-4 hidden" id="agendaRotationSettings"><label for="agendaDisplaySeconds">Agendu zobrazit</label><input id="agendaDisplaySeconds" name="agendaDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Obrazovky.</span></div>
           <div class="span-12"><span class="field-label">Barvy kalendářů</span><span class="hint">Každý kalendář má na displeji svou barvu podle pořadí na serveru a dole na obrazovce je legenda s jeho jménem. Když se celá jména nevejdou, legenda je zkrátí na čtyři znaky. V noční červené paletě se barvy slévají do jedné, aby nerušily noční vidění, a rozlišuje jen legenda.</span></div>
         </div>
       </div>
@@ -376,7 +380,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
           <div class="span-4"><label for="rssItemCount">Počet zpráv</label><input id="rssItemCount" name="rssItemCount" type="number" min="3" max="6" step="1" value="5"><span class="hint">3 až 6. Do šesti má titulek tři řádky, při šesti dva.</span></div>
           <div class="span-4"><label for="rssRefreshMinutes">Obnovovat každých</label><input id="rssRefreshMinutes" name="rssRefreshMinutes" type="number" min="5" max="120" step="1" value="10"><span class="hint">Počet minut mezi stažením kanálu.</span></div>
           <div class="span-12"><div class="switch-row"><span class="field-label">Zapojit zprávy do automatického střídání</span><label class="switch" aria-label="Zapojit zprávy do automatického střídání"><input id="rssAutomaticRotation" name="rssAutomaticRotation" type="checkbox"><span></span></label></div><span class="hint">Po vypnutí zůstane obrazovka dostupná podržením prstu na displeji.</span></div>
-          <div class="span-4 hidden" id="rssRotationSettings"><label for="rssDisplaySeconds">Zprávy zobrazit</label><input id="rssDisplaySeconds" name="rssDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Meteoradar.</span></div>
+          <div class="span-4 hidden" id="rssRotationSettings"><label for="rssDisplaySeconds">Zprávy zobrazit</label><input id="rssDisplaySeconds" name="rssDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Obrazovky.</span></div>
           <div class="span-12"><span class="field-label">Diakritika</span><span class="hint">Displej má písmo bez české diakritiky, proto se titulky přepisují do ASCII: z Ř se stane R, z ř pak r.</span></div>
         </div>
       </div>
@@ -392,12 +396,19 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       </div>
     </section>
     <section>
+      <h2>Automatické střídání obrazovek</h2>
+      <div class="grid">
+        <div class="span-12"><span class="hint">Obrazovku do střídání zapojíš přepínačem v její záložce. Doba zobrazení hodin se nastaví, jakmile se do střídání zapojí aspoň jedna obrazovka.</span></div>
+        <div class="span-4 hidden" id="clockRotationSettings"><label for="clockDisplaySeconds">Hodiny zobrazit</label><input id="clockDisplaySeconds" name="clockDisplaySeconds" type="number" min="10" max="3600" step="1" value="120"><span class="hint">Počet sekund, po které zůstanou zobrazené hodiny. Platí pro celé střídání, tedy i pro zprávy a předpověď.</span></div>
+      </div>
+    </section>
+    <section>
       <h2>Slunce a Měsíc</h2>
       <div class="grid">
         <div class="span-12"><div class="switch-row"><span class="field-label">Zobrazovat obrazovku se Sluncem a Měsícem</span><label class="switch" aria-label="Zobrazovat obrazovku se Sluncem a Měsícem"><input id="skyEnabled" name="skyEnabled" type="checkbox"><span></span></label></div><span class="hint">Východ a západ Slunce i Měsíce, délka dne a fáze Měsíce pro polohu zařízení. Počítá se přímo v hodinách, bez sítě.</span></div>
         <div class="span-12 grid advanced-band hidden" id="skySettings">
           <div class="span-12"><div class="switch-row"><span class="field-label">Zapojit Slunce a Měsíc do automatického střídání</span><label class="switch" aria-label="Zapojit Slunce a Měsíc do automatického střídání"><input id="skyAutomaticRotation" name="skyAutomaticRotation" type="checkbox"><span></span></label></div><span class="hint">Po vypnutí zůstane obrazovka dostupná podržením prstu na displeji.</span></div>
-          <div class="span-4 hidden" id="skyRotationSettings"><label for="skyDisplaySeconds">Slunce a Měsíc zobrazit</label><input id="skyDisplaySeconds" name="skyDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Meteoradar.</span></div>
+          <div class="span-4 hidden" id="skyRotationSettings"><label for="skyDisplaySeconds">Slunce a Měsíc zobrazit</label><input id="skyDisplaySeconds" name="skyDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Počet sekund při automatickém střídání. Dobu zobrazení hodin nastavíš v záložce Obrazovky.</span></div>
         </div>
       </div>
     </section>
@@ -421,7 +432,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       <div class="grid">
         <div class="span-12 subgroup-title digital-clock-only"><h3>Digitální ciferník</h3></div>
         <div class="span-6 digital-clock-only"><label for="timeFont">Font hodin</label><select id="timeFont" name="timeFont"><option value="barlow">Barlow Bold</option><option value="liberation">Liberation Sans Bold</option><option value="lcd">DSEG7 Modern Bold (LCD)</option><option value="doto">Doto Bold (Dot Matrix)</option></select><span class="hint">Změna se projeví po uložení bez restartu.</span></div>
-        <div class="span-3 digital-clock-only"><label for="timeColor">Barva hodin</label><input id="timeColor" name="timeColor" type="color" value="#f6f6f6"></div>
+        <div class="span-3 digital-clock-only analog-tone-picker"><label for="timeColor">Barva hodin</label><input id="timeColor" name="timeColor" type="color" value="#f6f6f6"></div>
         <div class="span-3 digital-clock-only"><div class="switch-row"><span class="field-label">Úvodní nula hodiny</span><label class="switch" aria-label="Zobrazit úvodní nulu hodiny"><input id="showLeadingHourZero" name="showLeadingHourZero" type="checkbox"><span></span></label></div><span class="hint">Například 08:15 místo 8:15.</span></div>
         <div class="span-6 digital-clock-only"><label for="dateFormat">Formát data</label><select id="dateFormat" name="dateFormat"><option value="numeric">20.08.2026</option><option value="day-month">20.08.</option><option value="weekday-day-month">Čtvrtek, 20. srpna</option><option value="day-month-year">20. srpna 2026</option><option value="weekday-day-month-year">Čtvrtek, 20. srpna 2026</option><option value="hidden">Nezobrazovat datum</option></select><span class="hint">Změna se projeví po uložení bez restartu.</span></div>
         <div class="span-3 digital-clock-only analog-tone-picker"><label for="dateColor">Barva data</label><input id="dateColor" name="dateColor" type="color" value="#b5b5b5"></div>
@@ -456,16 +467,6 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
               <div class="span-6"><label for="secondDotBrightness">Jas aktivní</label><div class="range-row"><input id="secondDotBrightness" name="secondDotBrightness" type="range" min="0" max="255"><output id="secondDotBrightnessValue">175</output></div></div>
             </div>
           </div>
-        </div>
-      </div>
-    </section>
-    <section id="automaticRadarRotationSection">
-      <h2>Automatické střídání obrazovek</h2>
-      <div class="grid">
-        <div class="span-12"><div class="switch-row"><span class="field-label">Automaticky střídat hodiny a meteoradar</span><label class="switch" aria-label="Automaticky střídat hodiny a meteoradar"><input id="automaticRadarRotation" name="automaticRadarRotation" type="checkbox"><span></span></label></div><span class="hint">Po zapnutí se hodiny a meteoradar střídají v samostatně nastavených intervalech.</span></div>
-        <div class="span-12 grid advanced-band hidden" id="clockRotationSettings">
-          <div class="span-6"><label for="clockDisplaySeconds">Hodiny zobrazit</label><input id="clockDisplaySeconds" name="clockDisplaySeconds" type="number" min="10" max="3600" step="1" value="120"><span class="hint">Počet sekund, po které zůstanou zobrazené hodiny. Platí pro celé střídání, tedy i pro zprávy a předpověď.</span></div>
-          <div class="span-6 hidden" id="radarRotationSettings"><label for="radarDisplaySeconds">Meteoradar zobrazit</label><input id="radarDisplaySeconds" name="radarDisplaySeconds" type="number" min="10" max="3600" step="1" value="20"><span class="hint">Minimální počet sekund. Rozběhnutá animace se vždy dokončí včetně koncové pauzy.</span></div>
         </div>
       </div>
     </section>
@@ -516,15 +517,17 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
       <div class="grid">
         <div class="span-12"><span class="hint">Záloha obsahuje celé uložené nastavení včetně vzhledu a pořadí obrazovek. Wi-Fi a secret ovládacího API si každé hodiny drží vlastní.</span></div>
         <div class="span-6"><label for="backupEncryptionPassword">Heslo zálohy</label><input id="backupEncryptionPassword" type="password" minlength="8" maxlength="64" autocomplete="new-password" spellcheck="false" placeholder="8–64 znaků"><span class="hint">Soubor i záloha na serveru jsou tímto heslem zašifrované. Hodiny si ho nepamatují: při obnově ho zadáš znovu a bez něj zálohu neotevře nikdo.</span></div>
-        <div class="span-6 actions-inline"><div class="device-actions"><button id="generateBackupPassword" type="button">Vygenerovat silné heslo</button><button id="showBackupPassword" type="button">Zobrazit heslo</button></div></div>
+        <div class="span-6 actions-inline"><button id="generateBackupPassword" type="button">Vygenerovat silné heslo</button><button id="showBackupPassword" type="button">Zobrazit heslo</button></div>
         <div class="span-6"><label for="backupPassword" id="backupPasswordLabel">Potvrď heslo webu, aby záloha nesla tokeny</label><input id="backupPassword" type="password" maxlength="20" autocomplete="current-password" placeholder="Prázdné = záloha bez tokenů a hesel"><span class="hint" id="backupPasswordHint">Zadej heslo webového nastavení, pokud má záloha nést i token Home Assistantu, klíč TMEP.cz, heslo agendy, heslo webu a adresu serveru. Prázdné pole = záloha bez nich.</span></div>
-        <div class="span-6 actions-inline"><div class="device-actions"><button id="exportConfig" type="button">Exportovat do souboru</button><button id="importConfig" type="button">Importovat ze souboru</button><input class="hidden" id="importConfigFile" type="file" accept=".whbackup,.json,application/json"></div></div>
         <div class="span-12 subgroup-title"><h3>Co obnovit při importu</h3></div><div class="span-12"><span class="hint">Záloha nese vždycky celé nastavení; tady vybereš, co z ní tyto hodiny převezmou. Vypnutou část si hodiny nechají svoji. Pro hodiny na jiném místě vypni Připojení a poloha. Wi-Fi se neobnovuje nikdy.</span></div><div class="span-4"><div class="switch-row"><span class="field-label">Připojení a poloha</span><label class="switch" aria-label="Obnovit připojení a polohu"><input type="checkbox" data-backup-part="connection" checked><span></span></label></div></div><div class="span-4"><div class="switch-row"><span class="field-label">Hodnoty na hodinách</span><label class="switch" aria-label="Obnovit hodnoty na hodinách"><input type="checkbox" data-backup-part="values" checked><span></span></label></div></div><div class="span-4"><div class="switch-row"><span class="field-label">Obrazovky</span><label class="switch" aria-label="Obnovit obrazovky"><input type="checkbox" data-backup-part="screens" checked><span></span></label></div></div><div class="span-4"><div class="switch-row"><span class="field-label">Vzhled a jas</span><label class="switch" aria-label="Obnovit vzhled a jas"><input type="checkbox" data-backup-part="display" checked><span></span></label></div></div><div class="span-4"><div class="switch-row"><span class="field-label">Systém a přístup</span><label class="switch" aria-label="Obnovit systém a přístup"><input type="checkbox" data-backup-part="system" checked><span></span></label></div></div><div class="span-12"><span class="hint">Připojení a poloha: zdroj dat, Home Assistant, TMEP.cz a město. Hodnoty: co ukazuje ciferník, včetně entity počasí. Obrazovky: předpověď, radar, letadla, zprávy, agenda a jejich pořadí a střídání. Vzhled a jas: typ hodin, barvy, fonty, vteřiny a den/noc. Systém a přístup: jazyk, automatická aktualizace, režim a heslo webu a server záloh.</span></div>
-        <div class="span-12"><label for="shareUrl">Server pro sdílení <span class="password-label-state" id="shareUrlState">— není uložený</span></label><input id="shareUrl" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://hodiny:heslo@server/settings"><span class="hint">Musí začínat https://. Uloží se po prvním úspěšném spojení se serverem.</span></div>
+        <div class="span-12 subgroup-title"><h3>Soubor</h3></div>
+        <div class="span-12 button-row"><button id="exportConfig" type="button">Exportovat do souboru</button><button id="importConfig" type="button">Importovat ze souboru</button><input class="hidden" id="importConfigFile" type="file" accept=".whbackup,.json,application/json"></div>
+        <div class="span-12 subgroup-title"><h3>Server pro sdílení</h3></div>
+        <div class="span-12"><label for="shareUrl">Adresa serveru <span class="password-label-state" id="shareUrlState">— není uložený</span></label><input id="shareUrl" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://hodiny:heslo@server/settings"><span class="hint">Musí začínat https://. Uloží se po prvním úspěšném spojení se serverem.</span></div>
         <div class="span-4"><label for="shareName">Název zálohy</label><input id="shareName" type="text" maxlength="32" autocomplete="off" spellcheck="false" placeholder="obyvak"><span class="hint">Malá písmena, číslice a pomlčky.</span></div>
-        <div class="span-8 actions-inline"><div class="device-actions"><button id="shareUpload" type="button">Uložit na server</button><button id="shareList" type="button">Načíst seznam</button><button class="danger hidden" id="shareForget" type="button">Zapomenout server</button></div></div>
-        <div class="span-8 hidden" id="shareBackupsRow"><label for="shareBackups">Zálohy na serveru</label><select id="shareBackups"></select></div>
-        <div class="span-4 actions-inline hidden" id="shareDownloadRow"><div class="device-actions"><button class="primary" id="shareDownload" type="button">Nahrát do těchto hodin</button><button class="danger" id="shareDelete" type="button">Smazat ze serveru</button></div></div>
+        <div class="span-8 actions-inline"><button id="shareUpload" type="button">Uložit na server</button><button id="shareList" type="button">Načíst seznam</button><button class="danger hidden" id="shareForget" type="button">Zapomenout server</button></div>
+        <div class="span-6 hidden" id="shareBackupsRow"><label for="shareBackups">Zálohy na serveru</label><select id="shareBackups"></select></div>
+        <div class="span-6 actions-inline hidden" id="shareDownloadRow"><button class="primary" id="shareDownload" type="button">Nahrát do těchto hodin</button><button class="danger" id="shareDelete" type="button">Smazat ze serveru</button></div>
         <div class="span-12"><span class="hint" id="backupFeedback" role="status"></span></div>
       </div>
     </section>
@@ -579,7 +582,7 @@ function populatePresetSelects(){document.querySelectorAll(".preset-select").for
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,character=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[character])}
 function radarRadiusLabel(radiusKm){return Number(radiusKm)===0?"ČR":`${radiusKm} km`}
 function renderRadarRangeState(){document.querySelectorAll("[data-radar-radius]").forEach(button=>{const radius=Number(button.dataset.radarRadius);const current=radius===activeRadarRadiusKm;const saved=radius===savedRadarRadiusKm;button.classList.toggle("is-current",current);button.classList.toggle("is-saved",saved);button.setAttribute("aria-pressed",current?"true":"false")});$("radarRadiusKm").value=String(activeRadarRadiusKm);const same=activeRadarRadiusKm===savedRadarRadiusKm;$("radarRangeFeedback").className="hint"+(same?" token-state":"");$("radarRangeFeedback").textContent=same?`Rozsah ${radarRadiusLabel(activeRadarRadiusKm)} je právě zobrazený i uložený.`:`Právě se zobrazuje ${radarRadiusLabel(activeRadarRadiusKm)}. Uložený výchozí rozsah je ${radarRadiusLabel(savedRadarRadiusKm)}.`}
-function updateRadarAvailability(available){radarAvailable=available===true;$('radarUnavailable').classList.toggle('hidden',radarAvailable);$('radarSettingsContent').classList.toggle('hidden',!radarAvailable);$('automaticRadarRotationSection').classList.toggle('hidden',!radarAvailable);$('automaticRadarRotation').disabled=!radarAvailable;if(!radarAvailable)$('automaticRadarRotation').checked=false;updateAutomaticRadarRotationControls();scheduleRadarStatePoll();renderScreenOrder()}
+function updateRadarAvailability(available){radarAvailable=available===true||$("radarSource").value==="rainviewer";$('radarUnavailable').classList.toggle('hidden',radarAvailable);$('radarSettingsContent').classList.toggle('hidden',!radarAvailable);$('automaticRadarRotation').disabled=!radarAvailable;if(!radarAvailable)$('automaticRadarRotation').checked=false;updateAutomaticRadarRotationControls();scheduleRadarStatePoll();renderScreenOrder()}
 function applyRadarRangeState(state){savedRadarRadiusKm=Number(state.savedRadiusKm??state.radarRadiusKm??0);activeRadarRadiusKm=Number(state.activeRadiusKm??state.radarActiveRadiusKm??savedRadarRadiusKm);if(typeof state.available==='boolean')updateRadarAvailability(state.available);renderRadarRangeState()}
 function updateDirtyFeedback(){const dirty=formInputDirty||radarPreviewDirty||appearancePreviewDirty;$("saveFeedback").className="feedback "+(dirty?"dirty":"success");$("saveFeedback").textContent=dirty?"Máš neuložené změny.":"Konfigurace je načtená a beze změn."}
 function selectedClockStyle(){return document.querySelector('input[name="clockStyle"]:checked')?.value||"digital"}
@@ -824,7 +827,7 @@ $("agendaUrl").addEventListener("input",()=>{renderScreenOrder();updateAgendaPri
 $("agendaTestButton").addEventListener("click",testAgendaFeed);
 $("rssEnabled").addEventListener("change",updateRssControls);
 $("rssUrl").addEventListener("input",renderScreenOrder);
-$("radarSource").addEventListener("change",renderScreenOrder);
+$("radarSource").addEventListener("change",()=>updateRadarAvailability($("openMeteoCountry").value==="CZ"));
 $("rssAutomaticRotation").addEventListener("change",updateRotationControls);
 $("forecastAutomaticRotation").addEventListener("change",updateRotationControls);
 $("planesAutomaticRotation").addEventListener("change",updateRotationControls);
