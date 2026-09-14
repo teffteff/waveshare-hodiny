@@ -57,6 +57,16 @@
 		}
 		reverse_proxy 127.0.0.1:8090
 	}
+	# Blesky jsou data prispevatelu Blitzortung.org, ktera se nesmi dal
+	# zverejnovat. Heslo tu proto chrani obsah: je to soukromy zdroj pro vlastni
+	# hodiny, ne verejne API. Vlastni hash (LIGHTNING_HASH), aby adresa blesku
+	# opsana do hodin nestacila na nic jineho.
+	handle /lightning.json {
+		basic_auth {
+			hodiny {env.LIGHTNING_HASH}
+		}
+		reverse_proxy 127.0.0.1:8093
+	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

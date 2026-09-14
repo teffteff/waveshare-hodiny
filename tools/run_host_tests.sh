@@ -35,7 +35,8 @@ run_test() {
 failures=0
 run_test wifi_provisioning "$FIRMWARE_DIR/WifiProvisioning.cpp" || failures=$((failures + 1))
 run_test device_name "$FIRMWARE_DIR/DeviceName.cpp" || failures=$((failures + 1))
-run_test day_night_logic "$FIRMWARE_DIR/DayNightLogic.cpp" || failures=$((failures + 1))
+run_test day_night_logic "$FIRMWARE_DIR/DayNightLogic.cpp" "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
+run_test astronomy "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test semver "$FIRMWARE_DIR/SemVer.cpp" || failures=$((failures + 1))
 run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1))
 run_test home_assistant_connection_policy || failures=$((failures + 1))
@@ -56,6 +57,7 @@ run_test adsb_parser "$FIRMWARE_DIR/AdsbParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp"
 run_test route_parser "$FIRMWARE_DIR/RouteParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test agenda_parser "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test agenda_layout || failures=$((failures + 1))
+run_test lightning_feed "$FIRMWARE_DIR/LightningFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then

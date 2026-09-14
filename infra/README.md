@@ -49,6 +49,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Generátor agendy | — | `/opt/agenda/generate.py`, `agenda.service` + `agenda.timer` | `agenda/` |
 | Server s agendou | 8089, jen loopback | `/opt/agenda/serve.py`, `agenda-web.service` | `agenda/` |
 | Přepravčí letadel | 8090, jen loopback | `/opt/planes/serve.py`, `planes-web.service` | `planes/` |
+| Přepravčí blesků | 8093, jen loopback | `/opt/lightning/serve.py`, `lightning-web.service` | `lightning/` |
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
@@ -92,6 +93,7 @@ mění v Nastavení → Systém → Síť.
 ```
 https://$CLOCK_HOST/top.xml      zprávy
 https://hodiny:$PLANES_PASSWORD@$CLOCK_HOST/planes.json  letadla (nepovinné)
+https://hodiny:$LIGHTNING_PASSWORD@$CLOCK_HOST/lightning.json  blesky (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -324,6 +326,71 @@ dobré konfiguraci je bezpečný; certifikáty zůstávají na disku. Nakonec
 Výměna hesla je stejná jako u agendy, jen se `sed` nahradí řádek `SETTINGS_HASH`
 – a platí totéž: nový hash se projeví až po `restart`, ne po `reload`. Hodiny si
 novou adresu uloží po prvním úspěšném spojení.
+
+## Blesky
+
+Realtime blesky ze sítě Blitzortung posílá LightningMaps.org přes WebSocket
+(`wss://live2.lightningmaps.org/`). Pro hodiny je to nevhodný tvar, a proto
+trvalé spojení drží `lightning/serve.py` — **jedno pro všechny hodiny**:
+
+- spojení je trvalé a šifrované; na hodinách by drželo dva 16kB TLS buffery,
+- výřez, o který si klient řekne, server bere jen jako vodítko: při měření
+  13. 9. 2026 dorazilo z požadovaného obdélníku jen **23 %** úderů, zbytek
+  z půl Evropy, přes kilobajt za sekundu,
+- protokol není zdokumentovaný (výzva `k`, úvodní dávka přes 50 kB); když se
+  změní, oprava je tady a ne v novém firmwaru ve všech hodinách.
+
+Server se k LightningMaps připojí **až na první dotaz** a odpojí se, když se
+hodiny čtvrt hodiny neozvou. Výřez skládá ze všech kruhů, na které se hodiny
+ptaly posledních deset minut, a když přibude nový, rozšíří ho tímtéž spojením.
+Údery drží půl hodiny v paměti.
+
+Hodiny se ptají `GET /lightning.json?lat=…&lon=…&r=…&since=…`. `r` je poloměr
+v km (nejvýš 400) a pokrývá okolí polohy pro výstrahu i pohled meteoradaru.
+`since` je `time` z předchozí odpovědi: server vrátí jen údery, které **přijal**
+později. Počítá se podle času přijetí, ne úderu, protože LightningMaps některé
+údery doručuje až minuty pozdě (naměřeno 223 s) a podle času úderu by se
+ztratily. Odpověď má tvar zprávy LightningMaps
+(`{"time":…,"live":true,"strokes":[{"time":ms,"lat":…,"lon":…,"id":…}]}`);
+`live: false` znamená, že spojení výřez hodin ještě nepokrývá, takže prázdný
+seznam neznamená „neblýská se“. Hodiny se pak zeptají znovu za pět sekund.
+
+Stav spojení ukáže `curl 127.0.0.1:8093/lightning/status` přímo na serveru
+(Caddy tuhle cestu ven nepouští).
+
+**Data patří přispěvatelům Blitzortung.org** a podle hlavičky jejich souborů
+se nesmí dál zveřejňovat ani komerčně využívat. Heslo tu proto na rozdíl od
+letadel chrání obsah: `/lightning.json` je soukromý zdroj pro vlastní hodiny.
+
+| | |
+|---|---|
+| Uživatel | `hodiny`, natvrdo v `caddy/Caddyfile` |
+| Hash hesla | `/etc/caddy/caddy.env` jako `LIGHTNING_HASH` |
+| Heslo | kořenový `.env` jako `LIGHTNING_PASSWORD` a celá adresa jako `LIGHTNING_URL` |
+| Hodiny | záložka **Meteoradar**, sekce **Blesky** |
+
+Zavedení (jednou), stejně jako letadla: uživatel, adresář, jednotka, pak hash
+a nový Caddyfile.
+
+```sh
+set -a; . .env; set +a
+SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+$SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/lightning --shell /sbin/nologin lightning \
+    && sudo install -d -o root -g lightning -m 750 /opt/lightning'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/lightning/serve.py infra/lightning/lightning-web.service "$CLOCK_SSH:"
+$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py lightning-web.service /opt/lightning/ \
+    && sudo cp /opt/lightning/lightning-web.service /etc/systemd/system/ \
+    && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now lightning-web.service'
+HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$LIGHTNING_PASSWORD'")"
+$SSH "$CLOCK_SSH" "printf 'LIGHTNING_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
+```
+
+Pak Caddy **restartovat** (nový hash se po `reload` nenačte) a teprve potom
+nasadit Caddyfile postupem z „Nasazení“. Nasazeno 14. 9. 2026;
+`tools/check-stack.sh` hlídá heslo, živé spojení i shodu souborů. Testy bez sítě:
+`python3 -m unittest infra/lightning/test_serve.py`.
 
 ## Letadla
 

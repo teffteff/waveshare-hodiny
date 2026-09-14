@@ -15,6 +15,7 @@
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
 #include "AgendaService.h"
+#include "Astronomy.h"
 #include "RssService.h"
 #include "SettingsShareService.h"
 #include "ConfigurationWeb.h"
@@ -27,9 +28,11 @@
 #include "FirmwareUpdateService.h"
 #include "I2C_Driver.h"
 #include "ImprovSerialService.h"
+#include "LightningService.h"
 #include "NetworkDiagnostics.h"
 #include "NetworkCoordinator.h"
 #include "TCA9554PWR.h"
+#include "TlsMemory.h"
 #include "TmepService.h"
 #include "WifiProvisioning.h"
 #include "WeatherAnimationService.h"
@@ -448,6 +451,7 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarMapOpacity,
       dashboardConfigBuffer.radarPauseSeconds,
       dashboardConfigBuffer.radarLegend,
+      dashboardConfigBuffer.radarPrecipitation,
       dashboardConfigBuffer.radarSource);
   applyPlaneRadarState(dashboardConfigBuffer);
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
@@ -718,7 +722,7 @@ void handleRadarVisibility(bool visible) {
                             config.openMeteoLongitude, config.radarRadiusKm,
                             config.radarFrameCount, config.radarMapOpacity,
                             config.radarPauseSeconds, config.radarLegend,
-                            config.radarSource);
+                            config.radarPrecipitation, config.radarSource);
 }
 
 // Radar letadel stahuje jen když je vidět, nebo když si ho majitel pustil do
@@ -781,7 +785,8 @@ void maintainRadarRangeChange() {
                                 config.radarFrameCount,
                                 config.radarMapOpacity,
                                 config.radarPauseSeconds,
-                                config.radarLegend, config.radarSource);
+                                config.radarLegend,
+                                config.radarPrecipitation, config.radarSource);
     }
   }
 }
@@ -816,7 +821,8 @@ bool previewRadarRangeFromWeb(uint16_t radiusKm) {
                               config.radarFrameCount,
                               config.radarMapOpacity,
                               config.radarPauseSeconds,
-                              config.radarLegend, config.radarSource);
+                              config.radarLegend, config.radarPrecipitation,
+                              config.radarSource);
   }
   return true;
 }
@@ -831,6 +837,7 @@ constexpr uint8_t ROTATION_SCREEN_RSS = CLOCK_SCREEN_RSS;
 constexpr uint8_t ROTATION_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST;
 constexpr uint8_t ROTATION_SCREEN_PLANES = CLOCK_SCREEN_PLANES;
 constexpr uint8_t ROTATION_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA;
+constexpr uint8_t ROTATION_SCREEN_SKY = CLOCK_SCREEN_SKY;
 constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
 constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
 
@@ -855,6 +862,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardForecastVisible()) return ROTATION_SCREEN_FORECAST;
   if (clockDashboardPlanesVisible()) return ROTATION_SCREEN_PLANES;
   if (clockDashboardAgendaVisible()) return ROTATION_SCREEN_AGENDA;
+  if (clockDashboardSkyVisible()) return ROTATION_SCREEN_SKY;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -881,6 +889,9 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_AGENDA:
       clockDashboardSetAgendaVisible(true);
       break;
+    case ROTATION_SCREEN_SKY:
+      clockDashboardSetSkyVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
@@ -888,6 +899,7 @@ void showRotationScreen(uint8_t screen) {
       clockDashboardSetForecastVisible(false);
       clockDashboardSetPlanesVisible(false);
       clockDashboardSetAgendaVisible(false);
+      clockDashboardSetSkyVisible(false);
       break;
   }
 }
@@ -904,6 +916,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
       return clockConfigPlanesAvailable(config);
     case ROTATION_SCREEN_AGENDA:
       return clockConfigAgendaAvailable(config);
+    case ROTATION_SCREEN_SKY:
+      return clockConfigSkyAvailable(config);
     default: return true;
   }
 }
@@ -925,6 +939,8 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_AGENDA:
       return clockConfigAgendaAvailable(config) &&
              config.agenda.automaticRotation;
+    case ROTATION_SCREEN_SKY:
+      return clockConfigSkyAvailable(config) && config.sky.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -940,6 +956,7 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     if (!snapshot.ready || snapshot.loading ||
         snapshot.fullPreparationInProgress)
       return false;
+    if (snapshot.mapOnly) return true;
     // RainViewer nabídne jen tolik snímků, kolik jich zrovna má - bývá jich
     // kolem třinácti. Trvat na přesném počtu by radar do rotace nikdy nepustil.
     if (snapshot.rainViewerSource) return snapshot.animationFrameCount > 0;
@@ -989,6 +1006,8 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
       return static_cast<unsigned long>(config.planes.displaySeconds) * 1000UL;
     case ROTATION_SCREEN_AGENDA:
       return static_cast<unsigned long>(config.agenda.displaySeconds) * 1000UL;
+    case ROTATION_SCREEN_SKY:
+      return static_cast<unsigned long>(config.sky.displaySeconds) * 1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -1001,7 +1020,8 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_RSS) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_FORECAST) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_PLANES) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_AGENDA);
+      rotationScreenEnabled(config, ROTATION_SCREEN_AGENDA) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_SKY);
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed();
@@ -1224,7 +1244,209 @@ void maintainRadarDisplay() {
                                  snapshot.latestFrame,
                                  snapshot.currentFrameNumber,
                                  snapshot.animationFrameCount,
-                                 snapshot.effectiveRadiusKm);
+                                 snapshot.effectiveRadiusKm, snapshot.mapOnly);
+}
+
+// Blesky z vlastního serveru: předá službě kruh výstrahy i pohled radaru,
+// radaru nastavení překryvu a ciferníku výstrahu.
+void maintainLightning() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const bool enabled = clockConfigLightningAvailable(config);
+  const float latitude = config.openMeteoLatitude;
+  const float longitude = config.openMeteoLongitude;
+  const bool overlay = enabled && config.lightning.radarOverlay &&
+                       clockConfigRadarAvailable(config);
+  float viewLatitude = latitude;
+  float viewLongitude = longitude;
+  float viewRadiusKm = 0.0f;
+  if (overlay)
+    chmiRadarViewCircle(latitude, longitude, config.radarRadiusKm, viewLatitude,
+                        viewLongitude, viewRadiusKm);
+  lightningServiceSetActive(enabled, config.lightning.url, latitude, longitude,
+                            config.lightning.alarmRadiusKm, viewLatitude,
+                            viewLongitude, viewRadiusKm,
+                            overlay && clockDashboardRadarVisible());
+  chmiRadarServiceSetLightning(overlay, latitude, longitude,
+                               config.lightning.alarmRadiusKm,
+                               config.lightning.alarmMinutes);
+
+  // Výstraha se přepočítává jednou za pět sekund; údery chodí nejčastěji po
+  // dvaceti a stárnou po minutách.
+  static unsigned long checkedAt = 0;
+  const unsigned long now = millis();
+  if (checkedAt != 0 && now - checkedAt < 5000) return;
+  checkedAt = now;
+  LightningProximity proximity;
+  const bool active =
+      enabled && config.lightning.clockAlert &&
+      lightningServiceProximity(latitude, longitude,
+                                config.lightning.alarmRadiusKm,
+                                config.lightning.alarmMinutes * 60U,
+                                proximity) &&
+      proximity.count > 0;
+  clockDashboardSetLightningAlert(active, proximity.nearestKm);
+}
+
+// Dnešní místní půlnoc a délka dne v sekundách; při změně času má den 23 nebo
+// 25 hodin.
+void localDayBounds(time_t epoch, int64_t &dayStart, int64_t &dayLength) {
+  struct tm local;
+  localtime_r(&epoch, &local);
+  local.tm_hour = 0;
+  local.tm_min = 0;
+  local.tm_sec = 0;
+  local.tm_isdst = -1;
+  dayStart = static_cast<int64_t>(mktime(&local));
+  local.tm_mday += 1;
+  local.tm_isdst = -1;
+  dayLength = static_cast<int64_t>(mktime(&local)) - dayStart;
+}
+
+// S Open-Meteo se den a noc počítají ze Slunce na zařízení, ne z odpovědi
+// počasí: ta chodí po deseti minutách, takže přepnutí přicházelo pozdě,
+// a při výpadku sítě zamrzlo. Home Assistant má vlastní entitu slunce.
+// Poslední výsledek se drží, aby výpočet neběžel v každé smyčce.
+struct LocalSunCache {
+  bool valid = false;
+  unsigned long computedAt = 0;
+  float latitude = NAN;
+  float longitude = NAN;
+  int8_t sunriseOffset = 0;
+  int8_t sunsetOffset = 0;
+  ClockLocalSunState state;
+};
+LocalSunCache localSunCache;
+
+bool applyLocalSunState(const ClockConfig &config, ClockValues &values) {
+  if (config.dataSource != CLOCK_DATA_SOURCE_OPEN_METEO) return false;
+  const time_t epoch = time(nullptr);
+  if (epoch < VALID_TIME_THRESHOLD) return false;
+  const unsigned long now = millis();
+  const bool settingsChanged =
+      config.openMeteoLatitude != localSunCache.latitude ||
+      config.openMeteoLongitude != localSunCache.longitude ||
+      config.sunriseOffsetMinutes != localSunCache.sunriseOffset ||
+      config.sunsetOffsetMinutes != localSunCache.sunsetOffset;
+  // Po dvaceti sekundách: přechod pak přijde nejvýš tak pozdě, a hledání
+  // událostí stojí jen pár milisekund.
+  if (!localSunCache.valid || settingsChanged ||
+      now - localSunCache.computedAt >= 20000) {
+    int64_t dayStart = 0;
+    int64_t dayLength = 0;
+    localDayBounds(epoch, dayStart, dayLength);
+    localSunCache.state = clockLocalSunState(
+        epoch, dayStart, dayLength, config.openMeteoLatitude,
+        config.openMeteoLongitude, config.sunriseOffsetMinutes,
+        config.sunsetOffsetMinutes);
+    localSunCache.valid = true;
+    localSunCache.computedAt = now;
+    localSunCache.latitude = config.openMeteoLatitude;
+    localSunCache.longitude = config.openMeteoLongitude;
+    localSunCache.sunriseOffset = config.sunriseOffsetMinutes;
+    localSunCache.sunsetOffset = config.sunsetOffsetMinutes;
+  }
+  const bool changed =
+      !values.sunStateAvailable ||
+      values.weatherIsDay != localSunCache.state.isDay ||
+      values.nextSunriseTimestamp !=
+          static_cast<uint64_t>(localSunCache.state.sunrise) ||
+      values.nextSunsetTimestamp !=
+          static_cast<uint64_t>(localSunCache.state.sunset);
+  values.weatherIsDay = localSunCache.state.isDay;
+  values.sunStateAvailable = true;
+  values.nextSunriseTimestamp =
+      static_cast<uint64_t>(localSunCache.state.sunrise);
+  values.nextSunsetTimestamp = static_cast<uint64_t>(localSunCache.state.sunset);
+  return changed;
+}
+
+void maintainLocalSunState() {
+#if !FIRMWARE_RELEASE
+  if (forceNightTestActive) return;
+#endif
+  if (applyLocalSunState(loopConfigSnapshot(), sampleValues))
+    clockDashboardUpdate(sampleValues);
+}
+
+// Slunce a Měsíc pro obrazovku. Počítá se jen se zapnutou obrazovkou, jednou
+// za minutu a hned po změně polohy nebo jazyka - hledání východů projde den
+// po deseti minutách, což je pár milisekund, ale v každé smyčce zbytečných.
+void maintainSkyData() {
+  const ClockConfig &config = loopConfigSnapshot();
+  if (!clockConfigSkyAvailable(config)) return;
+  static unsigned long computedAt = 0;
+  static float computedLatitude = NAN;
+  static float computedLongitude = NAN;
+  static bool computedValid = false;
+  const unsigned long now = millis();
+  const time_t epoch = time(nullptr);
+  const bool valid = epoch >= VALID_TIME_THRESHOLD;
+  const bool moved = config.openMeteoLatitude != computedLatitude ||
+                     config.openMeteoLongitude != computedLongitude;
+  if (!moved && valid == computedValid && computedAt != 0 &&
+      now - computedAt < 60000)
+    return;
+  computedAt = now;
+  computedLatitude = config.openMeteoLatitude;
+  computedLongitude = config.openMeteoLongitude;
+  computedValid = valid;
+
+  ClockSkyData data;
+  if (valid) {
+    const double latitude = config.openMeteoLatitude;
+    const double longitude = config.openMeteoLongitude;
+    // Den se počítá od místní půlnoci, ne od teď: odpolední obrazovka má
+    // ukázat dnešní ranní východ, ne ten zítřejší.
+    int64_t dayStart = 0;
+    int64_t dayLength = 0;
+    localDayBounds(epoch, dayStart, dayLength);
+    int64_t event = 0;
+    if (astronomyFindEvent(AstronomyBody::Sun, true, dayStart, dayLength,
+                           latitude, longitude, event))
+      data.sunrise = event;
+    if (astronomyFindEvent(AstronomyBody::Sun, false, dayStart, dayLength,
+                           latitude, longitude, event))
+      data.sunset = event;
+    if (astronomyFindSunAltitude(ASTRONOMY_CIVIL_TWILIGHT_DEG, true, dayStart,
+                                 dayLength, latitude, longitude, event))
+      data.civilDawn = event;
+    if (astronomyFindSunAltitude(ASTRONOMY_CIVIL_TWILIGHT_DEG, false, dayStart,
+                                 dayLength, latitude, longitude, event))
+      data.civilDusk = event;
+    if (astronomyFindEvent(AstronomyBody::Moon, true, dayStart, dayLength,
+                           latitude, longitude, event))
+      data.moonrise = event;
+    if (astronomyFindEvent(AstronomyBody::Moon, false, dayStart, dayLength,
+                           latitude, longitude, event))
+      data.moonset = event;
+    const int64_t noon = dayStart + dayLength / 2;
+    data.sunUpAllDay =
+        astronomyHorizonMarginDeg(AstronomyBody::Sun, noon, latitude,
+                                  longitude) > 0.0;
+    if (data.sunrise > 0 && data.sunset > data.sunrise) {
+      data.dayLengthMinutes =
+          static_cast<int>((data.sunset - data.sunrise + 30) / 60);
+    } else if (data.sunrise > 0 || data.sunset > 0) {
+      // Západ před východem: den začal včera, nebo skončí zítra. Délka světla
+      // je doplněk tmy mezi nimi.
+      const int64_t dark = data.sunrise > data.sunset && data.sunset > 0
+                               ? data.sunrise - data.sunset
+                               : 0;
+      data.dayLengthMinutes =
+          static_cast<int>((dayLength - dark + 30) / 60);
+    }
+    const AstronomyMoonPhase phase = astronomyMoonPhase(epoch);
+    data.moonPhase = static_cast<float>(phase.phase);
+    data.moonIllumination = static_cast<float>(phase.illuminationPercent);
+    constexpr int64_t LUNATION_SEARCH_SECONDS = 31LL * 24 * 60 * 60;
+    if (astronomyFindMoonPhase(0.5, epoch, LUNATION_SEARCH_SECONDS, event))
+      data.nextFullMoon = event;
+    if (astronomyFindMoonPhase(0.0, epoch, LUNATION_SEARCH_SECONDS, event))
+      data.nextNewMoon = event;
+    data.southernHemisphere = latitude < 0.0;
+    data.valid = true;
+  }
+  clockDashboardSetSky(data);
 }
 
 void maintainRadarNightVisual() {
@@ -1406,6 +1628,11 @@ void handleUsbCommands() {
         // takže ručně nalistovaná agenda by screenshot nikdy nezastihl.
         clockDashboardSetAgendaVisible(true);
         Serial.println("AGENDA_SHOWN");
+      } else if (usbCommand == "SKYSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
+        // takže ručně nalistovanou obrazovku by screenshot nikdy nezastihl.
+        clockDashboardSetSkyVisible(true);
+        Serial.println("SKY_SHOWN");
       } else if (usbCommand == "RADARSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
         // takže ručně nalistovaný radar by screenshot nikdy nezastihl.
@@ -1578,7 +1805,7 @@ void maintainNetworkTime() {
         config.openMeteoLatitude, config.openMeteoLongitude,
         config.radarRadiusKm, config.radarFrameCount,
         config.radarMapOpacity, config.radarPauseSeconds,
-        config.radarLegend, config.radarSource);
+        config.radarLegend, config.radarPrecipitation, config.radarSource);
     applyPlaneRadarState(config);
 #if !FIRMWARE_RELEASE
     Serial.println("NTP synchronizovano");
@@ -1703,6 +1930,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     delay(500);
     chmiRadarServicePrepareForFirmwareUpdate();
     planeRadarServicePrepareForFirmwareUpdate();
+    lightningServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
     planeRadarServiceBegin();
@@ -2714,6 +2942,10 @@ void applyPendingHomeAssistantValues() {
   }
 #endif
   sampleValues = values;
+#if !FIRMWARE_RELEASE
+  if (!forceNightTestActive)
+#endif
+    applyLocalSunState(loopConfigSnapshot(), sampleValues);
   clockDashboardUpdate(sampleValues);
 }
 }  // namespace
@@ -2725,6 +2957,9 @@ void setup() {
 #if !FIRMWARE_RELEASE
   Serial.println("Waveshare Hodiny startuji");
 #endif
+  // Dřív než cokoli otevře první TLS spojení: handshaky pak berou paměť
+  // z PSRAM a vnitřní SRAM nerozdrobí.
+  tlsMemoryBegin();
 
   I2C_Init();
   Set_EXIOS(0x0C);
@@ -2774,12 +3009,14 @@ void setup() {
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
+  lightningServiceBegin();
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
       runtimeConfig.radarRadiusKm, runtimeConfig.radarFrameCount,
       runtimeConfig.radarMapOpacity, runtimeConfig.radarPauseSeconds,
-      runtimeConfig.radarLegend, runtimeConfig.radarSource);
+      runtimeConfig.radarLegend, runtimeConfig.radarPrecipitation,
+      runtimeConfig.radarSource);
   // Poloha a nastavení se službě předají hned; stahovat začne až po
   // synchronizaci času, kdy applyPlaneRadarState() doplní skutečný stav.
   planeRadarServiceSetActive(false, false, runtimeConfig.openMeteoLatitude,
@@ -2878,6 +3115,9 @@ void loop() {
   maintainDisplayGestures();
   maintainRadarNightVisual();
   maintainRadarRangeChange();
+  maintainLightning();
+  maintainLocalSunState();
+  maintainSkyData();
   maintainRadarDisplay();
   maintainPlanesDisplay();
   maintainRssDisplay();

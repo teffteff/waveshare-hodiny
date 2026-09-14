@@ -20,6 +20,9 @@ struct ChmiRadarSnapshot {
   // mocniny dvou nepadnou přesně na nastavený rozsah.
   uint16_t effectiveRadiusKm = 50;
   bool rainViewerSource = false;
+  // Srážková vrstva je vypnutá: radar nic nestahuje a ukazuje jen mapu,
+  // případně s blesky. Taková mapa se počítá za hotový statický snímek.
+  bool mapOnly = false;
   char frameTime[6] = "";
   char message[64] = "Čekám na otevření radaru";
 };
@@ -55,7 +58,18 @@ void chmiRadarServiceSetActive(bool visible, bool backgroundRefresh,
                                float latitude, float longitude,
                                uint16_t radiusKm, uint8_t frameCount,
                                uint8_t mapOpacity, uint8_t pauseSeconds,
-                               bool showLegend, uint8_t source);
+                               bool showLegend, bool showPrecipitation,
+                               uint8_t source);
 void chmiRadarServiceSetRedNightMode(bool enabled);
+// Údery blesků přes radar a kruh výstrahy kolem polohy. Údery samotné drží
+// LightningService; radar si je při kreslení každého snímku jen přečte.
+void chmiRadarServiceSetLightning(bool overlay, float alarmLatitude,
+                                  float alarmLongitude, uint8_t alarmRadiusKm,
+                                  uint8_t alarmMinutes);
+// Kruh, který radar s daným nastavením opravdu ukazuje - aby se služba blesků
+// ptala na údery v celém viditelném výřezu, i u pohledu na celou republiku.
+void chmiRadarViewCircle(float latitude, float longitude, uint16_t radiusKm,
+                         float &centerLatitude, float &centerLongitude,
+                         float &viewRadiusKm);
 void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot);
 void chmiRadarServiceDiagnostics(ChmiRadarDiagnostics &diagnostics);

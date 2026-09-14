@@ -1,5 +1,6 @@
 #include "AgendaLayout.h"
 #include "AgendaParser.h"
+#include "Astronomy.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
 #include "ForecastIcons.h"
@@ -95,11 +96,15 @@ lv_obj_t *roomWeatherAnimation = nullptr;
 lv_obj_t *wifiStatusLabel = nullptr;
 lv_obj_t *statusLabel = nullptr;
 lv_obj_t *webStatusLabel = nullptr;
+// Upozornění na blesky v kruhu výstrahy: blesk a vzdálenost nejbližšího úderu.
+lv_obj_t *lightningStatusLabel = nullptr;
 lv_obj_t *dashboardContent = nullptr;
 lv_obj_t *valuesPage = nullptr;
 lv_obj_t *valuesTimeLabel = nullptr;
 lv_obj_t *valuesDateLabel = nullptr;
 lv_obj_t *valuesNamedayLabel = nullptr;
+// Výstraha před blesky na ciferníku HODNOTY, který nemá řadu stavových ikon.
+lv_obj_t *valuesLightningLabel = nullptr;
 lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 // Kořen obrazovky se drží kvůli stránce předpovědi, která se zakládá až při
@@ -315,6 +320,7 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST,
   DASHBOARD_SCREEN_PLANES = CLOCK_SCREEN_PLANES,
   DASHBOARD_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA,
+  DASHBOARD_SCREEN_SKY = CLOCK_SCREEN_SKY,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -404,6 +410,7 @@ char rightWeatherDecoderKey[48] = "";
 lv_img_dsc_t weatherAnimationSource = {};
 bool webActive = false;
 bool wifiConnected = false;
+bool lightningAlertActive = false;
 uint8_t timeColonEffect = CLOCK_TIME_COLON_STEADY;
 char displayedTimeText[6] = "--:--";
 uint32_t lastRenderedTimeColonColor = UINT32_MAX;
@@ -457,6 +464,11 @@ lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
                     lv_color_t color);
 void applyRssColors();
 void applyAgendaColors();
+void applySkyColors();
+void updateSkyHeaderLabel();
+void updateSkyPage();
+extern lv_obj_t *skyPage;
+extern bool skyFeatureAvailable;
 void layoutAgendaItems();
 void updateAgendaHeaderLabel();
 void updateAgendaLegendLabel();
@@ -592,6 +604,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
     case DASHBOARD_SCREEN_RADAR: return radarPage;
     case DASHBOARD_SCREEN_RSS: return rssPage;
     case DASHBOARD_SCREEN_AGENDA: return agendaPage;
+    case DASHBOARD_SCREEN_SKY: return skyPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
@@ -610,6 +623,8 @@ bool screenAvailable(uint8_t screen) {
       return planesFeatureAvailable && planesPage != nullptr;
     case DASHBOARD_SCREEN_AGENDA:
       return agendaFeatureAvailable && agendaPage != nullptr;
+    case DASHBOARD_SCREEN_SKY:
+      return skyFeatureAvailable && skyPage != nullptr;
     default: return true;
   }
 }
@@ -1696,28 +1711,43 @@ void alignConnectionStatusIcons() {
       (!redNightVisual || currentValues.homeAssistantOnline);
   const bool showWeb = webActive;
 
-  lv_obj_t *icons[] = {wifiStatusLabel, statusLabel, webStatusLabel};
-  const bool visible[] = {showWifi, showHomeAssistant, showWeb};
+  lv_obj_t *icons[] = {lightningStatusLabel, wifiStatusLabel, statusLabel,
+                       webStatusLabel};
+  const bool visible[] = {lightningAlertActive, showWifi, showHomeAssistant,
+                          showWeb};
+  constexpr int ICON_COUNT = 4;
+  // Ikony stojí po STATUS_SPACING od středu ke středu. Blesk nese i vzdálenost,
+  // takže je širší; řada se proto skládá podle skutečných šířek s mezerou,
+  // která mezi jednoznakovými ikonami vychází stejně jako dřív.
+  constexpr int ICON_WIDTH = 16;
+  const int gap = STATUS_SPACING - ICON_WIDTH;
+  int widths[ICON_COUNT] = {};
+  int totalWidth = 0;
   int visibleCount = 0;
-  for (bool iconVisible : visible) {
-    if (iconVisible) ++visibleCount;
+  for (int index = 0; index < ICON_COUNT; ++index) {
+    if (!visible[index]) continue;
+    lv_obj_update_layout(icons[index]);
+    widths[index] = index == 0 ? lv_obj_get_width(icons[index]) : ICON_WIDTH;
+    totalWidth += widths[index];
+    ++visibleCount;
   }
+  if (visibleCount > 1) totalWidth += (visibleCount - 1) * gap;
 
-  int visibleIndex = 0;
-  for (int index = 0; index < 3; ++index) {
+  int left = -totalWidth / 2;
+  for (int index = 0; index < ICON_COUNT; ++index) {
     if (!visible[index]) {
       lv_obj_add_flag(icons[index], LV_OBJ_FLAG_HIDDEN);
       continue;
     }
     lv_obj_clear_flag(icons[index], LV_OBJ_FLAG_HIDDEN);
-    const int x =
-        visibleIndex * STATUS_SPACING - (visibleCount - 1) * STATUS_SPACING / 2;
-    alignCenter(icons[index], x, STATUS_Y);
-    ++visibleIndex;
+    alignCenter(icons[index], left + widths[index] / 2, STATUS_Y);
+    left += widths[index] + gap;
   }
 }
 
 void applyConnectionStatusColors() {
+  // Blesk je výstraha, takže svítí červeně v denním i nočním vzhledu.
+  setTextColor(lightningStatusLabel, COLOR_ERROR);
   if (redNightVisualEnabled()) {
     setTextColor(wifiStatusLabel, COLOR_ERROR);
     setTextColor(statusLabel, COLOR_ERROR);
@@ -2318,6 +2348,7 @@ void applyDashboardColors() {
   applyValuesPageColors();
   applyRssColors();
   applyAgendaColors();
+  applySkyColors();
   // Předpověď má barvu v každé hodnotě zvlášť, takže se přebarvuje tím, že se
   // řádky složí znovu.
   updateForecastPage();
@@ -3203,6 +3234,314 @@ void createForecastPage(lv_obj_t *screen) {
   lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
 }
 
+// --- Slunce a Měsíc ---------------------------------------------------------
+// Časy a fázi spočítá WaveshareHodiny.ino z polohy (Astronomy.h); stránka je
+// jen naformátuje podle jazyka. Kotouč Měsíce se kreslí do vlastního bufferu
+// v PSRAM jako u radaru, protože LVGL srpek nakreslit neumí.
+constexpr int SKY_SUN_TITLE_Y = -150;
+constexpr int SKY_SUN_CAPTION_Y = -124;
+constexpr int SKY_SUN_TIME_Y = -98;
+constexpr int SKY_TWILIGHT_Y = -66;
+constexpr int SKY_DAY_LENGTH_Y = -42;
+constexpr int SKY_MOON_TITLE_Y = -12;
+constexpr int SKY_MOON_Y = 50;
+constexpr int SKY_MOON_CAPTION_OFFSET = -22;
+constexpr int SKY_MOON_TIME_OFFSET = 4;
+constexpr int SKY_COLUMN_X = 92;
+constexpr int SKY_MOON_COLUMN_X = 128;
+constexpr int SKY_PHASE_NAME_Y = 114;
+constexpr int SKY_ILLUMINATION_Y = 138;
+constexpr int SKY_NEXT_PHASES_Y = 166;
+constexpr int SKY_MOON_SIZE = 88;
+// Písma clock_czech nemají středovou tečku, takže údaje odděluje mezera.
+constexpr char SKY_SEPARATOR[] = "     ";
+const lv_color_t COLOR_SUN = LV_COLOR_MAKE(255, 184, 67);
+const lv_color_t COLOR_MOON = LV_COLOR_MAKE(214, 226, 240);
+// Neosvětlená část kotouče: jen naznačená, ať je vidět celý Měsíc.
+const lv_color_t COLOR_MOON_DARK = LV_COLOR_MAKE(44, 48, 56);
+const lv_color_t COLOR_MOON_DARK_NIGHT = LV_COLOR_MAKE(60, 8, 8);
+
+lv_obj_t *skyPage = nullptr;
+lv_obj_t *skyHeaderLabel = nullptr;
+lv_obj_t *skySunTitleLabel = nullptr;
+lv_obj_t *skyMoonTitleLabel = nullptr;
+lv_obj_t *skyCaptionLabels[4] = {};
+lv_obj_t *skyTimeLabels[4] = {};
+lv_obj_t *skyTwilightLabel = nullptr;
+lv_obj_t *skyDayLengthLabel = nullptr;
+lv_obj_t *skyPhaseNameLabel = nullptr;
+lv_obj_t *skyIlluminationLabel = nullptr;
+lv_obj_t *skyNextPhasesLabel = nullptr;
+lv_obj_t *skyMoonCanvas = nullptr;
+uint16_t *skyMoonPixels = nullptr;
+ClockSkyData skyData;
+bool skyFeatureAvailable = false;
+
+class SkyPsramAllocations {
+ public:
+  SkyPsramAllocations() { clockLvglPreferPsram(true); }
+  ~SkyPsramAllocations() { clockLvglPreferPsram(false); }
+
+  SkyPsramAllocations(const SkyPsramAllocations &) = delete;
+  SkyPsramAllocations &operator=(const SkyPsramAllocations &) = delete;
+};
+
+uint16_t skyRgb565(lv_color_t color) {
+  return static_cast<uint16_t>(lv_color_to16(color));
+}
+
+// Osvětlená část kotouče. Terminátor je elipsa: v každém řádku leží hranice
+// světla na x = w * cos(2π·fáze), kde w je půlšířka kotouče v tom řádku.
+// Dorůstající Měsíc svítí na severní polokouli zprava, couvající zleva;
+// na jižní je to obráceně.
+void renderSkyMoon() {
+  if (skyMoonPixels == nullptr) return;
+  const bool redNight = redNightVisualEnabled();
+  const uint16_t lit = skyRgb565(redNight ? COLOR_ERROR : COLOR_MOON);
+  const uint16_t dark =
+      skyRgb565(redNight ? COLOR_MOON_DARK_NIGHT : COLOR_MOON_DARK);
+  const uint16_t background = skyRgb565(COLOR_BACKGROUND);
+  const float radius = SKY_MOON_SIZE / 2.0f - 1.0f;
+  const float center = (SKY_MOON_SIZE - 1) / 2.0f;
+  const float phase = skyData.valid ? skyData.moonPhase : 0.0f;
+  const float terminator = cosf(phase * 2.0f * static_cast<float>(M_PI));
+  const bool waxing = phase < 0.5f;
+  for (int row = 0; row < SKY_MOON_SIZE; ++row) {
+    const float y = row - center;
+    const float halfWidthSquared = radius * radius - y * y;
+    for (int column = 0; column < SKY_MOON_SIZE; ++column) {
+      uint16_t &pixel = skyMoonPixels[row * SKY_MOON_SIZE + column];
+      float x = column - center;
+      if (halfWidthSquared < 0.0f || x * x > halfWidthSquared) {
+        pixel = background;
+        continue;
+      }
+      if (skyData.southernHemisphere) x = -x;
+      const float boundary = sqrtf(halfWidthSquared) * terminator;
+      const bool illuminated = waxing ? x >= boundary : x <= -boundary;
+      pixel = illuminated ? lit : dark;
+    }
+  }
+  if (skyMoonCanvas != nullptr) lv_obj_invalidate(skyMoonCanvas);
+}
+
+void formatSkyTime(int64_t epoch, char *text, size_t capacity) {
+  if (epoch <= 0) {
+    strlcpy(text, "--:--", capacity);
+    return;
+  }
+  const time_t value = static_cast<time_t>(epoch);
+  struct tm local;
+  if (localtime_r(&value, &local) == nullptr) {
+    strlcpy(text, "--:--", capacity);
+    return;
+  }
+  snprintf(text, capacity, "%02d:%02d", local.tm_hour, local.tm_min);
+}
+
+void formatSkyDate(int64_t epoch, char *text, size_t capacity) {
+  const time_t value = static_cast<time_t>(epoch);
+  struct tm local;
+  if (epoch <= 0 || localtime_r(&value, &local) == nullptr) {
+    strlcpy(text, "--", capacity);
+    return;
+  }
+  if (englishLanguage())
+    snprintf(text, capacity, "%d/%d", local.tm_mon + 1, local.tm_mday);
+  else
+    snprintf(text, capacity, "%d. %d.", local.tm_mday, local.tm_mon + 1);
+}
+
+void updateSkyHeaderLabel() {
+  if (skyHeaderLabel == nullptr) return;
+  char text[48];
+  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  setObjectVisible(skyHeaderLabel, haveText);
+  if (!haveText) return;
+  setTextColor(skyHeaderLabel,
+               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  lv_label_set_text(skyHeaderLabel, text);
+}
+
+void applySkyColors() {
+  if (skyPage == nullptr) return;
+  const bool redNight = redNightVisualEnabled();
+  const lv_color_t muted = redNight ? COLOR_ERROR : COLOR_MUTED;
+  setTextColor(skySunTitleLabel, redNight ? COLOR_ERROR : COLOR_SUN);
+  setTextColor(skyMoonTitleLabel, redNight ? COLOR_ERROR : COLOR_MOON);
+  for (int index = 0; index < 4; ++index) {
+    setTextColor(skyCaptionLabels[index], muted);
+    setTextColor(skyTimeLabels[index],
+                 redNight ? COLOR_ERROR : (index < 2 ? COLOR_SUN : COLOR_MOON));
+  }
+  setTextColor(skyTwilightLabel, muted);
+  setTextColor(skyDayLengthLabel, redNight ? COLOR_ERROR : COLOR_TEXT);
+  setTextColor(skyPhaseNameLabel, redNight ? COLOR_ERROR : COLOR_TEXT);
+  setTextColor(skyIlluminationLabel, muted);
+  setTextColor(skyNextPhasesLabel, muted);
+  updateSkyHeaderLabel();
+  renderSkyMoon();
+}
+
+void updateSkyPage() {
+  if (skyPage == nullptr) return;
+  const bool english = englishLanguage();
+  lv_label_set_text(skySunTitleLabel, english ? "SUN" : "SLUNCE");
+  lv_label_set_text(skyMoonTitleLabel, english ? "MOON" : "MĚSÍC");
+  const char *captions[4] = {english ? "rise" : "východ",
+                             english ? "set" : "západ",
+                             english ? "rise" : "východ",
+                             english ? "set" : "západ"};
+  const int64_t times[4] = {skyData.sunrise, skyData.sunset, skyData.moonrise,
+                            skyData.moonset};
+  for (int index = 0; index < 4; ++index) {
+    lv_label_set_text(skyCaptionLabels[index], captions[index]);
+    char text[8];
+    formatSkyTime(skyData.valid ? times[index] : 0, text, sizeof(text));
+    lv_label_set_text(skyTimeLabels[index], text);
+  }
+
+  char text[64];
+  // Za polárním kruhem v létě soumrak nenastane; tam se řádek schová.
+  if (skyData.valid && (skyData.civilDawn > 0 || skyData.civilDusk > 0)) {
+    char dawn[8];
+    char dusk[8];
+    formatSkyTime(skyData.civilDawn, dawn, sizeof(dawn));
+    formatSkyTime(skyData.civilDusk, dusk, sizeof(dusk));
+    snprintf(text, sizeof(text),
+             english ? "Civil dawn %s%sdusk %s"
+                     : "Občanské svítání %s%ssoumrak %s",
+             dawn, SKY_SEPARATOR, dusk);
+    lv_label_set_text(skyTwilightLabel, text);
+  } else {
+    lv_label_set_text(skyTwilightLabel, "");
+  }
+  if (!skyData.valid) {
+    lv_label_set_text(skyDayLengthLabel, english ? "Waiting for time sync"
+                                                 : "Čekám na čas ze sítě");
+  } else if (skyData.sunrise <= 0 && skyData.sunset <= 0) {
+    // Za polárním kruhem Slunce některé dny nevyjde nebo nezapadne.
+    lv_label_set_text(skyDayLengthLabel,
+                      skyData.sunUpAllDay
+                          ? (english ? "Polar day" : "Polární den")
+                          : (english ? "Polar night" : "Polární noc"));
+  } else {
+    const int minutes = skyData.dayLengthMinutes;
+    snprintf(text, sizeof(text), english ? "Day length %d h %02d min"
+                                         : "Délka dne %d h %02d min",
+             minutes / 60, minutes % 60);
+    lv_label_set_text(skyDayLengthLabel, text);
+  }
+
+  static constexpr const char *CZECH_PHASES[8] = {
+      "Nov",          "Dorůstající srpek", "První čtvrť", "Dorůstající Měsíc",
+      "Úplněk",       "Couvající Měsíc",   "Poslední čtvrť", "Couvající srpek"};
+  static constexpr const char *ENGLISH_PHASES[8] = {
+      "New moon",  "Waxing crescent", "First quarter", "Waxing gibbous",
+      "Full moon", "Waning gibbous",  "Last quarter",  "Waning crescent"};
+  const uint8_t phaseIndex = astronomyMoonPhaseIndex(skyData.moonPhase);
+  lv_label_set_text(skyPhaseNameLabel,
+                    !skyData.valid ? ""
+                    : english      ? ENGLISH_PHASES[phaseIndex]
+                                   : CZECH_PHASES[phaseIndex]);
+  if (skyData.valid) {
+    snprintf(text, sizeof(text), english ? "%d %% illuminated" : "osvětleno %d %%",
+             static_cast<int>(lroundf(skyData.moonIllumination)));
+  } else {
+    text[0] = '\0';
+  }
+  lv_label_set_text(skyIlluminationLabel, text);
+
+  char fullMoon[12];
+  char newMoon[12];
+  formatSkyDate(skyData.nextFullMoon, fullMoon, sizeof(fullMoon));
+  formatSkyDate(skyData.nextNewMoon, newMoon, sizeof(newMoon));
+  // Bližší událost jde první, ať se čte v pořadí, v jakém přijdou.
+  const bool fullFirst = skyData.nextFullMoon <= skyData.nextNewMoon;
+  const char *fullName = english ? "full" : "úplněk";
+  const char *newName = english ? "new" : "nov";
+  if (skyData.valid) {
+    snprintf(text, sizeof(text), "%s %s%s%s %s",
+             fullFirst ? fullName : newName, fullFirst ? fullMoon : newMoon,
+             SKY_SEPARATOR,
+             fullFirst ? newName : fullName, fullFirst ? newMoon : fullMoon);
+  } else {
+    text[0] = '\0';
+  }
+  lv_label_set_text(skyNextPhasesLabel, text);
+  applySkyColors();
+}
+
+void createSkyPage(lv_obj_t *screen) {
+  const SkyPsramAllocations psramAllocations;
+  skyPage = lv_obj_create(screen);
+  lv_obj_set_size(skyPage, 480, 480);
+  lv_obj_center(skyPage);
+  lv_obj_set_style_bg_color(skyPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(skyPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(skyPage, 0, 0);
+  lv_obj_set_style_pad_all(skyPage, 0, 0);
+  lv_obj_set_style_radius(skyPage, 0, 0);
+  lv_obj_clear_flag(skyPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  skyHeaderLabel = makeLabel(skyPage, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_recolor(skyHeaderLabel, true);
+  lv_label_set_text(skyHeaderLabel, "");
+  alignCenter(skyHeaderLabel, 0, FORECAST_HEADER_Y);
+
+  skySunTitleLabel = makeLabel(skyPage, &clock_czech_16, COLOR_SUN);
+  alignCenter(skySunTitleLabel, 0, SKY_SUN_TITLE_Y);
+  skyMoonTitleLabel = makeLabel(skyPage, &clock_czech_16, COLOR_MOON);
+  alignCenter(skyMoonTitleLabel, 0, SKY_MOON_TITLE_Y);
+
+  // Slunce má časy v řádku pod nadpisem, Měsíc po stranách kotouče.
+  const int captionX[4] = {-SKY_COLUMN_X, SKY_COLUMN_X, -SKY_MOON_COLUMN_X,
+                           SKY_MOON_COLUMN_X};
+  const int captionY[4] = {SKY_SUN_CAPTION_Y, SKY_SUN_CAPTION_Y,
+                           SKY_MOON_Y + SKY_MOON_CAPTION_OFFSET,
+                           SKY_MOON_Y + SKY_MOON_CAPTION_OFFSET};
+  const int timeY[4] = {SKY_SUN_TIME_Y, SKY_SUN_TIME_Y,
+                        SKY_MOON_Y + SKY_MOON_TIME_OFFSET,
+                        SKY_MOON_Y + SKY_MOON_TIME_OFFSET};
+  for (int index = 0; index < 4; ++index) {
+    skyCaptionLabels[index] = makeLabel(skyPage, &clock_czech_14, COLOR_MUTED);
+    alignCenter(skyCaptionLabels[index], captionX[index], captionY[index]);
+    skyTimeLabels[index] = makeLabel(
+        skyPage, index < 2 ? &lv_font_montserrat_32 : &lv_font_montserrat_24,
+        index < 2 ? COLOR_SUN : COLOR_MOON);
+    lv_label_set_text(skyTimeLabels[index], "--:--");
+    alignCenter(skyTimeLabels[index], captionX[index], timeY[index]);
+  }
+
+  skyTwilightLabel = makeLabel(skyPage, &clock_czech_14, COLOR_MUTED);
+  alignCenter(skyTwilightLabel, 0, SKY_TWILIGHT_Y);
+
+  skyDayLengthLabel = makeLabel(skyPage, &clock_czech_16, COLOR_TEXT);
+  alignCenter(skyDayLengthLabel, 0, SKY_DAY_LENGTH_Y);
+
+  skyMoonPixels = static_cast<uint16_t *>(heap_caps_malloc(
+      SKY_MOON_SIZE * SKY_MOON_SIZE * sizeof(uint16_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (skyMoonPixels != nullptr) {
+    skyMoonCanvas = lv_canvas_create(skyPage);
+    lv_canvas_set_buffer(skyMoonCanvas, skyMoonPixels, SKY_MOON_SIZE,
+                         SKY_MOON_SIZE, LV_IMG_CF_TRUE_COLOR);
+    alignCenter(skyMoonCanvas, 0, SKY_MOON_Y);
+  }
+
+  skyPhaseNameLabel = makeLabel(skyPage, &clock_czech_20, COLOR_TEXT);
+  alignCenter(skyPhaseNameLabel, 0, SKY_PHASE_NAME_Y);
+  skyIlluminationLabel = makeLabel(skyPage, &clock_czech_16, COLOR_MUTED);
+  alignCenter(skyIlluminationLabel, 0, SKY_ILLUMINATION_Y);
+  skyNextPhasesLabel = makeLabel(skyPage, &clock_czech_16, COLOR_MUTED);
+  alignCenter(skyNextPhasesLabel, 0, SKY_NEXT_PHASES_Y);
+
+  updateSkyPage();
+  makeChildrenTapThrough(skyPage);
+  lv_obj_add_flag(skyPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(skyPage, LV_OBJ_FLAG_HIDDEN);
+}
+
 // --- Radar letadel ----------------------------------------------------------
 // Mapa i letadla přijdou hotové z PlaneRadarService jako buffer RGB565; tady
 // se jen podloží pod canvas. Text kolem je LVGL, protože drobné mapové písmo
@@ -3705,6 +4044,7 @@ void updateOverlayStatusLabels() {
   updatePlanesClockLabel();
   updateForecastHeaderLabel();
   updateAgendaHeaderLabel();
+  updateSkyHeaderLabel();
   updateRssHeaderLabel();
 }
 
@@ -4452,6 +4792,14 @@ void makeValuesPage(lv_obj_t *screen) {
   valuesDateLabel = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
   lv_label_set_text(valuesDateLabel, "");
   alignCenter(valuesDateLabel, 0, -130);
+  // Pod devátou hodnotou u spodního okraje; kruh je tu úzký, ale na blesk
+  // a vzdálenost stačí.
+  valuesLightningLabel =
+      makeLabel(valuesPage, &lv_font_montserrat_16, COLOR_ERROR);
+  lv_label_set_text(valuesLightningLabel, "");
+  alignCenter(valuesLightningLabel, 0, 208);
+  lv_obj_add_flag(valuesLightningLabel, LV_OBJ_FLAG_HIDDEN);
+
   valuesNamedayLabel = makeLabel(valuesPage, &clock_czech_16, COLOR_MUTED);
   lv_label_set_text(valuesNamedayLabel, "");
   alignCenter(valuesNamedayLabel, 0, -108);
@@ -4728,6 +5076,11 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   webStatusLabel = makeLabel(content, &lv_font_montserrat_16, COLOR_OUTSIDE);
   lv_label_set_text(webStatusLabel, LV_SYMBOL_SETTINGS);
   lv_obj_add_flag(webStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  lightningStatusLabel =
+      makeLabel(content, &lv_font_montserrat_16, COLOR_ERROR);
+  lv_label_set_text(lightningStatusLabel, LV_SYMBOL_CHARGE);
+  lv_obj_add_flag(lightningStatusLabel, LV_OBJ_FLAG_HIDDEN);
   alignConnectionStatusIcons();
 
   createAnalogLayout(content);
@@ -4781,6 +5134,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetForecastAvailable(clockConfigForecastAvailable(config));
   clockDashboardSetPlanesAvailable(clockConfigPlanesAvailable(config));
   clockDashboardSetAgendaAvailable(clockConfigAgendaAvailable(config));
+  clockDashboardSetSkyAvailable(clockConfigSkyAvailable(config));
   // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
   // změně nastavení musí přepočítat - jinak by obrazovka kreslila hodiny do
   // místa, které si mezitím vzala spodní sekce.
@@ -4807,6 +5161,8 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
                        static_cast<uint8_t>(CLOCK_LANGUAGE_UNSET),
                        static_cast<uint8_t>(CLOCK_LANGUAGE_ENGLISH));
   applyDashboardLanguage();
+  // Popisky Slunce a Měsíce se skládají podle jazyka.
+  updateSkyPage();
   const bool wasRedNight = redNightVisualEnabled();
   const bool nightVisualChanged = nightVisualMode != config.nightVisualMode;
   nightVisualMode = config.nightVisualMode;
@@ -5894,6 +6250,36 @@ void clockDashboardSetRssItem(size_t index, const char *title,
   setObjectVisible(titleLabel, true);
 }
 
+bool clockDashboardSkyVisible() {
+  return activeScreen == DASHBOARD_SCREEN_SKY;
+}
+
+void clockDashboardSetSkyVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_SKY : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetSkyAvailable(bool available) {
+  // Stránka se zakládá až s prvním zapnutím obrazovky, stejně jako agenda.
+  if (available && skyPage == nullptr && dashboardScreen != nullptr)
+    createSkyPage(dashboardScreen);
+  if (skyFeatureAvailable == available) return;
+  skyFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_SKY) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (skyPage != nullptr) lv_obj_add_flag(skyPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+  }
+  updateScreenDots();
+}
+
+void clockDashboardSetSky(const ClockSkyData &data) {
+  skyData = data;
+  updateSkyPage();
+}
+
 bool clockDashboardAgendaVisible() {
   return activeScreen == DASHBOARD_SCREEN_AGENDA;
 }
@@ -6010,7 +6396,7 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                                     bool latestFrame,
                                     uint8_t currentFrameNumber,
                                     uint8_t animationFrameCount,
-                                    uint16_t displayedRadiusKm) {
+                                    uint16_t displayedRadiusKm, bool mapOnly) {
   if (radarCanvas == nullptr || radarStatusLabel == nullptr ||
       radarTitleLabel == nullptr || radarRangeLabel == nullptr)
     return;
@@ -6056,7 +6442,7 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                englishLanguage() ? "min" : "min", frameTime);
     else
       snprintf(frameText, sizeof(frameText), "%s", frameTime);
-  } else if (currentFrameNumber == 0) {
+  } else if (currentFrameNumber == 0 && !mapOnly) {
     // Zatím jen podkladová mapa: na místo času snímku patří, že se radar
     // načítá. Prázdný řádek vypadal, jako by se nic nedělo.
     snprintf(frameText, sizeof(frameText), "%s",
@@ -6206,6 +6592,31 @@ void clockDashboardSetWebActive(bool active) {
   webActive = active;
   if (firmwareUpdateActive) return;
   applyDashboardColors();
+}
+
+void clockDashboardSetLightningAlert(bool active, float nearestKm) {
+  if (lightningStatusLabel == nullptr) return;
+  char text[24] = LV_SYMBOL_CHARGE;
+  if (active) {
+    // Pod kilometr je lokalizace úderu hrubší než číslo.
+    if (nearestKm >= 1.0f)
+      snprintf(text, sizeof(text), LV_SYMBOL_CHARGE " %d km",
+               static_cast<int>(lroundf(nearestKm)));
+    else
+      strlcpy(text, LV_SYMBOL_CHARGE " <1 km", sizeof(text));
+  }
+  if (active == lightningAlertActive &&
+      strcmp(lv_label_get_text(lightningStatusLabel), text) == 0)
+    return;
+  lightningAlertActive = active;
+  lv_label_set_text(lightningStatusLabel, text);
+  if (valuesLightningLabel != nullptr) {
+    lv_label_set_text(valuesLightningLabel, text);
+    alignCenter(valuesLightningLabel, 0, 208);
+    setObjectVisible(valuesLightningLabel, active);
+  }
+  if (firmwareUpdateActive) return;
+  alignConnectionStatusIcons();
 }
 
 void clockDashboardSetWifiConnected(bool connected) {

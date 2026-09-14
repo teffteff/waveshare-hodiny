@@ -72,12 +72,20 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
   výšky, dosahy 10 až 100 km, filtr výšky, upozornění na nouzový squawk,
   hlídaný let a detail letadla i s trasou letu z adsb.lol,
+- realtime blesky ze sítě Blitzortung (LightningMaps.org) přes vlastní server:
+  údery na meteoradaru obarvené podle stáří a výstraha na ciferníku, když
+  blýská v nastaveném okruhu kolem polohy (viz `infra/README.md`),
+- obrazovku se Sluncem a Měsícem: východ a západ obou, občanské svítání
+  a soumrak, délka dne, fáze a osvětlení Měsíce a data příštího úplňku a novu,
+  počítané přímo na zařízení,
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
 - devět nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
   entitou Home Assistantu, jednotkou, přesností a barevnou škálou,
 - vlastní čidla TMEP.cz jako volitelný doplněk hodnot Open-Meteo,
 - vlastní jednotky, počet desetinných míst a plynulé barevné škály,
-- denní a noční jas s ručním přepínáním nebo automatikou podle Open-Meteo či entity slunce,
+- denní a noční jas s ručním přepínáním nebo automatikou podle východu a západu
+  Slunce spočítaného na zařízení pro zvolené město (se zdrojem Open-Meteo, přepne
+  na minutu přesně i bez sítě) či podle entity slunce z Home Assistantu,
 - tři efekty vteřin: klasické tečky, plynulou čáru a kometu,
 - webovou konfiguraci s volitelným heslem, export a import zálohy a bezpečný restart,
 - samostatnou živou diagnostiku hardwaru, paměti, sítě, Home Assistantu a radaru,
@@ -274,6 +282,14 @@ Mercatoru a jeho přiblížení jde po mocninách dvou, takže vyjde nejbližš�
 dostupný rozsah, a ne přesně číslo z nastavení; popisek nahoře proto ukazuje
 poloměr, který opravdu vyšel. Dlaždice se necachují, takže změna rozsahu
 znamená stažení animace znovu.
+
+### Vrstvy na mapě
+
+Záložka Meteoradar má tři vypínače vrstev: **Srážky**, **Blesky** a
+**Stupnice intenzity**. Bez srážek hodiny radar vůbec nestahují a obrazovka
+ukazuje jen podkladovou mapu, případně s údery blesků; stupnice se pak
+nekreslí, protože nemá co vysvětlovat. Vypínač blesků na mapě jde přepnout jen
+se zapnutými blesky v sekci Blesky pod ním.
 
 ### Stupnice intenzity
 

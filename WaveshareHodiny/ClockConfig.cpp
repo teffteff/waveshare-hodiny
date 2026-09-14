@@ -438,6 +438,7 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.agenda.url);
   terminateText(config.planesFeedUrl);
   terminateText(config.agendaCalendars.privateKey);
+  terminateText(config.lightning.url);
 }
 
 void normalizeConfig(ClockConfig &config) {
@@ -521,6 +522,13 @@ void normalizeConfig(ClockConfig &config) {
   if (!clockConfigAgendaPrivateKeyValid(config.agendaCalendars.privateKey))
     memset(config.agendaCalendars.privateKey, 0,
            sizeof(config.agendaCalendars.privateKey));
+  config.lightning.alarmRadiusKm =
+      constrain(config.lightning.alarmRadiusKm, CLOCK_LIGHTNING_MIN_ALARM_KM,
+                CLOCK_LIGHTNING_MAX_ALARM_KM);
+  config.lightning.alarmMinutes = constrain(
+      config.lightning.alarmMinutes, CLOCK_LIGHTNING_MIN_ALARM_MINUTES,
+      CLOCK_LIGHTNING_MAX_ALARM_MINUTES);
+  config.sky.displaySeconds = constrain(config.sky.displaySeconds, 10, 3600);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -622,6 +630,14 @@ bool clockConfigAgendaPrivateKeyValid(const char *key) {
 
 bool clockConfigAgendaAvailable(const ClockConfig &config) {
   return config.agenda.enabled && config.agenda.url[0] != '\0';
+}
+
+bool clockConfigLightningAvailable(const ClockConfig &config) {
+  return config.lightning.enabled && config.lightning.url[0] != '\0';
+}
+
+bool clockConfigSkyAvailable(const ClockConfig &config) {
+  return config.sky.enabled;
 }
 
 bool clockConfigPlanesAvailable(const ClockConfig &config) {
@@ -861,12 +877,20 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV41 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_41_SIZE];
+  uint32_t checksum;
+};
+
 namespace {
 
 enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV41) ||
          storedSize == sizeof(ConfigRecordV40) ||
          storedSize == sizeof(ConfigRecordV39) ||
          storedSize == sizeof(ConfigRecordV38) ||
@@ -902,6 +926,39 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 42 má stejnou velikost jako 43: nový vypínač srážek leží v jeho
+  // koncové výplni. Obsah výplně je nejistý, proto se vypínač nastaví natvrdo.
+  const bool legacyV42 =
+      readComplete && storedSize == sizeof(record) &&
+      record.magic == CONFIG_MAGIC && record.schemaVersion == 42 &&
+      record.config.schemaVersion == 42 &&
+      record.checksum == configChecksum(record.config);
+  if (legacyV42) {
+    config = record.config;
+    config.radarPrecipitation = true;
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
+  }
+
+  // Schéma 41 je přesnou předponou schématu 42; blesky i obrazovka Slunce
+  // a Měsíce si po zkopírování bajtů podrží výchozí hodnoty, tedy vypnuté
+  // a bez adresy serveru.
+  const ConfigRecordV41 &legacyV41 =
+      *reinterpret_cast<const ConfigRecordV41 *>(&record);
+  uint32_t embeddedSchemaV41 = 0;
+  if (readComplete && storedSize == sizeof(legacyV41))
+    memcpy(&embeddedSchemaV41, legacyV41.config, sizeof(embeddedSchemaV41));
+  if (readComplete && storedSize == sizeof(legacyV41) &&
+      legacyV41.magic == CONFIG_MAGIC && legacyV41.schemaVersion == 41 &&
+      embeddedSchemaV41 == 41 &&
+      legacyV41.checksum == bytesChecksum(legacyV41.config, sizeof(legacyV41.config))) {
+    memcpy(&config, legacyV41.config, sizeof(legacyV41.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 40 je přesnou předponou schématu 41; výběr kalendářů agendy si po

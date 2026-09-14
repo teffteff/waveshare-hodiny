@@ -24,6 +24,8 @@
 #include "RssService.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
+#include "LightningService.h"
+#include "TlsMemory.h"
 #include "ClockDashboard.h"
 #include "Display_ST7701.h"
 #include "FirmwareBuild.h"
@@ -1477,6 +1479,8 @@ void handleGetConfig() {
   result += config.radarPauseSeconds;
   result += F(",\"radarLegend\":");
   result += config.radarLegend ? F("true") : F("false");
+  result += F(",\"radarPrecipitation\":");
+  result += config.radarPrecipitation ? F("true") : F("false");
   result += F(",\"radarSource\":\"");
   result += config.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER
                 ? F("rainviewer")
@@ -1515,6 +1519,24 @@ void handleGetConfig() {
   result += config.agenda.displaySeconds;
   result += F(",\"agendaAutomaticRotation\":");
   result += config.agenda.automaticRotation ? F("true") : F("false");
+  result += F(",\"lightningEnabled\":");
+  result += config.lightning.enabled ? F("true") : F("false");
+  result += F(",\"lightningUrl\":\"");
+  result += jsonEscape(config.lightning.url);
+  result += F("\",\"lightningRadarOverlay\":");
+  result += config.lightning.radarOverlay ? F("true") : F("false");
+  result += F(",\"lightningClockAlert\":");
+  result += config.lightning.clockAlert ? F("true") : F("false");
+  result += F(",\"lightningAlarmRadiusKm\":");
+  result += config.lightning.alarmRadiusKm;
+  result += F(",\"lightningAlarmMinutes\":");
+  result += config.lightning.alarmMinutes;
+  result += F(",\"skyEnabled\":");
+  result += config.sky.enabled ? F("true") : F("false");
+  result += F(",\"skyAutomaticRotation\":");
+  result += config.sky.automaticRotation ? F("true") : F("false");
+  result += F(",\"skyDisplaySeconds\":");
+  result += config.sky.displaySeconds;
   result += F(",\"agendaHiddenCalendars\":");
   result += config.agendaCalendars.hiddenMask;
   // Heslo samo se nevrací nikdy, stejně jako token Home Assistantu.
@@ -1893,6 +1915,7 @@ void handleSaveConfig() {
   }
   config.radarPauseSeconds = static_cast<uint8_t>(radarPauseSeconds);
   config.radarLegend = server.arg("radarLegend") == "1";
+  config.radarPrecipitation = server.arg("radarPrecipitation") == "1";
   config.radarStatusLine = server.arg("radarStatusLine") == "1";
   clockConfigCopy(config.radarStatusTemperatureEntityId,
                   sizeof(config.radarStatusTemperatureEntityId),
@@ -2035,6 +2058,57 @@ void handleSaveConfig() {
     config.agenda.displaySeconds = static_cast<uint16_t>(agendaDisplaySeconds);
     config.agenda.automaticRotation =
         server.arg("agendaAutomaticRotation") == "1";
+  }
+
+  if (server.hasArg("lightningEnabled")) {
+    String lightningUrl = server.arg("lightningUrl");
+    lightningUrl.trim();
+    if (lightningUrl.length() >= CLOCK_LIGHTNING_URL_LENGTH) {
+      sendError(400, F("Adresa serveru blesků je příliš dlouhá."));
+      return;
+    }
+    if (!lightningUrl.isEmpty() && !lightningUrl.startsWith("http://") &&
+        !lightningUrl.startsWith("https://")) {
+      sendError(400,
+                F("Adresa serveru blesků musí začínat http:// nebo https://."));
+      return;
+    }
+    const bool lightningEnabled = server.arg("lightningEnabled") == "1";
+    if (lightningEnabled && lightningUrl.isEmpty()) {
+      sendError(400, F("Pro zapnuté blesky doplň adresu serveru."));
+      return;
+    }
+    const int alarmRadiusKm = server.arg("lightningAlarmRadiusKm").toInt();
+    if (alarmRadiusKm < CLOCK_LIGHTNING_MIN_ALARM_KM ||
+        alarmRadiusKm > CLOCK_LIGHTNING_MAX_ALARM_KM) {
+      sendError(400, F("Okruh výstrahy před blesky musí být od 1 do 50 km."));
+      return;
+    }
+    const int alarmMinutes = server.arg("lightningAlarmMinutes").toInt();
+    if (alarmMinutes < CLOCK_LIGHTNING_MIN_ALARM_MINUTES ||
+        alarmMinutes > CLOCK_LIGHTNING_MAX_ALARM_MINUTES) {
+      sendError(400, F("Doba výstrahy před blesky musí být od 5 do 30 minut."));
+      return;
+    }
+    config.lightning.enabled = lightningEnabled;
+    clockConfigCopy(config.lightning.url, sizeof(config.lightning.url),
+                    lightningUrl);
+    config.lightning.radarOverlay = server.arg("lightningRadarOverlay") == "1";
+    config.lightning.clockAlert = server.arg("lightningClockAlert") == "1";
+    config.lightning.alarmRadiusKm = static_cast<uint8_t>(alarmRadiusKm);
+    config.lightning.alarmMinutes = static_cast<uint8_t>(alarmMinutes);
+  }
+
+  if (server.hasArg("skyEnabled")) {
+    const int skyDisplaySeconds = server.arg("skyDisplaySeconds").toInt();
+    if (skyDisplaySeconds < 10 || skyDisplaySeconds > 3600) {
+      sendError(400, F("Doba zobrazení Slunce a Měsíce musí být od 10 do "
+                       "3600 sekund."));
+      return;
+    }
+    config.sky.enabled = server.arg("skyEnabled") == "1";
+    config.sky.automaticRotation = server.arg("skyAutomaticRotation") == "1";
+    config.sky.displaySeconds = static_cast<uint16_t>(skyDisplaySeconds);
   }
 
   if (server.hasArg("forecastEnabled")) {
@@ -3157,6 +3231,8 @@ void handleDiagnostics() {
   chmiRadarServiceDiagnostics(radar);
   PlaneRadarDiagnostics planes;
   planeRadarServiceDiagnostics(planes);
+  LightningDiagnostics lightning;
+  lightningServiceDiagnostics(lightning);
   const ClockConfig &config = currentConfig();
   bool sunAvailable = false;
   bool sunIsDay = true;
@@ -3302,6 +3378,33 @@ void handleDiagnostics() {
   result += F("\",\"message\":\"");
   result += jsonEscape(radar.message);
   result += F("\"}");
+  result += F(",\"lightning\":{\"enabled\":");
+  result += lightning.enabled ? F("true") : F("false");
+  result += F(",\"live\":");
+  result += lightning.live ? F("true") : F("false");
+  result += F(",\"attempts\":");
+  result += lightning.attempts;
+  result += F(",\"successes\":");
+  result += lightning.successes;
+  result += F(",\"lastHttpStatus\":");
+  result += lightning.lastHttpStatus;
+  result += F(",\"lastDownloadedBytes\":");
+  result += lightning.lastDownloadedBytes;
+  result += F(",\"lastSuccessAgeMs\":");
+  result += lightning.lastSuccessAgeMs;
+  result += F(",\"nextFetchInMs\":");
+  result += lightning.nextFetchInMs;
+  result += F(",\"strokesReceived\":");
+  result += lightning.strokesReceived;
+  result += F(",\"bufferedStrokes\":");
+  result += lightning.bufferedStrokes;
+  result += F(",\"requestRadiusKm\":");
+  result += String(lightning.requestRadiusKm, 0);
+  result += F(",\"message\":\"");
+  result += jsonEscape(lightning.message);
+  // Kolikrát musel handshake do vnitřní SRAM, protože PSRAM nestačila.
+  result += F("\"},\"tlsInternalFallbacks\":");
+  result += tlsMemoryInternalFallbackCount();
   result += F(",\"planes\":{\"available\":");
   result += planes.available ? F("true") : F("false");
   result += F(",\"active\":");

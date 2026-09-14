@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -41,6 +41,7 @@ fi
 FEED_URL="https://${HOST}/top.xml"
 AGENDA_URL="https://${HOST}/agenda.json"
 PLANES_URL="https://${HOST}/planes.json"
+LIGHTNING_URL="https://${HOST}/lightning.json"
 SETTINGS_URL="https://${HOST}/settings/"
 # Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
 # tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
@@ -254,6 +255,56 @@ print(f"OK {len(aircraft)}")
   fi
 fi
 
+# --- blesky ------------------------------------------------------------------
+# Data sítě Blitzortung se nesmí dál zveřejňovat, takže bez hesla musí přijít 401.
+# S heslem se kontroluje tvar odpovědi; prázdný seznam úderů je legitimní (když
+# neblýská), "live": false jen chvíli po probuzení spojení na LightningMaps.
+LIGHTNING_QUERY="lat=49.90461&lon=14.7842&r=150"
+lightning_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "${LIGHTNING_URL}?${LIGHTNING_QUERY}")"
+if [ "$lightning_public_code" = "401" ]; then
+  ok "blesky jsou bez hesla nedostupné (401)"
+elif [ "$lightning_public_code" = "200" ]; then
+  bad "blesky bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth, data Blitzortung jsou veřejně"
+else
+  warn "blesky bez hesla vrací '${lightning_public_code:-nic}' (nepovinná služba)"
+fi
+
+lightning_body=""
+if [ -z "${LIGHTNING_PASSWORD:-}" ]; then
+  warn "v .env chybí LIGHTNING_PASSWORD, obsah blesků se nekontroluje"
+else
+  lightning_curl_config="$(mktemp)"
+  chmod 600 "$lightning_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$LIGHTNING_PASSWORD" > "$lightning_curl_config"
+  lightning_body="$(curl -fsS --max-time 25 -K "$lightning_curl_config" "${LIGHTNING_URL}?${LIGHTNING_QUERY}" 2>/dev/null)"
+  rm -f "$lightning_curl_config"
+  if [ -z "$lightning_body" ]; then
+    warn "blesky na $LIGHTNING_URL s heslem z .env neodpovídají (heslo, nebo lightning-web.service)"
+  fi
+fi
+if [ -n "$lightning_body" ]; then
+  lightning_report="$(printf '%s' "$lightning_body" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    strokes = data["strokes"]
+    live = bool(data.get("live"))
+except Exception:
+    print("BAD 0 0"); raise SystemExit
+if not isinstance(strokes, list):
+    print("BAD 0 0"); raise SystemExit
+print(f"OK {len(strokes)} {int(live)}")
+')"
+  read -r lightning_status lightning_count lightning_live <<< "$lightning_report"
+  if [ "${lightning_status:-BAD}" = "BAD" ]; then
+    bad "blesky odpovídají, ale není to JSON s polem strokes — firmware by nenačetl nic"
+  elif [ "$lightning_live" = "1" ]; then
+    ok "blesky odpovídají živě, úderů v okruhu 150 km: $lightning_count"
+  else
+    warn "blesky odpovídají, ale spojení na LightningMaps se teprve otevírá (zkus znovu za pár sekund)"
+  fi
+fi
+
 # --- Home Assistant za proxy -------------------------------------------------
 ha_code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 20 "$HA_URL" 2>/dev/null)"
 if [ "$ha_code" = "200" ]; then
@@ -284,7 +335,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service settings-web.service caddy.service; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service caddy.service; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -320,7 +371,7 @@ if [ "$MODE" = "--deep" ]; then
     head_ "Shoda infra/ se serverem"
     # Přes sudo: /opt/agenda a /opt/settings jsou jen pro své služby (750/700),
     # opc do nich bez sudo nevidí.
-    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/settings/serve.py /opt/settings/settings-web.service /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
+    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -331,6 +382,7 @@ if [ "$MODE" = "--deep" ]; then
           /opt/news/*)                    local_path="infra/news/$(basename "$path")" ;;
           /opt/agenda/*)                  local_path="infra/agenda/$(basename "$path")" ;;
           /opt/planes/*)                  local_path="infra/planes/$(basename "$path")" ;;
+          /opt/lightning/*)               local_path="infra/lightning/$(basename "$path")" ;;
           /opt/settings/*)                local_path="infra/settings/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
