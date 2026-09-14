@@ -155,7 +155,7 @@ Produkční firmware obsluhuje Improv Serial na obou konektorech.
    použij IP adresu z nastavení na displeji. Máš-li v jedné síti víc hodin,
    dej každým vlastní název v záložce **Systém → Název zařízení v síti**;
    hodiny pak najdeš na `http://<název>.local/`.
-4. V záložce **Zdroj a poloha** vyber Open-Meteo s TMEP.cz nebo Home Assistant
+4. V záložce **Obecné** vyber Open-Meteo s TMEP.cz nebo Home Assistant
    a vyhledej město. Poloha je společná pro počasí Open-Meteo i meteoradar.
 5. Při použití Home Assistantu zadej jeho adresu a long-lived access token a
    tlačítkem **Otestovat připojení** ověř spojení.
@@ -385,10 +385,10 @@ konfigurace se změna zapíše až tlačítkem **Uložit změny**. Rozsah zvolen
 dotykem na displeji zůstává pouze do restartu; po něm se obnoví hodnota
 naposledy uložená přes web.
 
-Automatické střídání je ve výchozím stavu vypnuté. Po zapnutí lze nastavit
-samostatnou dobu zobrazení hodin, radaru, zpráv, předpovědi i letadel; do
-střídání se zapojí jen ty
-obrazovky, které jsou zapnuté, a ručně otevřená obrazovka zůstane až do dalšího
+Automatické střídání je ve výchozím stavu vypnuté. Každá obrazovka se do něj
+zapojuje přepínačem ve své záložce, kde má i vlastní dobu zobrazení; společnou
+dobu zobrazení hodin nastavíš v záložce **Obrazovky**. Do střídání se zapojí jen
+ty obrazovky, které jsou zapnuté, a ručně otevřená obrazovka zůstane až do dalšího
 gesta. Nastavený čas radaru je minimální: rozběhnutý animační cyklus se vždy
 dokončí včetně závěrečné pauzy, takže přechod zpět na hodiny nepřeruší animaci
 uprostřed. Po restartu
