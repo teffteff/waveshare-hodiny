@@ -3241,8 +3241,11 @@ void createForecastPage(lv_obj_t *screen) {
 constexpr int SKY_SUN_TITLE_Y = -150;
 constexpr int SKY_SUN_CAPTION_Y = -124;
 constexpr int SKY_SUN_TIME_Y = -98;
-constexpr int SKY_TWILIGHT_Y = -66;
-constexpr int SKY_DAY_LENGTH_Y = -42;
+// Svítání a soumrak stojí bez popisku pod východem a západem, stejně velkým
+// písmem jako časy Měsíce. Montserrat 24 měří 27 px, takže řádek délky dne
+// musí o kus níž, aby se s ním nepotkal.
+constexpr int SKY_TWILIGHT_Y = -64;
+constexpr int SKY_DAY_LENGTH_Y = -38;
 constexpr int SKY_MOON_TITLE_Y = -12;
 constexpr int SKY_MOON_Y = 50;
 constexpr int SKY_MOON_CAPTION_OFFSET = -22;
@@ -3267,7 +3270,7 @@ lv_obj_t *skySunTitleLabel = nullptr;
 lv_obj_t *skyMoonTitleLabel = nullptr;
 lv_obj_t *skyCaptionLabels[4] = {};
 lv_obj_t *skyTimeLabels[4] = {};
-lv_obj_t *skyTwilightLabel = nullptr;
+lv_obj_t *skyTwilightLabels[2] = {};
 lv_obj_t *skyDayLengthLabel = nullptr;
 lv_obj_t *skyPhaseNameLabel = nullptr;
 lv_obj_t *skyIlluminationLabel = nullptr;
@@ -3374,7 +3377,8 @@ void applySkyColors() {
     setTextColor(skyTimeLabels[index],
                  redNight ? COLOR_ERROR : (index < 2 ? COLOR_SUN : COLOR_MOON));
   }
-  setTextColor(skyTwilightLabel, muted);
+  setTextColor(skyTwilightLabels[0], muted);
+  setTextColor(skyTwilightLabels[1], muted);
   setTextColor(skyDayLengthLabel, redNight ? COLOR_ERROR : COLOR_TEXT);
   setTextColor(skyPhaseNameLabel, redNight ? COLOR_ERROR : COLOR_TEXT);
   setTextColor(skyIlluminationLabel, muted);
@@ -3401,21 +3405,18 @@ void updateSkyPage() {
     lv_label_set_text(skyTimeLabels[index], text);
   }
 
-  char text[64];
-  // Za polárním kruhem v létě soumrak nenastane; tam se řádek schová.
-  if (skyData.valid && (skyData.civilDawn > 0 || skyData.civilDusk > 0)) {
-    char dawn[8];
-    char dusk[8];
-    formatSkyTime(skyData.civilDawn, dawn, sizeof(dawn));
-    formatSkyTime(skyData.civilDusk, dusk, sizeof(dusk));
-    snprintf(text, sizeof(text),
-             english ? "Civil dawn %s%sdusk %s"
-                     : "Občanské svítání %s%ssoumrak %s",
-             dawn, SKY_SEPARATOR, dusk);
-    lv_label_set_text(skyTwilightLabel, text);
-  } else {
-    lv_label_set_text(skyTwilightLabel, "");
+  // Občanské svítání a soumrak. Za polárním kruhem v létě soumrak nenastane;
+  // tam se oba časy schovají.
+  const bool haveTwilight =
+      skyData.valid && (skyData.civilDawn > 0 || skyData.civilDusk > 0);
+  const int64_t twilight[2] = {skyData.civilDawn, skyData.civilDusk};
+  for (int index = 0; index < 2; ++index) {
+    char value[8] = "";
+    if (haveTwilight) formatSkyTime(twilight[index], value, sizeof(value));
+    lv_label_set_text(skyTwilightLabels[index], value);
   }
+
+  char text[64];
   if (!skyData.valid) {
     lv_label_set_text(skyDayLengthLabel, english ? "Waiting for time sync"
                                                  : "Čekám na čas ze sítě");
@@ -3513,8 +3514,11 @@ void createSkyPage(lv_obj_t *screen) {
     alignCenter(skyTimeLabels[index], captionX[index], timeY[index]);
   }
 
-  skyTwilightLabel = makeLabel(skyPage, &clock_czech_14, COLOR_MUTED);
-  alignCenter(skyTwilightLabel, 0, SKY_TWILIGHT_Y);
+  for (int index = 0; index < 2; ++index) {
+    skyTwilightLabels[index] =
+        makeLabel(skyPage, &lv_font_montserrat_24, COLOR_MUTED);
+    alignCenter(skyTwilightLabels[index], captionX[index], SKY_TWILIGHT_Y);
+  }
 
   skyDayLengthLabel = makeLabel(skyPage, &clock_czech_16, COLOR_TEXT);
   alignCenter(skyDayLengthLabel, 0, SKY_DAY_LENGTH_Y);
