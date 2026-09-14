@@ -34,6 +34,7 @@
 #include "TCA9554PWR.h"
 #include "TlsMemory.h"
 #include "TmepService.h"
+#include "WifiOnboarding.h"
 #include "WifiProvisioning.h"
 #include "WeatherAnimationService.h"
 #include "WeatherForecastService.h"
@@ -1719,10 +1720,6 @@ void maintainDisplaySync() {
 }
 
 void initializeNetworkTime() {
-  deviceNameLoad(networkDeviceName, sizeof(networkDeviceName));
-  // Jméno pro DHCP se předává při startu rozhraní, proto před Wi-Fi.
-  WiFi.setHostname(networkDeviceName);
-  wifiProvisioningBegin();
   configTzTime("CET-1CEST,M3.5.0/2,M10.5.0/3", "pool.ntp.org",
                "time.cloudflare.com");
   sntp_set_sync_interval(NTP_SYNC_INTERVAL_MS);
@@ -2995,6 +2992,16 @@ void setup() {
   currentDisplayBrightness = runtimeConfig.dayBrightness;
   Set_Backlight(currentDisplayBrightness);
   displayDriverInit();
+  deviceNameLoad(networkDeviceName, sizeof(networkDeviceName));
+  // Jméno pro DHCP se předává při startu rozhraní, proto před Wi-Fi.
+  WiFi.setHostname(networkDeviceName);
+#if FIRMWARE_RELEASE
+  improvSerialServiceInit(wifiProvisioningStart);
+#endif
+  wifiProvisioningBegin();
+  // Release bez dosažitelné sítě zůstane v nastavovacím portálu (QR kód,
+  // přístupový bod) a po zadání sítě se restartuje. Vývojové buildy pokračují.
+  wifiOnboardingRequireConnection();
   clockDashboardApplyAppearance(activeAppearance);
   clockDashboardInit(sampleValues, runtimeConfig.dayBrightness,
                        runtimeConfig.nightBrightness,
@@ -3026,9 +3033,6 @@ void setup() {
                              runtimeConfig.planesMapLabel);
   clockDashboardSetSecond(60);
   displayResyncAt = millis() + 2000;
-#if FIRMWARE_RELEASE
-  improvSerialServiceInit(wifiProvisioningStart);
-#endif
   initializeNetworkTime();
   // Zásobník musí pokrýt kopii ClockConfig (schéma 29 má přes 5 kB) i TLS
   // a parsování JSON ve fetch* funkcích. Při 12288 B kanárek přetekl.
