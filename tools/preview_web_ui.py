@@ -188,7 +188,7 @@ def stub_config() -> dict:
         "forecastHourCounts": [12, 11, 10, 9, 8, 10, 8, 7, 6, 5],
         "screenOrder": ["clock", "radar", "rss", "forecast", "planes"],
         "controlSecret": "nahled-bez-zarizeni",
-        "webPasswordConfigured": True,
+        "webPasswordConfigured": preview_password_configured,
         "settingsShareConfigured": False,
         "settingsShareUrl": "",
     }
@@ -216,13 +216,22 @@ def partial_restore(fields: dict) -> bool:
 
 PREVIEW_BACKUP = {
     "format": "waveshare-hodiny-settings",
-    "version": 3,
+    "version": 4,
     "firmware": "0.0.0-preview",
-    "schema": 39,
-    "secrets": False,
+    "schema": 41,
+    "secrets": True,
     "exportedAt": "2026-09-13T10:00:00Z",
+    "cipher": "AES-256-GCM",
+    "kdf": "PBKDF2-SHA256",
+    "iterations": 20000,
+    "salt": "00" * 16,
+    "nonce": "00" * 12,
     "data": "V0hTQgEAAAA",
 }
+# Heslo webu a heslo, které v náhledu otevře každou zálohu.
+PREVIEW_PASSWORD = "webove-heslo"
+PREVIEW_BACKUP_PASSWORD = "zalohove-heslo"
+preview_password_configured = True
 
 
 STUB_RESPONSES = {
@@ -295,36 +304,50 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 ["binary_sensor.dvere", "Vchodové dveře", "", "off"],
             ]})
             return
+        if path == "/api/web-password":
+            global preview_password_configured
+            fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+            print(f"POST {path}: {fields}", flush=True)
+            if preview_password_configured and \
+                    fields.get("currentPassword") != PREVIEW_PASSWORD:
+                self._json({"ok": False, "message": "Heslo webu není správné."}, 401)
+                return
+            if fields.get("action") == "clear":
+                preview_password_configured = False
+            else:
+                preview_password_configured = True
+            self._json({"ok": True, "configured": preview_password_configured})
+            return
         if path.startswith("/api/backup/"):
             fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
-            secrets = bool(fields.get("password"))
+            print(f"POST {path}: {sorted(fields)}", flush=True)
+            restore = path in ("/api/backup/import", "/api/backup/share/download")
+            if path in ("/api/backup/export", "/api/backup/share/upload") and \
+                    not preview_password_configured:
+                self._json({"ok": False, "message":
+                            "Zálohy nesou tokeny, proto jdou vytvořit jen s "
+                            "nastaveným heslem webu. Nastav ho v záložce Systém."}, 409)
+                return
+            if restore and fields.get("backupPassword") != PREVIEW_BACKUP_PASSWORD:
+                self._json({"ok": False, "message":
+                            "Heslo zálohy není správné, nebo je soubor poškozený."}, 401)
+                return
             if path == "/api/backup/export":
-                self._json({"ok": True, "secrets": secrets,
-                            "backup": {**PREVIEW_BACKUP, "secrets": secrets}})
-            elif path == "/api/backup/import":
-                print(f"POST {path}: {fields.get('parts')} kousků, "
-                      f"obnovit {fields.get('include') or 'vše'}", flush=True)
-                self._json({"ok": True, "secrets": False,
-                            "partial": partial_restore(fields),
-                            "webPasswordChanged": False})
+                self._json({"ok": True, "backup": PREVIEW_BACKUP})
+            elif restore:
+                self._json({"ok": True, "partial": partial_restore(fields),
+                            "webPasswordChanged": "system" in fields.get("include", "")})
             elif path == "/api/backup/share/list":
                 self._json({"ok": True, "url": "https://server.example/settings",
                             "backups": [
                                 {"name": "obyvak", "modified": "2026-09-13T08:15:00Z",
-                                 "firmware": "2.1.0", "secrets": True},
+                                 "firmware": "2.1.0"},
                                 {"name": "kuchyn", "modified": "2026-09-12T19:40:00Z",
-                                 "firmware": "2.1.0", "secrets": False},
+                                 "firmware": "2.1.0"},
                             ]})
             elif path == "/api/backup/share/upload":
                 self._json({"ok": True, "name": fields.get("name", ""),
-                            "url": "https://server.example/settings",
-                            "secrets": secrets})
-            elif path == "/api/backup/share/download":
-                print(f"POST {path}: obnovit {fields.get('include') or 'vše'}",
-                      flush=True)
-                self._json({"ok": True, "secrets": True,
-                            "partial": partial_restore(fields),
-                            "webPasswordChanged": False})
+                            "url": "https://server.example/settings"})
             else:
                 self._json({"ok": True})
             return

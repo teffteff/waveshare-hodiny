@@ -637,10 +637,13 @@ the clock or radar switches the day and night appearance.
 The configuration web server defaults to **Always on**. It can instead remain
 available for ten minutes after startup or activation from the device, or be
 disabled completely. Use it only on a trusted network; the dashboard gear icon
-indicates an active configuration server. An optional 6–20 character password
-protects web settings. The **System** tab shows an unprotected state in red and
-an active password in green. Only a derived hash is stored, and the password is
-only included in a backup when you enter it while backing up.
+indicates an active configuration server. An optional **web password**
+(8–64 characters) protects web settings; backups cannot be created without it
+because they carry tokens. The **System** tab shows an unprotected state in red
+and a set password in green. Only a derived hash is
+stored. Changing or removing the password requires the current one. A forgotten
+password can only be cleared on the clock itself: on settings page 5 tap
+**Clear password** and confirm with a second tap within five seconds.
 
 ### Diagnostics and backups
 
@@ -652,33 +655,32 @@ range, prepared-frame count and time span, last successful refresh, next check,
 HTTP status and the file currently being processed.
 
 The clock builds backups itself from what it has stored, so a backup contains
-**all settings**: both value pages, appearance, screen order, service addresses
-and the web mode. Only Wi-Fi and the control API secret stay with each clock.
-The Home Assistant token, TMEP.cz export key, web password and backup server
-address are included **only when the web configuration password is entered**
-while backing up; otherwise they never leave the device. Restoring a backup
-without them keeps the tokens the target clock already has (the Home Assistant
-token only for the same server address).
+**all settings**: both value pages, appearance, screen order, service
+addresses, the web mode, the Home Assistant token, TMEP.cz export key, agenda
+password, the web password hash and the backup server address. Only Wi-Fi,
+the network name and the control API secret stay with each clock.
 
 Every backup is **encrypted with a backup password** (8–64 characters,
-AES-256-GCM with a PBKDF2-SHA256 key). Neither the `.whbackup` file nor the copy
-on the server can be read without it, even with access to the server. The clock
-does not remember the password: you enter it again when restoring, and a
-forgotten password means a lost backup. **Generate a strong password** creates a
-random one to keep in a password manager. The backup description (firmware
-version, time, whether it carries tokens) stays readable for the server list but
-is authenticated together with the data, so it cannot be altered unnoticed. The
-web password decides what a backup may carry; the backup password protects the
-file once it has left the clock. A backup can be checked and opened without a
-clock: `BACKUP_PASSWORD='…' node tools/decrypt_settings_backup.mjs backup.whbackup`.
+AES-256-GCM with a PBKDF2-SHA256 key), entered twice so that a typo cannot
+produce a backup nobody can open. The clock does not remember it, and a
+forgotten backup password means a lost backup. A clock without a web password
+does not create backups at all – otherwise anyone on the same network could
+extract the tokens. Neither the `.whbackup` file nor the copy on the server can
+be read without the backup password, even with access to the server. The backup
+description (firmware version, time) stays readable for the server list but is
+authenticated together with the data, so it cannot be altered unnoticed. A
+backup can be checked and opened without a clock:
+`BACKUP_PASSWORD='…' node tools/decrypt_settings_backup.mjs backup.whbackup`.
 
-Backups can be saved to a file, or to your own server and loaded on another
-clock: on the **System** tab enter `https://hodiny:password@server/settings`,
-a backup name and **Save to server**; on the other clock use the same address,
-**Load list** and **Load into this clock**. **Delete from server** removes the
-backup selected in the list. The server side lives in
-`infra/settings/`. Older unencrypted backups (versions 2 and 3) can still be
-imported.
+Under **Create a backup** enter the backup password twice and choose
+**Download to a file**, or a backup name and **Save to server** (an empty name uses the clock's
+network name). Under **Restore a backup** pick a file or a backup from the
+server; the clock shows where it came from and which firmware made it, then asks
+for the backup password and for the parts to restore. Restoring **System and
+access** also takes over the web password of the clock the backup came from. The server is entered under **Sharing server** as
+`https://hodiny:password@server/settings`. **Delete from server** removes the
+backup selected in the list. The server side lives in `infra/settings/`. Older
+unencrypted backups (versions 2 and 3) cannot be opened.
 
 ## Touchscreen settings
 
@@ -702,10 +704,12 @@ the hold that changes screens; on the aircraft radar a single tap still selects
 the aircraft under the finger or closes its detail. Gestures are recognised in software from the raw touch
 coordinates rather than from the CST820 gesture register, and only once the
 finger lifts, so short drags across the round display are not lost and a single
-gesture never fires twice. Arrow buttons move between the three settings pages;
-drags are not used inside the settings menu. Available controls include
-day/night brightness, automatic mode, weather icons, seconds effects,
-web-server mode and OTA checks.
+gesture never fires twice. Arrow buttons move between the five settings pages;
+drags are not used inside the settings menu. Available controls include the
+clock type, day/night brightness, automatic mode, weather icons, seconds
+effects, web-server mode and OTA checks. The fifth page shows whether the clock
+has a password and clears a forgotten one: the first tap on **Clear password**
+turns the button red, a second tap within five seconds clears it.
 
 ## Animated Meteocons
 
@@ -864,8 +868,8 @@ protocol. Use the repository script with the currently verified serial port:
 
 - Public releases contain no Wi-Fi credentials.
 - Home Assistant tokens are stored locally and are not returned by the API.
-- Backups are encrypted with a backup password; tokens and passwords are
-  included only after confirming the web password, the control API secret never.
+- Backups are encrypted with a separate backup password; a clock without a web
+  password makes no backups. The control API secret is never included.
 - OTA uses HTTPS and verifies the application image before activation.
 - The configuration web server is intended for a trusted local network.
 - Do not publish control URLs, credentials, `.env` files or generated secret

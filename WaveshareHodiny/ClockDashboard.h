@@ -184,6 +184,11 @@ void clockDashboardSetWifiConnected(bool connected);
 // úderu v řadě stavových ikon; neaktivní výstraha ho schová.
 void clockDashboardSetLightningAlert(bool active, float nearestKm);
 void clockDashboardSetWebMode(uint8_t mode);
+// Poslední strana nastavení smaže zapomenuté heslo webu (po druhém klepnutí).
+// Callback vrací false, když se heslo smazat nepodařilo.
+using WebPasswordResetCallback = bool (*)();
+void clockDashboardSetWebPasswordResetCallback(WebPasswordResetCallback callback);
+void clockDashboardSetWebPasswordConfigured(bool configured);
 void clockDashboardApplyConfiguration(const ClockConfig &config);
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance);
 void clockDashboardUpdate(const ClockValues &values);

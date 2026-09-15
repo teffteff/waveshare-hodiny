@@ -389,13 +389,15 @@ bool constantTimeEqual(const uint8_t *left, const uint8_t *right,
   return difference == 0;
 }
 
-bool validWebPasswordLength(const String &password) {
-  size_t characterCount = 0;
-  for (size_t index = 0; index < password.length(); ++index) {
-    if ((static_cast<uint8_t>(password[index]) & 0xC0) != 0x80)
-      ++characterCount;
-  }
-  return characterCount >= 6 && characterCount <= 20;
+// Nové heslo webu má stejná pravidla jako heslo zálohy (8 až 64 znaků).
+// Přihlášení ale přijme i kratší heslo nastavené dřív, aby se nikdo nezamkl.
+bool validNewWebPassword(const String &password) {
+  return settingsBackupPasswordValid(password.c_str(), password.length());
+}
+
+bool comparableWebPassword(const String &password) {
+  return !password.isEmpty() &&
+         password.length() <= SETTINGS_BACKUP_PASSWORD_MAX_BYTES;
 }
 
 bool validSaveConfirmationId(const String &value) {
@@ -477,7 +479,7 @@ bool eraseWebPassword() {
 }
 
 bool webPasswordMatches(const String &password) {
-  if (!webPasswordEnabled || !validWebPasswordLength(password)) return false;
+  if (!webPasswordEnabled || !comparableWebPassword(password)) return false;
   uint8_t candidate[WEB_PASSWORD_HASH_SIZE];
   if (!deriveWebPassword(password, webPasswordRecord.salt, candidate))
     return false;
@@ -1336,14 +1338,36 @@ bool requireConfigurationAccess() {
   return true;
 }
 
-// Každý špatný pokus o heslo prodlouží čekání, ať jde o přihlášení, nebo
-// o zálohu s tajemstvími - jinak by se heslo dalo hádat přes druhou cestu.
+// Každý špatný pokus o heslo prodlouží čekání, ať jde o přihlášení, změnu
+// hesla, nebo zálohu - jinak by se heslo dalo hádat přes jinou cestu.
 void registerFailedPasswordAttempt() {
   if (failedLoginAttempts < 8) ++failedLoginAttempts;
   const uint8_t exponent = failedLoginAttempts > 5
                                ? 4
                                : failedLoginAttempts - 1;
   loginBlockedUntil = millis() + (1000UL << exponent);
+}
+
+// Ověří heslo webu z pole formuláře. Přihlášení samo nestačí na změnu ani
+// vypnutí hesla: jinak by si kdokoli u opuštěného prohlížeče heslo přepsal.
+// Při chybě odešle odpověď a vrátí false.
+bool verifyWebPassword(const String &password) {
+  if (!webPasswordEnabled) {
+    sendError(409, F("Hodiny zatím nemají heslo. Nastav ho v záložce Systém."));
+    return false;
+  }
+  if (deadlinePending(loginBlockedUntil)) {
+    sendError(429, F("Příliš mnoho pokusů. Zkus to za chvíli znovu."));
+    return false;
+  }
+  if (!webPasswordMatches(password)) {
+    registerFailedPasswordAttempt();
+    sendError(401, F("Heslo webu není správné."));
+    return false;
+  }
+  failedLoginAttempts = 0;
+  loginBlockedUntil = 0;
+  return true;
 }
 
 void handleWebLogin() {
@@ -1356,32 +1380,27 @@ void handleWebLogin() {
     return;
   }
   extendWebAvailability();
-  if (!webPasswordEnabled) {
-    sendError(409, F("Ochrana webového nastavení není zapnutá."));
-    return;
-  }
-  if (deadlinePending(loginBlockedUntil)) {
-    sendError(429, F("Příliš mnoho pokusů. Zkus to za chvíli znovu."));
-    return;
-  }
-  if (!webPasswordMatches(server.arg("password"))) {
-    registerFailedPasswordAttempt();
-    sendError(401, F("Heslo není správné."));
-    return;
-  }
-  failedLoginAttempts = 0;
-  loginBlockedUntil = 0;
+  if (!verifyWebPassword(server.arg("password"))) return;
   issueWebSession();
   sendJson(200, F("{\"ok\":true}"));
 }
 
 void handleWebPassword() {
   const String action = server.arg("action");
+  const bool expectedAction =
+      (!webPasswordEnabled && action == "set") ||
+      (webPasswordEnabled && (action == "change" || action == "clear"));
+  if (!expectedAction) {
+    sendError(409, webPasswordEnabled
+                       ? F("Heslo už je nastavené. Použij Změnit.")
+                       : F("Heslo zatím není nastavené. Použij Nastavit."));
+    return;
+  }
+  if (webPasswordEnabled &&
+      !verifyWebPassword(server.arg("currentPassword")))
+    return;
+
   if (action == "clear") {
-    if (!webPasswordEnabled) {
-      sendError(409, F("Ochrana heslem už je vypnutá."));
-      return;
-    }
     if (!eraseWebPassword()) {
       sendError(500, F("Heslo se nepodařilo vymazat z paměti."));
       return;
@@ -1392,18 +1411,9 @@ void handleWebPassword() {
     return;
   }
 
-  const bool expectedAction =
-      (!webPasswordEnabled && action == "set") ||
-      (webPasswordEnabled && action == "change");
-  if (!expectedAction) {
-    sendError(409, webPasswordEnabled
-                       ? F("Heslo už je nastavené. Použij Změnit.")
-                       : F("Heslo zatím není nastavené. Použij Nastavit."));
-    return;
-  }
   const String password = server.arg("password");
-  if (!validWebPasswordLength(password)) {
-    sendError(400, F("Heslo musí mít 6 až 20 znaků."));
+  if (!validNewWebPassword(password)) {
+    sendError(400, F("Heslo musí mít 8 až 64 znaků."));
     return;
   }
   if (!persistWebPassword(password)) {
@@ -3587,16 +3597,16 @@ void handleFirmwareInstall() {
 // --- Záloha nastavení ------------------------------------------------------
 //
 // Zálohu skládá firmware, ne prohlížeč: jen tak nese opravdu všechno, co je
-// uložené, včetně polí, která web neukazuje. Tajemství (token Home Assistantu,
-// exportní klíč TMEP, heslo webu a adresa serveru pro zálohy) se jinak z hodin
-// ven nedostanou vůbec - token se na web nikdy nevrací. Záloha je proto smí
-// nést jen po zadání hesla webového nastavení. Bez hesla by je z hodin vytáhl
-// kdokoli v síti, a to i tak, že by si zálohu poslal na vlastní server.
+// uložené, včetně polí, která web neukazuje, a vždy i s tajemstvími (token
+// Home Assistantu, exportní klíč TMEP, hash hesla webu a adresa serveru pro
+// zálohy). Ta se jinak z hodin ven nedostanou vůbec - token se na web nikdy
+// nevrací.
 //
-// Heslo webu tedy rozhoduje, CO záloha smí nést. Heslo zálohy (od obálky 4,
-// SettingsBackupCrypto.h) chrání soubor, KDYŽ už z hodin odešel - na disku,
-// v e-mailu i na serveru. Hodiny ho nikam neukládají a bez něj zálohu
-// neotevřou ani samy.
+// Hodiny bez hesla webu proto zálohu nevytvoří: jinak by tajemství vytáhl
+// kdokoli v síti, třeba tak, že by si zálohu poslal na vlastní server. S heslem
+// webu stačí přihlášení. Soubor pak chrání samostatné heslo zálohy
+// (SettingsBackupCrypto.h), které hodiny nikam neukládají a bez kterého zálohu
+// neotevřou ani samy; překlep v něm hlídá stránka dvojím zadáním.
 
 constexpr char BACKUP_FORMAT[] = "waveshare-hodiny-settings";
 constexpr size_t BACKUP_MAX_SEALED_BYTES =
@@ -3638,7 +3648,6 @@ bool ensureBackupBuffers() {
 void wipeBackupBuffers() {
   settingsBackupZeroize(backupBytes, SETTINGS_BACKUP_MAX_BYTES);
   settingsBackupZeroize(backupSealed, BACKUP_MAX_SEALED_BYTES);
-  // Soubor verze 3 z importu nese tajemství jen v base64.
   settingsBackupZeroize(backupText, BACKUP_MAX_ENVELOPE_BYTES);
   settingsBackupZeroize(&backupConfigBuffer, sizeof(backupConfigBuffer));
 }
@@ -3650,23 +3659,28 @@ struct BackupPassword {
   ~BackupPassword() { settingsBackupZeroize(text, sizeof(text)); }
 };
 
+// Nová záloha jen na hodinách s heslem webu. Při chybě odešle odpověď
+// a vrátí false.
+bool requireWebPasswordForBackup() {
+  if (webPasswordEnabled) return true;
+  sendError(409, F("Zálohy nesou tokeny, proto jdou vytvořit jen s nastaveným "
+                   "heslem webu. Nastav ho v záložce Systém."));
+  return false;
+}
+
 // Při chybě odešle odpověď a vrátí false.
 bool readBackupPassword(BackupPassword &password) {
   String value = server.arg("backupPassword");
-  const bool valid =
-      settingsBackupPasswordValid(value.c_str(), value.length());
-  if (valid) {
+  const bool ok = settingsBackupPasswordValid(value.c_str(), value.length());
+  if (!ok) sendError(400, F("Zadej heslo zálohy: 8 až 64 znaků."));
+  if (ok) {
     memcpy(password.text, value.c_str(), value.length());
     password.length = value.length();
     password.text[password.length] = '\0';
   }
   if (value.length() > 0)
     settingsBackupZeroize(const_cast<char *>(value.c_str()), value.length());
-  if (!valid) {
-    sendError(400, F("Zadej heslo zálohy: 8 až 64 znaků."));
-    return false;
-  }
-  return true;
+  return ok;
 }
 
 struct BackupKeyJob {
@@ -3718,32 +3732,6 @@ bool persistSettingsShareUrl(const char *url) {
   return saved;
 }
 
-// Zjistí, jestli záloha smí nést tajemství. Prázdné heslo znamená zálohu bez
-// nich; zadané heslo se musí shodovat. Při chybě odešle odpověď a vrátí false.
-bool authorizeBackupSecrets(bool &secrets) {
-  secrets = false;
-  const String password = server.arg("password");
-  if (password.isEmpty()) return true;
-  if (!webPasswordEnabled) {
-    sendError(409, F("Tokeny a hesla smí záloha nést jen s nastaveným heslem "
-                     "webového nastavení."));
-    return false;
-  }
-  if (deadlinePending(loginBlockedUntil)) {
-    sendError(429, F("Příliš mnoho pokusů. Zkus to za chvíli znovu."));
-    return false;
-  }
-  if (!webPasswordMatches(password)) {
-    registerFailedPasswordAttempt();
-    sendError(401, F("Heslo není správné."));
-    return false;
-  }
-  failedLoginAttempts = 0;
-  loginBlockedUntil = 0;
-  secrets = true;
-  return true;
-}
-
 String backupTimestamp() {
   const time_t now = time(nullptr);
   // Před synchronizací času by se do zálohy zapsal rok 1970.
@@ -3757,7 +3745,7 @@ String backupTimestamp() {
 
 // Poskládá šifrovanou obálku zálohy (SettingsBackupCrypto.h). Popis je
 // čitelný pro seznam na serveru, ale autentizovaný spolu s daty.
-bool buildBackupEnvelopeUnwiped(bool secrets, const BackupPassword &password,
+bool buildBackupEnvelopeUnwiped(const BackupPassword &password,
                                 String &envelope, String &error) {
   if (!ensureBackupBuffers()) {
     error = F("Pro zálohu není dostatek PSRAM.");
@@ -3770,18 +3758,13 @@ bool buildBackupEnvelopeUnwiped(bool secrets, const BackupPassword &password,
     return false;
   }
   SettingsBackupContent content;
-  content.secrets = secrets;
+  content.secrets = true;
   ClockAppearanceConfig activeAppearance;
   appearanceState(content.appearance, activeAppearance);
   content.webMode = static_cast<uint8_t>(selectedWebMode);
-  if (secrets) {
-    content.webPasswordPresent = webPasswordEnabled;
-    if (webPasswordEnabled)
-      memcpy(content.webPassword, &webPasswordRecord,
-             sizeof(content.webPassword));
-    clockConfigCopy(content.shareUrl, sizeof(content.shareUrl),
-                    settingsShareUrl);
-  }
+  content.webPasswordPresent = true;
+  memcpy(content.webPassword, &webPasswordRecord, sizeof(content.webPassword));
+  clockConfigCopy(content.shareUrl, sizeof(content.shareUrl), settingsShareUrl);
   const size_t size = settingsBackupEncode(backupConfigBuffer, content,
                                            backupBytes,
                                            SETTINGS_BACKUP_MAX_BYTES);
@@ -3795,7 +3778,7 @@ bool buildBackupEnvelopeUnwiped(bool secrets, const BackupPassword &password,
   settingsBackupCopyLabel(header.firmware, sizeof(header.firmware),
                           FIRMWARE_VERSION);
   header.schema = CLOCK_CONFIG_SCHEMA_VERSION;
-  header.secrets = secrets;
+  header.secrets = true;
   settingsBackupCopyLabel(header.exportedAt, sizeof(header.exportedAt),
                           backupTimestamp().c_str());
   header.iterations = SETTINGS_BACKUP_KDF_ITERATIONS;
@@ -3842,8 +3825,7 @@ bool buildBackupEnvelopeUnwiped(bool secrets, const BackupPassword &password,
   envelope += header.firmware;
   envelope += F("\",\"schema\":");
   envelope += header.schema;
-  envelope += F(",\"secrets\":");
-  envelope += secrets ? F("true") : F("false");
+  envelope += F(",\"secrets\":true");
   if (header.exportedAt[0] != '\0') {
     envelope += F(",\"exportedAt\":\"");
     envelope += header.exportedAt;
@@ -3866,17 +3848,14 @@ bool buildBackupEnvelopeUnwiped(bool secrets, const BackupPassword &password,
   return true;
 }
 
-bool buildBackupEnvelope(bool secrets, const BackupPassword &password,
-                         String &envelope, String &error) {
-  const bool built =
-      buildBackupEnvelopeUnwiped(secrets, password, envelope, error);
+bool buildBackupEnvelope(const BackupPassword &password, String &envelope,
+                         String &error) {
+  const bool built = buildBackupEnvelopeUnwiped(password, envelope, error);
   wipeBackupBuffers();
   return built;
 }
 
 struct BackupApplyOutcome {
-  bool encrypted = false;
-  bool secrets = false;
   bool partial = false;
   bool webPasswordChanged = false;
   ConfigurationWebMode webMode = CONFIGURATION_WEB_ALWAYS;
@@ -3891,8 +3870,8 @@ bool readBackupParts(uint8_t &parts) {
   return false;
 }
 
-// Otevře obálku zálohy do backupBytes. Verze 3 je jen base64, verze 4 se
-// dešifruje heslem zálohy z formuláře. Při chybě odešle odpověď a vrátí false.
+// Otevře obálku zálohy do backupBytes heslem zálohy z formuláře. Při chybě
+// odešle odpověď a vrátí false.
 bool openBackupEnvelope(const char *begin, const char *end,
                         SettingsBackupEnvelope &envelope, size_t &size) {
   size = 0;
@@ -3908,16 +3887,6 @@ bool openBackupEnvelope(const char *begin, const char *end,
       sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
       return false;
   }
-  if (envelope.version == SETTINGS_BACKUP_ENVELOPE_PLAIN) {
-    if (!settingsBackupBase64Decode(envelope.data, envelope.dataLength,
-                                    backupBytes, SETTINGS_BACKUP_MAX_BYTES,
-                                    size)) {
-      sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
-      return false;
-    }
-    return true;
-  }
-
   BackupPassword password;
   if (!readBackupPassword(password)) return false;
   size_t sealedSize = 0;
@@ -3964,15 +3933,12 @@ bool applyBackupEnvelopeUnwiped(const char *begin, const char *end,
   SettingsBackupContent content;
   switch (settingsBackupDecode(backupBytes, size, incoming, content)) {
     case SettingsBackupStatus::Ok:
-      // Popis šifrované obálky je autentizovaný; nesouhlas s vnitřkem by
-      // znamenal chybu při jejím skládání, ne cizí zásah.
-      if (envelope.version == SETTINGS_BACKUP_ENVELOPE_ENCRYPTED &&
-          envelope.secrets != content.secrets) {
+      // Popis obálky je autentizovaný; nesouhlas s vnitřkem by znamenal chybu
+      // při jejím skládání, ne cizí zásah.
+      if (envelope.secrets != content.secrets) {
         sendError(400, F("Záloha je poškozená."));
         return false;
       }
-      outcome.encrypted =
-          envelope.version == SETTINGS_BACKUP_ENVELOPE_ENCRYPTED;
       break;
     case SettingsBackupStatus::Corrupted:
       sendError(400, F("Záloha je poškozená."));
@@ -3986,17 +3952,18 @@ bool applyBackupEnvelopeUnwiped(const char *begin, const char *end,
       sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
       return false;
   }
-  if (content.webMode > CONFIGURATION_WEB_DISABLED) {
+  // Hodiny zálohují vždy i s tajemstvími a s heslem webu, bez kterého zálohu
+  // nevytvoří. Záloha bez nich by obnovou tokeny smazala.
+  if (content.webMode > CONFIGURATION_WEB_DISABLED || !content.secrets ||
+      !content.webPasswordPresent) {
     sendError(400, F("Soubor není platná záloha Waveshare Hodiny."));
     return false;
   }
   WebPasswordRecord importedPassword;
-  if (content.webPasswordPresent) {
-    memcpy(&importedPassword, content.webPassword, sizeof(importedPassword));
-    if (!validWebPasswordRecord(importedPassword)) {
-      sendError(400, F("Záloha je poškozená."));
-      return false;
-    }
+  memcpy(&importedPassword, content.webPassword, sizeof(importedPassword));
+  if (!validWebPasswordRecord(importedPassword)) {
+    sendError(400, F("Záloha je poškozená."));
+    return false;
   }
 
   const ClockConfig &current = currentConfig();
@@ -4005,31 +3972,6 @@ bool applyBackupEnvelopeUnwiped(const char *begin, const char *end,
   settingsBackupKeepCurrentParts(incoming, current, parts);
   const bool restoreDisplay = (parts & SETTINGS_BACKUP_PART_DISPLAY) != 0;
   const bool restoreSystem = (parts & SETTINGS_BACKUP_PART_SYSTEM) != 0;
-
-  if (!content.secrets) {
-    // Záloha bez tajemství nesmí smazat ta, která tyhle hodiny už mají. Token
-    // ale zůstane jen u stejné adresy Home Assistantu: poslat ho na server,
-    // který zvolila cizí záloha, by byl přesně ten únik, kterému se brání
-    // HomeAssistantConnectionPolicy.
-    if (normalizedUrl(incoming.homeAssistantUrl) ==
-        normalizedUrl(current.homeAssistantUrl)) {
-      clockConfigCopy(incoming.homeAssistantToken,
-                      sizeof(incoming.homeAssistantToken),
-                      current.homeAssistantToken);
-    }
-    clockConfigCopy(incoming.tmepExportKey, sizeof(incoming.tmepExportKey),
-                    current.tmepExportKey);
-    clockConfigCopy(incoming.tmepExportId, sizeof(incoming.tmepExportId),
-                    current.tmepExportId);
-    // Heslo k soukromým kalendářům platí totéž co pro token: jen na stejný
-    // server agendy.
-    if (normalizedUrl(incoming.agenda.url) ==
-        normalizedUrl(current.agenda.url)) {
-      clockConfigCopy(incoming.agendaCalendars.privateKey,
-                      sizeof(incoming.agendaCalendars.privateKey),
-                      current.agendaCalendars.privateKey);
-    }
-  }
 
   if (configSaveCallback == nullptr || !configSaveCallback(incoming, true)) {
     sendError(500, F("Nastavení se nepodařilo uložit do paměti."));
@@ -4050,15 +3992,11 @@ bool applyBackupEnvelopeUnwiped(const char *begin, const char *end,
       return false;
     }
   }
-  outcome.secrets = content.secrets;
-  if (content.secrets && restoreSystem) {
-    // Heslo webu se jen přebírá, nikdy nemaže: záloha s tajemstvími vzniká
-    // jen na hodinách s heslem, takže chybějící oddíl je cizí soubor, ne
-    // přání ochranu vypnout.
-    if (content.webPasswordPresent &&
-        (!webPasswordEnabled ||
-         memcmp(&importedPassword, &webPasswordRecord,
-                sizeof(importedPassword)) != 0)) {
+  if (restoreSystem) {
+    // Hodiny převezmou heslo webu hodin, ze kterých záloha pochází.
+    if (!webPasswordEnabled ||
+        memcmp(&importedPassword, &webPasswordRecord,
+               sizeof(importedPassword)) != 0) {
       if (!persistWebPasswordRecord(importedPassword)) {
         sendError(500, F("Heslo se nepodařilo uložit do paměti."));
         return false;
@@ -4088,11 +4026,7 @@ void finishBackupApply(const BackupApplyOutcome &outcome) {
     clearWebSessions();
     issueWebSession();
   }
-  String payload = F("{\"ok\":true,\"encrypted\":");
-  payload += outcome.encrypted ? F("true") : F("false");
-  payload += F(",\"secrets\":");
-  payload += outcome.secrets ? F("true") : F("false");
-  payload += F(",\"partial\":");
+  String payload = F("{\"ok\":true,\"partial\":");
   payload += outcome.partial ? F("true") : F("false");
   payload += F(",\"webPasswordChanged\":");
   payload += outcome.webPasswordChanged ? F("true") : F("false");
@@ -4104,12 +4038,10 @@ void finishBackupApply(const BackupApplyOutcome &outcome) {
 
 void handleBackupExport() {
   BackupPassword password;
-  if (!readBackupPassword(password)) return;
-  bool secrets = false;
-  if (!authorizeBackupSecrets(secrets)) return;
+  if (!requireWebPasswordForBackup() || !readBackupPassword(password)) return;
   String envelope;
   String error;
-  if (!buildBackupEnvelope(secrets, password, envelope, error)) {
+  if (!buildBackupEnvelope(password, envelope, error)) {
     sendError(503, error);
     return;
   }
@@ -4118,9 +4050,7 @@ void handleBackupExport() {
     sendError(503, F("Na zálohu nezbyla paměť. Zkus to znovu."));
     return;
   }
-  payload = F("{\"ok\":true,\"secrets\":");
-  payload += secrets ? F("true") : F("false");
-  payload += F(",\"backup\":");
+  payload = F("{\"ok\":true,\"backup\":");
   payload += envelope;
   payload += '}';
   sendJson(200, payload);
@@ -4249,15 +4179,7 @@ void handleSettingsShareList() {
     payload += jsonEscape(modified);
     payload += F("\",\"firmware\":\"");
     payload += jsonEscape(firmware);
-    payload += F("\",\"secrets\":");
-    payload += jsonReadBoolMember(cursor.itemBegin, cursor.itemEnd, "secrets")
-                   ? F("true")
-                   : F("false");
-    payload += F(",\"encrypted\":");
-    payload += jsonReadBoolMember(cursor.itemBegin, cursor.itemEnd, "encrypted")
-                   ? F("true")
-                   : F("false");
-    payload += '}';
+    payload += F("\"}");
   }
   payload += F("]}");
   sendJson(200, payload);
@@ -4270,17 +4192,15 @@ void handleSettingsShareUpload() {
       !readBackupName(request.name, sizeof(request.name)))
     return;
   BackupPassword password;
-  if (!readBackupPassword(password)) return;
-  bool secrets = false;
-  if (!authorizeBackupSecrets(secrets)) return;
-  // Záloha s tajemstvími nese i adresu serveru. Nová adresa z formuláře v ní
-  // musí být už teď, jinak by hodiny, které ji stáhnou, dostaly tu starou.
+  if (!requireWebPasswordForBackup() || !readBackupPassword(password)) return;
+  // Záloha nese i adresu serveru. Nová adresa z formuláře v ní musí být už
+  // teď, jinak by hodiny, které ji stáhnou, dostaly tu starou.
   char previousUrl[SETTINGS_SHARE_URL_LENGTH];
   clockConfigCopy(previousUrl, sizeof(previousUrl), settingsShareUrl);
   clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), request.url);
   String envelope;
   String error;
-  const bool built = buildBackupEnvelope(secrets, password, envelope, error);
+  const bool built = buildBackupEnvelope(password, envelope, error);
   clockConfigCopy(settingsShareUrl, sizeof(settingsShareUrl), previousUrl);
   if (!built) {
     sendError(503, error);
@@ -4295,9 +4215,7 @@ void handleSettingsShareUpload() {
   payload += request.name;
   payload += F("\",\"url\":\"");
   payload += jsonEscape(settingsShareDisplayUrl(request.url).c_str());
-  payload += F("\",\"secrets\":");
-  payload += secrets ? F("true") : F("false");
-  payload += '}';
+  payload += F("\"}");
   sendJson(200, payload);
 }
 
@@ -4629,6 +4547,16 @@ bool configurationWebSetMode(ConfigurationWebMode mode) {
   if (mode > CONFIGURATION_WEB_DISABLED) return false;
   if (!persistWebMode(mode)) return false;
   applyWebMode(mode);
+  return true;
+}
+
+bool configurationWebPasswordConfigured() { return webPasswordEnabled; }
+
+bool configurationWebClearPassword() {
+  if (webPasswordEnabled && !eraseWebPassword()) return false;
+  clearWebSessions();
+  failedLoginAttempts = 0;
+  loginBlockedUntil = 0;
   return true;
 }
 

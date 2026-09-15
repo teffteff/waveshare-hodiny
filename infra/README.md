@@ -277,7 +277,7 @@ Hodiny umí uložit celé nastavení na server a jiné hodiny si ho odtud stáhn
 `DELETE` na `/settings/<název>` jednu zálohu čtou, ukládají a mažou. Mazat jde
 z hodin tlačítkem **Smazat ze serveru**, nebo `rm /opt/settings/data/<název>.json`.
 
-**Záloha může nést token Home Assistantu a hash hesla webu**, proto:
+**Záloha nese token Home Assistantu a hash hesla webu**, proto:
 
 - stojí za `basic_auth` v Caddy s **vlastním heslem** (`SETTINGS_HASH`), ne
   s tím k agendě – to zná každé hodiny, které agendu jen čtou,
@@ -288,17 +288,14 @@ z hodin tlačítkem **Smazat ze serveru**, nebo `rm /opt/settings/data/<název>.
 - tělo má strop 64 kB (Caddy i server) a musí to být obálka zálohy hodin,
 - záloh je nejvýš 64, aby se disk nedal zaplnit ani s heslem.
 
-Od firmwaru s obálkou verze 4 je každá záloha zašifrovaná heslem zálohy
-(AES-256-GCM, klíč z PBKDF2-SHA256 ve firmwaru), které server nikdy nevidí;
-čitelný zůstává jen autentizovaný popis pro seznam (`"encrypted": true`).
-Server obsah neotevírá, kontroluje jen tvar obálky a meze iterací (10 000 až
-100 000). Nešifrovanou zálohu verze 3 od 14. 9. 2026 odmítne (400), takže
-hodiny se starším firmwarem na server neuloží nic, dokud se neaktualizují.
+Každá záloha je obálka verze 4 zašifrovaná heslem zálohy (AES-256-GCM, klíč
+z PBKDF2-SHA256 ve firmwaru), které server nikdy nevidí; čitelný zůstává jen
+autentizovaný popis pro seznam. Server obsah neotevírá, kontroluje jen tvar
+obálky a meze iterací (10 000 až 100 000). Starší nešifrované obálky odmítne
+(400) a do seznamu je nezařadí.
 
-Tokeny a hesla se do zálohy dostanou, jen když je majitel při zálohování potvrdí
-heslem webového nastavení – bez něj hodiny pošlou zálohu bez nich. Firmware
-přijme jen adresu `https://` a přesměrování nenásleduje, aby heslo z adresy
-nešlo jinam.
+Hodiny bez hesla webu zálohu nevytvoří. Firmware přijme jen adresu `https://` a přesměrování nenásleduje, aby
+heslo z adresy nešlo jinam.
 
 Zavedení (jednou):
 

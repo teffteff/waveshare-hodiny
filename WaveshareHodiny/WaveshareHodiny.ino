@@ -531,6 +531,7 @@ bool displayPowerForcedOff() {
 void handleSettingsOpen() {
   configurationWebEnsureActive();
   clockDashboardSetWebMode(configurationWebMode());
+  clockDashboardSetWebPasswordConfigured(configurationWebPasswordConfigured());
 }
 
 // Kanál zpráv se stahuje na pozadí i se zavřenou obrazovkou, takže otevření
@@ -1601,6 +1602,9 @@ void handleUsbCommands() {
         Serial.println("SETTINGS_OPEN");
       } else if (usbCommand == "SETTINGS4" && !screenshotTransferActive) {
         clockDashboardShowSettingsPage(3);
+        Serial.println("SETTINGS_OPEN");
+      } else if (usbCommand == "SETTINGS5" && !screenshotTransferActive) {
+        clockDashboardShowSettingsPage(4);
         Serial.println("SETTINGS_OPEN");
       } else if (usbCommand == "NIGHT" && !screenshotTransferActive) {
         clockDashboardSetNightMode(true);
@@ -3057,6 +3061,7 @@ void setup() {
                        handleForecastVisibility);
   clockDashboardSetPlanesVisibilityCallback(handlePlanesVisibility);
   clockDashboardSetAgendaVisibilityCallback(handleAgendaVisibility);
+  clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
