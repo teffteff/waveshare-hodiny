@@ -59,7 +59,7 @@ changes the system text and verbal date shown on the display.
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
 - optional automatic rotation between the clock, radar, news, forecast,
-  aircraft, agenda and school timetable, in an order you choose,
+  aircraft, agenda, school timetable and satellites, in an order you choose,
 - a news screen fed by any RSS or Atom feed,
 - an agenda screen fed by Google Calendar, merged across several calendars and
   coloured by the one each event came from,
@@ -74,6 +74,11 @@ changes the system text and verbal date shown on the display.
 - realtime lightning from the Blitzortung network (LightningMaps.org) through
   your own server: strokes on the radar coloured by age and an alert on the
   clock face when lightning strikes within a set radius (see `infra/README.md`),
+- a satellite screen: the sky above the clock as a circle with the zenith in the
+  middle, showing the ISS and bright, weather, navigation, amateur radio and
+  Starlink satellites with their path two minutes ahead, which ones can be seen
+  with the naked eye right now and the time of the next ISS pass; the orbits
+  are computed by your own server from CelesTrak data,
 - a sun and moon screen: rise and set times of both, civil dawn and dusk, day
   length, moon phase and illumination and the next full and new moon, computed
   on the device,
@@ -668,6 +673,57 @@ forces a fetch of its own. After a failure the
 interval is doubled and the last good frame stays on the display: an empty sky
 after one failed fetch looks like the truth but is not. A disabled screen is
 never fetched and is not reachable by the gesture either.
+
+### Satellites above the clock
+
+The **Satellites** screen shows the sky above the clock as a circle: the zenith
+in the middle, the horizon at the edge, rings at 30 and 60 degrees and the
+cardinal directions. As on the aircraft radar you can choose which direction is
+at the top; the sky is drawn like a map, with east to the right of north. The
+location is the same city the weather uses.
+
+**Your [own server](infra/README.md#družice) computes the orbits, not the
+clock.** It downloads the public orbital elements from
+[CelesTrak](https://celestrak.org/) (OMM, the successor to TLE, which cannot hold
+catalogue numbers above 99999), each group at most once every six hours, and
+propagates them with SGP4. The clock asks it every 30 to 120 seconds (a minute
+by default) and gets the azimuth and elevation of every satellite above the
+horizon every fifteen seconds for three minutes ahead. It interpolates between
+those points and redraws every second, so the satellites move smoothly and a
+failed download changes nothing: the path lasts another two minutes. Enter an
+address such as `https://hodiny:password@your-server.example.net/satellites.json`
+on the **Satellites** tab; with a password it must start with `https://`. The
+**Test the satellites** button asks the server before you save and shows what is
+above the horizon right now.
+
+**Groups.** Space stations (yellow), bright satellites visible to the naked eye
+(blue), weather (green), GPS, Galileo, GLONASS and BeiDou navigation (violet),
+amateur radio (orange) and Starlink (grey). The first three are on by default.
+Starlink is off on purpose: hundreds are usually above the horizon, so they are
+drawn as small dots without labels or paths and only get the room left over by
+the other groups (the cap is 150 satellites). A satellite in two groups is shown
+once.
+
+**Markers.** A filled dot with a halo means the satellite is sunlit and the sky
+is dark (the Sun at least 6° below the horizon), so it can be seen with the
+naked eye. A filled dot without a halo is sunlit but the sky is still bright, an
+empty ring is in Earth's shadow. Satellites below the minimum elevation (10° by
+default, a dotted circle on the display) are not drawn. A faint line shows where
+the satellite will be in two minutes. The line under the clock tells how many
+satellites are shown and, after dark, how many can be seen by eye. At the bottom
+is the **next ISS pass** above 10°: the time, the highest elevation and whether
+it will be visible.
+
+Tap a satellite to open its details: elevation, azimuth with the compass
+direction, orbital altitude, range, group, NORAD catalogue number and whether it
+can be seen by eye. Another tap closes them. When the satellite sinks below the
+minimum elevation the panel keeps the last values and says so.
+
+Data is downloaded only while the screen is visible or part of the automatic
+rotation; in the rotation it is fetched roughly every two and a half minutes
+even while hidden, so the paths are ready when its turn comes. The rotation opens
+the screen only with paths that cover the current moment; an empty sky above the
+minimum elevation is a valid state.
 
 ### Color scales
 

@@ -936,19 +936,30 @@ void testScreenOrderRoundTripAndNormalization() {
   assert(clockConfigLoad(repaired));
   assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
   assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
-  // Agenda, Slunce s Měsícem a škola přežily z výchozího pořadí na posledních
-  // třech místech, takže se doplňuje až za ně; teprve pak přijdou obrazovky,
-  // které v poli vůbec nebyly.
+  // Agenda, Slunce s Měsícem, škola a družice ve druhém bloku přežily
+  // z výchozího pořadí, takže se doplňuje až za ně; teprve pak přijdou
+  // obrazovky, které v poli vůbec nebyly - i přes hranici obou bloků.
   assert(repaired.screenOrder[2] == CLOCK_SCREEN_AGENDA);
   assert(repaired.screenOrder[3] == CLOCK_SCREEN_SKY);
   assert(repaired.screenOrder[4] == CLOCK_SCREEN_SCHOOL);
-  assert(repaired.screenOrder[5] == CLOCK_SCREEN_CLOCK);
-  assert(repaired.screenOrder[6] == CLOCK_SCREEN_RADAR);
-  assert(repaired.screenOrder[7] == CLOCK_SCREEN_FORECAST);
+  assert(repaired.screenOrder[5] == CLOCK_SCREEN_SATELLITES);
+  assert(repaired.screenOrder[6] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrder[7] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrderTail[0] == CLOCK_SCREEN_FORECAST);
+  assert(clockConfigScreenAt(repaired, 8) == CLOCK_SCREEN_FORECAST);
+  assert(clockConfigScreenPosition(repaired, CLOCK_SCREEN_FORECAST) == 8);
   for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
        index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
-    assert(repaired.screenOrder[index] == CLOCK_SCREEN_ORDER_UNUSED);
+    assert(clockConfigScreenOrderSlot(repaired, index) ==
+           CLOCK_SCREEN_ORDER_UNUSED);
   }
+
+  // Výchozí konfigurace má družice hned za školou, na začátku druhého bloku.
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.screenOrder[7] == CLOCK_SCREEN_SCHOOL);
+  assert(defaults.screenOrderTail[0] == CLOCK_SCREEN_SATELLITES);
+  assert(defaults.screenOrderTail[1] == CLOCK_SCREEN_ORDER_UNUSED);
 }
 
 void testSecondValuePagePersistenceAndMigration() {
@@ -1099,8 +1110,10 @@ void testLightningAndSkyPersistenceAndMigration() {
   assert(migrated.screenOrder[0] == CLOCK_SCREEN_RADAR);
   assert(migrated.screenOrder[1] == CLOCK_SCREEN_CLOCK);
   assert(migrated.screenOrder[6] == CLOCK_SCREEN_SKY);
-  // Škola přišla se schématem 44 a normalizace ji připojí na konec cyklu.
+  // Škola přišla se schématem 44 a normalizace ji připojí na konec cyklu,
+  // družice ze schématu 45 až za ni.
   assert(migrated.screenOrder[7] == CLOCK_SCREEN_SCHOOL);
+  assert(migrated.screenOrderTail[0] == CLOCK_SCREEN_SATELLITES);
 
   migrated.lightning.enabled = true;
   clockConfigCopy(migrated.lightning.url, sizeof(migrated.lightning.url),
@@ -1202,7 +1215,75 @@ void testSchoolPersistenceAndMigration() {
   assert(!clockConfigUrlHasCredentials(nullptr));
 }
 
+void testSatellitesPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.satellites.enabled && defaults.satellites.url[0] == '\0');
+  assert(defaults.satellites.groups ==
+         (CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_VISUAL |
+          CLOCK_SATELLITE_GROUP_WEATHER));
+  assert(defaults.satellites.showTracks);
+  assert(!clockConfigSatellitesAvailable(defaults));
+
+  // Schéma 44 je předponou 45: škola a přeskládané pořadí zůstanou, družice
+  // jsou vypnuté bez adresy a v cyklu až za poslední obrazovkou.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.school.enabled = true;
+  clockConfigCopy(source.school.url, sizeof(source.school.url),
+                  "https://hodiny:heslo@example.test/school.json");
+  source.screenOrder[0] = CLOCK_SCREEN_SCHOOL;
+  source.screenOrder[7] = CLOCK_SCREEN_CLOCK;
+  seed(legacyRecord(source, 44, CLOCK_CONFIG_SCHEMA_44_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(clockConfigSchoolAvailable(migrated));
+  assert(!migrated.satellites.enabled && migrated.satellites.url[0] == '\0');
+  assert(migrated.satellites.minElevationDeg == 10);
+  assert(migrated.satellites.refreshSeconds == 60);
+  assert(migrated.screenOrder[0] == CLOCK_SCREEN_SCHOOL);
+  assert(migrated.screenOrder[7] == CLOCK_SCREEN_CLOCK);
+  assert(clockConfigScreenAt(migrated, 8) == CLOCK_SCREEN_SATELLITES);
+  assert(storedSize() == sizeof(uint32_t) * 3 + sizeof(ClockConfig));
+
+  // Hodnoty mimo rozsah se srovnají, neznámé bity skupin zahodí.
+  migrated.satellites.enabled = true;
+  migrated.satellites.groups = 0xFF;
+  migrated.satellites.minElevationDeg = 90;
+  migrated.satellites.refreshSeconds = 5;
+  migrated.satellites.topBearingDeg = 400;
+  migrated.satellites.displaySeconds = 5;
+  migrated.satellites.showTracks = false;
+  clockConfigCopy(migrated.satellites.url, sizeof(migrated.satellites.url),
+                  "https://hodiny:heslo@example.test/satellites.json");
+  // Družice přesunuté dopředu: pořadí přes oba bloky se musí uložit celé.
+  uint8_t order[CLOCK_SCREEN_ORDER_CAPACITY];
+  clockConfigReadScreenOrder(migrated, order);
+  order[8] = CLOCK_SCREEN_CLOCK;
+  order[7] = CLOCK_SCREEN_SATELLITES;
+  clockConfigWriteScreenOrder(migrated, order);
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(clockConfigSatellitesAvailable(loaded));
+  assert(loaded.satellites.groups == CLOCK_SATELLITE_GROUP_ALL);
+  assert(loaded.satellites.minElevationDeg == CLOCK_SATELLITES_MAX_MIN_ELEVATION);
+  assert(loaded.satellites.refreshSeconds == CLOCK_SATELLITES_MIN_REFRESH_SECONDS);
+  assert(loaded.satellites.topBearingDeg == 0);
+  assert(loaded.satellites.displaySeconds == 10);
+  assert(!loaded.satellites.showTracks);
+  assert(clockConfigScreenPosition(loaded, CLOCK_SCREEN_SATELLITES) == 7);
+  assert(clockConfigScreenAt(loaded, 8) == CLOCK_SCREEN_CLOCK);
+
+  // Bez jediné skupiny není co stahovat ani ukazovat.
+  loaded.satellites.groups = 0;
+  assert(!clockConfigSatellitesAvailable(loaded));
+}
+
 int main() {
+  testSatellitesPersistenceAndMigration();
   testSchoolPersistenceAndMigration();
   testRadarPrecipitationPersistenceAndMigration();
   testAgendaCalendarsPersistenceAndMigration();

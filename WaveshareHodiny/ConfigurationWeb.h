@@ -67,6 +67,12 @@ void configurationWebSetSchoolTask(TaskHandle_t task);
 using SchoolProbeCallback = bool (*)(const ClockSchoolConfig &config,
                                      int &httpStatus, String &error);
 void configurationWebSetSchoolProbe(SchoolProbeCallback callback);
+// Zkouška adresy serveru družic. Stáhne ji úloha družic, skeč schová předání
+// i čekání na výsledek.
+struct SatelliteProbeResult;
+using SatellitesProbeCallback = bool (*)(const ClockSatellitesConfig &config,
+                                         SatelliteProbeResult &result);
+void configurationWebSetSatellitesProbe(SatellitesProbeCallback callback);
 // Přenos zálohy nastavení na server a zpět. Z téhož důvodu jako zkouška agendy
 // ho provede úloha agendy; skeč schová předání žádosti i čekání na výsledek.
 using SettingsShareCallback = bool (*)(const SettingsShareRequest &request,

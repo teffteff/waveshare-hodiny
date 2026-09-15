@@ -186,6 +186,18 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
                                      bool haveAircraftData,
                                      const PlaneRadarDetail &detail);
 
+// --- Družice -----------------------------------------------------------------
+bool clockDashboardSatellitesVisible();
+void clockDashboardSetSatellitesVisible(bool visible);
+// Vypnutá obrazovka se do rotace ani pod gesto nepustí a její stránka vzniká
+// až při prvním zapnutí. Klepnutí na obloze vybírá družici přes
+// clockDashboardHandleSingleTap().
+void clockDashboardSetSatellitesAvailable(bool available);
+void clockDashboardSetSatellitesVisibilityCallback(
+    RssVisibilityCallback visibility);
+struct SatelliteSnapshot;
+void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot);
+
 bool clockDashboardAutomaticRotationAllowed();
 // Switch the bank inside the values clock without changing the screen/dot.
 bool clockDashboardSwipeValues();

@@ -184,6 +184,15 @@ def stub_config() -> dict:
         "schoolRefreshMinutes": 20,
         "schoolDisplaySeconds": 20,
         "schoolAutomaticRotation": False,
+        "satellitesEnabled": True,
+        "satellitesUrl": "https://hodiny:heslo@server.example/satellites.json",
+        "satellitesGroups": "stations,visual,weather",
+        "satellitesMinElevation": 10,
+        "satellitesRefreshSeconds": 60,
+        "satellitesTopBearing": 0,
+        "satellitesShowTracks": True,
+        "satellitesDisplaySeconds": 20,
+        "satellitesAutomaticRotation": False,
         "forecastEnabled": True,
         "forecastAirQuality": True,
         "forecastDayCount": 3,
@@ -383,6 +392,24 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 "markCount": 1,
                 "marks": [{"when": "DNES", "subject": "Matematika", "abbrev": "M",
                            "mark": "1", "theme": "Násobilka"}],
+            })
+            return
+        if path == "/api/satellites/test":
+            fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+            print(f"POST {path}: {fields}", flush=True)
+            # Tvar odpovědi firmwaru (handleSatellitesTest).
+            self._json({
+                "ok": True, "count": 9, "total": 9, "ageHours": 3, "dark": True,
+                "pending": False, "problem": "",
+                "pass": {"rise": 1789508390, "set": 1789508779, "max": 48, "visible": True},
+                "satellites": [
+                    {"name": "ISS (ZARYA)", "group": "stations", "elevation": 54,
+                     "azimuth": 212, "sunlit": True},
+                    {"name": "NOAA 19", "group": "weather", "elevation": 31,
+                     "azimuth": 18, "sunlit": True},
+                    {"name": "SL-16 R/B", "group": "visual", "elevation": 12,
+                     "azimuth": 97, "sunlit": False},
+                ],
             })
             return
         if path == "/api/agenda/test":

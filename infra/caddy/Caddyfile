@@ -76,6 +76,17 @@
 		}
 		reverse_proxy 127.0.0.1:8094
 	}
+	# Druzice nad hodinami (infra/satellites). Drahy jsou verejna data
+	# CelesTraku, heslo chrani stroj: vypocet pro deset tisic druzic stoji
+	# procesor a cizi dotazy na mnoho poloh by ho vytizily. Dotaz navic nese
+	# polohu hodin. Vlastni hash (SATELLITES_HASH), aby adresa druzic opsana do
+	# hodin nestacila na nic jineho. /satellites/status ven nevede.
+	handle /satellites.json {
+		basic_auth {
+			hodiny {env.SATELLITES_HASH}
+		}
+		reverse_proxy 127.0.0.1:8095
+	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

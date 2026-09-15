@@ -47,6 +47,23 @@ constexpr size_t CLOCK_AGENDA_PRIVATE_KEY_LENGTH = 64;
 constexpr size_t CLOCK_LIGHTNING_URL_LENGTH = 192;
 // Adresa serveru s rozvrhem i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_SCHOOL_URL_LENGTH = 192;
+// Adresa serveru družic i se jménem a heslem pro basic_auth.
+constexpr size_t CLOCK_SATELLITES_URL_LENGTH = 192;
+// Skupiny družic jako bity. Pořadí bitů je pořadí skupin na serveru
+// (SatelliteFeed.h), takže se nesmí měnit.
+constexpr uint8_t CLOCK_SATELLITE_GROUP_STATIONS = 0x01;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_VISUAL = 0x02;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_WEATHER = 0x04;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_GNSS = 0x08;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_AMATEUR = 0x10;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_STARLINK = 0x20;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_ALL = 0x3F;
+// Nejmenší výška nad obzorem. Nad šedesát stupňů by zbyl kruh bez družic.
+constexpr uint8_t CLOCK_SATELLITES_MAX_MIN_ELEVATION = 60;
+// Server posílá dráhu na tři minuty dopředu. Obnova po dvou minutách nechá
+// rezervu na jedno nepovedené stažení, častější dotaz nic nepřinese.
+constexpr uint8_t CLOCK_SATELLITES_MIN_REFRESH_SECONDS = 30;
+constexpr uint8_t CLOCK_SATELLITES_MAX_REFRESH_SECONDS = 120;
 // Kruh výstrahy. Pod kilometr to nemá smysl kvůli přesnosti lokalizace
 // úderu, nad padesát už to není "bouřka u nás".
 constexpr uint8_t CLOCK_LIGHTNING_MIN_ALARM_KM = 1;
@@ -119,19 +136,29 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // server) and fills the eighth, reserved entry of the screen order. The schema
 // 43 record stays an exact prefix; the screen starts disabled without an
 // address, so an upgrade neither contacts a new server nor adds a screen.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 44;
+// Schema 45 appends the satellite screen (sky view from the owner's server) and
+// a second block of eight screen-order entries after it, because the original
+// array sits in the middle of the record and its reserve ran out with schema
+// 44. The schema 44 record stays an exact prefix; the screen starts disabled
+// without an address and lands at the end of the rotation order.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 45;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
-constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 8;
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 9;
 
 // Kolik bajtů pořadí zabírá v konfiguraci. Schválně víc, než kolik je dnes
 // obrazovek: pole leží na konci schématu 37, takže dokud se do rezervy vejde
 // další obrazovka, stačí povýšit COUNT a migrace zůstane pouhým zkopírováním
 // bajtů. Bez rezervy by každá další obrazovka posouvala všechno za polem.
-// Schéma 44 rezervu vyčerpalo obrazovkou Škola; další obrazovka už pole
-// rozšířit musí.
-constexpr size_t CLOCK_SCREEN_ORDER_CAPACITY = 8;
+// Schéma 44 rezervu vyčerpalo obrazovkou Škola. Schéma 45 proto přidalo za
+// konec záznamu druhý blok osmi bajtů (screenOrderTail); pořadí se čte jako
+// jedno pole přes clockConfigScreenOrderSlot() a dalších sedm obrazovek se do
+// něj zase vejde bez posouvání záznamu.
+constexpr size_t CLOCK_SCREEN_ORDER_HEAD_CAPACITY = 8;
+constexpr size_t CLOCK_SCREEN_ORDER_TAIL_CAPACITY = 8;
+constexpr size_t CLOCK_SCREEN_ORDER_CAPACITY =
+    CLOCK_SCREEN_ORDER_HEAD_CAPACITY + CLOCK_SCREEN_ORDER_TAIL_CAPACITY;
 
 // Výplň v nevyužitých slotech pořadí. Nula by byla platná obrazovka (hodiny),
 // takže by po migraci vypadala jako druhý záznam ciferníku.
@@ -146,6 +173,7 @@ enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_AGENDA = 5,
   CLOCK_SCREEN_SKY = 6,
   CLOCK_SCREEN_SCHOOL = 7,
+  CLOCK_SCREEN_SATELLITES = 8,
 };
 
 enum ClockLanguage : uint8_t {
@@ -401,6 +429,31 @@ struct alignas(4) ClockSchoolConfig {
   char url[CLOCK_SCHOOL_URL_LENGTH] = "";
 };
 
+// Obrazovka družic: obloha nad hodinami s družicemi a jejich dráhou. Polohu
+// počítá vlastní server (infra/satellites) z drah CelesTraku, hodiny jen
+// kreslí a mezi dotazy dráhu dopočítávají.
+//
+// Zarovnání na čtyři bajty staví strukturu přesně na konec záznamu schématu 44,
+// který končí koncovou výplní ClockConfig.
+struct alignas(4) ClockSatellitesConfig {
+  bool enabled = false;
+  bool automaticRotation = false;
+  // Budoucí dráha na další dvě minuty jako slabá čára za družicí.
+  bool showTracks = true;
+  // Bity CLOCK_SATELLITE_GROUP_*. Starlink je ve výchozím stavu vypnutý: jeho
+  // stovky teček by zakryly všechno ostatní.
+  uint8_t groups = CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_VISUAL |
+                   CLOCK_SATELLITE_GROUP_WEATHER;
+  // Pod touhle výškou se družice nekreslí. Deset stupňů schová to, co stejně
+  // zakryjí domy a stromy.
+  uint8_t minElevationDeg = 10;
+  uint8_t refreshSeconds = 60;
+  // Azimut, který je nahoře - stejně jako u radaru letadel.
+  uint16_t topBearingDeg = 0;
+  uint16_t displaySeconds = 20;
+  char url[CLOCK_SATELLITES_URL_LENGTH] = "";
+};
+
 // Realtime blesky. Hodiny s LightningMaps nemluví samy: trvalé spojení drží
 // vlastní server z infra/lightning a hodiny se ho jen ptají. Bez adresy proto
 // funkce nejde zapnout.
@@ -543,7 +596,8 @@ struct ClockConfig {
   //
   // Schéma 37 pole rozšířilo z pěti bajtů na osm. Roste jen na konci, takže
   // prvních pět bajtů staršího záznamu dopadne přesně tam, kam patří.
-  uint8_t screenOrder[CLOCK_SCREEN_ORDER_CAPACITY] = {
+  // Pokračuje v screenOrderTail na konci záznamu; číst obojí jako celek.
+  uint8_t screenOrder[CLOCK_SCREEN_ORDER_HEAD_CAPACITY] = {
       CLOCK_SCREEN_CLOCK,  CLOCK_SCREEN_RADAR,
       CLOCK_SCREEN_RSS,    CLOCK_SCREEN_FORECAST,
       CLOCK_SCREEN_PLANES, CLOCK_SCREEN_AGENDA,
@@ -582,6 +636,17 @@ struct ClockConfig {
   // Pole schématu 44. Zarovnání na čtyři bajty ji staví přesně na konec
   // uloženého záznamu schématu 43.
   ClockSchoolConfig school;
+  // Pole schématu 45. Družice začínají přesně na konci záznamu schématu 44.
+  ClockSatellitesConfig satellites;
+  // Pozice 8 až 15 pořadí obrazovek. Výchozí stav je prázdný i u nové
+  // konfigurace: družice na konec cyklu doplní normalizace, stejně jako každou
+  // obrazovku, která ve starším záznamu chybí. Kdyby tu družice stály předem,
+  // předběhly by u záznamu schématu 36 agendu, Slunce i školu.
+  uint8_t screenOrderTail[CLOCK_SCREEN_ORDER_TAIL_CAPACITY] = {
+      CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED,
+      CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED,
+      CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED,
+      CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED};
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -632,7 +697,7 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_36_SIZE = offsetof(ClockConfig, agenda);
 
 static_assert(CLOCK_CONFIG_SCHEMA_36_SIZE == 5696 &&
                   offsetof(ClockConfig, screenOrder) +
-                          CLOCK_SCREEN_ORDER_CAPACITY ==
+                          CLOCK_SCREEN_ORDER_HEAD_CAPACITY ==
                       CLOCK_CONFIG_SCHEMA_36_SIZE,
               "Schema 37 must preserve the complete schema 36 prefix.");
 
@@ -689,10 +754,38 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_42_SIZE =
 constexpr size_t CLOCK_CONFIG_SCHEMA_43_SIZE = offsetof(ClockConfig, school);
 
 static_assert(CLOCK_CONFIG_SCHEMA_43_SIZE == CLOCK_CONFIG_SCHEMA_42_SIZE &&
-                  CLOCK_CONFIG_SCHEMA_43_SIZE % alignof(ClockConfig) == 0 &&
-                  offsetof(ClockConfig, school) + sizeof(ClockSchoolConfig) ==
-                      sizeof(ClockConfig),
+                  CLOCK_CONFIG_SCHEMA_43_SIZE % alignof(ClockConfig) == 0,
               "Schema 44 must preserve the complete schema 43 prefix.");
+
+// Schéma 44 končilo školou, jejíž velikost je násobkem čtyř, takže za ní žádná
+// koncová výplň nebyla.
+constexpr size_t CLOCK_CONFIG_SCHEMA_44_SIZE = offsetof(ClockConfig, satellites);
+
+static_assert(CLOCK_CONFIG_SCHEMA_44_SIZE ==
+                      offsetof(ClockConfig, school) + sizeof(ClockSchoolConfig) &&
+                  CLOCK_CONFIG_SCHEMA_44_SIZE % alignof(ClockConfig) == 0 &&
+                  offsetof(ClockConfig, screenOrderTail) ==
+                      offsetof(ClockConfig, satellites) +
+                          sizeof(ClockSatellitesConfig) &&
+                  offsetof(ClockConfig, screenOrderTail) +
+                          CLOCK_SCREEN_ORDER_TAIL_CAPACITY ==
+                      sizeof(ClockConfig),
+              "Schema 45 must preserve the complete schema 44 prefix.");
+
+// Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
+// záznamu, 8-15 ve screenOrderTail na jeho konci.
+inline uint8_t &clockConfigScreenOrderSlot(ClockConfig &config, size_t index) {
+  return index < CLOCK_SCREEN_ORDER_HEAD_CAPACITY
+             ? config.screenOrder[index]
+             : config.screenOrderTail[index - CLOCK_SCREEN_ORDER_HEAD_CAPACITY];
+}
+
+inline uint8_t clockConfigScreenOrderSlot(const ClockConfig &config,
+                                          size_t index) {
+  return index < CLOCK_SCREEN_ORDER_HEAD_CAPACITY
+             ? config.screenOrder[index]
+             : config.screenOrderTail[index - CLOCK_SCREEN_ORDER_HEAD_CAPACITY];
+}
 
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
@@ -760,6 +853,8 @@ bool clockConfigLightningAvailable(const ClockConfig &config);
 bool clockConfigSkyAvailable(const ClockConfig &config);
 // Škola potřebuje zapnutou obrazovku i adresu serveru, stejně jako agenda.
 bool clockConfigSchoolAvailable(const ClockConfig &config);
+// Družice potřebují zapnutou obrazovku, adresu serveru a aspoň jednu skupinu.
+bool clockConfigSatellitesAvailable(const ClockConfig &config);
 // Adresa nese jméno a heslo ("https://user:heslo@server/..."). Po http:// by
 // heslo i data za ním šla sítí čitelně, proto je volající s http:// odmítá.
 bool clockConfigUrlHasCredentials(const char *url);
@@ -777,6 +872,10 @@ uint8_t clockConfigScreenPosition(const ClockConfig &config, uint8_t screen);
 // Nevyužitá část pole se dorovná na CLOCK_SCREEN_ORDER_UNUSED. Pole musí mít
 // CLOCK_SCREEN_ORDER_CAPACITY bajtů.
 void clockConfigNormalizeScreenOrder(uint8_t *order);
+// Pořadí z obou bloků konfigurace do jednoho pole a zpátky. Pole má
+// CLOCK_SCREEN_ORDER_CAPACITY bajtů.
+void clockConfigReadScreenOrder(const ClockConfig &config, uint8_t *order);
+void clockConfigWriteScreenOrder(ClockConfig &config, const uint8_t *order);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,
                          uint8_t defaultAnalogDateFormat =

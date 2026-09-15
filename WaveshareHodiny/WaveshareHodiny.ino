@@ -14,6 +14,7 @@
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
+#include "SatelliteService.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
 #include "Astronomy.h"
@@ -144,6 +145,12 @@ uint32_t displayedAgendaGeneration = UINT32_MAX;
 uint32_t displayedSchoolGeneration = UINT32_MAX;
 uint32_t displayedForecastGeneration = UINT32_MAX;
 uint32_t displayedPlanesGeneration = UINT32_MAX;
+// Obloha s družicemi se překresluje každou vteřinu; obrazovka převezme každý
+// nový snímek a mezi nimi i změnu hlášky nebo načítání.
+uint32_t displayedSatellitesGeneration = UINT32_MAX;
+bool displayedSatellitesLoading = false;
+bool displayedSatellitesDetailOpen = false;
+char displayedSatellitesMessage[64] = "";
 // Detail se překresluje mimo generaci snímku: klepnutí na letadlo mění panel,
 // ne mapu pod ním, takže by se jinak ukázal až s dalším stažením.
 bool displayedPlanesDetailOpen = false;
@@ -455,6 +462,21 @@ void applyPlaneRadarState(const ClockConfig &config) {
   applyPlaneRadarState(config, clockDashboardPlanesVisible());
 }
 
+// Družice stahují jen viditelné, nebo řídce ve střídání, aby měla rotace
+// s čím obrazovku otevřít.
+void applySatellitesState(const ClockConfig &config, bool visible) {
+  const bool available = clockConfigSatellitesAvailable(config);
+  satelliteServiceSetActive(available && visible,
+                            available && config.satellites.automaticRotation,
+                            config.openMeteoLatitude, config.openMeteoLongitude,
+                            config.satellites,
+                            config.language == CLOCK_LANGUAGE_ENGLISH);
+}
+
+void applySatellitesState(const ClockConfig &config) {
+  applySatellitesState(config, clockDashboardSatellitesVisible());
+}
+
 void applyPendingRuntimeConfiguration() {
   if (!runtimeConfigurationApplyPending ||
       static_cast<long>(millis() - runtimeConfigurationApplyAt) < 0) {
@@ -483,6 +505,7 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarPrecipitation,
       dashboardConfigBuffer.radarSource);
   applyPlaneRadarState(dashboardConfigBuffer);
+  applySatellitesState(dashboardConfigBuffer);
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
   // panelu. Provádíme ji až po dokončení obsluhy HTTP požadavku.
   LCD_Resync();
@@ -771,6 +794,39 @@ bool runSchoolProbeFromWeb(const ClockSchoolConfig &config, int &httpStatus,
   return schoolProbeRequest.ok;
 }
 
+// Zkouška adresy serveru družic z webu. Provede ji úloha družic; web server
+// mezitím nesmí zamrznout displej ani nechat hladovět watchdog smyčky.
+constexpr uint32_t SATELLITES_PROBE_TIMEOUT_MS = 30UL * 1000UL;
+
+bool runSatellitesProbeFromWeb(const ClockSatellitesConfig &config,
+                               SatelliteProbeResult &result) {
+  result = SatelliteProbeResult{};
+  const ClockConfig &current = loopConfigSnapshot();
+  if (!satelliteServiceStartProbe(config, current.openMeteoLatitude,
+                                  current.openMeteoLongitude)) {
+    strlcpy(result.error, "Zkouška družic už probíhá nebo úloha neběží.",
+            sizeof(result.error));
+    return false;
+  }
+  const unsigned long deadline = millis() + SATELLITES_PROBE_TIMEOUT_MS;
+  while (!satelliteServiceProbeResult(result)) {
+    if (static_cast<long>(millis() - deadline) >= 0) {
+      satelliteServiceAbandonProbe();
+      result = SatelliteProbeResult{};
+      strlcpy(result.error, "Zkouška družic se nedočkala odpovědi.",
+              sizeof(result.error));
+      return false;
+    }
+    if (!screenshotTransferActive) {
+      clockDashboardLoop();
+      displayDriverLoop();
+    }
+    delay(5);
+    feedLoopWDT();
+  }
+  return result.ok;
+}
+
 bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
                         String &error) {
   httpStatus = 0;
@@ -869,6 +925,15 @@ void handlePlanesVisibility(bool visible) {
   applyPlaneRadarState(loopConfigSnapshot(), visible);
 }
 
+void handleSatellitesVisibility(bool visible) {
+  displayModeStartedAt = millis();
+  automaticRotationPaused = false;
+  // Canvas se při odchodu schová; vynulovaná generace ho po návratu odkryje
+  // i tehdy, když se mezitím nic nepřekreslilo.
+  if (visible) displayedSatellitesGeneration = UINT32_MAX;
+  applySatellitesState(loopConfigSnapshot(), visible);
+}
+
 void handleRadarRangeChange(int8_t direction) {
   static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 200, 0};
   const ClockConfig &config = loopConfigSnapshot();
@@ -965,6 +1030,7 @@ constexpr uint8_t ROTATION_SCREEN_PLANES = CLOCK_SCREEN_PLANES;
 constexpr uint8_t ROTATION_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA;
 constexpr uint8_t ROTATION_SCREEN_SKY = CLOCK_SCREEN_SKY;
 constexpr uint8_t ROTATION_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL;
+constexpr uint8_t ROTATION_SCREEN_SATELLITES = CLOCK_SCREEN_SATELLITES;
 constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
 constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
 
@@ -991,6 +1057,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardAgendaVisible()) return ROTATION_SCREEN_AGENDA;
   if (clockDashboardSkyVisible()) return ROTATION_SCREEN_SKY;
   if (clockDashboardSchoolVisible()) return ROTATION_SCREEN_SCHOOL;
+  if (clockDashboardSatellitesVisible()) return ROTATION_SCREEN_SATELLITES;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -1023,6 +1090,9 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_SCHOOL:
       clockDashboardSetSchoolVisible(true);
       break;
+    case ROTATION_SCREEN_SATELLITES:
+      clockDashboardSetSatellitesVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
@@ -1032,6 +1102,7 @@ void showRotationScreen(uint8_t screen) {
       clockDashboardSetAgendaVisible(false);
       clockDashboardSetSkyVisible(false);
       clockDashboardSetSchoolVisible(false);
+      clockDashboardSetSatellitesVisible(false);
       break;
   }
 }
@@ -1052,6 +1123,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
       return clockConfigSkyAvailable(config);
     case ROTATION_SCREEN_SCHOOL:
       return clockConfigSchoolAvailable(config);
+    case ROTATION_SCREEN_SATELLITES:
+      return clockConfigSatellitesAvailable(config);
     default: return true;
   }
 }
@@ -1078,6 +1151,9 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_SCHOOL:
       return clockConfigSchoolAvailable(config) &&
              config.school.automaticRotation;
+    case ROTATION_SCREEN_SATELLITES:
+      return clockConfigSatellitesAvailable(config) &&
+             config.satellites.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -1128,6 +1204,11 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     // ruční gesto na ni pustí pořád.
     return status.ready && (status.lessonCount > 0 || status.homeworkCount > 0);
   }
+  if (screen == ROTATION_SCREEN_SATELLITES) {
+    // Dráhy z řídkého stahování na pozadí musí pokrývat tuhle chvíli; prázdná
+    // obloha nad nastavenou výškou je přitom platný stav.
+    return satelliteServiceHasCurrentData();
+  }
   if (screen == ROTATION_SCREEN_PLANES) {
     // Prázdná obloha je platný stav, takže se čeká jen na první vykreslený
     // snímek - ne na to, až nějaké letadlo přiletí.
@@ -1155,6 +1236,9 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
       return static_cast<unsigned long>(config.sky.displaySeconds) * 1000UL;
     case ROTATION_SCREEN_SCHOOL:
       return static_cast<unsigned long>(config.school.displaySeconds) * 1000UL;
+    case ROTATION_SCREEN_SATELLITES:
+      return static_cast<unsigned long>(config.satellites.displaySeconds) *
+             1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -1169,7 +1253,8 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_PLANES) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_AGENDA) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SKY) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL);
+      rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES);
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed();
@@ -1389,6 +1474,24 @@ void maintainPlanesDisplay() {
           sizeof(displayedPlanesMessage));
   displayedPlanesRangeKm = snapshot.rangeKm;
   displayedPlanesLoading = snapshot.loading;
+}
+
+void maintainSatellitesDisplay() {
+  if (!clockDashboardSatellitesVisible()) return;
+  static SatelliteSnapshot snapshot;
+  satelliteServiceSnapshot(snapshot);
+  if (snapshot.generation == displayedSatellitesGeneration &&
+      snapshot.loading == displayedSatellitesLoading &&
+      snapshot.detail.open == displayedSatellitesDetailOpen &&
+      strcmp(snapshot.message, displayedSatellitesMessage) == 0) {
+    return;
+  }
+  clockDashboardSetSatellitesSnapshot(snapshot);
+  displayedSatellitesGeneration = snapshot.generation;
+  displayedSatellitesLoading = snapshot.loading;
+  displayedSatellitesDetailOpen = snapshot.detail.open;
+  strlcpy(displayedSatellitesMessage, snapshot.message,
+          sizeof(displayedSatellitesMessage));
 }
 
 void maintainRadarDisplay() {
@@ -1627,6 +1730,7 @@ void maintainRadarNightVisual() {
   radarRedNightModeApplied = enabled;
   chmiRadarServiceSetRedNightMode(enabled);
   planeRadarServiceSetRedNightMode(enabled);
+  satelliteServiceSetRedNightMode(enabled);
 }
 
 void handleConfigurationWebStatus(bool active) {
@@ -1824,6 +1928,10 @@ void handleUsbCommands() {
         // takže ručně nalistovaná letadla by screenshot nikdy nezastihl.
         clockDashboardSetPlanesVisible(true);
         Serial.println("PLANES_SHOWN");
+      } else if (usbCommand == "SATELLITESSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje.
+        clockDashboardSetSatellitesVisible(true);
+        Serial.println("SATELLITES_SHOWN");
       } else if (usbCommand.startsWith("RADARSOURCE") &&
                  !screenshotTransferActive) {
         // Přepnutí zdroje srážek bez webu, aby šly obě varianty porovnat.
@@ -1984,6 +2092,7 @@ void maintainNetworkTime() {
         config.radarMapOpacity, config.radarPauseSeconds,
         config.radarLegend, config.radarPrecipitation, config.radarSource);
     applyPlaneRadarState(config);
+    applySatellitesState(config);
 #if !FIRMWARE_RELEASE
     Serial.println("NTP synchronizovano");
 #endif
@@ -2107,6 +2216,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     delay(500);
     chmiRadarServicePrepareForFirmwareUpdate();
     planeRadarServicePrepareForFirmwareUpdate();
+    satelliteServicePrepareForFirmwareUpdate();
     lightningServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
@@ -2115,6 +2225,8 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     // nikdo nezapnul zpátky - callback viditelnosti se nezavolá - a radar by po
     // přerušené aktualizaci mlčel až do restartu, včetně vypadnutí ze střídání.
     applyPlaneRadarState(loopConfigSnapshot());
+    satelliteServiceBegin();
+    applySatellitesState(loopConfigSnapshot());
     firmwareUpdateCountdownStarted = false;
     firmwareUpdateBlackRequested = false;
     displayResyncAt = millis() + 500;
@@ -3269,10 +3381,12 @@ void setup() {
   clockDashboardSetPlanesVisibilityCallback(handlePlanesVisibility);
   clockDashboardSetAgendaVisibilityCallback(handleAgendaVisibility);
   clockDashboardSetSchoolVisibilityCallback(handleSchoolVisibility);
+  clockDashboardSetSatellitesVisibilityCallback(handleSatellitesVisibility);
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
+  satelliteServiceBegin();
   lightningServiceBegin();
   chmiRadarServiceSetActive(
       false, false,
@@ -3288,6 +3402,11 @@ void setup() {
                              runtimeConfig.planes,
                              runtimeConfig.planesFeedUrl,
                              runtimeConfig.planesMapLabel);
+  // Stejně jako letadla: nastavení hned, stahovat se začne po synchronizaci času.
+  satelliteServiceSetActive(false, false, runtimeConfig.openMeteoLatitude,
+                            runtimeConfig.openMeteoLongitude,
+                            runtimeConfig.satellites,
+                            runtimeConfig.language == CLOCK_LANGUAGE_ENGLISH);
   clockDashboardSetSecond(60);
   displayResyncAt = millis() + 2000;
   initializeNetworkTime();
@@ -3321,6 +3440,7 @@ void setup() {
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetSchoolTask(schoolTaskHandle);
   configurationWebSetSchoolProbe(runSchoolProbeFromWeb);
+  configurationWebSetSatellitesProbe(runSatellitesProbeFromWeb);
   configurationWebSetBackgroundWork(runBackgroundWorkFromWeb);
   configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
@@ -3388,6 +3508,7 @@ void loop() {
   maintainSkyData();
   maintainRadarDisplay();
   maintainPlanesDisplay();
+  maintainSatellitesDisplay();
   maintainRssDisplay();
   maintainAgendaDisplay();
   maintainSchoolDisplay();

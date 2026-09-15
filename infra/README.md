@@ -52,6 +52,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Přepravčí blesků | 8093, jen loopback | `/opt/lightning/serve.py`, `lightning-web.service` | `lightning/` |
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Rozvrh a úkoly | 8094, jen loopback | `/opt/school/serve.py`, `feed.py`, `school-web.service`, přihlášení v `/opt/school/school.env` | `school/` |
+| Družice | 8095, jen loopback | `/opt/satellites/serve.py`, `requirements.txt`, `.venv`, `satellites-web.service`, dráhy v `/var/cache/satellites/` | `satellites/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
@@ -96,6 +97,7 @@ https://$CLOCK_HOST/top.xml      zprávy
 https://hodiny:$PLANES_PASSWORD@$CLOCK_HOST/planes.json  letadla (nepovinné)
 https://hodiny:$LIGHTNING_PASSWORD@$CLOCK_HOST/lightning.json  blesky (nepovinné)
 https://hodiny:$SCHOOL_PASSWORD@$CLOCK_HOST/school.json  rozvrh a úkoly (nepovinné)
+https://hodiny:$SATELLITES_PASSWORD@$CLOCK_HOST/satellites.json  družice (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -130,8 +132,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090, 8092, 8093 a 8094 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami a rozvrhem poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093, 8094 a 8095 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami, rozvrhem a družicemi poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -477,6 +479,70 @@ ignoruje, takže radar mezitím běží dál; opačné pořadí by ho na tu dobu
 Výměna hesla je stejná jako u agendy, jen se `sed` nahradí řádek `PLANES_HASH`
 a nová adresa se opíše do hodin.
 
+## Družice
+
+Obrazovka **Družice** ukazuje oblohu nad hodinami. Hodiny se ptají
+`GET /satellites.json?lat=…&lon=…&groups=…&minel=…` a `satellites/serve.py`
+jim vrátí pro každou družici nad obzorem azimut a výšku v desetinách stupně po
+15 s na 3 minuty dopředu (`p`), výšku dráhy, vzdálenost, jestli je na Slunci,
+výšku Slunce u pozorovatele a nejbližší přelet ISS nad 10°. Hodiny mezi body
+interpolují a ptají se jednou za minutu.
+
+**Odkud jsou dráhy.** Z [CelesTraku](https://celestrak.org/NORAD/elements/),
+skupiny `stations`, `visual`, `weather`, `gnss`, `amateur` a `starlink`, ve
+formátu OMM (JSON). TLE se nepoužívá: katalogová čísla nad 99999 se do něj
+nevejdou. Poloha se počítá knihovnou `sgp4` (referenční implementace SGP4) pro
+celou skupinu naráz přes NumPy; převod TEME → souřadnice pozorovatele je ve
+`serve.py` a proti Skyfieldu sedí na setiny stupně (ověřeno 15. 9. 2026).
+Deset tisíc družic Starlinku trvá kolem 50 ms.
+
+**Kolik dotazů jde na CelesTrak.** Skupina se stahuje, jen když si o ni řekly
+nějaké hodiny, a pak nejvýš jednou za 6 hodin; o kterou se dva dny nikdo
+neřekl, ta se přestane obnovovat. CelesTrak data přepočítává po dvou hodinách
+a IP adresy, které se ptají častěji, blokuje. Po chybě se čeká 10, 20, 40…
+minut (nejvýš 6 h), na 403/429 12 h a na hlášku „has not updated“ se
+pokračuje se staršími daty. Stažené skupiny leží v `/var/cache/satellites/`,
+takže restart služby CelesTrak nezatíží. Dráhy starší než týden server
+nevydá (u nízkých družic by ležely stovky kilometrů vedle) a odpoví 503.
+
+**Stav** ukáže přímo na serveru `curl -s 127.0.0.1:8095/satellites/status`:
+počet objektů ve skupině, stáří, jestli je chtěná, za jak dlouho další pokus
+a poslední chyba. Caddy tuhle cestu ven nepouští.
+
+**Čerstvá skupina, která ještě není stažená**, vrátí 503 s `Retry-After: 30`
+(nebo 200 s `"pending"`, když jiná skupina už data má); hodiny to zkusí za půl
+minuty. Odpovědi se drží 15 s, takže víc hodin v domácnosti sdílí jeden výpočet.
+
+**Heslo k `/satellites.json`** je vlastní (`SATELLITES_HASH` v `caddy.env`).
+Data jsou veřejná, ale výpočet stojí procesor a dotaz nese polohu hodin.
+Firmware adresu s heslem přes `http://` neuloží.
+
+Zavedení (jednou):
+
+```sh
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/satellites --shell /sbin/nologin satellites \
+    && sudo install -d -o root -g satellites -m 750 /opt/satellites'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/satellites/serve.py infra/satellites/requirements.txt infra/satellites/satellites-web.service "$CLOCK_SSH:"
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py requirements.txt satellites-web.service /opt/satellites/ \
+    && rm serve.py requirements.txt satellites-web.service \
+    && sudo /usr/bin/python3.11 -m venv /opt/satellites/.venv \
+    && sudo /opt/satellites/.venv/bin/pip install --quiet -r /opt/satellites/requirements.txt'
+NEW="$(openssl rand -hex 24)"   # do .env jako SATELLITES_PASSWORD
+SSH "$CLOCK_SSH" "echo SATELLITES_HASH=\$(caddy hash-password --plaintext '$NEW') | sudo tee -a /etc/caddy/caddy.env >/dev/null"
+SSH "$CLOCK_SSH" 'sudo cp /opt/satellites/satellites-web.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now satellites-web.service && sudo systemctl restart caddy'
+```
+
+Caddyfile s blokem `/satellites.json` se nasazuje jako obvykle (viz „Nasazení
+změn z repozitáře“), **až po** zapsání `SATELLITES_HASH`. Do hodin se pak opíše
+`https://hodiny:$SATELLITES_PASSWORD@$CLOCK_HOST/satellites.json` v záložce
+**Družice**. Testy bez sítě běží v repozitáři s libovolným prostředím, které má
+`sgp4` a `numpy` (stejné verze jako `requirements.txt`):
+`python -m unittest infra/satellites/test_serve.py`.
+
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
 U Home Assistanta v `caddy/Caddyfile` kdysi stály tyhle dvě řádky:
@@ -768,6 +834,8 @@ Dnes platí:
 | `/opt/settings` | `root:settings` 750 | `data/` (`settings`) |
 | `/opt/school` | `root:school` 750 | nic; `school.env` je `root` 600 |
 | `/var/lib/school` | `school` 700 (zakládá systemd, `StateDirectory`) | `state.json` (`school` 600) |
+| `/opt/satellites` | `root:satellites` 750 | nic; `.venv` patří rootovi |
+| `/var/cache/satellites` | `satellites` 750 (zakládá systemd, `CacheDirectory`) | stažené skupiny drah |
 
 Kód a `.venv` patří rootovi, takže je služba nezmění. `news.env`
 a `agenda.env` jsou rootovy (600): systemd je načte do prostředí ještě před
@@ -828,7 +896,7 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
 ## Obnova serveru
 
 1. Nový stroj, otevřít 80/443 v OCI i ve `firewalld`. Uživatelé služeb:
-   `for u in news agenda planes settings school; do sudo useradd --system
+   `for u in news agenda planes settings school satellites; do sudo useradd --system
    --no-create-home --home-dir /opt/$u --shell /sbin/nologin $u; done`
    a vlastnictví podle tabulky v „Zabezpečení stroje“.
 2. Caddy: binárku do `/usr/bin/caddy`, `caddy/Caddyfile` do `/etc/caddy/`
@@ -854,7 +922,10 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
 6. Rozvrh (nepovinné): viz „Rozvrh a úkoly ze Školy OnLine“ — `school/*.py`
    a jednotka do `/opt/school/`, `school.env` s přihlášením, `SCHOOL_HASH`
    do `/etc/caddy/caddy.env`.
-7. `tools/check-stack.sh --deep`.
+7. Družice (nepovinné): viz „Družice“ — `.venv` z `satellites/requirements.txt`,
+   `SATELLITES_HASH` do `/etc/caddy/caddy.env`. Dráhy se stáhnou samy při
+   prvním dotazu hodin.
+8. `tools/check-stack.sh --deep`.
 
 **Python na tom stroji:** `python3` je 3.6.8, který nemá `zoneinfo` a tiše
 nainstaluje roky staré verze knihoven. Obě `.venv` se proto stavějí výslovně

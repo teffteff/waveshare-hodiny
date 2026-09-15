@@ -1,0 +1,38 @@
+[Unit]
+Description=Druzice nad hodinami z drah CelesTraku
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Kod i .venv patri
+# rootovi; sluzba zapisuje jen stazene drahy do CacheDirectory.
+User=satellites
+Group=satellites
+Environment=SATELLITES_PORT=8095
+# Jen pro Caddy na stejnem stroji. Na verejne IP by se dal obejit basic_auth
+# a kdokoli by si pres server nechal pocitat drahy pro libovolnou polohu.
+Environment=SATELLITES_BIND=127.0.0.1
+# /var/cache/satellites zaklada systemd sam a patri uzivateli satellites.
+# systemd 239 na Oracle Linuxu 8 cestu sluzbe nepreda, proto i promenna.
+# Smazani adresare nic nerozbije, jen se drahy po restartu stahnou znovu.
+CacheDirectory=satellites
+CacheDirectoryMode=0750
+Environment=SATELLITES_CACHE_DIR=/var/cache/satellites
+# .venv se sgp4 a numpy (requirements.txt), postavene /usr/bin/python3.11:
+# /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6.
+ExecStart=/opt/satellites/.venv/bin/python /opt/satellites/serve.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

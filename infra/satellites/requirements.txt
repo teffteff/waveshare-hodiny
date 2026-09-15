@@ -1,0 +1,5 @@
+# /opt/satellites/.venv, postavene /usr/bin/python3.11.
+# sgp4 je referencni implementace Vallado a spol. s C++ jadrem; numpy pocita
+# vsechny druzice skupiny naraz. Obe maji hotova kola pro aarch64.
+sgp4==2.27
+numpy==2.3.3

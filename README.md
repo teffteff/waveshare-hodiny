@@ -63,7 +63,8 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané přetažením prstu,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
 - volitelné automatické střídání hodin, radaru, zpráv, předpovědi, letadel,
-  agendy a rozvrhu se samostatnou dobou zobrazení a vlastním pořadím obrazovek,
+  agendy, rozvrhu a družic se samostatnou dobou zobrazení a vlastním pořadím
+  obrazovek,
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
 - obrazovku s agendou z Google Kalendáře, sloučenou z několika kalendářů
   a obarvenou podle toho, ze kterého z nich událost je,
@@ -77,6 +78,10 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - realtime blesky ze sítě Blitzortung (LightningMaps.org) přes vlastní server:
   údery na meteoradaru obarvené podle stáří a výstraha na ciferníku, když
   blýská v nastaveném okruhu kolem polohy (viz `infra/README.md`),
+- obrazovku s družicemi nad hodinami: obloha jako kruh se zenitem uprostřed,
+  ISS, jasné, meteorologické, navigační, radioamatérské družice i Starlink
+  s dráhou na dvě minuty dopředu, vyznačením, co jde právě vidět okem,
+  a časem příštího přeletu ISS; dráhy počítá vlastní server z dat CelesTrak,
 - obrazovku se Sluncem a Měsícem: východ a západ obou, občanské svítání
   a soumrak, délka dne, fáze a osvětlení Měsíce a data příštího úplňku a novu,
   počítané přímo na zařízení,
@@ -670,6 +675,55 @@ a na displeji zůstane poslední povedený snímek: prázdná obloha po jednom
 nepovedeném stažení vypadá jako pravda, ale není. Vypnutá obrazovka se
 nestahuje vůbec a neobjeví se ani gestem.
 
+### Družice nad hodinami
+
+Obrazovka **Družice** ukazuje oblohu nad hodinami jako kruh: uprostřed je
+zenit, na okraji obzor, kružnice v 30 a 60 stupních a světové strany. Stejně
+jako u radaru letadel se dá zvolit, který směr je nahoře; obloha je nakreslená
+jako mapa, tedy východ vpravo od severu. Poloha se bere ze stejného města jako
+počasí.
+
+**Dráhy počítá [vlastní server](infra/README.md#družice), ne hodiny.** Server
+stahuje veřejné dráhy z [CelesTraku](https://celestrak.org/) (formát OMM,
+nástupce TLE, který nová katalogová čísla nad 99999 neumí), každou skupinu
+nejvýš jednou za šest hodin, a z nich knihovnou SGP4 počítá, kde družice na
+obloze jsou. Hodiny se ho ptají jednou za 30 až 120 sekund (výchozí minuta)
+a dostanou pro každou družici nad obzorem azimut a výšku po patnácti vteřinách
+na tři minuty dopředu. Mezi body si polohu dopočítávají samy a obrazovku
+překreslují každou vteřinu, takže se družice hýbou plynule a nepovedené
+stažení nic nerozhodí: dráha vydrží ještě dvě minuty. Adresa ve tvaru
+`https://hodiny:heslo@tvuj-server.example.net/satellites.json` se zadává
+v záložce **Družice**; s heslem musí začínat `https://`. Tlačítko
+**Vyzkoušet družice** se serveru zeptá ještě před uložením a ukáže, co je
+právě nad obzorem.
+
+**Skupiny.** Vesmírné stanice (žlutě), jasné družice viditelné okem (modře),
+meteorologické (zeleně), navigační GPS, Galileo, GLONASS a BeiDou (fialově),
+radioamatérské (oranžově) a Starlink (šedě). Výchozí jsou první tři. Starlink
+je schválně vypnutý: nad obzorem jich bývají stovky, takže se kreslí jen jako
+drobné tečky bez popisků a drah a dostanou jen místo, které zbude po ostatních
+skupinách (strop je 150 družic). Družice ve dvou skupinách se ukáže jednou.
+
+**Značky.** Plná tečka se svatozáří znamená, že družice je na Slunci a obloha
+je tmavá (Slunce aspoň 6° pod obzorem) — tedy že ji jde vidět pouhým okem.
+Plná tečka bez svatozáře je na Slunci, ale obloha je ještě světlá, prázdný
+kroužek je ve stínu Země. Pod nastavenou nejmenší výškou (výchozí 10°,
+na displeji tečkovaná kružnice) se družice nekreslí. Slabá čára ukazuje, kam
+družice za dvě minuty doletí. Řádek pod časem říká, kolik družic je vidět,
+za tmy i kolik z nich okem. Dole je **příští přelet ISS** nad 10°: čas, nejvyšší
+výška a jestli bude viditelný.
+
+Klepnutím na družici se otevře detail: výška nad obzorem, azimut se světovou
+stranou, výška dráhy, vzdálenost, skupina, katalogové číslo NORAD a jestli je
+vidět okem. Další klepnutí ho zavře. Když družice zapadne pod nastavenou výšku,
+detail zůstane s posledními čísly a přizná to.
+
+Stahuje se jen tehdy, když je obrazovka vidět, nebo zapojená do automatického
+střídání — pak zhruba každé dvě a půl minuty i se schovanou obrazovkou, aby
+měla dráhy po ruce, až na ni přijde řada. Střídání ji otevře jen s dráhami,
+které pokrývají aktuální chvíli; prázdná obloha nad nastavenou výškou je platný
+stav.
+
 ### Barevné prahy měřených hodnot
 
 Každá měřená hodnota může mít až deset dvojic **hodnota → barva**. Firmware
@@ -1058,6 +1112,8 @@ být nutné uvést ESP32-S3 do bootloaderu podle dokumentace Waveshare.
 - konfigurační web lze chránit heslem; bez nastaveného hesla patří pouze do
   důvěryhodné LAN,
 - veřejná diagnostika nezobrazuje hesla, tokeny ani secret ovládacího API,
+- adresa rozvrhu i serveru družic s heslem musí začínat `https://`, jinak ji
+  web neuloží,
 - HA HTTPS aktuálně toleruje neověřený/self-signed certifikát,
 - OTA používá samostatná přísnější ověření TLS, originu, velikosti a SHA-256,
 - ovládací API URL obsahuje secret a nesmí se zveřejňovat.
