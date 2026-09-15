@@ -1,0 +1,530 @@
+"""Rozvrh a domaci ukoly ze Skoly OnLine v podobe, kterou hodiny jen opisou.
+
+Skola OnLine nema verejne API. Mobilni aplikace ale mluvi s REST API na
+/solapi/api (OAuth2 password grant, JSON), ktere zmapovaly neoficialni
+projekty - dokumentace Libre-SkolaOnline/API-docs, integrace
+elvisek2020/hacs-calendar_skolaonline pro Home Assistant a aplikace resol.
+Je to podstatne pevnejsi zaklad nez skrabani ASP.NET stranek webove aplikace
+(jako to dela skola-online-stahovani-znamek): JSON se s kazdym prebarvenim
+webu nemeni.
+
+Neoficialni API se ale zmenit muze, a zdroje se neshoduji ani v nazvech poli
+(ukol ma podle jednoho "topic" a "dateTo", podle druheho "name" a "dateEnd").
+Proto se u kazdeho pole zkousi vic variant a co se nepozna, se tise vynecha.
+Hodiny tenhle tvar nikdy nevidi: dostanou jen hotove radky z render(), takze
+zmena API znamena opravu tady, ne novy firmware.
+
+Modul nema zavislosti mimo standardni knihovnu a nesaha na sit, aby sel
+zkouset bez uctu ve Skole OnLine.
+"""
+
+from __future__ import annotations
+
+import html
+import os
+import re
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+TZ = ZoneInfo(os.environ.get("SCHOOL_TZ", "Europe/Prague"))
+# Zakladni skola ma nejvys osm hodin denne, odpoledne s nultou devet. Strop je
+# pojistka proti rozvrhu, ktery by vratil cely tyden pod jednim dnem.
+MAX_LESSONS = int(os.environ.get("SCHOOL_MAX_LESSONS", "10"))
+MAX_HOMEWORK = int(os.environ.get("SCHOOL_MAX_HOMEWORK", "12"))
+# Ukol s terminem za mesic dnes nikoho nezajima a na kruhu by vytlacil ten
+# na zitrek.
+HOMEWORK_DAYS = int(os.environ.get("SCHOOL_HOMEWORK_DAYS", "14"))
+# Po konci posledni hodiny se dnesek jeste chvili drzi, at rozvrh nezmizi
+# presne ve chvili, kdy dite vychazi ze tridy. Pak se prepne na pristi
+# skolni den - to je ten, na ktery se vecer bali taska.
+DAY_GRACE_MINUTES = int(os.environ.get("SCHOOL_DAY_GRACE_MINUTES", "15"))
+# Kolik skolnich dnu vedle sebe. Kruh pobere dva sloupce; tretimu by nezbylo
+# misto ani na nazev predmetu.
+DAY_COUNT = int(os.environ.get("SCHOOL_DAY_COUNT", "2"))
+# Znaky, ne bajty. Radek na kruhu pobere kolem 25 znaku, predmet se ale na
+# hodinach meri v pixelech a pripadne nahradi zkratkou; tady jde jen o to,
+# aby do odpovedi nesel odstavec.
+MAX_TITLE = int(os.environ.get("SCHOOL_MAX_TITLE", "60"))
+MAX_SHORT = 24
+# Druha stranka obrazovky Skola: neprectene zpravy a nove znamky. Starsi nez
+# dva tydny uz nejsou "nove" - rodic je cte jinde a na hodinach by jen visely.
+MESSAGE_DAYS = int(os.environ.get("SCHOOL_MESSAGE_DAYS", "14"))
+MARK_DAYS = int(os.environ.get("SCHOOL_MARK_DAYS", "14"))
+# Kolik radku posilat; celkovy pocet jde zvlast v messageCount a markCount.
+MAX_MESSAGES = 6
+MAX_MARKS = 8
+MAX_MARK = 8
+# Tituly pred jmenem ("Mgr.", "PaedDr.") a za nim ("Ph.D.") koncici teckou.
+_ACADEMIC_TITLE = re.compile(r"\S+\.$")
+
+WEEKDAYS = ["PO", "ÚT", "ST", "ČT", "PÁ", "SO", "NE"]
+WEEKDAY_NAMES = ["PONDĚLÍ", "ÚTERÝ", "STŘEDA", "ČTVRTEK", "PÁTEK", "SOBOTA", "NEDĚLE"]
+
+# Stav hodiny pro hodiny. Cislo, ne text, aby se firmware nemusel ucit ceske
+# nazvy typu hodin.
+STATE_NORMAL = 0
+# Suplovani, presun, skolni akce - hodina se kona, ale jinak nez obvykle.
+STATE_CHANGED = 1
+STATE_CANCELED = 2
+
+# Typy hodin v hourType.id.
+HOUR_TYPE_NORMAL = "ROZVRH"
+# Puvodni hodina, za kterou nekdo zaskakuje. Chodi spolu s nahradou na stejnem
+# case, takze by bez odfiltrovani byly v rozvrhu dve hodiny pres sebe.
+HOUR_TYPE_SUBSTITUTED = "SUPLOVANA"
+HOUR_TYPE_SUBSTITUTION = "SUPLOVANI"
+CANCEL_KEYWORDS = ("odpad", "zrušen", "zrusen", "volno", "cancel")
+DONE_KEYS = ("isDone", "done", "isCompleted", "completed", "isFinished", "finished")
+
+_TAG = re.compile(r"<[^>]+>")
+_BLOCK_TAG = re.compile(r"<\s*(br|/p|/div|/li)\b[^>]*>", re.IGNORECASE)
+
+
+# --- pomocnici nad volnym JSONem ---------------------------------------------
+
+def _text(source, *keys: str) -> str:
+    """Prvni neprazdny retezec z dictu podle klicu, se sloucenymi mezerami."""
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
+def _list_texts(source, key: str, *fields: str) -> list[str]:
+    items = source.get(key) if isinstance(source, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [text for item in items if (text := _text(item, *fields))]
+
+
+def _parse_datetime(value) -> datetime | None:
+    """Casy chodi bez zony ("2026-09-07T08:00:00") a mysli se mistne."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(TZ).replace(tzinfo=None)
+    return parsed
+
+
+def _parse_date(value) -> date | None:
+    parsed = _parse_datetime(value)
+    if parsed is not None:
+        return parsed.date()
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def plain_text(value: str, limit: int = MAX_TITLE) -> str:
+    """Z HTML popisu ukolu udela jeden radek. Zkracuje na hranici slova
+    a pripoji vypustku; hodiny si ji v pismu prelozi na tri tecky."""
+    if not isinstance(value, str):
+        return ""
+    text = _BLOCK_TAG.sub(" ", value)
+    text = html.unescape(_TAG.sub("", text))
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    space = cut.rfind(" ")
+    if space >= limit // 2:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:-") + "…"
+
+
+def day_label(day: date, today: date) -> str:
+    if day == today:
+        return "DNES"
+    if day == today + timedelta(days=1):
+        return "ZÍTRA"
+    if day == today - timedelta(days=1):
+        return "VČERA"
+    return f"{WEEKDAYS[day.weekday()]} {day.day}.{day.month}."
+
+
+# --- /v1/user -----------------------------------------------------------------
+
+def students_from_user(user) -> list[dict]:
+    """Deti, jejichz rozvrh ucet vidi.
+
+    Rodicovsky ucet ma userType "parent" a deti v "children"; jeho vlastni
+    personID zadny rozvrh nema a /v1/timeTable by na nej odpovedel 403.
+    Zakovsky ucet popisuje sam sebe.
+    """
+    if not isinstance(user, dict):
+        return []
+    students = []
+    for child in user.get("children") or []:
+        if isinstance(child, dict) and child.get("id"):
+            students.append({
+                "id": str(child["id"]),
+                "name": _text(child, "firstName", "displayName", "fullName") or str(child["id"]),
+                "fullName": _text(child, "displayName", "fullName"),
+                "class": _text(child, "className"),
+            })
+    if students or user.get("userType") == "parent":
+        return students
+    person = user.get("personID") or user.get("personId")
+    if not person:
+        return []
+    full = _text(user, "fullName", "displayName")
+    return [{
+        "id": str(person),
+        "name": _text(user, "firstName") or (full.split()[0] if full else str(person)),
+        "fullName": full,
+        "class": _text(user.get("class"), "abbrev", "name"),
+    }]
+
+
+def pick_student(students: list[dict], wanted: str) -> dict | None:
+    """SCHOOL_STUDENT vybira dite podle ID nebo casti jmena. Prazdny vyber
+    znamena prvni dite, coz u uctu s jednim ditetem je jedina moznost."""
+    if not students:
+        return None
+    wanted = (wanted or "").strip().casefold()
+    if not wanted:
+        return students[0]
+    for student in students:
+        if student["id"].casefold() == wanted:
+            return student
+    for student in students:
+        if wanted in f"{student['name']} {student['fullName']}".casefold():
+            return student
+    return None
+
+
+# --- /v1/timeTable ----------------------------------------------------------
+
+def _hour_type(schedule: dict) -> str:
+    hour_type = schedule.get("hourType")
+    value = hour_type.get("id") if isinstance(hour_type, dict) else None
+    return value.strip().upper() if isinstance(value, str) else ""
+
+
+def _lesson_note(schedule: dict, hour_type: str) -> str:
+    """Kratky popis zmeny. U bezne hodiny je hourKind prazdny objekt."""
+    if hour_type in ("", HOUR_TYPE_NORMAL):
+        return _text(schedule.get("hourKind"), "name", "description")
+    return (_text(schedule.get("hourKind"), "name", "description")
+            or _text(schedule.get("hourType"), "description", "name"))
+
+
+def _is_canceled(schedule: dict, hour_type: str, note: str) -> bool:
+    if any(schedule.get(key) is True for key in ("isCanceled", "isCancelled", "canceled", "removed")):
+        return True
+    haystack = f"{hour_type} {note}".casefold()
+    return any(keyword in haystack for keyword in CANCEL_KEYWORDS)
+
+
+def normalize_timetable(payload) -> list[dict]:
+    """Hodiny ze vsech dnu odpovedi, serazene podle zacatku.
+
+    Kazda hodina nese jen to, co hodiny ukazou: poradi, cas, predmet (plny
+    nazev i zkratku, displej si vybere podle sirky) a pripadnou zmenu.
+    Ucitele ani ucebny se schvalne neposilaji - na kruhu na ne neni misto
+    a u skolni akce server vypise cely sbor.
+    """
+    days = payload.get("days") if isinstance(payload, dict) else None
+    lessons = []
+    for day in days if isinstance(days, list) else []:
+        if not isinstance(day, dict) or not isinstance(day.get("schedules"), list):
+            continue
+        day_date = _parse_date(day.get("date"))
+        for schedule in day["schedules"]:
+            if not isinstance(schedule, dict):
+                continue
+            begin = _parse_datetime(schedule.get("beginTime"))
+            end = _parse_datetime(schedule.get("endTime"))
+            if begin is None:
+                continue
+            # beginTime je obvykle cele datum a cas; kdyby prisel jen cas
+            # s nesmyslnym dnem (1900-01-01), plati datum dne.
+            if day_date is not None and begin.date() != day_date:
+                begin = datetime.combine(day_date, begin.time())
+                if end is not None:
+                    end = datetime.combine(day_date, end.time())
+            if end is None or end <= begin:
+                end = begin + timedelta(minutes=45)
+            hour_type = _hour_type(schedule)
+            note = _lesson_note(schedule, hour_type)
+            subject = schedule.get("subject")
+            name = _text(subject, "name", "abbrev")
+            abbrev = _text(subject, "abbrev")
+            if not name:
+                # Skolni akce a podobne bloky nemaji predmet; smysluplny kratky
+                # nazev nesou v hourType, hourKind.description byva uredni odstavec.
+                name = _text(schedule.get("hourType"), "description", "name") or note or "Hodina"
+            canceled = _is_canceled(schedule, hour_type, note)
+            if canceled:
+                state = STATE_CANCELED
+            elif hour_type not in ("", HOUR_TYPE_NORMAL) or note:
+                state = STATE_CHANGED
+            else:
+                state = STATE_NORMAL
+            captions = _list_texts(schedule, "detailHours", "name", "caption")
+            hour = captions[0] if captions else _text(schedule, "hourCaption", "caption")
+            # Nektere skoly cisluji hodiny "1", jine "1."; na hodinach ma
+            # sloupec vypadat vsude stejne.
+            if hour.isdigit():
+                hour += "."
+            lessons.append({
+                "id": str(schedule.get("scheduledHourId") or ""),
+                "type": hour_type,
+                "start": begin.isoformat(timespec="minutes"),
+                "end": end.isoformat(timespec="minutes"),
+                "hour": hour,
+                "subject": plain_text(name, MAX_TITLE),
+                "abbrev": plain_text(abbrev, MAX_SHORT),
+                "note": plain_text(note, MAX_SHORT) if state != STATE_NORMAL else "",
+                "state": state,
+            })
+
+    # Suplovana hodina, za kterou prisla nahrada, se zahodi. Bez nahrady
+    # zustane - to, ze ji nekdo suplovat ma, je samo o sobe zprava.
+    substituted = {(lesson["start"], lesson["end"]) for lesson in lessons
+                   if lesson["type"] == HOUR_TYPE_SUBSTITUTION}
+    lessons = [lesson for lesson in lessons
+               if not (lesson["type"] == HOUR_TYPE_SUBSTITUTED
+                       and (lesson["start"], lesson["end"]) in substituted)]
+    lessons.sort(key=lambda lesson: (lesson["start"], lesson["end"], lesson["subject"]))
+    return lessons
+
+
+# --- /v1/students/{id}/homeworks ----------------------------------------------
+
+def normalize_homework(payload) -> list[dict]:
+    """Nesplnene ukoly s terminem. Ukol bez terminu se na hodiny nedostane:
+    neni podle ceho ho zaradit a "nekdy" z rana nikoho nezajima."""
+    items = payload.get("homeworks") if isinstance(payload, dict) else payload
+    homework = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if any(item.get(key) is True for key in DONE_KEYS):
+            continue
+        due = _parse_date(item.get("dateEnd") or item.get("dateTo") or item.get("deadline")
+                          or item.get("dueDate"))
+        if due is None:
+            continue
+        title = plain_text(_text(item, "name", "topic", "title"))
+        if not title:
+            title = plain_text(_text(item, "content", "detailedDescription", "description"))
+        if not title:
+            continue
+        subject = item.get("subject")
+        homework.append({
+            "id": str(item.get("id") or ""),
+            "due": due.isoformat(),
+            "subject": plain_text(_text(subject, "name", "abbrev") or _text(item, "subjectName"), MAX_TITLE),
+            "abbrev": plain_text(_text(subject, "abbrev"), MAX_SHORT),
+            "title": title,
+        })
+    homework.sort(key=lambda entry: (entry["due"], entry["subject"], entry["title"]))
+    return homework
+
+
+# --- /v1/messages/received ---------------------------------------------------
+
+def sender_surname(name: str) -> str:
+    """"Mgr. Jana Novakova" -> "Novakova". Na kruh se cele jmeno s titulem
+    vedle titulku zpravy nevejde a prijmeni ucitele dite pozna."""
+    words = [word for word in (name or "").split() if not _ACADEMIC_TITLE.fullmatch(word)]
+    return words[-1].strip(",") if words else ""
+
+
+def normalize_messages(payload) -> list[dict]:
+    """Neprectene prijate zpravy, nejnovejsi prvni.
+
+    Posila se jen odesilatel a titulek. Telo zpravy (HTML, casto o diteti)
+    na nastennych hodinach nema co delat a server ho nikam dal nepousti.
+    Za neprectenou se bere jen zprava s read == false; chybejici priznak
+    znamena zmenu API a radsi nic nez falesne upozorneni.
+    """
+    items = payload.get("messages") if isinstance(payload, dict) else None
+    messages = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or item.get("read") is not False:
+            continue
+        sent = _parse_datetime(item.get("sentDate"))
+        if sent is None:
+            continue
+        messages.append({
+            "id": str(item.get("id") or ""),
+            "sent": sent.isoformat(timespec="minutes"),
+            "sender": plain_text(sender_surname(_text(item.get("sender"), "name")), MAX_SHORT),
+            "title": plain_text(_text(item, "title", "subject")) or "Zpráva",
+        })
+    messages.sort(key=lambda message: message["sent"], reverse=True)
+    return messages
+
+
+# --- /v1/students/{id}/marks/list ---------------------------------------------
+
+def normalize_marks(payload) -> list[dict]:
+    """Znamky s datem, nejnovejsi prvni. Predmet se dohleda v ciselniku
+    "subjects" z te same odpovedi; znamka sama nese jen jeho ID."""
+    if not isinstance(payload, dict):
+        return []
+    subjects = {str(subject.get("id")): subject for subject in payload.get("subjects") or []
+                if isinstance(subject, dict)}
+    marks = []
+    for item in payload.get("marks") or []:
+        if not isinstance(item, dict):
+            continue
+        day = _parse_date(item.get("markDate"))
+        mark = _text(item, "markText")
+        if day is None or not mark:
+            continue
+        subject = subjects.get(str(item.get("subjectId")), {})
+        marks.append({
+            "id": str(item.get("id") or ""),
+            "date": day.isoformat(),
+            "subject": plain_text(_text(subject, "name"), MAX_TITLE),
+            "abbrev": plain_text(_text(subject, "abbrev"), MAX_SHORT),
+            "mark": plain_text(mark, MAX_MARK),
+            "theme": plain_text(_text(item, "theme")),
+        })
+    marks.sort(key=lambda entry: (entry["date"], entry["id"]), reverse=True)
+    return marks
+
+
+# --- odpoved pro hodiny ------------------------------------------------------
+
+def pick_day(lessons: list[dict], now: datetime) -> date | None:
+    """Den, jehoz rozvrh se ukaze: dnesek, dokud neskoncila posledni hodina
+    (a kratka rezerva), jinak nejblizsi dalsi den, kdy se uci. O vikendu a
+    o prazdninach tak hodiny ukazou pondeli, respektive prvni skolni den.
+
+    Odpadle hodiny se do rozhodovani nepocitaji: den, kdy vsechno odpada,
+    se ukaze, ale neprodluzuje se jimi.
+    """
+    today = now.date()
+    local_now = now.astimezone(TZ).replace(tzinfo=None)
+    days: dict[date, datetime] = {}
+    for lesson in lessons:
+        start = datetime.fromisoformat(lesson["start"])
+        end = datetime.fromisoformat(lesson["end"])
+        day = start.date()
+        if lesson["state"] == STATE_CANCELED and day in days:
+            continue
+        days[day] = max(days.get(day, end), end)
+    todays_end = days.get(today)
+    if todays_end is not None and local_now < todays_end + timedelta(minutes=DAY_GRACE_MINUTES):
+        return today
+    later = sorted(day for day in days if day > today)
+    return later[0] if later else None
+
+
+def school_days(lessons: list[dict], first: date | None, count: int) -> list[date]:
+    """Den z pick_day() a za nim dalsi dny, kdy se uci. Vikend a volno se
+    preskakuji: v patek odpoledne tak hodiny ukazou pondeli a utery."""
+    if first is None:
+        return []
+    later = sorted({datetime.fromisoformat(lesson["start"]).date() for lesson in lessons}
+                   - {first})
+    return [first] + [day for day in later if day > first][: max(count - 1, 0)]
+
+
+def render(snapshot: dict, now: datetime | None = None) -> dict:
+    """Odpoved /school.json. Sklada se az pri dotazu, protoze o tom, ktery den
+    je "dnes" a jestli uz skoncilo vyucovani, rozhoduje cas dotazu, ne cas
+    posledniho stazeni."""
+    now = (now or datetime.now(TZ)).astimezone(TZ)
+    today = now.date()
+    lessons = snapshot.get("lessons", [])
+    student = snapshot.get("student") or {}
+
+    days = []
+    for day in school_days(lessons, pick_day(lessons, now), DAY_COUNT):
+        rows = []
+        end = None
+        for lesson in lessons:
+            start = datetime.fromisoformat(lesson["start"])
+            if start.date() != day:
+                continue
+            lesson_end = datetime.fromisoformat(lesson["end"])
+            # Konec vyucovani je konec posledni hodiny, ktera se opravdu kona.
+            if lesson.get("state") != STATE_CANCELED:
+                end = max(end or lesson_end, lesson_end)
+            rows.append({
+                "hour": lesson.get("hour", ""),
+                "start": f"{start:%H:%M}",
+                "end": f"{lesson_end:%H:%M}",
+                "subject": lesson.get("subject", ""),
+                "abbrev": lesson.get("abbrev", ""),
+                "note": lesson.get("note", ""),
+                "state": lesson.get("state", STATE_NORMAL),
+            })
+        days.append({
+            # Popisek dne ve stejnem tvaru jako u agendy; weekday jen u DNES
+            # a ZITRA, kde samotny popisek den v tydnu nerika.
+            "day": day_label(day, today),
+            "weekday": WEEKDAY_NAMES[day.weekday()] if day <= today + timedelta(days=1) else "",
+            "today": day == today,
+            "end": f"{end:%H:%M}" if end else "",
+            "lessons": rows[:MAX_LESSONS],
+        })
+
+    # Zkratka predmetu z rozvrhu, protoze ukol casto nese jen plny nazev.
+    abbrevs = {lesson["subject"]: lesson["abbrev"] for lesson in lessons
+               if lesson.get("abbrev") and lesson.get("subject")}
+    horizon = today + timedelta(days=HOMEWORK_DAYS)
+    homework = []
+    for item in snapshot.get("homework", []):
+        due = date.fromisoformat(item["due"])
+        if not today <= due <= horizon:
+            continue
+        homework.append({
+            "due": day_label(due, today),
+            "subject": item.get("subject", ""),
+            "abbrev": item.get("abbrev") or abbrevs.get(item.get("subject", ""), ""),
+            "title": item.get("title", ""),
+        })
+        if len(homework) >= MAX_HOMEWORK:
+            break
+
+    body = {
+        "generated": snapshot.get("generated", ""),
+        "student": student.get("name", ""),
+        # Prazdne pole o prazdninach: v dohledu neni den, kdy se uci.
+        "days": days,
+        "homework": homework,
+        # Posledni stazeni selhalo, ale starsi data jsou porad lepsi nez prazdno
+        # (nejdyl serve.MAX_AGE_HOURS). Firmware pole necte, hlida ho
+        # tools/check-stack.sh.
+        "problem": snapshot.get("problem", ""),
+    }
+    # Zpravy a znamky jen tehdy, kdyz je server stahuje. Bez klice hodiny
+    # druhou stranku vubec nenabidnou; prazdne pole znamena "nic noveho".
+    if "messages" in snapshot:
+        horizon = today - timedelta(days=MESSAGE_DAYS)
+        recent = [message for message in snapshot["messages"]
+                  if datetime.fromisoformat(message["sent"]).date() >= horizon]
+        body["messageCount"] = len(recent)
+        body["messages"] = [{
+            "when": day_label(datetime.fromisoformat(message["sent"]).date(), today),
+            "sender": message.get("sender", ""),
+            "title": message.get("title", ""),
+        } for message in recent[:MAX_MESSAGES]]
+    if "marks" in snapshot:
+        horizon = today - timedelta(days=MARK_DAYS)
+        recent = [mark for mark in snapshot["marks"] if date.fromisoformat(mark["date"]) >= horizon]
+        body["markCount"] = len(recent)
+        body["marks"] = [{
+            "when": day_label(date.fromisoformat(mark["date"]), today),
+            "subject": mark.get("subject", ""),
+            "abbrev": mark.get("abbrev", ""),
+            "mark": mark.get("mark", ""),
+            "theme": mark.get("theme", ""),
+        } for mark in recent[:MAX_MARKS]]
+    return body

@@ -1,5 +1,7 @@
 #include "AgendaLayout.h"
 #include "AgendaParser.h"
+#include "SchoolLayout.h"
+#include "SchoolService.h"
 #include "Astronomy.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
@@ -329,6 +331,7 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_PLANES = CLOCK_SCREEN_PLANES,
   DASHBOARD_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA,
   DASHBOARD_SCREEN_SKY = CLOCK_SCREEN_SKY,
+  DASHBOARD_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -488,6 +491,13 @@ extern bool skyFeatureAvailable;
 void layoutAgendaItems();
 void updateAgendaHeaderLabel();
 void updateAgendaLegendLabel();
+extern lv_obj_t *schoolPage;
+extern uint8_t schoolPageIndex;
+extern bool schoolFeatureAvailable;
+extern RssVisibilityCallback schoolVisibilityCallback;
+void applySchoolColors();
+void updateSchoolHeaderLabel();
+void layoutSchoolPage();
 lv_color_t forecastTemperatureColor(float degrees);
 void forecastAppendColorTag(char *destination, size_t capacity,
                             lv_color_t color);
@@ -602,6 +612,7 @@ void applyDashboardLanguage() {
   // Předpověď má v každém řádku vlastní text, takže se překládá tím, že se
   // řádky složí znovu.
   updateForecastPage();
+  layoutSchoolPage();
   displayedDeviceInfo[0] = '\0';
   displayedFirmwareStatus[0] = '\0';
 }
@@ -622,6 +633,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
     case DASHBOARD_SCREEN_RSS: return rssPage;
     case DASHBOARD_SCREEN_AGENDA: return agendaPage;
     case DASHBOARD_SCREEN_SKY: return skyPage;
+    case DASHBOARD_SCREEN_SCHOOL: return schoolPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
@@ -642,6 +654,8 @@ bool screenAvailable(uint8_t screen) {
       return agendaFeatureAvailable && agendaPage != nullptr;
     case DASHBOARD_SCREEN_SKY:
       return skyFeatureAvailable && skyPage != nullptr;
+    case DASHBOARD_SCREEN_SCHOOL:
+      return schoolFeatureAvailable && schoolPage != nullptr;
     default: return true;
   }
 }
@@ -688,6 +702,17 @@ void setActiveScreen(uint8_t screen) {
   const bool isAgenda = screen == DASHBOARD_SCREEN_AGENDA;
   if (wasAgenda != isAgenda && agendaVisibilityCallback != nullptr)
     agendaVisibilityCallback(isAgenda);
+  // Škola stejně: stahuje na vlastním intervalu, otevření jen popožene.
+  const bool wasSchool = previous == DASHBOARD_SCREEN_SCHOOL;
+  const bool isSchool = screen == DASHBOARD_SCREEN_SCHOOL;
+  if (wasSchool != isSchool) {
+    // Obrazovka se vždycky otevírá na rozvrhu, i po automatickém střídání.
+    if (schoolPageIndex != 0) {
+      schoolPageIndex = 0;
+      layoutSchoolPage();
+    }
+    if (schoolVisibilityCallback != nullptr) schoolVisibilityCallback(isSchool);
+  }
   // Předpověď běží na vlastním intervalu i skrytá; otevření obrazovky jí jen
   // dá vědět, aby stará data stáhla znovu.
   const bool wasForecast = previous == DASHBOARD_SCREEN_FORECAST;
@@ -2439,6 +2464,7 @@ void applyDashboardColors() {
   applyValuesPageColors();
   applyRssColors();
   applyAgendaColors();
+  applySchoolColors();
   applySkyColors();
   // Předpověď má barvu v každé hodnotě zvlášť, takže se přebarvuje tím, že se
   // řádky složí znovu.
@@ -2979,6 +3005,529 @@ void applyAgendaColors() {
   }
   updateAgendaHeaderLabel();
   updateAgendaLegendLabel();
+}
+
+// Obrazovka Škola: rozvrh nahoře, domácí úkoly pod ním. Rozvrh má jen pořadí
+// hodiny a předmět - časy a učebny si dítě pamatuje a na kruhu by vzaly místo
+// názvům předmětů. Díky tomu se vejdou dva dny vedle sebe: den z pravidla
+// serveru (dnešek, po vyučování příští školní den) a školní den po něm. Jediný
+// čas, na kterém záleží, je konec vyučování: stojí hned za popiskem dne,
+// "DNES do 12:20", aby se četl jako jedna věta.
+// Jediný den (třeba před prázdninami) dostane celou šířku a delší hlavičku.
+//
+// Jeden den stojí ve stejných mezích jako agenda (-150 až 166). Dva sloupce
+// sahají až na ±172: první řádek hodin leží na y = -153, kde má kruh
+// poloviční tětivu 185 px, a dál dolů se jen rozšiřuje. Užší je jen řádek
+// hlaviček (y = -172, tětiva 167 px), proto popisek dne začíná až nad
+// předměty a nesmí sahat za SCHOOL_TWO_DAY_HEADING_RIGHT. Každý předmět
+// tak má 144 px: nejdelší běžné předměty první stupně jsou "Výtvarná výchova"
+// (143 px), "Hudební výchova" (142) a "Pracovní činnosti" (140) a vejdou se
+// celé, delší nahradí zkratka.
+//
+// Barvy nesou stav, ne dekoraci: změněná hodina (suplování, akce) má předmět
+// oranžově, odpadlá je celá tlumená s "odpadá" za předmětem a právě
+// probíhající nebo nejbližší hodina dnešního rozvrhu je zelená.
+// V noční červené paletě se barvy slijí do jedné; stav pak nese jen poznámka.
+constexpr int SCHOOL_RADIUS = 240;
+constexpr int SCHOOL_LEFT = -150;
+constexpr int SCHOOL_RIGHT = 166;
+constexpr int SCHOOL_TWO_DAY_LEFT = -172;
+constexpr int SCHOOL_TWO_DAY_WIDTH = 169;
+constexpr int SCHOOL_TWO_DAY_GAP = 6;
+// Pravý okraj řádku hlaviček ve dvou sloupcích, aby dlouhý popisek s koncem
+// vyučování nesahal za kruh.
+constexpr int SCHOOL_TWO_DAY_HEADING_RIGHT = 162;
+// "10." má 20,25 px; číslo je zarovnané doprava, takže mezera mezi sloupci
+// dny je vidět větší než SCHOOL_TWO_DAY_GAP.
+constexpr int SCHOOL_HOUR_WIDTH = 21;
+constexpr int SCHOOL_COLUMN_GAP = 4;
+// Mezera mezi popiskem dne a koncem vyučování.
+constexpr int SCHOOL_END_GAP = 6;
+constexpr int SCHOOL_DUE_WIDTH = 74;
+constexpr int SCHOOL_ROW_GAP = 2;
+constexpr int SCHOOL_SECTION_GAP = 8;
+constexpr int SCHOOL_HEADER_Y = -196;
+constexpr int SCHOOL_BLOCK_TOP = -172;
+constexpr int SCHOOL_BLOCK_HEIGHT = 345;
+constexpr char SCHOOL_MORE_MARK[] = "...";
+
+lv_obj_t *schoolPage = nullptr;
+lv_obj_t *schoolHeaderLabel = nullptr;
+lv_obj_t *schoolStatusLabel = nullptr;
+lv_obj_t *schoolDayLabels[SCHOOL_MAX_DAYS] = {};
+lv_obj_t *schoolEndLabels[SCHOOL_MAX_DAYS] = {};
+lv_obj_t *schoolHomeworkHeading = nullptr;
+lv_obj_t *schoolHourLabels[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
+lv_obj_t *schoolSubjectLabels[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
+lv_obj_t *schoolDueLabels[SCHOOL_MAX_HOMEWORK] = {};
+lv_obj_t *schoolTaskLabels[SCHOOL_MAX_HOMEWORK] = {};
+// Druhá stránka: nepřečtené zprávy a nové známky, přepíná se tažením prstu
+// stejně jako druhá sada hodnot. Obrazovka se vždycky otevírá na rozvrhu.
+lv_obj_t *schoolMessagesHeading = nullptr;
+lv_obj_t *schoolMessageWhenLabels[SCHOOL_MAX_MESSAGES] = {};
+lv_obj_t *schoolMessageTextLabels[SCHOOL_MAX_MESSAGES] = {};
+lv_obj_t *schoolMarksHeading = nullptr;
+lv_obj_t *schoolMarkWhenLabels[SCHOOL_MAX_MARKS] = {};
+lv_obj_t *schoolMarkTextLabels[SCHOOL_MAX_MARKS] = {};
+bool schoolFeatureAvailable = false;
+RssVisibilityCallback schoolVisibilityCallback = nullptr;
+uint8_t schoolPageIndex = 0;
+// Stav poslední předané odpovědi. Texty z ní leží v labelech; tady zůstává
+// jen to, co potřebují barvy, zvýraznění a přepnutí jazyka.
+bool schoolReady = false;
+uint8_t schoolDayCount = 0;
+bool schoolDayToday[SCHOOL_MAX_DAYS] = {};
+uint8_t schoolLessonCounts[SCHOOL_MAX_DAYS] = {};
+// "HH:MM" konce vyučování; prázdné, když všechno odpadá.
+char schoolEndTimes[SCHOOL_MAX_DAYS][SCHOOL_TIME_LENGTH] = {};
+// Popisek dne, jak ho skládá clockDashboardSetSchool. Šířka se měří z téhle
+// kopie: v režimu LV_LABEL_LONG_DOT může label vracet text už s tečkami.
+char schoolHeadings[SCHOOL_MAX_DAYS][2 * SCHOOL_DAY_LENGTH + 4] = {};
+uint8_t schoolHomeworkCount = 0;
+uint8_t schoolHomeworkTotal = 0;
+bool schoolHasMessages = false;
+uint8_t schoolMessageCount = 0;
+uint8_t schoolMessageTotal = 0;
+bool schoolHasMarks = false;
+uint8_t schoolMarkCount = 0;
+uint8_t schoolMarkTotal = 0;
+SchoolListsResult schoolListsVisible;
+SchoolLessonTime schoolLessonTimes[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS];
+SchoolLessonState schoolLessonStates[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
+SchoolLayoutResult schoolVisible;
+int schoolHighlightedLesson[SCHOOL_MAX_DAYS] = {-1, -1};
+char schoolMessage[SCHOOL_MESSAGE_LENGTH] = "";
+
+int schoolLineHeight() { return lv_font_get_line_height(&clock_czech_16); }
+int schoolHeadingHeight() { return lv_font_get_line_height(&clock_czech_14); }
+
+void placeSchoolLabel(lv_obj_t *label, int left, int top) {
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, SCHOOL_RADIUS + left,
+               SCHOOL_RADIUS + top);
+}
+
+// Levý okraj a šířka sloupce dne podle toho, kolik dnů se ukazuje.
+int schoolColumnLeft(size_t day) {
+  if (schoolDayCount < 2) return SCHOOL_LEFT;
+  return SCHOOL_TWO_DAY_LEFT +
+         static_cast<int>(day) * (SCHOOL_TWO_DAY_WIDTH + SCHOOL_TWO_DAY_GAP);
+}
+
+int schoolColumnWidth() {
+  return schoolDayCount < 2 ? SCHOOL_RIGHT - SCHOOL_LEFT : SCHOOL_TWO_DAY_WIDTH;
+}
+
+int schoolSubjectWidth() {
+  return schoolColumnWidth() - SCHOOL_HOUR_WIDTH - SCHOOL_COLUMN_GAP;
+}
+
+int schoolTextWidth(const char *text) {
+  return lv_txt_get_width(text, strlen(text), &clock_czech_14, 0,
+                          LV_TEXT_FLAG_NONE);
+}
+
+// Aktuální minuta dne, nebo -1 před synchronizací času.
+int schoolMinuteOfDay() {
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return -1;
+  struct tm local;
+  if (localtime_r(&now, &local) == nullptr) return -1;
+  return local.tm_hour * 60 + local.tm_min;
+}
+
+void applySchoolColors() {
+  if (schoolPage == nullptr) return;
+  const bool redNight = redNightVisualEnabled();
+  const lv_color_t muted = redNight ? COLOR_ERROR : COLOR_MUTED;
+  const lv_color_t text = redNight ? COLOR_ERROR : COLOR_TEXT;
+  setTextColor(schoolStatusLabel, muted);
+  setTextColor(schoolHomeworkHeading, muted);
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+    setTextColor(schoolDayLabels[day], muted);
+    setTextColor(schoolEndLabels[day], text);
+    for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index) {
+      const SchoolLessonState state = schoolLessonStates[day][index];
+      const bool canceled = state == SchoolLessonState::Canceled;
+      const bool changed = state == SchoolLessonState::Changed;
+      const bool current =
+          static_cast<int>(index) == schoolHighlightedLesson[day];
+      lv_color_t hourColor = current ? COLOR_AIR : COLOR_MUTED;
+      // Změna má přednost: suplování je zpráva i u právě probíhající hodiny.
+      lv_color_t subjectColor =
+          changed ? COLOR_ROOM : (current ? COLOR_AIR : COLOR_TEXT);
+      if (canceled) hourColor = subjectColor = COLOR_MUTED;
+      if (redNight) hourColor = subjectColor = COLOR_ERROR;
+      setTextColor(schoolHourLabels[day][index], hourColor);
+      setTextColor(schoolSubjectLabels[day][index], subjectColor);
+    }
+  }
+  for (size_t index = 0; index < SCHOOL_MAX_HOMEWORK; ++index) {
+    setTextColor(schoolDueLabels[index], redNight ? COLOR_ERROR : COLOR_ROOM);
+    const bool moreMark = schoolVisible.homeworkEllipsis &&
+                          index + 1 == schoolVisible.homework;
+    setTextColor(schoolTaskLabels[index], moreMark ? muted : text);
+  }
+  // Nepřečtené zprávy svítí oranžově jako termíny; "žádné nové" je tlumené.
+  setTextColor(schoolMessagesHeading,
+               schoolMessageTotal > 0 && !redNight ? COLOR_ROOM : muted);
+  setTextColor(schoolMarksHeading, muted);
+  const lv_color_t when = redNight ? COLOR_ERROR : COLOR_ROOM;
+  for (size_t index = 0; index < SCHOOL_MAX_MESSAGES; ++index) {
+    const bool moreMark = schoolListsVisible.firstEllipsis &&
+                          index + 1 == schoolListsVisible.first;
+    setTextColor(schoolMessageWhenLabels[index], when);
+    setTextColor(schoolMessageTextLabels[index], moreMark ? muted : text);
+  }
+  for (size_t index = 0; index < SCHOOL_MAX_MARKS; ++index) {
+    const bool moreMark = schoolListsVisible.secondEllipsis &&
+                          index + 1 == schoolListsVisible.second;
+    setTextColor(schoolMarkWhenLabels[index], when);
+    setTextColor(schoolMarkTextLabels[index], moreMark ? muted : text);
+  }
+}
+
+// Zvýraznění dnešní hodiny se mění s časem, ne s daty, takže ho obnovuje
+// i změna minuty.
+void updateSchoolHighlight(bool force = false) {
+  if (schoolPage == nullptr) return;
+  const int minute = schoolMinuteOfDay();
+  bool changed = force;
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+    int highlighted = -1;
+    if (schoolReady && day < schoolDayCount && schoolDayToday[day]) {
+      const uint8_t shown = schoolLessonCounts[day] < schoolVisible.lessons
+                                ? schoolLessonCounts[day]
+                                : schoolVisible.lessons;
+      highlighted =
+          schoolCurrentLesson(schoolLessonTimes[day], shown, minute);
+    }
+    if (highlighted != schoolHighlightedLesson[day]) {
+      schoolHighlightedLesson[day] = highlighted;
+      changed = true;
+    }
+  }
+  if (changed) applySchoolColors();
+}
+
+void updateSchoolHeaderLabel() {
+  if (schoolHeaderLabel == nullptr) return;
+  char text[48];
+  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  setObjectVisible(schoolHeaderLabel, haveText);
+  if (haveText) {
+    setTextColor(schoolHeaderLabel,
+                 redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+    lv_label_set_text(schoolHeaderLabel, text);
+  }
+  updateSchoolHighlight();
+}
+
+bool schoolNewsAvailable() {
+  return schoolReady && (schoolHasMessages || schoolHasMarks);
+}
+
+// Řádky jedné sekce druhé stránky: termín vlevo, text vedle. Poslední
+// viditelný řádek nahradí tečky, když se všechny položky nevejdou.
+int layoutSchoolNewsRows(lv_obj_t **whenLabels, lv_obj_t **textLabels,
+                         size_t capacity, uint8_t visible, bool ellipsis,
+                         int cursorY) {
+  const int line = schoolLineHeight() + SCHOOL_ROW_GAP;
+  for (size_t index = 0; index < capacity; ++index) {
+    const bool shown = index < visible;
+    const bool moreMark = shown && ellipsis && index + 1 == visible;
+    setObjectVisible(whenLabels[index], shown && !moreMark);
+    setObjectVisible(textLabels[index], shown);
+    if (!shown) continue;
+    if (moreMark) lv_label_set_text(textLabels[index], SCHOOL_MORE_MARK);
+    placeSchoolLabel(whenLabels[index], SCHOOL_LEFT, cursorY);
+    placeSchoolLabel(textLabels[index],
+                     SCHOOL_LEFT + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP,
+                     cursorY);
+    cursorY += line;
+  }
+  return cursorY;
+}
+
+void layoutSchoolNewsPage(bool shown, bool english) {
+  schoolListsVisible = SchoolListsResult{};
+  if (shown) {
+    schoolListsVisible = schoolListsLayout(
+        schoolHasMessages, schoolMessageCount, schoolMessageTotal,
+        schoolHasMarks, schoolMarkCount, schoolMarkTotal,
+        SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
+                            SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
+                            SCHOOL_BLOCK_HEIGHT});
+  }
+  const SchoolListsResult &visible = schoolListsVisible;
+  int cursorY = SCHOOL_BLOCK_TOP;
+  setObjectVisible(schoolMessagesHeading, visible.firstHeading);
+  if (visible.firstHeading) {
+    char text[48];
+    if (schoolMessageTotal == 0) {
+      strlcpy(text, english ? "NO NEW MESSAGES" : "ŽÁDNÉ NOVÉ ZPRÁVY",
+              sizeof(text));
+    } else {
+      snprintf(text, sizeof(text), "%s %u",
+               english ? "UNREAD MESSAGES" : "NEPŘEČTENÉ ZPRÁVY",
+               static_cast<unsigned>(schoolMessageTotal));
+    }
+    lv_label_set_text(schoolMessagesHeading, text);
+    placeSchoolLabel(schoolMessagesHeading, SCHOOL_LEFT, cursorY);
+    cursorY += schoolHeadingHeight() +
+               (schoolMessageCount > 0 ? SCHOOL_ROW_GAP : 0);
+  }
+  cursorY = layoutSchoolNewsRows(schoolMessageWhenLabels,
+                                 schoolMessageTextLabels, SCHOOL_MAX_MESSAGES,
+                                 visible.first, visible.firstEllipsis, cursorY);
+  setObjectVisible(schoolMarksHeading, visible.secondHeading);
+  if (visible.secondHeading) {
+    if (visible.firstHeading) cursorY += SCHOOL_SECTION_GAP;
+    lv_label_set_text(schoolMarksHeading,
+                      schoolMarkTotal == 0
+                          ? (english ? "NO NEW MARKS" : "ŽÁDNÉ NOVÉ ZNÁMKY")
+                          : (english ? "MARKS" : "ZNÁMKY"));
+    placeSchoolLabel(schoolMarksHeading, SCHOOL_LEFT, cursorY);
+    cursorY += schoolHeadingHeight() +
+               (schoolMarkCount > 0 ? SCHOOL_ROW_GAP : 0);
+  }
+  layoutSchoolNewsRows(schoolMarkWhenLabels, schoolMarkTextLabels,
+                       SCHOOL_MAX_MARKS, visible.second, visible.secondEllipsis,
+                       cursorY);
+}
+
+// Rozmístí sloupce a řádky podle toho, kolik se jich vejde, a skryje zbytek.
+// Hlavičky a hláška se skládají tady, aby je přepnutí jazyka přeložilo.
+void layoutSchoolPage() {
+  if (schoolPage == nullptr) return;
+  const bool english = englishLanguage();
+  // Data bez zpráv a známek vrátí obrazovku na rozvrh.
+  if (!schoolNewsAvailable()) schoolPageIndex = 0;
+  const bool newsPage = schoolPageIndex == 1;
+  layoutSchoolNewsPage(newsPage, english);
+  const bool homeworkShown = dashboardRuntimeConfig.school.showHomework;
+  uint8_t rows = 0;
+  for (size_t day = 0; day < schoolDayCount; ++day)
+    if (schoolLessonCounts[day] > rows) rows = schoolLessonCounts[day];
+  const bool haveDays = schoolReady && schoolDayCount > 0;
+  // O prázdninách bez úkolů stačí "Žádné vyučování" uprostřed; "ŽÁDNÉ ÚKOLY"
+  // patří jen pod rozvrh.
+  schoolVisible = schoolLayout(
+      schoolReady ? rows : 0,
+      schoolReady && homeworkShown ? schoolHomeworkCount : 0,
+      schoolReady && homeworkShown ? schoolHomeworkTotal : 0,
+      haveDays && homeworkShown,
+      SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
+                          SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
+                          SCHOOL_BLOCK_HEIGHT});
+  // Na druhé stránce se rozvrh schová celý, včetně hlášky uprostřed.
+  if (newsPage) schoolVisible = SchoolLayoutResult{};
+  const bool showMessage =
+      !newsPage &&
+      (!schoolReady || (!haveDays && schoolVisible.homework == 0));
+  setObjectVisible(schoolStatusLabel, showMessage);
+  if (showMessage) {
+    const char *text;
+    if (!schoolReady && schoolMessage[0] != '\0') {
+      text = schoolMessage;
+    } else if (schoolReady) {
+      text = english ? "No school coming up" : "Žádné vyučování";
+    } else {
+      text = english ? "Loading timetable..." : "Načítám rozvrh...";
+    }
+    lv_label_set_text(schoolStatusLabel, text);
+  }
+
+  const int top = SCHOOL_BLOCK_TOP;
+  const int line = schoolLineHeight() + SCHOOL_ROW_GAP;
+  const int lessonsTop = top + schoolHeadingHeight() + SCHOOL_ROW_GAP;
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+    // Prázdniny s úkoly: jediná hlavička "ŽÁDNÉ VYUČOVÁNÍ" nad úkoly.
+    const bool heading = !newsPage && !showMessage &&
+                         (day < schoolDayCount || (day == 0 && !haveDays));
+    const bool showEnd = heading && day < schoolDayCount &&
+                         schoolEndTimes[day][0] != '\0';
+    const int left = schoolColumnLeft(day);
+    const bool twoDays = schoolDayCount >= 2;
+    // Ve dvou sloupcích stojí hlavička nad předměty, ne nad čísly hodin:
+    // řádek hlaviček leží tam, kde je kruh nejužší.
+    const int headingLeft =
+        twoDays ? left + SCHOOL_HOUR_WIDTH + SCHOOL_COLUMN_GAP : left;
+    int headingRight = left + schoolColumnWidth();
+    if (twoDays && headingRight > SCHOOL_TWO_DAY_HEADING_RIGHT)
+      headingRight = SCHOOL_TWO_DAY_HEADING_RIGHT;
+    setObjectVisible(schoolDayLabels[day], heading);
+    setObjectVisible(schoolEndLabels[day], showEnd);
+    if (heading) {
+      if (!haveDays) {
+        strlcpy(schoolHeadings[day], english ? "NO SCHOOL" : "ŽÁDNÉ VYUČOVÁNÍ",
+                sizeof(schoolHeadings[day]));
+      }
+      lv_label_set_text(schoolDayLabels[day], schoolHeadings[day]);
+    }
+    // Konec vyučování stojí hned za popiskem. Popisek se zkrátí jen tehdy,
+    // když by se oba do sloupce nevešly - čas je důležitější než den v týdnu.
+    char endText[24] = "";
+    int endWidth = 0;
+    if (showEnd) {
+      snprintf(endText, sizeof(endText), "%s %s", english ? "to" : "do",
+               schoolEndTimes[day]);
+      endWidth = schoolTextWidth(endText);
+    }
+    if (heading) {
+      const int available = headingRight - headingLeft -
+                            (showEnd ? endWidth + SCHOOL_END_GAP : 0);
+      int dayWidth = schoolTextWidth(schoolHeadings[day]);
+      if (dayWidth > available) dayWidth = available;
+      // Label o pixel širší než text: s přesnou šířkou LVGL občas usekne
+      // poslední znak na tečky.
+      lv_obj_set_width(schoolDayLabels[day], dayWidth + 1);
+      placeSchoolLabel(schoolDayLabels[day], headingLeft, top);
+      if (showEnd) {
+        lv_label_set_text(schoolEndLabels[day], endText);
+        lv_obj_set_width(schoolEndLabels[day], endWidth + 1);
+        placeSchoolLabel(schoolEndLabels[day],
+                         headingLeft + dayWidth + SCHOOL_END_GAP, top);
+      }
+    }
+    int cursorY = lessonsTop;
+    for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index) {
+      const bool visible = !newsPage && !showMessage && day < schoolDayCount &&
+                           index < schoolLessonCounts[day] &&
+                           index < schoolVisible.lessons;
+      setObjectVisible(schoolHourLabels[day][index], visible);
+      setObjectVisible(schoolSubjectLabels[day][index], visible);
+      if (!visible) continue;
+      lv_obj_set_width(schoolSubjectLabels[day][index], schoolSubjectWidth());
+      placeSchoolLabel(schoolHourLabels[day][index], left, cursorY);
+      placeSchoolLabel(schoolSubjectLabels[day][index],
+                       left + SCHOOL_HOUR_WIDTH + SCHOOL_COLUMN_GAP, cursorY);
+      cursorY += line;
+    }
+  }
+
+  int cursorY = lessonsTop + schoolVisible.lessons * line;
+  const bool homeworkHeading =
+      schoolVisible.homework > 0 || schoolVisible.homeworkEmpty;
+  setObjectVisible(schoolHomeworkHeading, homeworkHeading);
+  if (homeworkHeading) {
+    cursorY += SCHOOL_SECTION_GAP;
+    lv_label_set_text(schoolHomeworkHeading,
+                      schoolVisible.homeworkEmpty
+                          ? (english ? "NO HOMEWORK" : "ŽÁDNÉ ÚKOLY")
+                          : (english ? "HOMEWORK" : "ÚKOLY"));
+    placeSchoolLabel(schoolHomeworkHeading, SCHOOL_LEFT, cursorY);
+    cursorY += schoolHeadingHeight() + SCHOOL_ROW_GAP;
+  }
+  for (size_t index = 0; index < SCHOOL_MAX_HOMEWORK; ++index) {
+    const bool visible = index < schoolVisible.homework;
+    const bool moreMark =
+        visible && schoolVisible.homeworkEllipsis &&
+        index + 1 == schoolVisible.homework;
+    setObjectVisible(schoolDueLabels[index], visible && !moreMark);
+    setObjectVisible(schoolTaskLabels[index], visible);
+    if (!visible) continue;
+    // Tečky stojí pod textem, ne pod termínem: říkají "a další úkoly".
+    if (moreMark) lv_label_set_text(schoolTaskLabels[index], SCHOOL_MORE_MARK);
+    placeSchoolLabel(schoolDueLabels[index], SCHOOL_LEFT, cursorY);
+    placeSchoolLabel(schoolTaskLabels[index],
+                     SCHOOL_LEFT + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP,
+                     cursorY);
+    cursorY += line;
+  }
+  updateSchoolHighlight(true);
+}
+
+// Stránka školy leží v PSRAM ze stejného důvodu jako agenda: přes šedesát
+// štítků by jinak ukouslo interní RAM, kterou potřebuje TLS.
+class SchoolPsramAllocations {
+ public:
+  SchoolPsramAllocations() { clockLvglPreferPsram(true); }
+  ~SchoolPsramAllocations() { clockLvglPreferPsram(false); }
+
+  SchoolPsramAllocations(const SchoolPsramAllocations &) = delete;
+  SchoolPsramAllocations &operator=(const SchoolPsramAllocations &) = delete;
+};
+
+lv_obj_t *makeSchoolLabel(const lv_font_t *font, int width,
+                          lv_text_align_t align) {
+  lv_obj_t *label = makeLabel(schoolPage, font, COLOR_TEXT);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(label, width);
+  lv_obj_set_style_text_align(label, align, 0);
+  lv_label_set_text(label, "");
+  lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+  return label;
+}
+
+void createSchoolPage(lv_obj_t *screen) {
+  SchoolPsramAllocations psram;
+  schoolPage = lv_obj_create(screen);
+  lv_obj_set_size(schoolPage, 480, 480);
+  lv_obj_center(schoolPage);
+  lv_obj_set_style_bg_color(schoolPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(schoolPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(schoolPage, 0, 0);
+  lv_obj_set_style_pad_all(schoolPage, 0, 0);
+  lv_obj_set_style_radius(schoolPage, 0, 0);
+  lv_obj_clear_flag(schoolPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  schoolHeaderLabel = makeLabel(schoolPage, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_recolor(schoolHeaderLabel, true);
+  lv_label_set_text(schoolHeaderLabel, "");
+  alignCenter(schoolHeaderLabel, 0, SCHOOL_HEADER_Y);
+
+  schoolStatusLabel = makeLabel(schoolPage, &clock_czech_16, COLOR_MUTED);
+  lv_label_set_long_mode(schoolStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(schoolStatusLabel, 340);
+  lv_obj_set_style_text_align(schoolStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(schoolStatusLabel, "");
+  alignCenter(schoolStatusLabel, 0, 0);
+
+  const int fullWidth = SCHOOL_RIGHT - SCHOOL_LEFT;
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+    schoolDayLabels[day] =
+        makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+    schoolEndLabels[day] =
+        makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+    for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index) {
+      schoolHourLabels[day][index] = makeSchoolLabel(
+          &clock_czech_16, SCHOOL_HOUR_WIDTH, LV_TEXT_ALIGN_RIGHT);
+      schoolSubjectLabels[day][index] =
+          makeSchoolLabel(&clock_czech_16, fullWidth, LV_TEXT_ALIGN_LEFT);
+    }
+  }
+  schoolHomeworkHeading =
+      makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+  const int taskWidth = fullWidth - SCHOOL_DUE_WIDTH - SCHOOL_COLUMN_GAP;
+  for (size_t index = 0; index < SCHOOL_MAX_HOMEWORK; ++index) {
+    schoolDueLabels[index] = makeSchoolLabel(&clock_czech_16, SCHOOL_DUE_WIDTH,
+                                             LV_TEXT_ALIGN_LEFT);
+    schoolTaskLabels[index] =
+        makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
+  }
+  schoolMessagesHeading =
+      makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+  for (size_t index = 0; index < SCHOOL_MAX_MESSAGES; ++index) {
+    schoolMessageWhenLabels[index] = makeSchoolLabel(
+        &clock_czech_16, SCHOOL_DUE_WIDTH, LV_TEXT_ALIGN_LEFT);
+    schoolMessageTextLabels[index] =
+        makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
+  }
+  schoolMarksHeading =
+      makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+  for (size_t index = 0; index < SCHOOL_MAX_MARKS; ++index) {
+    schoolMarkWhenLabels[index] = makeSchoolLabel(
+        &clock_czech_16, SCHOOL_DUE_WIDTH, LV_TEXT_ALIGN_LEFT);
+    schoolMarkTextLabels[index] =
+        makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
+  }
+
+  makeChildrenTapThrough(schoolPage);
+  lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_HIDDEN);
+  updateSchoolHeaderLabel();
+  layoutSchoolPage();
+  applySchoolColors();
 }
 
 // Obrazovka předpovědi. Svislý rozpočet - kolik hodin po denní části a
@@ -4139,6 +4688,7 @@ void updateOverlayStatusLabels() {
   updatePlanesClockLabel();
   updateForecastHeaderLabel();
   updateAgendaHeaderLabel();
+  updateSchoolHeaderLabel();
   updateSkyHeaderLabel();
   updateRssHeaderLabel();
 }
@@ -5254,6 +5804,9 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetPlanesAvailable(clockConfigPlanesAvailable(config));
   clockDashboardSetAgendaAvailable(clockConfigAgendaAvailable(config));
   clockDashboardSetSkyAvailable(clockConfigSkyAvailable(config));
+  clockDashboardSetSchoolAvailable(clockConfigSchoolAvailable(config));
+  // Vypínač úkolů mění rozvržení bez nového stažení.
+  layoutSchoolPage();
   // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
   // změně nastavení musí přepočítat - jinak by obrazovka kreslila hodiny do
   // místa, které si mezitím vzala spodní sekce.
@@ -6504,6 +7057,164 @@ void clockDashboardSetAgendaCalendars(const char *const *names, size_t count) {
   updateAgendaLegendLabel();
 }
 
+bool clockDashboardSwipeSchool() {
+  if (activeScreen != DASHBOARD_SCREEN_SCHOOL || schoolPage == nullptr ||
+      settingsVisible || firmwareUpdateActive)
+    return false;
+  // Zpátky na rozvrh se dá vždycky; na zprávy jen, když je server posílá.
+  if (schoolPageIndex == 0 && !schoolNewsAvailable()) return false;
+  schoolPageIndex = 1 - schoolPageIndex;
+  layoutSchoolPage();
+  return true;
+}
+
+bool clockDashboardSchoolVisible() {
+  return activeScreen == DASHBOARD_SCREEN_SCHOOL;
+}
+
+void clockDashboardSetSchoolVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_SCHOOL : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetSchoolVisibilityCallback(
+    RssVisibilityCallback visibility) {
+  schoolVisibilityCallback = visibility;
+}
+
+void clockDashboardSetSchoolAvailable(bool available) {
+  // Stránka se zakládá až s prvním zapnutím obrazovky, stejně jako agenda.
+  if (available && schoolPage == nullptr && dashboardScreen != nullptr)
+    createSchoolPage(dashboardScreen);
+  if (schoolFeatureAvailable == available) return;
+  schoolFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_SCHOOL) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (schoolPage != nullptr) lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (schoolVisibilityCallback != nullptr) schoolVisibilityCallback(false);
+  }
+  updateScreenDots();
+}
+
+bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
+  if (schoolPage == nullptr) return false;
+  schoolReady = feed != nullptr;
+  strlcpy(schoolMessage, message != nullptr ? message : "",
+          sizeof(schoolMessage));
+  if (feed == nullptr) {
+    schoolDayCount = 0;
+    schoolHomeworkCount = 0;
+    schoolHomeworkTotal = 0;
+    schoolHasMessages = schoolHasMarks = false;
+    schoolMessageCount = schoolMessageTotal = 0;
+    schoolMarkCount = schoolMarkTotal = 0;
+    layoutSchoolPage();
+    return true;
+  }
+  // Počet dnů určuje šířku sloupců, a tu potřebuje výběr mezi plným názvem
+  // předmětu a zkratkou níž.
+  schoolDayCount = static_cast<uint8_t>(feed->dayCount);
+  const int subjectWidth = schoolSubjectWidth();
+  for (size_t dayIndex = 0; dayIndex < SCHOOL_MAX_DAYS; ++dayIndex) {
+    const bool present = dayIndex < feed->dayCount;
+    schoolLessonCounts[dayIndex] =
+        present ? static_cast<uint8_t>(feed->days[dayIndex].lessonCount) : 0;
+    schoolDayToday[dayIndex] = present && feed->days[dayIndex].today;
+    schoolEndTimes[dayIndex][0] = '\0';
+    for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index) {
+      schoolLessonStates[dayIndex][index] = SchoolLessonState::Normal;
+      schoolLessonTimes[dayIndex][index] = SchoolLessonTime{};
+    }
+    if (!present) continue;
+    const SchoolDay &day = feed->days[dayIndex];
+    strlcpy(schoolEndTimes[dayIndex], day.end, sizeof(schoolEndTimes[dayIndex]));
+    // Ve dvou sloupcích se den v týdnu nevejde; "DNES" a "ZÍTRA" vedle sebe
+    // stačí a vzdálenější den nese datum.
+    char *heading = schoolHeadings[dayIndex];
+    const size_t headingSize = sizeof(schoolHeadings[dayIndex]);
+    if (feed->dayCount < 2 && day.weekday[0] != '\0') {
+      snprintf(heading, headingSize, "%s, %s", day.day, day.weekday);
+    } else {
+      strlcpy(heading, day.day, headingSize);
+    }
+    for (size_t index = 0; index < day.lessonCount; ++index) {
+      const SchoolLesson &lesson = day.lessons[index];
+      schoolLessonStates[dayIndex][index] = lesson.state;
+      schoolLessonTimes[dayIndex][index] = schoolLessonTime(lesson);
+      lv_label_set_text(schoolHourLabels[dayIndex][index], lesson.hour);
+      const bool canceled = lesson.state == SchoolLessonState::Canceled;
+      // Odpadlá hodina nese poznámku přímo za předmětem.
+      const char *suffix =
+          canceled ? (englishLanguage() ? " - off" : " - odpadá") : "";
+      const auto fits = [&](const char *name) {
+        char text[SCHOOL_SUBJECT_LENGTH + 16];
+        snprintf(text, sizeof(text), "%s%s", name, suffix);
+        return lv_txt_get_width(text, strlen(text), &clock_czech_16, 0,
+                                LV_TEXT_FLAG_NONE) <= subjectWidth;
+      };
+      // Plný název, dokud se vejde; zkratka "Čj" řekne víc než useknuté
+      // "Český jazyk a l...".
+      const char *subject = lesson.subject;
+      if (lesson.abbrev[0] != '\0' && !fits(lesson.subject))
+        subject = lesson.abbrev;
+      char text[SCHOOL_SUBJECT_LENGTH + 16];
+      snprintf(text, sizeof(text), "%s%s", subject, suffix);
+      lv_label_set_text(schoolSubjectLabels[dayIndex][index], text);
+    }
+  }
+  schoolHomeworkCount = static_cast<uint8_t>(feed->homeworkCount);
+  schoolHomeworkTotal = static_cast<uint8_t>(
+      feed->homeworkTotal < UINT8_MAX ? feed->homeworkTotal : UINT8_MAX);
+  for (size_t index = 0; index < feed->homeworkCount; ++index) {
+    const SchoolHomework &task = feed->homework[index];
+    lv_label_set_text(schoolDueLabels[index], task.due);
+    char text[SCHOOL_SHORT_LENGTH + SCHOOL_TITLE_LENGTH + 4];
+    if (task.abbrev[0] != '\0') {
+      snprintf(text, sizeof(text), "%s: %s", task.abbrev, task.title);
+    } else {
+      strlcpy(text, task.title, sizeof(text));
+    }
+    lv_label_set_text(schoolTaskLabels[index], text);
+  }
+  const auto clampCount = [](size_t value) {
+    return static_cast<uint8_t>(value < UINT8_MAX ? value : UINT8_MAX);
+  };
+  schoolHasMessages = feed->hasMessages;
+  schoolMessageCount = clampCount(feed->messageCount);
+  schoolMessageTotal = clampCount(feed->messageTotal);
+  for (size_t index = 0; index < feed->messageCount; ++index) {
+    const SchoolMessage &message = feed->messages[index];
+    lv_label_set_text(schoolMessageWhenLabels[index], message.when);
+    char text[SCHOOL_SENDER_LENGTH + SCHOOL_TITLE_LENGTH + 4];
+    if (message.sender[0] != '\0') {
+      snprintf(text, sizeof(text), "%s: %s", message.sender, message.title);
+    } else {
+      strlcpy(text, message.title, sizeof(text));
+    }
+    lv_label_set_text(schoolMessageTextLabels[index], text);
+  }
+  schoolHasMarks = feed->hasMarks;
+  schoolMarkCount = clampCount(feed->markCount);
+  schoolMarkTotal = clampCount(feed->markTotal);
+  for (size_t index = 0; index < feed->markCount; ++index) {
+    const SchoolMark &mark = feed->marks[index];
+    lv_label_set_text(schoolMarkWhenLabels[index], mark.when);
+    // "M 1  Násobilka": zkratka předmětu, známka a téma, pokud je.
+    const char *subject = mark.abbrev[0] != '\0' ? mark.abbrev : mark.subject;
+    char text[SCHOOL_SUBJECT_LENGTH + SCHOOL_MARK_LENGTH +
+              SCHOOL_TITLE_LENGTH + 8];
+    snprintf(text, sizeof(text), "%s%s%s%s%s", subject,
+             subject[0] != '\0' ? " " : "", mark.mark,
+             mark.theme[0] != '\0' ? "  " : "", mark.theme);
+    lv_label_set_text(schoolMarkTextLabels[index], text);
+  }
+  layoutSchoolPage();
+  return true;
+}
+
 void clockDashboardSetRadarVisible(bool visible) { setRadarVisible(visible); }
 
 bool clockDashboardAutomaticRotationAllowed() {
@@ -6631,6 +7342,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     if (agendaPage != nullptr) lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
+    if (schoolPage != nullptr) lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_HIDDEN);
     if (forecastPage != nullptr)
       lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
     if (planesPage != nullptr)
@@ -6662,6 +7374,10 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
       // služba by zůstala vypnutá a už nikdy nic nestáhla.
       if (agendaVisibilityCallback != nullptr) agendaVisibilityCallback(true);
+    } else if (activeScreen == DASHBOARD_SCREEN_SCHOOL &&
+               schoolPage != nullptr) {
+      lv_obj_clear_flag(schoolPage, LV_OBJ_FLAG_HIDDEN);
+      if (schoolVisibilityCallback != nullptr) schoolVisibilityCallback(true);
     } else if (activeScreen == DASHBOARD_SCREEN_FORECAST &&
                forecastPage != nullptr) {
       lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);

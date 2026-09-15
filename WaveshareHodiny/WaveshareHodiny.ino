@@ -15,6 +15,7 @@
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
 #include "AgendaService.h"
+#include "SchoolService.h"
 #include "Astronomy.h"
 #include "RssService.h"
 #include "SettingsShareService.h"
@@ -86,6 +87,7 @@ SemaphoreHandle_t runtimeConfigMutex = nullptr;
 TaskHandle_t homeAssistantTaskHandle = nullptr;
 TaskHandle_t rssTaskHandle = nullptr;
 TaskHandle_t agendaTaskHandle = nullptr;
+TaskHandle_t schoolTaskHandle = nullptr;
 TaskHandle_t forecastTaskHandle = nullptr;
 String usbCommand;
 bool screenshotTransferActive = false;
@@ -139,6 +141,7 @@ unsigned long radarRadiusApplyAt = 0;
 bool automaticRotationPaused = true;
 uint32_t displayedRssGeneration = UINT32_MAX;
 uint32_t displayedAgendaGeneration = UINT32_MAX;
+uint32_t displayedSchoolGeneration = UINT32_MAX;
 uint32_t displayedForecastGeneration = UINT32_MAX;
 uint32_t displayedPlanesGeneration = UINT32_MAX;
 // Detail se překresluje mimo generaci snímku: klepnutí na letadlo mění panel,
@@ -187,6 +190,10 @@ constexpr uint32_t RSS_VISIBILITY_REFRESH_MS = 5UL * 60UL * 1000UL;
 // Server agendu přepočítává po čtvrthodině, takže mladší data otevření
 // obrazovky obnovovat nemusí - stejně by přišla stejná odpověď.
 constexpr uint32_t AGENDA_VISIBILITY_REFRESH_MS = 10UL * 60UL * 1000UL;
+// Škola: server se Školy OnLine ptá po dvaceti minutách, takže mladší data
+// otevření obrazovky neobnovuje.
+constexpr uint32_t SCHOOL_RETRY_MS = 2UL * 60UL * 1000UL;
+constexpr uint32_t SCHOOL_VISIBILITY_REFRESH_MS = 10UL * 60UL * 1000UL;
 // Předpověď se mění po hodinách, takže otevření obrazovky nemá cenu
 // stahovat znovu dřív než po čtvrthodině.
 constexpr uint32_t FORECAST_VISIBILITY_REFRESH_MS = 15UL * 60UL * 1000UL;
@@ -238,6 +245,19 @@ volatile bool agendaProbePending = false;
 volatile bool agendaProbeDone = false;
 constexpr uint32_t AGENDA_PROBE_TIMEOUT_MS = 30UL * 1000UL;
 
+// Zkouška adresy rozvrhu z webu. Stejně jako u agendy ji provede úloha školy,
+// která má zásobník na ověření proti svazku kořenů Mozilly.
+struct SchoolProbeRequest {
+  ClockSchoolConfig config;
+  int httpStatus = 0;
+  bool ok = false;
+  char error[SCHOOL_MESSAGE_LENGTH] = "";
+};
+SchoolProbeRequest schoolProbeRequest;
+volatile bool schoolProbePending = false;
+volatile bool schoolProbeDone = false;
+constexpr uint32_t SCHOOL_PROBE_TIMEOUT_MS = 30UL * 1000UL;
+
 // Přenos zálohy nastavení na server a zpět. Potřebuje stejné ověření proti
 // svazku kořenů Mozilly jako agenda, takže ho obstará úloha agendy; web server
 // jen předá žádost a počká. Web server je jednovláknový, takže stačí jediná.
@@ -276,6 +296,13 @@ void copyRuntimeAgendaConfig(ClockAgendaConfig &destination,
   destination = runtimeConfig.agenda;
   calendars = runtimeConfig.agendaCalendars;
   xSemaphoreGive(runtimeConfigMutex);
+}
+
+void copyRuntimeSchoolConfig(ClockSchoolConfig &destination) {
+  if (runtimeConfigMutex != nullptr)
+    xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
+  destination = runtimeConfig.school;
+  if (runtimeConfigMutex != nullptr) xSemaphoreGive(runtimeConfigMutex);
 }
 
 // Úloha kanálu zpráv si nebere celou ClockConfig, aby nepotřebovala další
@@ -352,6 +379,7 @@ bool saveRuntimeConfig(const ClockConfig &config, bool tokenWasSubmitted) {
   // doběhnutí nastaveného intervalu, tedy klidně za dvě hodiny.
   if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
   if (agendaTaskHandle != nullptr) xTaskNotifyGive(agendaTaskHandle);
+  if (schoolTaskHandle != nullptr) xTaskNotifyGive(schoolTaskHandle);
   if (forecastTaskHandle != nullptr) xTaskNotifyGive(forecastTaskHandle);
   return true;
 }
@@ -552,6 +580,19 @@ void handleAgendaVisibility(bool visible) {
   xTaskNotifyGive(agendaTaskHandle);
 }
 
+void handleSchoolVisibility(bool visible) {
+  if (!visible || schoolTaskHandle == nullptr) return;
+  const ClockConfig &config = loopConfigSnapshot();
+  if (!clockConfigSchoolAvailable(config)) return;
+  SchoolStatus status;
+  if (!schoolServiceStatus(status) || status.loading) return;
+  if (status.ready && status.lastSuccessAvailable &&
+      status.lastSuccessAgeMs < SCHOOL_VISIBILITY_REFRESH_MS) {
+    return;
+  }
+  xTaskNotifyGive(schoolTaskHandle);
+}
+
 void handleRssVisibility(bool visible) {
   if (!visible || rssTaskHandle == nullptr) return;
   const ClockConfig &config = loopConfigSnapshot();
@@ -689,6 +730,45 @@ bool runBackgroundWorkFromWeb(void (*work)(void *), void *context) {
     feedLoopWDT();
   }
   return true;
+}
+
+bool runSchoolProbeFromWeb(const ClockSchoolConfig &config, int &httpStatus,
+                           String &error) {
+  httpStatus = 0;
+  if (schoolTaskHandle == nullptr) {
+    error = F("Úloha rozvrhu neběží.");
+    return false;
+  }
+  if (schoolProbePending) {
+    error = F("Zkouška rozvrhu už probíhá.");
+    return false;
+  }
+  schoolProbeRequest.config = config;
+  schoolProbeRequest.httpStatus = 0;
+  schoolProbeRequest.ok = false;
+  schoolProbeRequest.error[0] = '\0';
+  schoolProbeDone = false;
+  schoolProbePending = true;
+  xTaskNotifyGive(schoolTaskHandle);
+
+  const unsigned long deadline = millis() + SCHOOL_PROBE_TIMEOUT_MS;
+  while (!schoolProbeDone) {
+    if (static_cast<long>(millis() - deadline) >= 0) {
+      error = F("Zkouška rozvrhu se nedočkala odpovědi.");
+      return false;
+    }
+    // Stejně jako u zkoušky kanálu: displej nesmí zamrznout a watchdog
+    // smyčky musí dostat najíst.
+    if (!screenshotTransferActive) {
+      clockDashboardLoop();
+      displayDriverLoop();
+    }
+    delay(5);
+    feedLoopWDT();
+  }
+  httpStatus = schoolProbeRequest.httpStatus;
+  if (!schoolProbeRequest.ok) error = schoolProbeRequest.error;
+  return schoolProbeRequest.ok;
 }
 
 bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
@@ -884,6 +964,7 @@ constexpr uint8_t ROTATION_SCREEN_FORECAST = CLOCK_SCREEN_FORECAST;
 constexpr uint8_t ROTATION_SCREEN_PLANES = CLOCK_SCREEN_PLANES;
 constexpr uint8_t ROTATION_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA;
 constexpr uint8_t ROTATION_SCREEN_SKY = CLOCK_SCREEN_SKY;
+constexpr uint8_t ROTATION_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL;
 constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
 constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
 
@@ -909,6 +990,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardPlanesVisible()) return ROTATION_SCREEN_PLANES;
   if (clockDashboardAgendaVisible()) return ROTATION_SCREEN_AGENDA;
   if (clockDashboardSkyVisible()) return ROTATION_SCREEN_SKY;
+  if (clockDashboardSchoolVisible()) return ROTATION_SCREEN_SCHOOL;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -938,6 +1020,9 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_SKY:
       clockDashboardSetSkyVisible(true);
       break;
+    case ROTATION_SCREEN_SCHOOL:
+      clockDashboardSetSchoolVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
@@ -946,6 +1031,7 @@ void showRotationScreen(uint8_t screen) {
       clockDashboardSetPlanesVisible(false);
       clockDashboardSetAgendaVisible(false);
       clockDashboardSetSkyVisible(false);
+      clockDashboardSetSchoolVisible(false);
       break;
   }
 }
@@ -964,6 +1050,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
       return clockConfigAgendaAvailable(config);
     case ROTATION_SCREEN_SKY:
       return clockConfigSkyAvailable(config);
+    case ROTATION_SCREEN_SCHOOL:
+      return clockConfigSchoolAvailable(config);
     default: return true;
   }
 }
@@ -987,6 +1075,9 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
              config.agenda.automaticRotation;
     case ROTATION_SCREEN_SKY:
       return clockConfigSkyAvailable(config) && config.sky.automaticRotation;
+    case ROTATION_SCREEN_SCHOOL:
+      return clockConfigSchoolAvailable(config) &&
+             config.school.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -1029,6 +1120,14 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     // jen "nic nemáš", nemá cenu - ruční gesto na ni pustí pořád.
     return status.ready && status.count > 0;
   }
+  if (screen == ROTATION_SCREEN_SCHOOL) {
+    SchoolStatus status;
+    // Zamčená mezipaměť neznamená prázdný rozvrh; zkusí se za chvíli znovu.
+    if (!schoolServiceStatus(status)) return false;
+    // O prázdninách bez úkolů by obrazovka řekla jen "žádné vyučování";
+    // ruční gesto na ni pustí pořád.
+    return status.ready && (status.lessonCount > 0 || status.homeworkCount > 0);
+  }
   if (screen == ROTATION_SCREEN_PLANES) {
     // Prázdná obloha je platný stav, takže se čeká jen na první vykreslený
     // snímek - ne na to, až nějaké letadlo přiletí.
@@ -1054,6 +1153,8 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
       return static_cast<unsigned long>(config.agenda.displaySeconds) * 1000UL;
     case ROTATION_SCREEN_SKY:
       return static_cast<unsigned long>(config.sky.displaySeconds) * 1000UL;
+    case ROTATION_SCREEN_SCHOOL:
+      return static_cast<unsigned long>(config.school.displaySeconds) * 1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -1067,7 +1168,8 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_FORECAST) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_PLANES) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_AGENDA) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_SKY);
+      rotationScreenEnabled(config, ROTATION_SCREEN_SKY) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL);
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed();
@@ -1146,7 +1248,7 @@ void maintainDisplayGestures() {
   }
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
-    if (clockDashboardSwipeValues()) {
+    if (clockDashboardSwipeValues() || clockDashboardSwipeSchool()) {
       displayModeStartedAt = millis();
     } else if (radarAvailable && clockDashboardRadarVisible()) {
       handleRadarRangeChange(rangeSwipeDirection);
@@ -1231,6 +1333,27 @@ void maintainAgendaDisplay() {
     return;
   }
   displayedAgendaGeneration = status.generation;
+}
+
+void pushSchoolToDashboard(const SchoolFeed &feed, void *context) {
+  *static_cast<bool *>(context) = clockDashboardSetSchool(&feed, "");
+}
+
+void maintainSchoolDisplay() {
+  SchoolStatus status;
+  // Zamčená mezipaměť by jinak vypadala jako nenačtený rozvrh.
+  if (!schoolServiceStatus(status)) return;
+  if (status.generation == displayedSchoolGeneration) return;
+  // Stránka se zakládá až se zapnutím obrazovky. Kdyby první stažení doběhlo
+  // dřív, generace se nezapíše a data se předají, jakmile stránka vznikne.
+  bool shown = false;
+  if (status.ready) {
+    // Když je mezipaměť právě zamčená, generace se nezapíše a zkusí se znovu.
+    if (!schoolServiceVisit(pushSchoolToDashboard, &shown)) return;
+  } else {
+    shown = clockDashboardSetSchool(nullptr, status.message);
+  }
+  if (shown) displayedSchoolGeneration = status.generation;
 }
 
 // Snímek radaru letadel na obrazovku. Generace se mění i po neúspěšném
@@ -1677,6 +1800,15 @@ void handleUsbCommands() {
         // takže ručně nalistovaná agenda by screenshot nikdy nezastihl.
         clockDashboardSetAgendaVisible(true);
         Serial.println("AGENDA_SHOWN");
+      } else if (usbCommand == "SCHOOLSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje.
+        clockDashboardSetSchoolVisible(true);
+        Serial.println("SCHOOL_SHOWN");
+      } else if (usbCommand == "SCHOOLNEWS" && !screenshotTransferActive) {
+        // Druhá stránka Školy pro screenshot: tažení prstu přes USB poslat nejde.
+        clockDashboardSetSchoolVisible(true);
+        Serial.println(clockDashboardSwipeSchool() ? "SCHOOL_NEWS_SHOWN"
+                                                   : "SCHOOL_NEWS_UNAVAILABLE");
       } else if (usbCommand == "SKYSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
         // takže ručně nalistovanou obrazovku by screenshot nikdy nezastihl.
@@ -2688,6 +2820,80 @@ void agendaTask(void *) {
   }
 }
 
+// Škola má vlastní úlohu ze stejného důvodu jako agenda: adresu zadává
+// majitel, ověřuje se proti svazku kořenů Mozilly a zásobník leží v PSRAM.
+// Vrací, za jak dlouho je další pokus, nebo 0, když se škola nepoužívá.
+unsigned long maintainSchoolFetch(const ClockSchoolConfig &config,
+                                  unsigned long &nextRefreshAt,
+                                  char *lastFetchedUrl,
+                                  size_t lastFetchedUrlSize) {
+  if (!(config.enabled && config.url[0] != '\0')) {
+    if (lastFetchedUrl[0] != '\0') {
+      // Obrazovka se vypnula nebo přišla o adresu; rozvrh nesmí zůstat.
+      schoolServiceClear();
+      lastFetchedUrl[0] = '\0';
+    }
+    nextRefreshAt = 0;
+    return 0;
+  }
+  if (strcmp(lastFetchedUrl, config.url) != 0) {
+    // Jiný server: rozvrh z toho původního pryč a stáhnout hned.
+    if (lastFetchedUrl[0] != '\0') schoolServiceClear();
+    strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
+    nextRefreshAt = 0;
+  }
+  const unsigned long now = millis();
+  if (nextRefreshAt != 0 && static_cast<long>(now - nextRefreshAt) < 0) {
+    return nextRefreshAt - now;
+  }
+  int httpStatus = 0;
+  String error;
+  const bool ok = schoolServiceFetch(
+      config, NetworkDiagnosticKind::SchoolRuntime, httpStatus, error);
+  const unsigned long interval =
+      ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
+         : SCHOOL_RETRY_MS;
+  nextRefreshAt = millis() + interval;
+  return interval;
+}
+
+void schoolTask(void *) {
+  unsigned long nextRefreshAt = 0;
+  char lastUrl[CLOCK_SCHOOL_URL_LENGTH] = "";
+  ClockSchoolConfig config;
+  for (;;) {
+    if (schoolProbePending) {
+      int httpStatus = 0;
+      String error;
+      const bool ok =
+          schoolServiceProbe(schoolProbeRequest.config, httpStatus, error);
+      schoolProbeRequest.httpStatus = httpStatus;
+      schoolProbeRequest.ok = ok;
+      strlcpy(schoolProbeRequest.error, error.c_str(),
+              sizeof(schoolProbeRequest.error));
+      // Pending pouští další žádost, takže se nuluje až po zapsání výsledku.
+      schoolProbeDone = true;
+      schoolProbePending = false;
+      continue;
+    }
+    copyRuntimeSchoolConfig(config);
+    if (WiFi.status() != WL_CONNECTED) {
+      nextRefreshAt = 0;
+      // Bez sítě se nestahuje, takže by stáří rozvrhu nikdo nehlídal.
+      schoolServiceExpireStale();
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
+      continue;
+    }
+    const unsigned long waitMs =
+        maintainSchoolFetch(config, nextRefreshAt, lastUrl, sizeof(lastUrl));
+    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
+                                             : pdMS_TO_TICKS(waitMs)) > 0) {
+      // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
+      if (!schoolProbePending) nextRefreshAt = 0;
+    }
+  }
+}
+
 // Kanál zpráv má vlastní úlohu. Do úlohy home-assistant se nevešel: její
 // zásobník je vyměřený na TLS s jedním připnutým kořenem a na parsování JSON,
 // kdežto ověření proti svazku kořenů Mozilly potřebuje výrazně víc.
@@ -3035,6 +3241,7 @@ void setup() {
   tmepServiceBegin();
   rssServiceBegin();
   agendaServiceBegin();
+  schoolServiceBegin();
   weatherForecastServiceBegin();
   LCD_Init();
   currentDisplayBrightness = runtimeConfig.dayBrightness;
@@ -3061,6 +3268,7 @@ void setup() {
                        handleForecastVisibility);
   clockDashboardSetPlanesVisibilityCallback(handlePlanesVisibility);
   clockDashboardSetAgendaVisibilityCallback(handleAgendaVisibility);
+  clockDashboardSetSchoolVisibilityCallback(handleSchoolVisibility);
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
   chmiRadarServiceBegin();
@@ -3107,6 +3315,12 @@ void setup() {
   configurationWebSetAgendaTask(agendaTaskHandle);
   configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
   configurationWebSetSettingsShare(runSettingsShareFromWeb);
+  // Rozvrh se ověřuje proti svazku kořenů Mozilly stejně jako agenda.
+  xTaskCreatePinnedToCoreWithCaps(
+      schoolTask, "school", 20480, nullptr, 1, &schoolTaskHandle, 0,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  configurationWebSetSchoolTask(schoolTaskHandle);
+  configurationWebSetSchoolProbe(runSchoolProbeFromWeb);
   configurationWebSetBackgroundWork(runBackgroundWorkFromWeb);
   configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
@@ -3176,6 +3390,7 @@ void loop() {
   maintainPlanesDisplay();
   maintainRssDisplay();
   maintainAgendaDisplay();
+  maintainSchoolDisplay();
   maintainForecastDisplay();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné

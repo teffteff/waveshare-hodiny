@@ -1,0 +1,36 @@
+[Unit]
+Description=Rozvrh a domaci ukoly ze Skoly OnLine pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Kod patri rootovi,
+# token je jen v pameti. Zapisuje jen posledni stazena data do StateDirectory.
+User=school
+Group=school
+Environment=SCHOOL_PORT=8094
+# Jen pro Caddy na stejnem stroji. Odpoved nese jmeno ditete a jeho ukoly,
+# takze by se na verejne IP dal basic_auth z Caddyfile obejit.
+Environment=SCHOOL_BIND=127.0.0.1
+# Jmeno a heslo do Skoly OnLine. Soubor patri rootovi (600), systemd ho nacte
+# pred prepnutim na uzivatele, takze sluzba ho jako soubor neprecte.
+EnvironmentFile=/opt/school/school.env
+# /var/lib/school zaklada systemd sam, patri uzivateli school a nikdo jiny do
+# nej nevidi: soubor nese rozvrh, ukoly, titulky zprav a znamky. systemd 239
+# na Oracle Linuxu 8 cestu sluzbe sam nepreda, proto i promenna.
+StateDirectory=school
+StateDirectoryMode=0700
+Environment=SCHOOL_STATE_DIR=/var/lib/school
+# Zadny venv: sluzba si vystaci se standardni knihovnou.
+# Interpret je vyslovne 3.11, /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6.
+ExecStart=/usr/bin/python3.11 /opt/school/serve.py
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

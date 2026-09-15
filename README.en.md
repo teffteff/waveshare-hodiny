@@ -59,10 +59,13 @@ changes the system text and verbal date shown on the display.
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
 - optional automatic rotation between the clock, radar, news, forecast,
-  aircraft and agenda, in an order you choose,
+  aircraft, agenda and school timetable, in an order you choose,
 - a news screen fed by any RSS or Atom feed,
 - an agenda screen fed by Google Calendar, merged across several calendars and
   coloured by the one each event came from,
+- a school screen with the timetable and homework from Škola OnLine through
+  your own server, with substitutions, cancelled lessons and the current lesson
+  highlighted,
 - a forecast screen with hourly and daily Open-Meteo data, optionally with air
   quality, PM2.5 and grass pollen — and nine hours instead of six without it,
 - an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by
@@ -478,6 +481,53 @@ screen says `Nic naplánovaného` and the automatic rotation skips it, because
 rotating to a page that only reports emptiness is not worth a slot — the finger
 hold still reaches it whenever you want. After a failure the firmware retries in
 two minutes and keeps the last successfully loaded events on screen.
+
+### School timetable and homework
+
+The **School** screen shows one child's timetable for two school days side by
+side, plus homework, from Škola OnLine, the Czech school information system.
+The left column is today until the last lesson ends, then the next school day;
+the right column is the school day after it — so the bag is packed in the
+evening from what the clock shows, and on Friday afternoon it shows Monday and
+Tuesday. Each column has a day label (`DNES`, `ZÍTRA`, `PO 21.9.`) with the end
+of the school day on the right (`do 12:20`). Rows carry only the lesson number
+and subject; a subject that does not fit its column is replaced by its Škola
+OnLine abbreviation. When only one school day is in sight, it gets the full
+width.
+
+Colours carry state: today's current or next lesson has a green number and
+subject, substitutions and school events have an orange subject, and a
+cancelled lesson is dimmed with `odpadá` after the subject. Below the timetable is the
+**homework** due from today over the next two weeks, as much as fits; when it
+does not all fit, the last line becomes three dots. When there is none,
+`ŽÁDNÉ ÚKOLY` (no homework) stands below the timetable. Homework can be
+switched off on the tab.
+
+Swiping sideways switches to a second page (like the second set of values on
+the VALUES face): **unread messages** and **marks** from the last two weeks.
+A message shows only the day, the sender's surname and its title; the message
+content never reaches the clock. The screen always opens on the timetable.
+
+**The server talks to Škola OnLine, the clock does not.** Škola OnLine has no
+public API, but its mobile app uses a JSON API mapped by unofficial projects.
+[Your own server](infra/README.md#rozvrh-a-úkoly-ze-školy-online) logs in,
+keeps the token, downloads the timetable and homework and sends the clock only
+finished rows. The child's username and password are therefore neither in the
+clock nor in the settings backup, and when Škola OnLine changes its API, the
+server is fixed and the firmware stays.
+
+On the **School** tab enter an address such as
+`https://user:password@your-server.example.net/school.json` — the timetable
+carries the child's name, so the reference server keeps it behind a password
+like the agenda. An address with a password must start with `https://`,
+otherwise the password and the homework would cross the network readable.
+**Test the timetable** downloads the address before you save.
+The timetable is downloaded every 5 to 120 minutes, 20 by default. When the
+server does not answer for three hours, or has no fresh data itself, the
+screen drops the old timetable and says why — the TODAY and TOMORROW labels
+would no longer be right. During
+holidays with no homework the screen says `Žádné vyučování` and the automatic
+rotation skips it; the finger hold still reaches it.
 
 ### Weather forecast
 

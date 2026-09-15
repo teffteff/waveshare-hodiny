@@ -21,6 +21,7 @@
 
 #include "CompressedPages.h"
 #include "AgendaService.h"
+#include "SchoolService.h"
 #include "RssService.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
@@ -314,6 +315,8 @@ TaskHandle_t rssTaskForDiagnostics = nullptr;
 RssProbeCallback rssProbeCallback = nullptr;
 TaskHandle_t agendaTaskForDiagnostics = nullptr;
 AgendaProbeCallback agendaProbeCallback = nullptr;
+TaskHandle_t schoolTaskForDiagnostics = nullptr;
+SchoolProbeCallback schoolProbeCallback = nullptr;
 SettingsShareCallback settingsShareCallback = nullptr;
 BackgroundWorkCallback backgroundWorkCallback = nullptr;
 DeviceNameChangedCallback deviceNameChangedCallback = nullptr;
@@ -1549,6 +1552,18 @@ void handleGetConfig() {
   result += config.sky.automaticRotation ? F("true") : F("false");
   result += F(",\"skyDisplaySeconds\":");
   result += config.sky.displaySeconds;
+  result += F(",\"schoolEnabled\":");
+  result += config.school.enabled ? F("true") : F("false");
+  result += F(",\"schoolUrl\":\"");
+  result += jsonEscape(config.school.url);
+  result += F("\",\"schoolShowHomework\":");
+  result += config.school.showHomework ? F("true") : F("false");
+  result += F(",\"schoolRefreshMinutes\":");
+  result += config.school.refreshMinutes;
+  result += F(",\"schoolDisplaySeconds\":");
+  result += config.school.displaySeconds;
+  result += F(",\"schoolAutomaticRotation\":");
+  result += config.school.automaticRotation ? F("true") : F("false");
   result += F(",\"agendaHiddenCalendars\":");
   result += config.agendaCalendars.hiddenMask;
   // Heslo samo se nevrací nikdy, stejně jako token Home Assistantu.
@@ -2111,6 +2126,47 @@ void handleSaveConfig() {
     config.lightning.alarmMinutes = static_cast<uint8_t>(alarmMinutes);
   }
 
+  if (server.hasArg("schoolEnabled")) {
+    String schoolUrl = server.arg("schoolUrl");
+    schoolUrl.trim();
+    if (schoolUrl.length() >= CLOCK_SCHOOL_URL_LENGTH) {
+      sendError(400, F("Adresa rozvrhu je příliš dlouhá."));
+      return;
+    }
+    if (!schoolUrl.isEmpty() && !schoolUrl.startsWith("http://") &&
+        !schoolUrl.startsWith("https://")) {
+      sendError(400, F("Adresa rozvrhu musí začínat http:// nebo https://."));
+      return;
+    }
+    if (schoolUrl.startsWith("http://") &&
+        clockConfigUrlHasCredentials(schoolUrl.c_str())) {
+      sendError(400, F("Adresa rozvrhu s heslem musí začínat https://."));
+      return;
+    }
+    const bool schoolEnabled = server.arg("schoolEnabled") == "1";
+    if (schoolEnabled && schoolUrl.isEmpty()) {
+      sendError(400, F("Pro zapnutou obrazovku Škola doplň adresu rozvrhu."));
+      return;
+    }
+    const int schoolRefreshMinutes = server.arg("schoolRefreshMinutes").toInt();
+    if (schoolRefreshMinutes < 5 || schoolRefreshMinutes > 120) {
+      sendError(400, F("Obnova rozvrhu musí být od 5 do 120 minut."));
+      return;
+    }
+    const int schoolDisplaySeconds = server.arg("schoolDisplaySeconds").toInt();
+    if (schoolDisplaySeconds < 10 || schoolDisplaySeconds > 3600) {
+      sendError(400, F("Doba zobrazení rozvrhu musí být od 10 do 3600 sekund."));
+      return;
+    }
+    config.school.enabled = schoolEnabled;
+    clockConfigCopy(config.school.url, sizeof(config.school.url), schoolUrl);
+    config.school.showHomework = server.arg("schoolShowHomework") == "1";
+    config.school.refreshMinutes = static_cast<uint8_t>(schoolRefreshMinutes);
+    config.school.displaySeconds = static_cast<uint16_t>(schoolDisplaySeconds);
+    config.school.automaticRotation =
+        server.arg("schoolAutomaticRotation") == "1";
+  }
+
   if (server.hasArg("skyEnabled")) {
     const int skyDisplaySeconds = server.arg("skyDisplaySeconds").toInt();
     if (skyDisplaySeconds < 10 || skyDisplaySeconds > 3600) {
@@ -2615,6 +2671,132 @@ void handleRssTest() {
       },
       &context);
   result += F("]}");
+  sendJson(200, result);
+}
+
+// Náhled rozvrhu pro web: stejné řádky, jaké dostane displej.
+void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
+  result += F("{\"ok\":true,\"student\":\"");
+  result += jsonEscape(feed.student);
+  result += F("\",\"days\":[");
+  for (size_t dayIndex = 0; dayIndex < feed.dayCount; ++dayIndex) {
+    const SchoolDay &day = feed.days[dayIndex];
+    if (dayIndex > 0) result += ',';
+    result += F("{\"day\":\"");
+    result += jsonEscape(day.day);
+    result += F("\",\"weekday\":\"");
+    result += jsonEscape(day.weekday);
+    result += F("\",\"end\":\"");
+    result += jsonEscape(day.end);
+    result += F("\",\"lessons\":[");
+    for (size_t index = 0; index < day.lessonCount; ++index) {
+      const SchoolLesson &lesson = day.lessons[index];
+      if (index > 0) result += ',';
+      result += F("{\"hour\":\"");
+      result += jsonEscape(lesson.hour);
+      result += F("\",\"subject\":\"");
+      result += jsonEscape(lesson.subject);
+      result += F("\",\"note\":\"");
+      result += jsonEscape(lesson.note);
+      result += F("\",\"state\":");
+      result += static_cast<unsigned>(lesson.state);
+      result += '}';
+    }
+    result += F("]}");
+  }
+  result += F("],\"homework\":[");
+  for (size_t index = 0; index < feed.homeworkCount; ++index) {
+    const SchoolHomework &task = feed.homework[index];
+    if (index > 0) result += ',';
+    result += F("{\"due\":\"");
+    result += jsonEscape(task.due);
+    result += F("\",\"subject\":\"");
+    result += jsonEscape(task.subject);
+    result += F("\",\"title\":\"");
+    result += jsonEscape(task.title);
+    result += F("\"}");
+  }
+  result += ']';
+  if (feed.hasMessages) {
+    result += F(",\"messageCount\":");
+    result += static_cast<unsigned>(feed.messageTotal);
+    result += F(",\"messages\":[");
+    for (size_t index = 0; index < feed.messageCount; ++index) {
+      const SchoolMessage &message = feed.messages[index];
+      if (index > 0) result += ',';
+      result += F("{\"when\":\"");
+      result += jsonEscape(message.when);
+      result += F("\",\"sender\":\"");
+      result += jsonEscape(message.sender);
+      result += F("\",\"title\":\"");
+      result += jsonEscape(message.title);
+      result += F("\"}");
+    }
+    result += ']';
+  }
+  if (feed.hasMarks) {
+    result += F(",\"markCount\":");
+    result += static_cast<unsigned>(feed.markTotal);
+    result += F(",\"marks\":[");
+    for (size_t index = 0; index < feed.markCount; ++index) {
+      const SchoolMark &mark = feed.marks[index];
+      if (index > 0) result += ',';
+      result += F("{\"when\":\"");
+      result += jsonEscape(mark.when);
+      result += F("\",\"subject\":\"");
+      result += jsonEscape(mark.subject);
+      result += F("\",\"abbrev\":\"");
+      result += jsonEscape(mark.abbrev);
+      result += F("\",\"mark\":\"");
+      result += jsonEscape(mark.mark);
+      result += F("\",\"theme\":\"");
+      result += jsonEscape(mark.theme);
+      result += F("\"}");
+    }
+    result += ']';
+  }
+  result += '}';
+}
+
+void handleSchoolTest() {
+  ClockSchoolConfig probe;
+  String url = server.arg("schoolUrl");
+  url.trim();
+  if (url.isEmpty()) url = currentConfig().school.url;
+  if (url.isEmpty()) {
+    sendError(400, F("Doplň adresu rozvrhu."));
+    return;
+  }
+  if (url.length() >= CLOCK_SCHOOL_URL_LENGTH) {
+    sendError(400, F("Adresa rozvrhu je příliš dlouhá."));
+    return;
+  }
+  if (url.startsWith("http://") && clockConfigUrlHasCredentials(url.c_str())) {
+    sendError(400, F("Adresa rozvrhu s heslem musí začínat https://."));
+    return;
+  }
+  if (schoolProbeCallback == nullptr) {
+    sendError(503, F("Zkouška rozvrhu nyní není dostupná."));
+    return;
+  }
+  clockConfigCopy(probe.url, sizeof(probe.url), url);
+  int httpStatus = 0;
+  String error;
+  if (!schoolProbeCallback(probe, httpStatus, error)) {
+    sendError(502, error.isEmpty() ? String(F("Rozvrh se nepodařilo načíst."))
+                                   : error);
+    return;
+  }
+  String result;
+  result.reserve(3072);
+  if (!schoolServiceVisitProbe(
+          [](const SchoolFeed &feed, void *context) {
+            appendSchoolFeedJson(*static_cast<String *>(context), feed);
+          },
+          &result)) {
+    sendError(503, F("Náhled rozvrhu nyní není dostupný."));
+    return;
+  }
   sendJson(200, result);
 }
 
@@ -3330,6 +3512,11 @@ void handleDiagnostics() {
                 ? 0
                 : static_cast<uint32_t>(
                       uxTaskGetStackHighWaterMark(agendaTaskForDiagnostics));
+  result += F(",\"school\":");
+  result += schoolTaskForDiagnostics == nullptr
+                ? 0
+                : static_cast<uint32_t>(
+                      uxTaskGetStackHighWaterMark(schoolTaskForDiagnostics));
   result += F("},\"minimumMemory\":{\"internalFree\":");
   result += static_cast<unsigned long>(heap_caps_get_minimum_free_size(
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -3487,6 +3674,12 @@ void handleDiagnostics() {
   result += F(",\"agendaTest\":");
   appendDiagnosticJson(
       result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::AgendaTest));
+  result += F(",\"schoolRuntime\":");
+  appendDiagnosticJson(
+      result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::SchoolRuntime));
+  result += F(",\"schoolTest\":");
+  appendDiagnosticJson(
+      result, networkDiagnosticsSnapshot(NetworkDiagnosticKind::SchoolTest));
   result += '}';
   sendJson(200, result);
 }
@@ -4410,6 +4603,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   registerBoundedPost("/api/tmep/test", []() {
     if (requireConfigurationAccess()) handleTmepTest();
   });
+  registerBoundedPost("/api/school/test", []() {
+    if (requireConfigurationAccess()) handleSchoolTest();
+  });
   registerBoundedPost("/api/agenda/test", []() {
     if (requireConfigurationAccess()) handleAgendaTest();
   });
@@ -4497,6 +4693,14 @@ void configurationWebSetRssTask(TaskHandle_t task) {
 
 void configurationWebSetAgendaTask(TaskHandle_t task) {
   agendaTaskForDiagnostics = task;
+}
+
+void configurationWebSetSchoolTask(TaskHandle_t task) {
+  schoolTaskForDiagnostics = task;
+}
+
+void configurationWebSetSchoolProbe(SchoolProbeCallback callback) {
+  schoolProbeCallback = callback;
 }
 
 void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {

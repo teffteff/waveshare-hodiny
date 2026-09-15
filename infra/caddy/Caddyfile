@@ -67,6 +67,15 @@
 		}
 		reverse_proxy 127.0.0.1:8093
 	}
+	# Rozvrh a domaci ukoly ze Skoly OnLine (infra/school). Nese jmeno ditete,
+	# tridu a ukoly, takze patri za heslo. Vlastni hash (SCHOOL_HASH), aby adresa
+	# agendy nebo blesku opsana do hodin nestacila na cteni skolnich dat.
+	handle /school.json {
+		basic_auth {
+			hodiny {env.SCHOOL_HASH}
+		}
+		reverse_proxy 127.0.0.1:8094
+	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

@@ -86,7 +86,7 @@ enum SettingsBackupPart : uint8_t {
   // Hodnoty na obrazovce hodin: strany, měřené hodnoty, obě stránky mřížky,
   // sloty Open-Meteo a TMEP i entita počasí pro jejich ikonu.
   SETTINGS_BACKUP_PART_VALUES = 0x02,
-  // Předpověď, meteoradar, letadla, zprávy, agenda a pořadí a střídání
+  // Předpověď, meteoradar, letadla, zprávy, agenda, škola a pořadí a střídání
   // obrazovek.
   SETTINGS_BACKUP_PART_SCREENS = 0x04,
   // Vzhled hodin, barvy, fonty, vteřiny, ikony počasí, jas a režim den/noc.

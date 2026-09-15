@@ -231,6 +231,8 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     CONFIG_FIELD(lightning, PART_SCREENS),
     CONFIG_FIELD(sky, PART_SCREENS),
     CONFIG_FIELD(radarPrecipitation, PART_SCREENS),
+    // Adresa serveru s rozvrhem nese heslo stejně jako adresa agendy.
+    CONFIG_FIELD(school, PART_SCREENS),
 };
 #undef CONFIG_FIELD
 
@@ -247,7 +249,7 @@ constexpr bool configFieldsInOrder() {
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
 // Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
-static_assert((offsetof(ClockConfig, radarPrecipitation) + sizeof(bool) +
+static_assert((offsetof(ClockConfig, school) + sizeof(ClockSchoolConfig) +
                alignof(ClockConfig) - 1) /
                       alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),

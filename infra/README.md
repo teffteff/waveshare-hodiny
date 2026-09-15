@@ -30,7 +30,7 @@ CLOCK_SSH_KEY=$HOME/cesta/ke/klici.key
 ```
 
 `tools/check-stack.sh` si je odtud načte sám. Níž se používají jako proměnné,
-takže se dají příkazy kopírovat po `set -a; . .env; set +a`.
+takže se dají příkazy kopírovat po `set -a; . ./.env; set +a`.
 
 Klíč bývá RSA, takže novější OpenSSH ho bez pomoci odmítne — proto všude
 `-o PubkeyAcceptedAlgorithms=+ssh-rsa`:
@@ -51,6 +51,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Přepravčí letadel | 8090, jen loopback | `/opt/planes/serve.py`, `planes-web.service` | `planes/` |
 | Přepravčí blesků | 8093, jen loopback | `/opt/lightning/serve.py`, `lightning-web.service` | `lightning/` |
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
+| Rozvrh a úkoly | 8094, jen loopback | `/opt/school/serve.py`, `feed.py`, `school-web.service`, přihlášení v `/opt/school/school.env` | `school/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
@@ -94,6 +95,7 @@ mění v Nastavení → Systém → Síť.
 https://$CLOCK_HOST/top.xml      zprávy
 https://hodiny:$PLANES_PASSWORD@$CLOCK_HOST/planes.json  letadla (nepovinné)
 https://hodiny:$LIGHTNING_PASSWORD@$CLOCK_HOST/lightning.json  blesky (nepovinné)
+https://hodiny:$SCHOOL_PASSWORD@$CLOCK_HOST/school.json  rozvrh a úkoly (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -128,8 +130,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090 a 8092 mezi ně nepatří**: servery se zprávami, agendou, letadly
-a zálohami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093 a 8094 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami a rozvrhem poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -300,18 +302,18 @@ heslo z adresy nešlo jinam.
 Zavedení (jednou):
 
 ```sh
-set -a; . .env; set +a
-SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
 NEW="$(openssl rand -hex 24)"      # hex: bez : a @ kvůli adrese
-HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$NEW'")"
+HASH="$(SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$NEW'")"
 # Hash se do caddy.env PŘIDÁ, AGENDA_HASH musí zůstat.
-$SSH "$CLOCK_SSH" "printf 'SETTINGS_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
-$SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/settings --shell /sbin/nologin settings \
+SSH "$CLOCK_SSH" "printf 'SETTINGS_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/settings --shell /sbin/nologin settings \
     && sudo install -d -o root -g settings -m 750 /opt/settings \
     && sudo install -d -o settings -g settings -m 700 /opt/settings/data'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     infra/settings/serve.py infra/settings/settings-web.service "$CLOCK_SSH:"
-$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py settings-web.service /opt/settings/ \
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py settings-web.service /opt/settings/ \
     && sudo cp /opt/settings/settings-web.service /etc/systemd/system/ \
     && sudo systemctl daemon-reload && sudo systemctl enable --now settings-web.service'
 ```
@@ -377,18 +379,18 @@ Zavedení (jednou), stejně jako letadla: uživatel, adresář, jednotka, pak ha
 a nový Caddyfile.
 
 ```sh
-set -a; . .env; set +a
-SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
-$SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/lightning --shell /sbin/nologin lightning \
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/lightning --shell /sbin/nologin lightning \
     && sudo install -d -o root -g lightning -m 750 /opt/lightning'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     infra/lightning/serve.py infra/lightning/lightning-web.service "$CLOCK_SSH:"
-$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py lightning-web.service /opt/lightning/ \
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py lightning-web.service /opt/lightning/ \
     && sudo cp /opt/lightning/lightning-web.service /etc/systemd/system/ \
     && sudo systemctl daemon-reload \
     && sudo systemctl enable --now lightning-web.service'
-HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$LIGHTNING_PASSWORD'")"
-$SSH "$CLOCK_SSH" "printf 'LIGHTNING_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
+HASH="$(SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$LIGHTNING_PASSWORD'")"
+SSH "$CLOCK_SSH" "printf 'LIGHTNING_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
 ```
 
 Pak Caddy **restartovat** (nový hash se po `reload` nenačte) a teprve potom
@@ -461,12 +463,12 @@ ignoruje, takže radar mezitím běží dál; opačné pořadí by ho na tu dobu
    viz „Zálohy nastavení“):
 
    ```sh
-   set -a; . .env; set +a
-   SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
-   HASH="$($SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$PLANES_PASSWORD'")"
+   set -a; . ./.env; set +a
+   SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+   HASH="$(SSH "$CLOCK_SSH" "caddy hash-password --plaintext '$PLANES_PASSWORD'")"
    # Hash se do caddy.env PŘIDÁ, ostatní řádky musí zůstat.
-   $SSH "$CLOCK_SSH" "printf 'PLANES_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
-   $SSH "$CLOCK_SSH" 'sudo systemctl restart caddy'
+   SSH "$CLOCK_SSH" "printf 'PLANES_HASH=%s\n' '$HASH' | sudo tee -a /etc/caddy/caddy.env >/dev/null && sudo chmod 600 /etc/caddy/caddy.env"
+   SSH "$CLOCK_SSH" 'sudo systemctl restart caddy'
    ```
 
 3. Nový Caddyfile podle „Nasazení změn z repozitáře“.
@@ -567,20 +569,139 @@ store nezhodí web; kdyby se něco pokazilo, obnov zálohu a restartuj.
 (Ta cesta `/path/to/your/config` je doopravdy takhle pojmenovaná — zástupný
 text z návodu se kdysi nenahradil a HA na něm od té doby jede.)
 
+## Rozvrh a úkoly ze Školy OnLine
+
+Obrazovka **Škola** na hodinách ukazuje rozvrh jednoho dítěte a jeho domácí
+úkoly, na druhé stránce (tažením prstu) nepřečtené zprávy a nové známky.
+Hodiny se do Školy OnLine nepřihlašují: `school/serve.py` se přihlásí
+sám, drží si token v paměti, stáhne rozvrh na dva týdny dopředu a aktivní
+úkoly a hodinám vrací jen hotové řádky (`/school.json`, kolem kilobajtu).
+
+**Kolik dotazů jde do Školy OnLine.** Je to cizí server a neoficiální API,
+takže co nejméně. Jedno stažení jsou dva dotazy (rozvrh, úkoly) a zhruba
+jednou za hodinu obnova tokenu; dítě se v `/v1/user` hledá jednou denně.
+Často se ptá jen tehdy, když se může něco změnit a dítě to potřebuje vědět:
+
+| Situace | Interval | Proměnná |
+| --- | --- | --- |
+| 6–21 h, dnes do konce vyučování nebo od poledne před školním dnem | 20 min | `SCHOOL_DAY_POLL_MINUTES` |
+| noc | 2 h | `SCHOOL_NIGHT_POLL_MINUTES` |
+| jindy ve dne (pátek po škole, sobota, neděle dopoledne) | 2 h | `SCHOOL_IDLE_POLL_MINUTES` |
+| v celých dvou týdnech ani hodina (prázdniny) | 6 h | `SCHOOL_HOLIDAY_POLL_MINUTES` |
+| 23–5 h: žádný dotaz, ani opakování po chybě nebo po startu služby | — | `SCHOOL_QUIET_HOURS` |
+
+Zprávy a známky se připojují k běžnému stažení, zprávy nejvýš jednou za
+hodinu (`SCHOOL_MESSAGES_POLL_MINUTES`), známky jednou za tři
+(`SCHOOL_MARKS_POLL_MINUTES`), v noci jen poprvé po startu. Mezi 23. a 5.
+hodinou nejde do Školy OnLine nic. Týden vyučování tak dá kolem 700 dotazů
+(zhruba 100 denně včetně zpráv a známek), prázdninový den kolem 15.
+Chyba sítě nebo serveru se opakuje po 10, 20, 40… minutách, nejvýš po dvou
+hodinách, a `Retry-After` u 429/503 se dodrží. Každý odstup se náhodně
+prodlouží nebo zkrátí o až 10 % (`SCHOOL_POLL_JITTER_PERCENT`), takže dotazy
+nechodí v přesném rytmu. Z hodin se nic z toho nastavit nedá: „Obnovovat
+každých“ v záložce Škola říká jen, jak často se hodiny ptají tohohle serveru.
+
+**Zdroj.** Škola OnLine veřejné API nemá, ale mobilní aplikace mluví s JSON
+API na `https://aplikace.skolaonline.cz/solapi/api` (OAuth2 password grant,
+`client_id=test_client`). Je neoficiální — zmapovaly ho
+[Libre-SkolaOnline/API-docs](https://github.com/Libre-SkolaOnline/API-docs),
+[hacs-calendar_skolaonline](https://github.com/elvisek2020/hacs-calendar_skolaonline)
+a [resol](https://codeberg.org/resol/resol). Oproti škrabání webové aplikace
+(jako [skola-online-stahovani-znamek](https://github.com/JakubAndrysek/skola-online-stahovani-znamek))
+se nemění s každou úpravou vzhledu webu. Když se změní, opravuje se
+`school/feed.py`; tvar `/school.json` zůstane a firmware se měnit nemusí.
+
+Co server posílá a proč tak:
+
+- **Které dny.** Pole `days` nese dva školní dny (`SCHOOL_DAY_COUNT`): dnešek,
+  dokud neskončila poslední hodina (plus 15 minut), potom nejbližší další den
+  s vyučováním, a za ním další školní den — večer se balí taška na zítřek,
+  v pátek odpoledne svítí pondělí a úterý. Každý den nese i `end`, konec
+  poslední hodiny, která se koná. Počítá se při každém dotazu, ne při stažení,
+  takže se den přepne včas. O prázdninách je `days` prázdné a hodiny řeknou,
+  že se neučí.
+- **Suplování.** Původní hodina, za kterou přišla náhrada, se zahodí; náhrada
+  má `state` 1 a krátkou poznámku. Odpadlá hodina má `state` 2.
+- **Úkoly** s termínem od dneška na 14 dní, seřazené podle termínu. Úkol bez
+  termínu nebo označený jako hotový se neposílá. Zkratka předmětu se doplní
+  z rozvrhu, protože úkol často nese jen plný název.
+- **Zprávy** (`messages`, `messageCount`): jen nepřečtené (`read: false`)
+  z posledních 14 dní (`SCHOOL_MESSAGE_DAYS`), nejnovější první, nejvýš šest
+  řádků; `messageCount` je celkový počet. Ze zprávy jde jen příjmení
+  odesílatele bez titulů a titulek — tělo zprávy (HTML, často o dítěti)
+  server hodinám neposílá. Starší nepřečtené zprávy se nepočítají: rodič je
+  čte jinde a na hodinách by visely napořád. Seznam zprávy jako přečtené
+  neoznačí (ověřeno 15. 9. 2026); detail zprávy se nevolá.
+  Počty z `/v1/user/notifications` se nepoužívají, s příznaky `read` nesedí.
+- **Známky** (`marks`, `markCount`) z posledních 14 dní (`SCHOOL_MARK_DAYS`):
+  den, zkratka předmětu, známka a téma, nejvýš osm řádků.
+- Selže-li stažení zpráv nebo známek, rozvrh jede dál se staršími daty; po
+  `SCHOOL_MAX_AGE_HOURS` se zahodí. `SCHOOL_MESSAGES=0` a `SCHOOL_MARKS=0`
+  je vypnou úplně a hodiny druhou stránku nenabídnou.
+- **Uložený stav.** Po každém úspěšném stažení se data zapíšou do
+  `/var/lib/school/state.json` (jen pro uživatele `school`: nese jméno dítěte,
+  rozvrh, úkoly, titulky zpráv a známky; token ne). Po restartu — třeba po
+  noční aktualizaci v tichých hodinách — je server vydává hned a první dotaz
+  do Školy OnLine počká, dokud data nezestárnou na svůj interval. Stav se
+  zahodí, když se změnil účet nebo `SCHOOL_STUDENT`, nebo když je soubor
+  poškozený. Čisté stažení hned: `sudo rm /var/lib/school/state.json` a restart.
+- **`problem`** je neprázdný, když poslední stažení selhalo. Server pak dál
+  vydává starší data, nejdéle ale 14 hodin (`SCHOOL_MAX_AGE_HOURS`, přečká
+  noc bez dotazů); potom
+  odpovídá 503 a hodiny místo včerejšího rozvrhu bez suplování ukážou
+  „Server nemá čerstvý rozvrh ze Školy OnLine“. Firmware `problem` nečte,
+  hlídá ho `tools/check-stack.sh`.
+
+**Heslo do Školy OnLine** leží v `/opt/school/school.env` (root, 600) a nikam
+jinam než na `aplikace.skolaonline.cz` nejde. Lepší je rodičovský účet než
+žákovský: dítě si heslo může změnit. Po odmítnutém hesle server šest hodin
+nic nezkouší, aby školní systém účet po sérii chyb nezamkl — po opravě hesla
+proto `systemctl restart school-web.service`. Uložený stav restart nezdrží:
+data z doby před chybou jsou starší než interval, takže se ptá hned.
+
+**Heslo k `/school.json`** je vlastní (`SCHOOL_HASH` v `caddy.env`), stejně
+jako u letadel a blesků: adresa opsaná do hodin nemá stačit na nic jiného.
+
+Zavedení (jednou):
+
+```sh
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/school --shell /sbin/nologin school \
+    && sudo install -d -o root -g school -m 750 /opt/school'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/school/feed.py infra/school/serve.py infra/school/school-web.service "$CLOCK_SSH:"
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 feed.py serve.py school-web.service /opt/school/ \
+    && rm feed.py serve.py school-web.service'
+# Přihlášení: vzor je infra/school/school.env.example.
+SSH -t "$CLOCK_SSH" 'sudo install -o root -g root -m 600 /dev/null /opt/school/school.env && sudo vi /opt/school/school.env'
+# Ověření, že účet vidí dítě a API vrací to, co feed.py čte (vypisuje skutečná data):
+SSH -t "$CLOCK_SSH" 'sudo systemd-run --pty --quiet --uid=school -p EnvironmentFile=/opt/school/school.env /usr/bin/python3.11 /opt/school/serve.py --probe'
+NEW="$(openssl rand -hex 24)"   # do .env jako SCHOOL_PASSWORD
+SSH "$CLOCK_SSH" "echo SCHOOL_HASH=\$(caddy hash-password --plaintext '$NEW') | sudo tee -a /etc/caddy/caddy.env >/dev/null"
+SSH "$CLOCK_SSH" 'sudo cp /opt/school/school-web.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now school-web.service && sudo systemctl restart caddy'
+```
+
+Caddyfile s blokem `/school.json` se nasazuje jako obvykle (viz „Nasazení
+změn z repozitáře“), a to **až po** zapsání `SCHOOL_HASH`: bez proměnné by
+Caddy při restartu spadl. Do hodin se pak opíše
+`https://hodiny:$SCHOOL_PASSWORD@$CLOCK_HOST/school.json` v záložce **Škola**.
+
 ## Nasazení změn z repozitáře
 
 Soubory se mění tady a teprve pak jdou na server; opačné pořadí je přesně to,
 co `--deep` ohlásí jako rozjeté. Po commitu:
 
 ```sh
-set -a; . .env; set +a          # načte CLOCK_HOST, CLOCK_SSH, CLOCK_SSH_KEY
-SSH="ssh -i $CLOCK_SSH_KEY -o PubkeyAcceptedAlgorithms=+ssh-rsa"
-$SSH "$CLOCK_SSH" 'mkdir -p news-deploy'
+set -a; . ./.env; set +a          # načte CLOCK_HOST, CLOCK_SSH, CLOCK_SSH_KEY
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'mkdir -p news-deploy'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     infra/news/generate.py infra/news/serve.py infra/news/locations.py \
     infra/news/news.service infra/news/news.timer infra/news/news-web.service \
     "$CLOCK_SSH:news-deploy/"
-$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 news-deploy/* /opt/news/ && rm -r news-deploy \
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 news-deploy/* /opt/news/ && rm -r news-deploy \
     && sudo cp /opt/news/news*.service /opt/news/news.timer \
     /etc/systemd/system/ && sudo systemctl daemon-reload \
     && sudo systemctl restart news-web.service && sudo systemctl start news.service'
@@ -597,11 +718,11 @@ pořád ještě 3.6 a ta neumí ani `from __future__ import annotations`. Poprv�
 potřeba založit adresář a jednotku povolit:
 
 ```sh
-$SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/planes --shell /sbin/nologin planes \
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/planes --shell /sbin/nologin planes \
     && sudo install -d -o root -g planes -m 750 /opt/planes'
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     infra/planes/serve.py infra/planes/planes-web.service "$CLOCK_SSH:"
-$SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py planes-web.service /opt/planes/ \
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py planes-web.service /opt/planes/ \
     && sudo cp /opt/planes/planes-web.service /etc/systemd/system/ \
     && sudo systemctl daemon-reload \
     && sudo systemctl enable --now planes-web.service'
@@ -615,7 +736,7 @@ dosazení i porovnává:
 sed "s/{{DOMAIN}}/$CLOCK_HOST/g" infra/caddy/Caddyfile > /tmp/Caddyfile
 scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
     /tmp/Caddyfile "$CLOCK_SSH:/home/${CLOCK_SSH%%@*}/Caddyfile.new"
-$SSH "$CLOCK_SSH" 'sudo cp ~/Caddyfile.new /etc/caddy/Caddyfile \
+SSH "$CLOCK_SSH" 'sudo cp ~/Caddyfile.new /etc/caddy/Caddyfile \
     && sudo systemctl reload caddy'
 ```
 
@@ -645,6 +766,8 @@ Dnes platí:
 | `/opt/agenda` | `root:agenda` 750 | `www/` (`agenda`); `key.json` je `agenda` 400 |
 | `/opt/planes` | `root:planes` 750 | nic |
 | `/opt/settings` | `root:settings` 750 | `data/` (`settings`) |
+| `/opt/school` | `root:school` 750 | nic; `school.env` je `root` 600 |
+| `/var/lib/school` | `school` 700 (zakládá systemd, `StateDirectory`) | `state.json` (`school` 600) |
 
 Kód a `.venv` patří rootovi, takže je služba nezmění. `news.env`
 a `agenda.env` jsou rootovy (600): systemd je načte do prostředí ještě před
@@ -705,7 +828,7 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
 ## Obnova serveru
 
 1. Nový stroj, otevřít 80/443 v OCI i ve `firewalld`. Uživatelé služeb:
-   `for u in news agenda planes settings; do sudo useradd --system
+   `for u in news agenda planes settings school; do sudo useradd --system
    --no-create-home --home-dir /opt/$u --shell /sbin/nologin $u; done`
    a vlastnictví podle tabulky v „Zabezpečení stroje“.
 2. Caddy: binárku do `/usr/bin/caddy`, `caddy/Caddyfile` do `/etc/caddy/`
@@ -728,7 +851,10 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
    `/etc/caddy/caddy.env`, jednotku do `/etc/systemd/system/`, `systemctl
    enable --now settings-web.service`. Samotné zálohy v `data/` se dají
    kdykoli znovu nahrát z hodin.
-6. `tools/check-stack.sh --deep`.
+6. Rozvrh (nepovinné): viz „Rozvrh a úkoly ze Školy OnLine“ — `school/*.py`
+   a jednotka do `/opt/school/`, `school.env` s přihlášením, `SCHOOL_HASH`
+   do `/etc/caddy/caddy.env`.
+7. `tools/check-stack.sh --deep`.
 
 **Python na tom stroji:** `python3` je 3.6.8, který nemá `zoneinfo` a tiše
 nainstaluje roky staré verze knihoven. Obě `.venv` se proto stavějí výslovně
