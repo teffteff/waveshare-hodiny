@@ -440,12 +440,16 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.agendaCalendars.privateKey);
   terminateText(config.lightning.url);
   terminateText(config.school.url);
+  terminateText(config.satellites.url);
 }
 
 void normalizeConfig(ClockConfig &config) {
   config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   terminateConfigTexts(config);
-  clockConfigNormalizeScreenOrder(config.screenOrder);
+  uint8_t screenOrder[CLOCK_SCREEN_ORDER_CAPACITY];
+  clockConfigReadScreenOrder(config, screenOrder);
+  clockConfigNormalizeScreenOrder(screenOrder);
+  clockConfigWriteScreenOrder(config, screenOrder);
   config.dayBrightness = constrain(config.dayBrightness, 1, 100);
   config.nightBrightness = constrain(config.nightBrightness, 1, 100);
   config.sunriseOffsetMinutes = constrain(config.sunriseOffsetMinutes, -60, 60);
@@ -533,6 +537,17 @@ void normalizeConfig(ClockConfig &config) {
   config.school.refreshMinutes = constrain(config.school.refreshMinutes, 5, 120);
   config.school.displaySeconds =
       constrain(config.school.displaySeconds, 10, 3600);
+  config.satellites.groups &= CLOCK_SATELLITE_GROUP_ALL;
+  config.satellites.minElevationDeg =
+      constrain(config.satellites.minElevationDeg, static_cast<uint8_t>(0),
+                CLOCK_SATELLITES_MAX_MIN_ELEVATION);
+  config.satellites.refreshSeconds =
+      constrain(config.satellites.refreshSeconds,
+                CLOCK_SATELLITES_MIN_REFRESH_SECONDS,
+                CLOCK_SATELLITES_MAX_REFRESH_SECONDS);
+  if (config.satellites.topBearingDeg >= 360) config.satellites.topBearingDeg = 0;
+  config.satellites.displaySeconds =
+      constrain(config.satellites.displaySeconds, 10, 3600);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -644,6 +659,11 @@ bool clockConfigSchoolAvailable(const ClockConfig &config) {
   return config.school.enabled && config.school.url[0] != '\0';
 }
 
+bool clockConfigSatellitesAvailable(const ClockConfig &config) {
+  return config.satellites.enabled && config.satellites.url[0] != '\0' &&
+         (config.satellites.groups & CLOCK_SATELLITE_GROUP_ALL) != 0;
+}
+
 bool clockConfigUrlHasCredentials(const char *url) {
   if (url == nullptr) return false;
   const char *scheme = strstr(url, "://");
@@ -668,13 +688,13 @@ bool clockConfigPlanesAvailable(const ClockConfig &config) {
 
 uint8_t clockConfigScreenAt(const ClockConfig &config, uint8_t position) {
   if (position >= CLOCK_SCREEN_ORDER_COUNT) return CLOCK_SCREEN_CLOCK;
-  const uint8_t screen = config.screenOrder[position];
+  const uint8_t screen = clockConfigScreenOrderSlot(config, position);
   return screen < CLOCK_SCREEN_ORDER_COUNT ? screen : CLOCK_SCREEN_CLOCK;
 }
 
 uint8_t clockConfigScreenPosition(const ClockConfig &config, uint8_t screen) {
   for (uint8_t position = 0; position < CLOCK_SCREEN_ORDER_COUNT; ++position) {
-    if (config.screenOrder[position] == screen) return position;
+    if (clockConfigScreenOrderSlot(config, position) == screen) return position;
   }
   return 0;
 }
@@ -700,6 +720,16 @@ void clockConfigNormalizeScreenOrder(uint8_t *order) {
     normalized[count++] = CLOCK_SCREEN_ORDER_UNUSED;
   }
   memcpy(order, normalized, sizeof(normalized));
+}
+
+void clockConfigReadScreenOrder(const ClockConfig &config, uint8_t *order) {
+  for (size_t index = 0; index < CLOCK_SCREEN_ORDER_CAPACITY; ++index)
+    order[index] = clockConfigScreenOrderSlot(config, index);
+}
+
+void clockConfigWriteScreenOrder(ClockConfig &config, const uint8_t *order) {
+  for (size_t index = 0; index < CLOCK_SCREEN_ORDER_CAPACITY; ++index)
+    clockConfigScreenOrderSlot(config, index) = order[index];
 }
 
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
@@ -847,6 +877,12 @@ void clockConfigApplyDefaults(ClockConfig &config) {
   config.metricBColorScale = ClockMetricColorScale{};
   config.metricBColorScale.points[0] = {0.0f, 0xFFB843};
   applyLegacySideValueDefaults(config);
+  // Výchozí pořadí končí prázdným druhým blokem; teprve normalizace do něj
+  // doplní obrazovky, které se do prvního nevešly.
+  uint8_t screenOrder[CLOCK_SCREEN_ORDER_CAPACITY];
+  clockConfigReadScreenOrder(config, screenOrder);
+  clockConfigNormalizeScreenOrder(screenOrder);
+  clockConfigWriteScreenOrder(config, screenOrder);
 }
 
 // Záznam i s konfigurací má přes 8 kB. Jako statická proměnná by ležel v .bss
@@ -897,6 +933,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV44 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_44_SIZE];
+  uint32_t checksum;
+};
+
 // Schémata 42 a 43 mají stejnou velikost a liší se jen číslem schématu.
 struct ConfigRecordV43 {
   uint32_t magic;
@@ -918,6 +961,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV44) ||
          storedSize == sizeof(ConfigRecordV43) ||
          storedSize == sizeof(ConfigRecordV41) ||
          storedSize == sizeof(ConfigRecordV40) ||
@@ -955,6 +999,32 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Starší záznam druhý blok pořadí obrazovek nemá. Výchozí hodnoty v něm už
+  // nesou družice, a ty by při normalizaci předběhly obrazovky, které
+  // v záznamu chybějí také - u schématu 36 agendu, Slunce i školu. Prázdný
+  // blok nechá normalizaci doplnit všechny chybějící ve výchozím pořadí.
+  memset(config.screenOrderTail, CLOCK_SCREEN_ORDER_UNUSED,
+         sizeof(config.screenOrderTail));
+
+  // Schéma 44 je přesnou předponou schématu 45; družice si po zkopírování bajtů
+  // podrží výchozí hodnoty, tedy vypnuté bez adresy, a normalizace je pošle na
+  // konec pořadí obrazovek.
+  const ConfigRecordV44 &legacyV44 =
+      *reinterpret_cast<const ConfigRecordV44 *>(&record);
+  uint32_t embeddedSchemaV44 = 0;
+  if (readComplete && storedSize == sizeof(legacyV44))
+    memcpy(&embeddedSchemaV44, legacyV44.config, sizeof(embeddedSchemaV44));
+  if (readComplete && storedSize == sizeof(legacyV44) &&
+      legacyV44.magic == CONFIG_MAGIC && legacyV44.schemaVersion == 44 &&
+      embeddedSchemaV44 == 44 &&
+      legacyV44.checksum ==
+          bytesChecksum(legacyV44.config, sizeof(legacyV44.config))) {
+    memcpy(&config, legacyV44.config, sizeof(legacyV44.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 43 je přesnou předponou schématu 44; obrazovka Škola si po

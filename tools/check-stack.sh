@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -44,6 +44,7 @@ PLANES_URL="https://${HOST}/planes.json"
 LIGHTNING_URL="https://${HOST}/lightning.json"
 SETTINGS_URL="https://${HOST}/settings/"
 SCHOOL_URL="https://${HOST}/school.json"
+SATELLITES_URL="https://${HOST}/satellites.json"
 # Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
 # tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
 AGENDA_USER="${AGENDA_USER:-hodiny}"
@@ -306,6 +307,70 @@ print(f"OK {len(strokes)} {int(live)}")
   fi
 fi
 
+# --- družice -------------------------------------------------------------------
+# Dráhy jsou veřejná data, heslo chrání procesor serveru a polohu v dotazu, takže
+# bez hesla musí přijít 401. S heslem se kontroluje tvar odpovědi a stáří drah:
+# server je obnovuje po šesti hodinách, po dni už něco se stahováním z CelesTraku
+# není v pořádku. 503 chvíli po startu znamená, že se dráhy teprve stahují.
+SATELLITES_QUERY="lat=49.90&lon=14.78&groups=stations,visual,weather&minel=0"
+satellites_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "${SATELLITES_URL}?${SATELLITES_QUERY}")"
+if [ "$satellites_public_code" = "401" ]; then
+  ok "družice jsou bez hesla nedostupné (401)"
+elif [ "$satellites_public_code" = "200" ]; then
+  bad "družice bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth, výpočet drah je komukoli k dispozici"
+else
+  warn "družice bez hesla vrací '${satellites_public_code:-nic}' (nepovinná služba)"
+fi
+
+satellites_body=""
+satellites_code=""
+if [ -z "${SATELLITES_PASSWORD:-}" ]; then
+  warn "v .env chybí SATELLITES_PASSWORD, obsah družic se nekontroluje"
+else
+  satellites_curl_config="$(mktemp)"
+  chmod 600 "$satellites_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$SATELLITES_PASSWORD" > "$satellites_curl_config"
+  satellites_body="$(curl -sS --max-time 25 -K "$satellites_curl_config" -w '\n%{http_code}' "${SATELLITES_URL}?${SATELLITES_QUERY}" 2>/dev/null)"
+  rm -f "$satellites_curl_config"
+  satellites_code="$(printf '%s' "$satellites_body" | tail -n 1)"
+  satellites_body="$(printf '%s' "$satellites_body" | sed '$d')"
+  if [ "$satellites_code" = "503" ]; then
+    warn "družice odpovídají 503 — server teprve stahuje dráhy z CelesTraku, nebo jsou starší než týden (journalctl -u satellites-web)"
+    satellites_body=""
+  elif [ "$satellites_code" != "200" ]; then
+    warn "družice na $SATELLITES_URL s heslem z .env vrací '${satellites_code:-nic}' (heslo, nebo satellites-web.service)"
+    satellites_body=""
+  fi
+fi
+if [ -n "$satellites_body" ]; then
+  satellites_report="$(printf '%s' "$satellites_body" | python3 -c '
+import json, sys, time
+try:
+    data = json.loads(sys.stdin.read())
+    sats = data["sats"]
+    age = int(data["age"])
+    skew = abs(time.time() - int(data["time"]))
+except Exception:
+    print("BAD 0 0 0 0"); raise SystemExit
+if data.get("v") != 1 or not isinstance(sats, list):
+    print("BAD 0 0 0 0"); raise SystemExit
+problem = 1 if data.get("problem") or data.get("pending") else 0
+print(f"OK {len(sats)} {age} {int(skew)} {problem}")
+')"
+  read -r satellites_status satellites_count satellites_age satellites_skew satellites_problem <<< "$satellites_report"
+  if [ "${satellites_status:-BAD}" = "BAD" ]; then
+    bad "družice odpovídají, ale není to JSON verze 1 se sats — firmware by nenačetl nic"
+  elif [ "$satellites_skew" -gt 60 ]; then
+    bad "čas odpovědi družic se liší o $satellites_skew s — server nemá správné hodiny, dráhy na displeji by ležely jinde"
+  elif [ "$satellites_age" -gt 24 ]; then
+    bad "dráhy družic jsou staré $satellites_age h — stahování z CelesTraku neprochází (curl 127.0.0.1:8095/satellites/status na serveru)"
+  elif [ "$satellites_problem" = "1" ]; then
+    warn "družice odpovídají, ale některá skupina chybí nebo je stará (curl 127.0.0.1:8095/satellites/status na serveru)"
+  else
+    ok "družice odpovídají, nad obzorem: $satellites_count, stáří drah $satellites_age h"
+  fi
+fi
+
 # --- rozvrh a úkoly ---------------------------------------------------------
 # Škola nese jméno dítěte a jeho úkoly, takže bez hesla musí přijít 401. S heslem
 # z .env (SCHOOL_PASSWORD) se kontroluje čerstvost. Ve dne je práh 3 h (nejdelší
@@ -403,7 +468,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service caddy.service; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service caddy.service; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -439,7 +504,7 @@ if [ "$MODE" = "--deep" ]; then
     head_ "Shoda infra/ se serverem"
     # Přes sudo: /opt/agenda, /opt/settings a /opt/school jsou jen pro své služby (750/700),
     # opc do nich bez sudo nevidí.
-    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
+    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /opt/satellites/serve.py /opt/satellites/satellites-web.service /opt/satellites/requirements.txt /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -453,6 +518,7 @@ if [ "$MODE" = "--deep" ]; then
           /opt/lightning/*)               local_path="infra/lightning/$(basename "$path")" ;;
           /opt/settings/*)                local_path="infra/settings/$(basename "$path")" ;;
           /opt/school/*)                  local_path="infra/school/$(basename "$path")" ;;
+          /opt/satellites/*)              local_path="infra/satellites/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
           *) continue ;;

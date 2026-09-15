@@ -38,6 +38,7 @@ const char *clockScreenName(uint8_t screen) {
     case CLOCK_SCREEN_AGENDA: return "agenda";
     case CLOCK_SCREEN_SKY: return "sky";
     case CLOCK_SCREEN_SCHOOL: return "school";
+    case CLOCK_SCREEN_SATELLITES: return "satellites";
     default: return "clock";
   }
 }

@@ -22,6 +22,7 @@
 #include "CompressedPages.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
+#include "SatelliteService.h"
 #include "RssService.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
@@ -317,6 +318,7 @@ TaskHandle_t agendaTaskForDiagnostics = nullptr;
 AgendaProbeCallback agendaProbeCallback = nullptr;
 TaskHandle_t schoolTaskForDiagnostics = nullptr;
 SchoolProbeCallback schoolProbeCallback = nullptr;
+SatellitesProbeCallback satellitesProbeCallback = nullptr;
 SettingsShareCallback settingsShareCallback = nullptr;
 BackgroundWorkCallback backgroundWorkCallback = nullptr;
 DeviceNameChangedCallback deviceNameChangedCallback = nullptr;
@@ -649,6 +651,46 @@ void applyWebMode(ConfigurationWebMode mode) {
   if (mode == CONFIGURATION_WEB_DISABLED) lockConfiguration();
   else unlockConfiguration(true);
 }
+
+// Skupiny družic jako text "stations,visual" - stejná jména, jaká čte server.
+String satelliteGroupsText(uint8_t mask) {
+  String text;
+  for (uint8_t group = 0; group < SATELLITE_GROUP_COUNT; ++group) {
+    if ((mask & (1U << group)) == 0) continue;
+    if (!text.isEmpty()) text += ',';
+    text += satelliteGroupName(group);
+  }
+  return text;
+}
+
+// Opak: neznámé jméno odmítne celý seznam, aby překlep tiše nevypnul skupinu.
+bool parseSatelliteGroups(const String &text, uint8_t &mask) {
+  mask = 0;
+  int start = 0;
+  while (start <= static_cast<int>(text.length())) {
+    int end = text.indexOf(',', start);
+    if (end < 0) end = text.length();
+    String name = text.substring(start, end);
+    name.trim();
+    if (!name.isEmpty()) {
+      bool known = false;
+      for (uint8_t group = 0; group < SATELLITE_GROUP_COUNT; ++group) {
+        if (name == satelliteGroupName(group)) {
+          mask |= static_cast<uint8_t>(1U << group);
+          known = true;
+          break;
+        }
+      }
+      if (!known) return false;
+    }
+    start = end + 1;
+  }
+  return true;
+}
+
+// Adresa, skupiny a nejmenší výška družic z požadavku; definice u zkoušky.
+bool readSatellitesRequest(String &url, uint8_t &groups, int &minElevation,
+                           String &error);
 
 String jsonEscape(const char *value) {
   String result;
@@ -1564,6 +1606,24 @@ void handleGetConfig() {
   result += config.school.displaySeconds;
   result += F(",\"schoolAutomaticRotation\":");
   result += config.school.automaticRotation ? F("true") : F("false");
+  result += F(",\"satellitesEnabled\":");
+  result += config.satellites.enabled ? F("true") : F("false");
+  result += F(",\"satellitesUrl\":\"");
+  result += jsonEscape(config.satellites.url);
+  result += F("\",\"satellitesGroups\":\"");
+  result += satelliteGroupsText(config.satellites.groups);
+  result += F("\",\"satellitesMinElevation\":");
+  result += config.satellites.minElevationDeg;
+  result += F(",\"satellitesRefreshSeconds\":");
+  result += config.satellites.refreshSeconds;
+  result += F(",\"satellitesTopBearing\":");
+  result += config.satellites.topBearingDeg;
+  result += F(",\"satellitesShowTracks\":");
+  result += config.satellites.showTracks ? F("true") : F("false");
+  result += F(",\"satellitesDisplaySeconds\":");
+  result += config.satellites.displaySeconds;
+  result += F(",\"satellitesAutomaticRotation\":");
+  result += config.satellites.automaticRotation ? F("true") : F("false");
   result += F(",\"agendaHiddenCalendars\":");
   result += config.agendaCalendars.hiddenMask;
   // Heslo samo se nevrací nikdy, stejně jako token Home Assistantu.
@@ -1627,7 +1687,7 @@ void handleGetConfig() {
   for (size_t index = 0; index < CLOCK_SCREEN_ORDER_COUNT; ++index) {
     if (index > 0) result += ',';
     result += '"';
-    result += clockScreenName(config.screenOrder[index]);
+    result += clockScreenName(clockConfigScreenOrderSlot(config, index));
     result += '"';
   }
   result += ']';
@@ -2167,6 +2227,64 @@ void handleSaveConfig() {
         server.arg("schoolAutomaticRotation") == "1";
   }
 
+  if (server.hasArg("satellitesEnabled")) {
+    String satellitesUrl;
+    uint8_t satelliteGroups = 0;
+    int satellitesMinElevation = 0;
+    String validationError;
+    if (!readSatellitesRequest(satellitesUrl, satelliteGroups,
+                               satellitesMinElevation, validationError)) {
+      sendError(400, validationError);
+      return;
+    }
+    const bool satellitesEnabled = server.arg("satellitesEnabled") == "1";
+    if (satellitesEnabled && satellitesUrl.isEmpty()) {
+      sendError(400, F("Pro zapnutou obrazovku družic doplň adresu serveru."));
+      return;
+    }
+    if (satellitesEnabled && satelliteGroups == 0) {
+      sendError(400, F("Vyber aspoň jednu skupinu družic."));
+      return;
+    }
+    const int satellitesRefreshSeconds =
+        server.arg("satellitesRefreshSeconds").toInt();
+    if (satellitesRefreshSeconds < CLOCK_SATELLITES_MIN_REFRESH_SECONDS ||
+        satellitesRefreshSeconds > CLOCK_SATELLITES_MAX_REFRESH_SECONDS) {
+      sendError(400, F("Obnova družic musí být od 30 do 120 sekund."));
+      return;
+    }
+    const String topBearingText = server.arg("satellitesTopBearing");
+    const int satellitesTopBearing = topBearingText.toInt();
+    if (topBearingText.isEmpty() || satellitesTopBearing < 0 ||
+        satellitesTopBearing > 359) {
+      sendError(400, F("Směr nahoře u družic musí být od 0 do 359 stupňů."));
+      return;
+    }
+    const int satellitesDisplaySeconds =
+        server.arg("satellitesDisplaySeconds").toInt();
+    if (satellitesDisplaySeconds < 10 || satellitesDisplaySeconds > 3600) {
+      sendError(400, F("Doba zobrazení družic musí být od 10 do 3600 sekund."));
+      return;
+    }
+    config.satellites.enabled = satellitesEnabled;
+    clockConfigCopy(config.satellites.url, sizeof(config.satellites.url),
+                    satellitesUrl);
+    // Vypnutá obrazovka si skupiny pamatuje, i prázdné; zapnout ji bez nich
+    // výše neprojde.
+    config.satellites.groups = satelliteGroups;
+    config.satellites.minElevationDeg =
+        static_cast<uint8_t>(satellitesMinElevation);
+    config.satellites.refreshSeconds =
+        static_cast<uint8_t>(satellitesRefreshSeconds);
+    config.satellites.topBearingDeg =
+        static_cast<uint16_t>(satellitesTopBearing);
+    config.satellites.showTracks = server.arg("satellitesShowTracks") == "1";
+    config.satellites.displaySeconds =
+        static_cast<uint16_t>(satellitesDisplaySeconds);
+    config.satellites.automaticRotation =
+        server.arg("satellitesAutomaticRotation") == "1";
+  }
+
   if (server.hasArg("skyEnabled")) {
     const int skyDisplaySeconds = server.arg("skyDisplaySeconds").toInt();
     if (skyDisplaySeconds < 10 || skyDisplaySeconds > 3600) {
@@ -2300,7 +2418,8 @@ void handleSaveConfig() {
       sendError(400, F("Pořadí obrazovek není platné."));
       return;
     }
-    memcpy(config.screenOrder, screenOrder, sizeof(config.screenOrder));
+    // Pořadí leží ve dvou blocích záznamu; zapsat se musí oba.
+    clockConfigWriteScreenOrder(config, screenOrder);
   }
 
   const String submittedTmepUrl = server.arg("tmepExportUrl");
@@ -2756,6 +2875,119 @@ void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
     result += ']';
   }
   result += '}';
+}
+
+// Adresa, skupiny a nejmenší výška družic z požadavku. Totéž kontroluje uložení
+// i zkouška, aby zkouška nepustila adresu, kterou by uložení odmítlo.
+bool readSatellitesRequest(String &url, uint8_t &groups, int &minElevation,
+                           String &error) {
+  url = server.arg("satellitesUrl");
+  url.trim();
+  if (url.length() >= CLOCK_SATELLITES_URL_LENGTH) {
+    error = F("Adresa serveru družic je příliš dlouhá.");
+    return false;
+  }
+  if (!url.isEmpty() && !url.startsWith("http://") &&
+      !url.startsWith("https://")) {
+    error = F("Adresa serveru družic musí začínat http:// nebo https://.");
+    return false;
+  }
+  // Heslo po http:// by šlo sítí čitelně, stejně jako poloha hodin.
+  if (url.startsWith("http://") && clockConfigUrlHasCredentials(url.c_str())) {
+    error = F("Adresa serveru družic s heslem musí začínat https://.");
+    return false;
+  }
+  if (!parseSatelliteGroups(server.arg("satellitesGroups"), groups)) {
+    error = F("Neznámá skupina družic.");
+    return false;
+  }
+  const String minText = server.arg("satellitesMinElevation");
+  minElevation = minText.toInt();
+  if (minText.isEmpty() || minElevation < 0 ||
+      minElevation > CLOCK_SATELLITES_MAX_MIN_ELEVATION) {
+    error = F("Nejmenší výška družic musí být od 0 do 60 stupňů.");
+    return false;
+  }
+  return true;
+}
+
+void handleSatellitesTest() {
+  String url;
+  uint8_t groups = 0;
+  int minElevation = 0;
+  String error;
+  if (!readSatellitesRequest(url, groups, minElevation, error)) {
+    sendError(400, error);
+    return;
+  }
+  if (url.isEmpty()) {
+    sendError(400, F("Doplň adresu serveru družic."));
+    return;
+  }
+  if (groups == 0) {
+    sendError(400, F("Vyber aspoň jednu skupinu družic."));
+    return;
+  }
+  if (satellitesProbeCallback == nullptr) {
+    sendError(503, F("Zkouška družic nyní není dostupná."));
+    return;
+  }
+  ClockSatellitesConfig probe;
+  clockConfigCopy(probe.url, sizeof(probe.url), url);
+  probe.groups = groups;
+  probe.minElevationDeg = static_cast<uint8_t>(minElevation);
+  // Výsledek má přes kilobajt; na zásobníku smyčky, ne v interní .bss.
+  SatelliteProbeResult probeResult;
+  if (!satellitesProbeCallback(probe, probeResult)) {
+    sendError(502, probeResult.error[0] != '\0'
+                       ? String(probeResult.error)
+                       : String(F("Družice se nepodařilo načíst.")));
+    return;
+  }
+  String result;
+  result.reserve(1536);
+  result += F("{\"ok\":true,\"count\":");
+  result += probeResult.count;
+  result += F(",\"total\":");
+  result += probeResult.serverTotal;
+  result += F(",\"ageHours\":");
+  result += probeResult.elementAgeHours;
+  result += F(",\"dark\":");
+  result += probeResult.observerDark ? F("true") : F("false");
+  result += F(",\"pending\":");
+  result += probeResult.pending ? F("true") : F("false");
+  result += F(",\"problem\":\"");
+  result += jsonEscape(probeResult.problem);
+  result += '"';
+  if (probeResult.pass.valid) {
+    result += F(",\"pass\":{\"rise\":");
+    result += String(static_cast<unsigned long>(probeResult.pass.rise));
+    result += F(",\"set\":");
+    result += String(static_cast<unsigned long>(probeResult.pass.set));
+    result += F(",\"max\":");
+    result += probeResult.pass.maxElevationDeg;
+    result += F(",\"visible\":");
+    result += probeResult.pass.visible ? F("true") : F("false");
+    result += '}';
+  }
+  result += F(",\"satellites\":[");
+  for (uint8_t index = 0; index < probeResult.entryCount; ++index) {
+    const SatelliteProbeEntry &entry = probeResult.entries[index];
+    if (index > 0) result += ',';
+    result += F("{\"name\":\"");
+    result += jsonEscape(entry.name);
+    result += F("\",\"group\":\"");
+    result += satelliteGroupName(entry.group);
+    result += F("\",\"elevation\":");
+    result += static_cast<int>(std::lround(entry.elevationDeg));
+    result += F(",\"azimuth\":");
+    result += static_cast<int>(std::lround(entry.azimuthDeg)) % 360;
+    result += F(",\"sunlit\":");
+    result += entry.sunlit ? F("true") : F("false");
+    result += '}';
+  }
+  result += F("]}");
+  sendJson(200, result);
 }
 
 void handleSchoolTest() {
@@ -3633,6 +3865,39 @@ void handleDiagnostics() {
   result += F("\",\"message\":\"");
   result += jsonEscape(planes.message);
   result += F("\"}");
+  {
+    SatelliteDiagnostics satellites;
+    satelliteServiceDiagnostics(satellites);
+    result += F(",\"satellites\":{\"available\":");
+    result += satellites.available ? F("true") : F("false");
+    result += F(",\"active\":");
+    result += satellites.active ? F("true") : F("false");
+    result += F(",\"visible\":");
+    result += satellites.visible ? F("true") : F("false");
+    result += F(",\"loading\":");
+    result += satellites.loading ? F("true") : F("false");
+    result += F(",\"haveData\":");
+    result += satellites.haveData ? F("true") : F("false");
+    result += F(",\"trackCount\":");
+    result += satellites.trackCount;
+    result += F(",\"serverTotal\":");
+    result += satellites.serverTotal;
+    result += F(",\"elementAgeHours\":");
+    result += satellites.elementAgeHours;
+    result += F(",\"lastSuccessfulRefreshAgeMs\":");
+    result += satellites.lastSuccessfulRefreshAgeMs;
+    result += F(",\"nextRefreshInMs\":");
+    result += satellites.nextRefreshInMs;
+    result += F(",\"lastHttpStatus\":");
+    result += satellites.lastHttpStatus;
+    result += F(",\"lastDownloadedBytes\":");
+    result += static_cast<unsigned long>(satellites.lastDownloadedBytes);
+    result += F(",\"serverProblem\":\"");
+    result += jsonEscape(satellites.serverProblem);
+    result += F("\",\"message\":\"");
+    result += jsonEscape(satellites.message);
+    result += F("\"}");
+  }
   result += F(",\"homeAssistantRuntime\":");
   appendDiagnosticJson(
       result, networkDiagnosticsSnapshot(
@@ -4606,6 +4871,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   registerBoundedPost("/api/school/test", []() {
     if (requireConfigurationAccess()) handleSchoolTest();
   });
+  registerBoundedPost("/api/satellites/test", []() {
+    if (requireConfigurationAccess()) handleSatellitesTest();
+  });
   registerBoundedPost("/api/agenda/test", []() {
     if (requireConfigurationAccess()) handleAgendaTest();
   });
@@ -4701,6 +4969,10 @@ void configurationWebSetSchoolTask(TaskHandle_t task) {
 
 void configurationWebSetSchoolProbe(SchoolProbeCallback callback) {
   schoolProbeCallback = callback;
+}
+
+void configurationWebSetSatellitesProbe(SatellitesProbeCallback callback) {
+  satellitesProbeCallback = callback;
 }
 
 void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {

@@ -198,8 +198,8 @@ void testSlotIndexSelectsItsOwnFields() {
 // permutace, jinak by z cyklu zmizela obrazovka.
 void testScreenOrderIsParsed() {
   uint8_t order[CLOCK_SCREEN_ORDER_CAPACITY] = {};
-  assert(parseScreenOrder("planes,clock,agenda,forecast,rss,radar,sky,school",
-                          order));
+  assert(parseScreenOrder(
+      "planes,clock,agenda,forecast,rss,radar,sky,school,satellites", order));
   assert(order[0] == CLOCK_SCREEN_PLANES);
   assert(order[1] == CLOCK_SCREEN_CLOCK);
   assert(order[2] == CLOCK_SCREEN_AGENDA);
@@ -208,6 +208,7 @@ void testScreenOrderIsParsed() {
   assert(order[5] == CLOCK_SCREEN_RADAR);
   assert(order[6] == CLOCK_SCREEN_SKY);
   assert(order[7] == CLOCK_SCREEN_SCHOOL);
+  assert(order[8] == CLOCK_SCREEN_SATELLITES);
   // Rezerva za posledním jménem nesmí zůstat nulová: nula je ciferník.
   for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
        index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
@@ -226,6 +227,9 @@ void testIncompleteOrDuplicateScreenOrderIsRejected() {
   assert(!parseScreenOrder("clock,radar,rss,forecast,forecast,agenda", order));
   assert(!parseScreenOrder("clock,radar,rss,forecast,planes,clock", order));
   assert(!parseScreenOrder("clock,radar,rss,forecast,planes,settings", order));
+  // Osm jmen bylo úplné pořadí schématu 44; družice chybí.
+  assert(!parseScreenOrder("clock,radar,rss,forecast,planes,agenda,sky,school",
+                           order));
 }
 
 }  // namespace

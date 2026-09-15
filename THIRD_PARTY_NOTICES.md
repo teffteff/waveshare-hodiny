@@ -68,6 +68,22 @@ potřebuje. Firmware proto posílá vlastní User-Agent, ptá se jen když je
 obrazovka vidět nebo zapojená do střídání, a u větších dosahů si sám prodlouží
 interval. Na trasu se ptá jen na jedno vybrané letadlo a odpověď si drží.
 
+## Dráhy družic CelesTrak, sgp4 a NumPy
+
+Obrazovka družic čte polohy z vlastního serveru (`infra/satellites`), který
+počítá dráhy z veřejných dat:
+
+- dráhové elementy ve formátu OMM z https://celestrak.org/ (CelesTrak,
+  Dr. T. S. Kelso; data pocházejí z katalogu 18. a 19. letky vesmírné
+  kontroly U.S. Space Force). CelesTrak žádá, aby se data nestahovala častěji,
+  než se přepočítávají; server proto každou skupinu stahuje nejvýš jednou za
+  šest hodin a drží ji na disku,
+- knihovna sgp4 (Brandon Rhodes, podle referenční implementace Vallado a spol.),
+  licence MIT, https://github.com/brandon-rhodes/python-sgp4,
+- NumPy, licence BSD-3-Clause, https://numpy.org/.
+
+Knihovny běží jen na serveru, do firmwaru se nepřekládají.
+
 ## Meteorologická data ČHMÚ
 
 Meteoradar používá radarový kompozit MAX_Z poskytovaný Českým

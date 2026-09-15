@@ -394,6 +394,8 @@ void testSelectedPartsKeepTheRest() {
   assert(incoming.agendaCalendars.privateKey[0] == '\0');
   assert(memcmp(incoming.screenOrder, current.screenOrder,
                 sizeof(current.screenOrder)) == 0);
+  assert(memcmp(incoming.screenOrderTail, current.screenOrderTail,
+                sizeof(current.screenOrderTail)) == 0);
   assert(incoming.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
 
   // Všechny části dohromady nemění nic.

@@ -2,6 +2,7 @@
 #include "AgendaParser.h"
 #include "SchoolLayout.h"
 #include "SchoolService.h"
+#include "SatelliteService.h"
 #include "Astronomy.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
@@ -133,6 +134,20 @@ lv_obj_t *planesDetailRouteFrom = nullptr;
 lv_obj_t *planesDetailRouteTo = nullptr;
 lv_obj_t *planesDetailSignalLost = nullptr;
 bool planesFeatureAvailable = false;
+// Obrazovka družic: obloha přijde hotová ze SatelliteService, text kolem je
+// LVGL stejně jako u radaru letadel.
+lv_obj_t *satellitesPage = nullptr;
+lv_obj_t *satellitesCanvas = nullptr;
+lv_obj_t *satellitesClockLabel = nullptr;
+lv_obj_t *satellitesStatusLabel = nullptr;
+lv_obj_t *satellitesPassLabel = nullptr;
+lv_obj_t *satellitesDetailPanel = nullptr;
+lv_obj_t *satellitesDetailTitle = nullptr;
+lv_obj_t *satellitesDetailClose = nullptr;
+constexpr uint8_t SATELLITES_DETAIL_ROW_COUNT = 6;
+lv_obj_t *satellitesDetailRows[SATELLITES_DETAIL_ROW_COUNT] = {};
+lv_obj_t *satellitesDetailLost = nullptr;
+bool satellitesFeatureAvailable = false;
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *agendaPage = nullptr;
 lv_obj_t *agendaHeaderLabel = nullptr;
@@ -332,6 +347,7 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA,
   DASHBOARD_SCREEN_SKY = CLOCK_SCREEN_SKY,
   DASHBOARD_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL,
+  DASHBOARD_SCREEN_SATELLITES = CLOCK_SCREEN_SATELLITES,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -447,6 +463,7 @@ RssVisibilityCallback agendaVisibilityCallback = nullptr;
 ForecastVisibilityCallback forecastVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
 RssVisibilityCallback planesVisibilityCallback = nullptr;
+RssVisibilityCallback satellitesVisibilityCallback = nullptr;
 WebPasswordResetCallback webPasswordResetCallback = nullptr;
 bool webPasswordConfigured = false;
 // Smazání chce druhé klepnutí do pěti sekund; 0 = nepotvrzuje se.
@@ -472,6 +489,7 @@ void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber);
 void updateScreenDots();
 void updateRadarClockLabel();
 void updatePlanesClockLabel();
+void updateSatellitesClockLabel();
 void updateOverlayStatusLabels();
 const char *radarEmptyStateText(bool busy);
 void updateClockStyleCardSelection();
@@ -634,6 +652,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
     case DASHBOARD_SCREEN_AGENDA: return agendaPage;
     case DASHBOARD_SCREEN_SKY: return skyPage;
     case DASHBOARD_SCREEN_SCHOOL: return schoolPage;
+    case DASHBOARD_SCREEN_SATELLITES: return satellitesPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
@@ -656,6 +675,8 @@ bool screenAvailable(uint8_t screen) {
       return skyFeatureAvailable && skyPage != nullptr;
     case DASHBOARD_SCREEN_SCHOOL:
       return schoolFeatureAvailable && schoolPage != nullptr;
+    case DASHBOARD_SCREEN_SATELLITES:
+      return satellitesFeatureAvailable && satellitesPage != nullptr;
     default: return true;
   }
 }
@@ -734,6 +755,21 @@ void setActiveScreen(uint8_t screen) {
         lv_obj_add_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
     }
     if (planesVisibilityCallback != nullptr) planesVisibilityCallback(isPlanes);
+  }
+  // Družice se kreslí jen viditelné, nebo řídce na pozadí kvůli střídání.
+  const bool wasSatellites = previous == DASHBOARD_SCREEN_SATELLITES;
+  const bool isSatellites = screen == DASHBOARD_SCREEN_SATELLITES;
+  if (wasSatellites != isSatellites) {
+    if (!isSatellites) {
+      // Detail by po návratu visel nad družicí, která mezitím zapadla.
+      satelliteServiceCloseDetail();
+      if (satellitesCanvas != nullptr)
+        lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
+      if (satellitesDetailPanel != nullptr)
+        lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (satellitesVisibilityCallback != nullptr)
+      satellitesVisibilityCallback(isSatellites);
   }
   // Stránka se právě vytáhla dopředu, takže ukazatel musí zpátky nad ni.
   updateScreenDots();
@@ -4686,6 +4722,7 @@ void updatePlanesClockLabel() {
 void updateOverlayStatusLabels() {
   updateRadarClockLabel();
   updatePlanesClockLabel();
+  updateSatellitesClockLabel();
   updateForecastHeaderLabel();
   updateAgendaHeaderLabel();
   updateSchoolHeaderLabel();
@@ -5805,6 +5842,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetAgendaAvailable(clockConfigAgendaAvailable(config));
   clockDashboardSetSkyAvailable(clockConfigSkyAvailable(config));
   clockDashboardSetSchoolAvailable(clockConfigSchoolAvailable(config));
+  clockDashboardSetSatellitesAvailable(clockConfigSatellitesAvailable(config));
   // Vypínač úkolů mění rozvržení bez nového stažení.
   layoutSchoolPage();
   // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
@@ -6629,6 +6667,10 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   // Zahodit se musí i klepnutí mimo letadla: jinak by potlačení čekalo dál a
   // spolklo nejbližší dvojklepnutí, kterým se přepíná denní režim.
   if (consumeSuppressedTap()) return;
+  if (activeScreen == DASHBOARD_SCREEN_SATELLITES) {
+    satelliteServiceHandleTap(x, y);
+    return;
+  }
   if (activeScreen != DASHBOARD_SCREEN_PLANES) return;
   planeRadarServiceHandleTap(x, y);
 }
@@ -6822,6 +6864,309 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
 
   updatePlanesClockLabel();
   updatePlanesDetail(detail);
+}
+
+namespace {
+
+// --- Družice ------------------------------------------------------------------
+// Pásy jako u radaru letadel: čas, pod ním počet družic, dole přelet ISS.
+constexpr int SATELLITES_CLOCK_OFFSET_Y = -186;
+constexpr int SATELLITES_STATUS_OFFSET_Y = -158;
+constexpr int SATELLITES_PASS_OFFSET_Y = 166;
+// Šest řádků a nadpis; rohy panelu 330x260 leží uvnitř kruhu displeje.
+constexpr int SATELLITES_DETAIL_WIDTH = 330;
+constexpr int SATELLITES_DETAIL_HEIGHT = 260;
+constexpr int SATELLITES_DETAIL_ROWS_TOP = 50;
+constexpr int SATELLITES_DETAIL_ROW_STEP = 28;
+const lv_color_t COLOR_SATELLITE_VISIBLE = LV_COLOR_MAKE(101, 199, 68);
+
+void createSatellitesPage(lv_obj_t *screen) {
+  PlanesPsramAllocations psramAllocations;
+
+  satellitesPage = lv_obj_create(screen);
+  lv_obj_set_size(satellitesPage, 480, 480);
+  lv_obj_center(satellitesPage);
+  lv_obj_set_style_bg_color(satellitesPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(satellitesPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(satellitesPage, 0, 0);
+  lv_obj_set_style_pad_all(satellitesPage, 0, 0);
+  lv_obj_set_style_radius(satellitesPage, 0, 0);
+  lv_obj_clear_flag(satellitesPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  satellitesCanvas = lv_canvas_create(satellitesPage);
+  lv_obj_center(satellitesCanvas);
+  lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(satellitesCanvas, LV_OBJ_FLAG_CLICKABLE);
+
+  satellitesClockLabel = makePlanesOverlayLabel(
+      satellitesPage, &clock_czech_20, COLOR_TEXT, SATELLITES_CLOCK_OFFSET_Y);
+  lv_obj_add_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
+  satellitesStatusLabel = makePlanesOverlayLabel(
+      satellitesPage, &clock_czech_14, COLOR_OUTSIDE, SATELLITES_STATUS_OFFSET_Y);
+  lv_label_set_recolor(satellitesStatusLabel, true);
+  satellitesPassLabel = makePlanesOverlayLabel(
+      satellitesPage, &clock_czech_16, COLOR_ROOM, SATELLITES_PASS_OFFSET_Y);
+  lv_label_set_recolor(satellitesPassLabel, true);
+  lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
+
+  satellitesDetailPanel = lv_obj_create(satellitesPage);
+  lv_obj_set_size(satellitesDetailPanel, SATELLITES_DETAIL_WIDTH,
+                  SATELLITES_DETAIL_HEIGHT);
+  lv_obj_center(satellitesDetailPanel);
+  lv_obj_set_style_bg_color(satellitesDetailPanel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(satellitesDetailPanel, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(satellitesDetailPanel, COLOR_OUTSIDE, 0);
+  lv_obj_set_style_border_width(satellitesDetailPanel, 2, 0);
+  lv_obj_set_style_radius(satellitesDetailPanel, 14, 0);
+  lv_obj_set_style_pad_all(satellitesDetailPanel, 0, 0);
+  lv_obj_clear_flag(satellitesDetailPanel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+
+  satellitesDetailTitle =
+      makeLabel(satellitesDetailPanel, &clock_czech_20, COLOR_ROOM);
+  lv_label_set_text(satellitesDetailTitle, "");
+  lv_obj_set_width(satellitesDetailTitle, SATELLITES_DETAIL_WIDTH - 70);
+  lv_label_set_long_mode(satellitesDetailTitle, LV_LABEL_LONG_DOT);
+  lv_obj_align(satellitesDetailTitle, LV_ALIGN_TOP_LEFT, 18, 14);
+  satellitesDetailClose =
+      makeLabel(satellitesDetailPanel, &clock_czech_18, COLOR_ERROR);
+  lv_label_set_text(satellitesDetailClose, "X");
+  lv_obj_align(satellitesDetailClose, LV_ALIGN_TOP_RIGHT, -18, 14);
+  for (uint8_t row = 0; row < SATELLITES_DETAIL_ROW_COUNT; ++row) {
+    lv_obj_t *label =
+        makeLabel(satellitesDetailPanel, &clock_czech_16, COLOR_TEXT);
+    lv_label_set_text(label, "");
+    lv_label_set_recolor(label, true);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 18,
+                 SATELLITES_DETAIL_ROWS_TOP + row * SATELLITES_DETAIL_ROW_STEP);
+    satellitesDetailRows[row] = label;
+  }
+  satellitesDetailLost =
+      makeLabel(satellitesDetailPanel, &clock_czech_16, COLOR_ROOM);
+  lv_label_set_text(satellitesDetailLost, "");
+  lv_obj_align(satellitesDetailLost, LV_ALIGN_BOTTOM_RIGHT, -14, -8);
+  lv_obj_add_flag(satellitesDetailLost, LV_OBJ_FLAG_HIDDEN);
+
+  makeChildrenTapThrough(satellitesPage);
+  lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+void updateSatellitesClockLabel() {
+  if (satellitesClockLabel == nullptr) return;
+  char text[32];
+  // Stejný přepínač stavového řádku jako na obou radarech.
+  if (!radarStatusLineEnabled || !composeStatusLineText(text, sizeof(text))) {
+    lv_obj_add_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_label_set_text(satellitesClockLabel, text);
+  alignCenter(satellitesClockLabel, 0, SATELLITES_CLOCK_OFFSET_Y);
+  lv_obj_clear_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+const char *satelliteGroupLabel(uint8_t group, bool english) {
+  switch (group) {
+    case SATELLITE_GROUP_STATIONS: return english ? "Space station" : "Vesmírná stanice";
+    case SATELLITE_GROUP_VISUAL: return english ? "Bright satellite" : "Jasná družice";
+    case SATELLITE_GROUP_WEATHER: return english ? "Weather" : "Meteorologická";
+    case SATELLITE_GROUP_GNSS: return english ? "Navigation" : "Navigační";
+    case SATELLITE_GROUP_AMATEUR: return english ? "Amateur radio" : "Radioamatérská";
+    case SATELLITE_GROUP_STARLINK: return "Starlink";
+    default: return "?";
+  }
+}
+
+// Osm směrů po 45 stupních; česky S, SV, V, ... jako na kompasu.
+const char *compassDirection(float azimuthDeg, bool english) {
+  static const char *const CZECH[8] = {"S", "SV", "V", "JV", "J", "JZ", "Z", "SZ"};
+  static const char *const ENGLISH[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+  float normalized = std::fmod(azimuthDeg, 360.0f);
+  if (!std::isfinite(normalized)) normalized = 0.0f;
+  if (normalized < 0.0f) normalized += 360.0f;
+  const int index = static_cast<int>((normalized + 22.5f) / 45.0f) % 8;
+  return english ? ENGLISH[index] : CZECH[index];
+}
+
+void updateSatellitesDetail(const SatelliteDetail &detail) {
+  if (satellitesDetailPanel == nullptr) return;
+  if (!detail.open) {
+    lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const bool english = englishLanguage();
+  const bool redNight = redNightVisualEnabled();
+  lv_label_set_text(satellitesDetailTitle,
+                    detail.name[0] != '\0' ? detail.name : "?");
+  char line[64];
+  uint8_t row = 0;
+  snprintf(line, sizeof(line), "%s: %d°",
+           english ? "ELEVATION" : "NAD OBZOREM",
+           static_cast<int>(std::lround(detail.elevationDeg)));
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  snprintf(line, sizeof(line), "%s: %d° %s", english ? "AZIMUTH" : "AZIMUT",
+           static_cast<int>(std::lround(detail.azimuthDeg)) % 360,
+           compassDirection(detail.azimuthDeg, english));
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  snprintf(line, sizeof(line), "%s: %u km", english ? "ALTITUDE" : "VÝŠKA",
+           static_cast<unsigned>(detail.altitudeKm));
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  snprintf(line, sizeof(line), "%s: %u km", english ? "RANGE" : "VZDÁLENOST",
+           static_cast<unsigned>(detail.rangeKm));
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  // Písmo nemá střední tečku, proto svislá čára.
+  snprintf(line, sizeof(line), "%s  |  NORAD %lu",
+           satelliteGroupLabel(detail.group, english),
+           static_cast<unsigned long>(detail.noradId));
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  // Viditelnost okem je to hlavní, proč se na detail člověk dívá.
+  if (detail.visibleNow) {
+    snprintf(line, sizeof(line), "#%s %s#", redNight ? "FF4848" : "65C744",
+             english ? "Visible to the naked eye" : "Viditelná pouhým okem");
+  } else if (detail.sunlit) {
+    snprintf(line, sizeof(line), "%s",
+             english ? "Sunlit, sky too bright" : "Na Slunci, obloha je světlá");
+  } else {
+    snprintf(line, sizeof(line), "%s",
+             english ? "In Earth's shadow" : "Ve stínu Země");
+  }
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  if (detail.lost) {
+    lv_label_set_text(satellitesDetailLost,
+                      english ? "below the set elevation" : "pod nastavenou výškou");
+    lv_obj_clear_flag(satellitesDetailLost, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(satellitesDetailLost, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_set_style_border_color(satellitesDetailPanel,
+                                redNight ? COLOR_ERROR : COLOR_OUTSIDE, 0);
+  setTextColor(satellitesDetailTitle, redNight ? COLOR_ERROR : COLOR_ROOM);
+  for (lv_obj_t *label : satellitesDetailRows)
+    setTextColor(label, redNight ? COLOR_ERROR : COLOR_TEXT);
+  lv_obj_clear_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(satellitesDetailPanel);
+}
+
+// Přelet ISS pod oblohou. Časy jsou v místním čase hodin.
+void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
+  if (satellitesPassLabel == nullptr) return;
+  const SatellitePass &pass = snapshot.pass;
+  const time_t now = time(nullptr);
+  if (!snapshot.passWanted || !pass.valid || now < 1700000000 ||
+      static_cast<int64_t>(now) > pass.set) {
+    lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const bool english = englishLanguage();
+  const bool redNight = redNightVisualEnabled();
+  const char *visibleColor = redNight ? "FF4848" : "65C744";
+  char visibleText[40] = "";
+  if (pass.visible) {
+    snprintf(visibleText, sizeof(visibleText), "  #%s %s#", visibleColor,
+             english ? "VISIBLE" : "VIDITELNÁ");
+  }
+  char text[96];
+  if (static_cast<int64_t>(now) >= pass.rise) {
+    snprintf(text, sizeof(text), "ISS %s  max %u°%s",
+             english ? "OVERHEAD" : "NAD OBZOREM",
+             static_cast<unsigned>(pass.maxElevationDeg), visibleText);
+  } else {
+    const time_t rise = static_cast<time_t>(pass.rise);
+    struct tm riseLocal;
+    struct tm nowLocal;
+    localtime_r(&rise, &riseLocal);
+    localtime_r(&now, &nowLocal);
+    const bool tomorrow = riseLocal.tm_yday != nowLocal.tm_yday;
+    snprintf(text, sizeof(text), "ISS %s%02d:%02d  max %u°%s",
+             tomorrow ? (english ? "TOMORROW " : "ZÍTRA ") : "",
+             riseLocal.tm_hour, riseLocal.tm_min,
+             static_cast<unsigned>(pass.maxElevationDeg), visibleText);
+  }
+  setTextColor(satellitesPassLabel, redNight ? COLOR_ERROR : COLOR_ROOM);
+  lv_label_set_text(satellitesPassLabel, text);
+  alignCenter(satellitesPassLabel, 0, SATELLITES_PASS_OFFSET_Y);
+  lv_obj_clear_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+}  // namespace
+
+bool clockDashboardSatellitesVisible() {
+  return activeScreen == DASHBOARD_SCREEN_SATELLITES;
+}
+
+void clockDashboardSetSatellitesVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_SATELLITES : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetSatellitesVisibilityCallback(
+    RssVisibilityCallback visibility) {
+  satellitesVisibilityCallback = visibility;
+}
+
+void clockDashboardSetSatellitesAvailable(bool available) {
+  // Stránka se zakládá až s prvním zapnutím obrazovky.
+  if (available && satellitesPage == nullptr && dashboardScreen != nullptr)
+    createSatellitesPage(dashboardScreen);
+  if (satellitesFeatureAvailable == available) return;
+  satellitesFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_SATELLITES) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (satellitesPage != nullptr)
+      lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (satellitesVisibilityCallback != nullptr)
+      satellitesVisibilityCallback(false);
+  }
+  updateScreenDots();
+}
+
+void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
+  if (satellitesCanvas == nullptr || satellitesStatusLabel == nullptr) return;
+  const bool english = englishLanguage();
+  const bool redNight = redNightVisualEnabled();
+
+  if (snapshot.pixels != nullptr) {
+    lv_canvas_set_buffer(satellitesCanvas, const_cast<uint16_t *>(snapshot.pixels),
+                         SATELLITE_SKY_WIDTH, SATELLITE_SKY_HEIGHT,
+                         LV_IMG_CF_TRUE_COLOR);
+    lv_obj_clear_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(satellitesCanvas);
+  } else {
+    lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  char text[80];
+  if (!snapshot.haveData) {
+    // Hláška služby vysvětlí, proč data nejsou; bez ní se píše, že se stahují.
+    if (snapshot.message[0] != '\0') {
+      snprintf(text, sizeof(text), "#FFB843 %s#", snapshot.message);
+    } else {
+      snprintf(text, sizeof(text), "#B5B5B5 %s#",
+               snapshot.loading
+                   ? (english ? "Loading satellites..." : "Načítám družice...")
+                   : (english ? "Waiting for data" : "Čekám na data"));
+    }
+  } else if (snapshot.observerDark) {
+    snprintf(text, sizeof(text), "%s: %u   #%s %s: %u#",
+             english ? "SATELLITES" : "DRUŽICE",
+             static_cast<unsigned>(snapshot.shownCount),
+             redNight ? "FF4848" : "65C744",
+             english ? "VISIBLE" : "VIDITELNÉ",
+             static_cast<unsigned>(snapshot.visibleCount));
+  } else {
+    snprintf(text, sizeof(text), "%s: %u", english ? "SATELLITES" : "DRUŽICE",
+             static_cast<unsigned>(snapshot.shownCount));
+  }
+  setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
+  lv_label_set_text(satellitesStatusLabel, text);
+  alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
+
+  updateSatellitesPassLabel(snapshot);
+  updateSatellitesClockLabel();
+  updateSatellitesDetail(snapshot.detail);
 }
 
 void clockDashboardSetForecastVisible(bool visible) {
@@ -7347,6 +7692,8 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       lv_obj_add_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
     if (planesPage != nullptr)
       lv_obj_add_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
+    if (satellitesPage != nullptr)
+      lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     if (activeScreen == DASHBOARD_SCREEN_RADAR &&
         radarVisibilityCallback != nullptr)
@@ -7356,6 +7703,9 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     if (activeScreen == DASHBOARD_SCREEN_PLANES &&
         planesVisibilityCallback != nullptr)
       planesVisibilityCallback(false);
+    if (activeScreen == DASHBOARD_SCREEN_SATELLITES &&
+        satellitesVisibilityCallback != nullptr)
+      satellitesVisibilityCallback(false);
     lv_obj_clear_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(firmwareUpdateOverlay);
     updateScreenDots();
@@ -7387,6 +7737,12 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
       // služba by zůstala vypnutá a už nikdy nic nestáhla.
       if (planesVisibilityCallback != nullptr) planesVisibilityCallback(true);
+    } else if (activeScreen == DASHBOARD_SCREEN_SATELLITES &&
+               satellitesPage != nullptr) {
+      lv_obj_clear_flag(satellitesPage, LV_OBJ_FLAG_HIDDEN);
+      // Jinak by služba po přerušené aktualizaci zůstala vypnutá.
+      if (satellitesVisibilityCallback != nullptr)
+        satellitesVisibilityCallback(true);
     } else {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }
