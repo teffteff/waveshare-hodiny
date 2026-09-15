@@ -178,6 +178,12 @@ def stub_config() -> dict:
         "agendaHiddenCalendars": 0,
         "agendaPrivateKeyConfigured": False,
         "agendaCalendars": PREVIEW_AGENDA_CALENDARS,
+        "schoolEnabled": True,
+        "schoolUrl": "https://hodiny:heslo@server.example/school.json",
+        "schoolShowHomework": True,
+        "schoolRefreshMinutes": 20,
+        "schoolDisplaySeconds": 20,
+        "schoolAutomaticRotation": False,
         "forecastEnabled": True,
         "forecastAirQuality": True,
         "forecastDayCount": 3,
@@ -350,6 +356,34 @@ class PreviewHandler(BaseHTTPRequestHandler):
                             "url": "https://server.example/settings"})
             else:
                 self._json({"ok": True})
+            return
+        if path == "/api/school/test":
+            fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+            print(f"POST {path}: {fields}", flush=True)
+            # Tvar odpovědi firmwaru (appendSchoolFeedJson).
+            self._json({
+                "ok": True, "student": "Adam",
+                "days": [
+                    {"day": "DNES", "weekday": "ÚTERÝ", "end": "12:20", "lessons": [
+                        {"hour": "1.", "subject": "Český jazyk", "note": "", "state": 0},
+                        {"hour": "2.", "subject": "Anglický jazyk",
+                         "note": "Suplování", "state": 1},
+                    ]},
+                    {"day": "ZÍTRA", "weekday": "STŘEDA", "end": "11:25", "lessons": [
+                        {"hour": "1.", "subject": "Hudební výchova",
+                         "note": "Odpadlá hodina", "state": 2},
+                    ]},
+                ],
+                "homework": [
+                    {"due": "ZÍTRA", "subject": "Matematika",
+                     "title": "Pracovní sešit str. 12"},
+                ],
+                "messageCount": 1,
+                "messages": [{"when": "VČERA", "sender": "Nováková", "title": "Třídní schůzky"}],
+                "markCount": 1,
+                "marks": [{"when": "DNES", "subject": "Matematika", "abbrev": "M",
+                           "mark": "1", "theme": "Násobilka"}],
+            })
             return
         if path == "/api/agenda/test":
             fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}

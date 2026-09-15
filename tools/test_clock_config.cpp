@@ -936,14 +936,15 @@ void testScreenOrderRoundTripAndNormalization() {
   assert(clockConfigLoad(repaired));
   assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
   assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
-  // Agenda a Slunce s Měsícem přežily z výchozího pořadí na šestém a sedmém
-  // místě, takže se doplňuje až za ně; teprve pak přijdou obrazovky, které
-  // v poli vůbec nebyly.
+  // Agenda, Slunce s Měsícem a škola přežily z výchozího pořadí na posledních
+  // třech místech, takže se doplňuje až za ně; teprve pak přijdou obrazovky,
+  // které v poli vůbec nebyly.
   assert(repaired.screenOrder[2] == CLOCK_SCREEN_AGENDA);
   assert(repaired.screenOrder[3] == CLOCK_SCREEN_SKY);
-  assert(repaired.screenOrder[4] == CLOCK_SCREEN_CLOCK);
-  assert(repaired.screenOrder[5] == CLOCK_SCREEN_RADAR);
-  assert(repaired.screenOrder[6] == CLOCK_SCREEN_FORECAST);
+  assert(repaired.screenOrder[4] == CLOCK_SCREEN_SCHOOL);
+  assert(repaired.screenOrder[5] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrder[6] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrder[7] == CLOCK_SCREEN_FORECAST);
   for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
        index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
     assert(repaired.screenOrder[index] == CLOCK_SCREEN_ORDER_UNUSED);
@@ -1083,7 +1084,10 @@ void testLightningAndSkyPersistenceAndMigration() {
   source.agendaCalendars.hiddenMask = 0b11;
   source.screenOrder[0] = CLOCK_SCREEN_RADAR;
   source.screenOrder[1] = CLOCK_SCREEN_CLOCK;
+  // Záznam schématu 41 měl na posledních dvou pozicích volno; škola na [7]
+  // přišla až s výchozím pořadím schématu 44.
   source.screenOrder[6] = CLOCK_SCREEN_ORDER_UNUSED;
+  source.screenOrder[7] = CLOCK_SCREEN_ORDER_UNUSED;
   seed(legacyRecord(source, 41, CLOCK_CONFIG_SCHEMA_41_SIZE));
   ClockConfig migrated;
   assert(clockConfigLoad(migrated));
@@ -1095,7 +1099,8 @@ void testLightningAndSkyPersistenceAndMigration() {
   assert(migrated.screenOrder[0] == CLOCK_SCREEN_RADAR);
   assert(migrated.screenOrder[1] == CLOCK_SCREEN_CLOCK);
   assert(migrated.screenOrder[6] == CLOCK_SCREEN_SKY);
-  assert(migrated.screenOrder[7] == CLOCK_SCREEN_ORDER_UNUSED);
+  // Škola přišla se schématem 44 a normalizace ji připojí na konec cyklu.
+  assert(migrated.screenOrder[7] == CLOCK_SCREEN_SCHOOL);
 
   migrated.lightning.enabled = true;
   clockConfigCopy(migrated.lightning.url, sizeof(migrated.lightning.url),
@@ -1142,7 +1147,63 @@ void testRadarPrecipitationPersistenceAndMigration() {
   assert(!loaded.radarPrecipitation);
 }
 
+void testSchoolPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.school.enabled && defaults.school.url[0] == '\0');
+  assert(defaults.school.showHomework);
+  assert(!clockConfigSchoolAvailable(defaults));
+
+  // Schéma 43 je předponou 44: škola zůstane vypnutá a bez adresy, pořadí
+  // obrazovek si podrží vlastní sled a školu přidá až na konec.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.radarPrecipitation = false;
+  source.sky.enabled = true;
+  source.screenOrder[0] = CLOCK_SCREEN_AGENDA;
+  source.screenOrder[5] = CLOCK_SCREEN_CLOCK;
+  source.screenOrder[7] = CLOCK_SCREEN_ORDER_UNUSED;
+  seed(legacyRecord(source, 43, CLOCK_CONFIG_SCHEMA_43_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(!migrated.radarPrecipitation);
+  assert(migrated.sky.enabled);
+  assert(!migrated.school.enabled && migrated.school.url[0] == '\0');
+  assert(migrated.school.refreshMinutes == 20);
+  assert(migrated.school.displaySeconds == 20);
+  assert(migrated.screenOrder[0] == CLOCK_SCREEN_AGENDA);
+  assert(migrated.screenOrder[5] == CLOCK_SCREEN_CLOCK);
+  assert(migrated.screenOrder[7] == CLOCK_SCREEN_SCHOOL);
+
+  migrated.school.enabled = true;
+  migrated.school.showHomework = false;
+  migrated.school.refreshMinutes = 1;
+  migrated.school.displaySeconds = 60000;
+  clockConfigCopy(migrated.school.url, sizeof(migrated.school.url),
+                  "https://hodiny:heslo@example.test/school.json");
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(clockConfigSchoolAvailable(loaded));
+  assert(!loaded.school.showHomework);
+  assert(loaded.school.refreshMinutes == 5);
+  assert(loaded.school.displaySeconds == 3600);
+  assert(strcmp(loaded.school.url,
+                "https://hodiny:heslo@example.test/school.json") == 0);
+
+  assert(clockConfigUrlHasCredentials("http://hodiny:heslo@server/school.json"));
+  assert(clockConfigUrlHasCredentials("https://hodiny@server"));
+  assert(!clockConfigUrlHasCredentials("http://server/school.json"));
+  assert(!clockConfigUrlHasCredentials("http://server/a@b"));
+  assert(!clockConfigUrlHasCredentials("http://server?mail=a@b"));
+  assert(!clockConfigUrlHasCredentials("server@example"));
+  assert(!clockConfigUrlHasCredentials(nullptr));
+}
+
 int main() {
+  testSchoolPersistenceAndMigration();
   testRadarPrecipitationPersistenceAndMigration();
   testAgendaCalendarsPersistenceAndMigration();
   testPlanesMapLabelPersistenceAndMigration();

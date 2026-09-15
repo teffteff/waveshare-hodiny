@@ -108,6 +108,23 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
 // shoduje s parametrem calendar u události, takže legenda i časy dostanou
 // stejnou barvu. Bez jmen se legenda nekreslí.
 void clockDashboardSetAgendaCalendars(const char *const *names, size_t count);
+// --- Rozvrh a úkoly ---------------------------------------------------------
+bool clockDashboardSchoolVisible();
+// Tažení prstu na obrazovce Škola přepne mezi rozvrhem a stránkou se zprávami
+// a známkami. Vrací false, když obrazovka Škola nesvítí nebo druhá stránka
+// nemá data.
+bool clockDashboardSwipeSchool();
+void clockDashboardSetSchoolVisible(bool visible);
+// Vypnutá obrazovka nebo prázdná adresa se do rotace ani pod gesto nepustí;
+// stránka se zakládá až při prvním zapnutí.
+void clockDashboardSetSchoolAvailable(bool available);
+void clockDashboardSetSchoolVisibilityCallback(RssVisibilityCallback visibility);
+// Předá obrazovce rozvrh. Bez feedu obrazovka ukáže `message`, nebo s prázdnou
+// hláškou "načítám". Texty se z feedu opíšou hned, takže ukazatel smí ukazovat
+// do mezipaměti služby jen po dobu volání. Vrací false, když stránka ještě
+// není založená; volající pak data předá znovu.
+struct SchoolFeed;
+bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message);
 bool clockDashboardForecastVisible();
 void clockDashboardSetForecastVisible(bool visible);
 // Vypnutá obrazovka se do rotace ani pod gesto nepustí.

@@ -62,11 +62,13 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - volitelnou stupnici intenzity srážek v dBZ a mm/h podle zvoleného zdroje,
 - rozsahy 25, 50, 100 a 200 km nebo celou ČR ovládané přetažením prstu,
 - červenou noční paletu radaru se zachováním rozlišení intenzity srážek,
-- volitelné automatické střídání hodin, radaru, zpráv, předpovědi, letadel
-  a agendy se samostatnou dobou zobrazení a vlastním pořadím obrazovek,
+- volitelné automatické střídání hodin, radaru, zpráv, předpovědi, letadel,
+  agendy a rozvrhu se samostatnou dobou zobrazení a vlastním pořadím obrazovek,
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
 - obrazovku s agendou z Google Kalendáře, sloučenou z několika kalendářů
   a obarvenou podle toho, ze kterého z nich událost je,
+- obrazovku s rozvrhem a domácími úkoly ze Školy OnLine přes vlastní server,
+  se suplováním, odpadlými hodinami a zvýrazněnou právě probíhající hodinou,
 - obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
   ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
 - radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
@@ -502,6 +504,47 @@ je obrazovka zavřená. Server ji stejně přepočítává po čtvrthodině, tak
 na stránku, která hlásí jen prázdno, nemá cenu — podržením prstu se na ni
 dostaneš pořád. Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na
 displeji nechá poslední úspěšně načtené události.
+
+### Rozvrh a úkoly ze Školy OnLine
+
+Obrazovka **Škola** ukazuje rozvrh jednoho dítěte na dva školní dny vedle
+sebe a jeho domácí úkoly. Levý sloupec je dnešek, dokud neskončí poslední
+hodina, potom příští den, kdy se učí; pravý sloupec je školní den po něm —
+večer se tak balí taška podle toho, co je na hodinách, a v pátek odpoledne
+svítí pondělí a úterý. Každý sloupec má popisek dne (`DNES`, `ZÍTRA`,
+`PO 21.9.`) a vpravo od něj konec vyučování (`do 12:20`). Řádky mají jen pořadí
+hodiny a předmět; předmět, který se do sloupce nevejde, nahradí zkratka ze
+Školy OnLine. Když je v dohledu jen jeden školní den, dostane celou šířku.
+
+Barvy nesou stav: právě probíhající nebo nejbližší hodina dnešního rozvrhu má
+zelené pořadí i předmět, suplování a školní akce mají předmět oranžově a
+odpadlá hodina je celá tlumená a za předmětem má `odpadá`. Pod rozvrhem jsou **úkoly**
+s termínem od dneška na dva týdny, kolik se jich vejde; když se všechny
+nevejdou, poslední řádek nahradí tři tečky. Když žádné nejsou, stojí pod
+rozvrhem `ŽÁDNÉ ÚKOLY`. Úkoly jdou v záložce vypnout.
+
+Tažením prstu do strany se obrazovka přepne na druhou stránku (stejně jako
+druhá sada hodnot na ciferníku HODNOTY): **nepřečtené zprávy** a **známky**
+za poslední dva týdny. U zprávy je jen den, příjmení odesílatele a titulek;
+obsah zprávy do hodin nejde. Obrazovka se vždycky otevírá na rozvrhu.
+
+**Do Školy OnLine chodí server, ne hodiny.** Škola OnLine nemá veřejné API,
+mobilní aplikace ale mluví s JSON API, které zmapovaly neoficiální projekty.
+Přihlašuje se [vlastní server](infra/README.md#rozvrh-a-úkoly-ze-školy-online):
+drží token, stahuje rozvrh a úkoly a hodinám posílá jen hotové řádky. Jméno
+a heslo dítěte proto v hodinách ani v záloze nastavení není. Když Škola OnLine
+své API změní, opravuje se server a firmware zůstane.
+
+Do hodin se v záložce **Škola** zadává adresa ve tvaru
+`https://uzivatel:heslo@tvuj-server.example.net/school.json` — rozvrh nese
+jméno dítěte, takže u referenčního serveru stojí za heslem stejně jako
+agenda. Adresa s heslem musí začínat `https://`, jinak by heslo i úkoly šly
+sítí čitelně. Tlačítko **Vyzkoušet rozvrh** adresu stáhne ještě před uložením.
+Rozvrh se stahuje po 5 až 120 minutách, výchozí je 20 minut. Když server
+tři hodiny neodpovídá, nebo sám nemá čerstvá data, obrazovka starý rozvrh
+zahodí a řekne proč — popisky DNES a ZÍTRA by už neseděly. O prázdninách
+bez úkolů obrazovka řekne `Žádné vyučování` a automatické střídání ji
+přeskočí; podržením prstu se na ni dostaneš pořád.
 
 ### Předpověď počasí
 

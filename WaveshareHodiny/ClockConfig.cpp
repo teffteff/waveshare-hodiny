@@ -439,6 +439,7 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.planesFeedUrl);
   terminateText(config.agendaCalendars.privateKey);
   terminateText(config.lightning.url);
+  terminateText(config.school.url);
 }
 
 void normalizeConfig(ClockConfig &config) {
@@ -529,6 +530,9 @@ void normalizeConfig(ClockConfig &config) {
       config.lightning.alarmMinutes, CLOCK_LIGHTNING_MIN_ALARM_MINUTES,
       CLOCK_LIGHTNING_MAX_ALARM_MINUTES);
   config.sky.displaySeconds = constrain(config.sky.displaySeconds, 10, 3600);
+  config.school.refreshMinutes = constrain(config.school.refreshMinutes, 5, 120);
+  config.school.displaySeconds =
+      constrain(config.school.displaySeconds, 10, 3600);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -634,6 +638,22 @@ bool clockConfigAgendaAvailable(const ClockConfig &config) {
 
 bool clockConfigLightningAvailable(const ClockConfig &config) {
   return config.lightning.enabled && config.lightning.url[0] != '\0';
+}
+
+bool clockConfigSchoolAvailable(const ClockConfig &config) {
+  return config.school.enabled && config.school.url[0] != '\0';
+}
+
+bool clockConfigUrlHasCredentials(const char *url) {
+  if (url == nullptr) return false;
+  const char *scheme = strstr(url, "://");
+  if (scheme == nullptr) return false;
+  // Zavináč se počítá jen v autoritě; v cestě nebo dotazu heslo neznamená.
+  for (const char *cursor = scheme + 3; *cursor != '\0'; ++cursor) {
+    if (*cursor == '/' || *cursor == '?' || *cursor == '#') return false;
+    if (*cursor == '@') return true;
+  }
+  return false;
 }
 
 bool clockConfigSkyAvailable(const ClockConfig &config) {
@@ -877,6 +897,14 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+// Schémata 42 a 43 mají stejnou velikost a liší se jen číslem schématu.
+struct ConfigRecordV43 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_43_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV41 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -890,6 +918,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV43) ||
          storedSize == sizeof(ConfigRecordV41) ||
          storedSize == sizeof(ConfigRecordV40) ||
          storedSize == sizeof(ConfigRecordV39) ||
@@ -928,16 +957,23 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     return ConfigRecordDecode::Current;
   }
 
-  // Schéma 42 má stejnou velikost jako 43: nový vypínač srážek leží v jeho
-  // koncové výplni. Obsah výplně je nejistý, proto se vypínač nastaví natvrdo.
-  const bool legacyV42 =
-      readComplete && storedSize == sizeof(record) &&
-      record.magic == CONFIG_MAGIC && record.schemaVersion == 42 &&
-      record.config.schemaVersion == 42 &&
-      record.checksum == configChecksum(record.config);
-  if (legacyV42) {
-    config = record.config;
-    config.radarPrecipitation = true;
+  // Schéma 43 je přesnou předponou schématu 44; obrazovka Škola si po
+  // zkopírování bajtů podrží výchozí hodnoty, tedy vypnutou bez adresy.
+  // Schéma 42 má stejnou velikost jako 43: vypínač srážek leží v jeho koncové
+  // výplni. Obsah výplně je nejistý, proto se u 42 vypínač nastaví natvrdo.
+  const ConfigRecordV43 &legacyV43 =
+      *reinterpret_cast<const ConfigRecordV43 *>(&record);
+  uint32_t embeddedSchemaV43 = 0;
+  if (readComplete && storedSize == sizeof(legacyV43))
+    memcpy(&embeddedSchemaV43, legacyV43.config, sizeof(embeddedSchemaV43));
+  if (readComplete && storedSize == sizeof(legacyV43) &&
+      legacyV43.magic == CONFIG_MAGIC &&
+      (legacyV43.schemaVersion == 42 || legacyV43.schemaVersion == 43) &&
+      embeddedSchemaV43 == legacyV43.schemaVersion &&
+      legacyV43.checksum ==
+          bytesChecksum(legacyV43.config, sizeof(legacyV43.config))) {
+    memcpy(&config, legacyV43.config, sizeof(legacyV43.config));
+    if (legacyV43.schemaVersion == 42) config.radarPrecipitation = true;
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
     return ConfigRecordDecode::Migrated;

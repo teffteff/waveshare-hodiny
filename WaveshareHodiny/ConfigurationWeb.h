@@ -62,6 +62,11 @@ using AgendaProbeCallback = bool (*)(const ClockAgendaConfig &config,
                                      const ClockAgendaCalendarsConfig &calendars,
                                      int &httpStatus, String &error);
 void configurationWebSetAgendaProbe(AgendaProbeCallback callback);
+// Rozvrh má vlastní úlohu a zkoušku adresy, stejně jako agenda.
+void configurationWebSetSchoolTask(TaskHandle_t task);
+using SchoolProbeCallback = bool (*)(const ClockSchoolConfig &config,
+                                     int &httpStatus, String &error);
+void configurationWebSetSchoolProbe(SchoolProbeCallback callback);
 // Přenos zálohy nastavení na server a zpět. Z téhož důvodu jako zkouška agendy
 // ho provede úloha agendy; skeč schová předání žádosti i čekání na výsledek.
 using SettingsShareCallback = bool (*)(const SettingsShareRequest &request,

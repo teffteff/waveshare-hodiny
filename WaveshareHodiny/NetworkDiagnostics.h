@@ -15,7 +15,9 @@ enum class NetworkDiagnosticKind : uint8_t {
   ForecastRuntime = 9,
   AgendaRuntime = 10,
   AgendaTest = 11,
-  Count = 12,
+  SchoolRuntime = 12,
+  SchoolTest = 13,
+  Count = 14,
 };
 
 struct NetworkMemorySnapshot {

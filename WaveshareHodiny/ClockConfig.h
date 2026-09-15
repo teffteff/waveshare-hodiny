@@ -45,6 +45,8 @@ constexpr uint8_t CLOCK_AGENDA_MAX_ITEMS = 16;
 constexpr size_t CLOCK_AGENDA_PRIVATE_KEY_LENGTH = 64;
 // Adresa serveru blesků i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_LIGHTNING_URL_LENGTH = 192;
+// Adresa serveru s rozvrhem i se jménem a heslem pro basic_auth.
+constexpr size_t CLOCK_SCHOOL_URL_LENGTH = 192;
 // Kruh výstrahy. Pod kilometr to nemá smysl kvůli přesnosti lokalizace
 // úderu, nad padesát už to není "bouřka u nás".
 constexpr uint8_t CLOCK_LIGHTNING_MIN_ALARM_KM = 1;
@@ -113,16 +115,22 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // Schema 43 appends a switch for the precipitation layer of the radar. It lands
 // in the trailing padding of schema 42, so both records have the same size and
 // only the schema number tells them apart; the layer starts on after upgrade.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 43;
+// Schema 44 appends the school screen (timetable and homework from the owner's
+// server) and fills the eighth, reserved entry of the screen order. The schema
+// 43 record stays an exact prefix; the screen starts disabled without an
+// address, so an upgrade neither contacts a new server nor adds a screen.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 44;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
-constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 7;
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 8;
 
 // Kolik bajtů pořadí zabírá v konfiguraci. Schválně víc, než kolik je dnes
 // obrazovek: pole leží na konci schématu 37, takže dokud se do rezervy vejde
 // další obrazovka, stačí povýšit COUNT a migrace zůstane pouhým zkopírováním
 // bajtů. Bez rezervy by každá další obrazovka posouvala všechno za polem.
+// Schéma 44 rezervu vyčerpalo obrazovkou Škola; další obrazovka už pole
+// rozšířit musí.
 constexpr size_t CLOCK_SCREEN_ORDER_CAPACITY = 8;
 
 // Výplň v nevyužitých slotech pořadí. Nula by byla platná obrazovka (hodiny),
@@ -137,6 +145,7 @@ enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_PLANES = 4,
   CLOCK_SCREEN_AGENDA = 5,
   CLOCK_SCREEN_SKY = 6,
+  CLOCK_SCREEN_SCHOOL = 7,
 };
 
 enum ClockLanguage : uint8_t {
@@ -372,6 +381,26 @@ struct ClockAgendaCalendarsConfig {
   char privateKey[CLOCK_AGENDA_PRIVATE_KEY_LENGTH] = "";
 };
 
+// Obrazovka Škola: rozvrh a domácí úkoly jednoho dítěte. Hodiny se do Školy
+// OnLine nepřihlašují - čtou hotové řádky z vlastního serveru (infra/school),
+// který drží přihlášení a stahuje sám. Proto tu je jen adresa, žádné heslo do
+// školního systému.
+//
+// Zarovnání na čtyři bajty je schválně: struktura se připojuje za záznam
+// schématu 43, který končí koncovou výplní ClockConfig. Se zarovnáním na dva
+// bajty by začala uvnitř té výplně a nejistý bajt by dopadl do jejích polí.
+struct alignas(4) ClockSchoolConfig {
+  bool enabled = false;
+  bool automaticRotation = false;
+  // Úkoly pod rozvrhem. Vypnuté dají celou obrazovku rozvrhu.
+  bool showHomework = true;
+  // Server se Školy OnLine ptá po dvaceti minutách, častější dotaz hodin nic
+  // nového nepřinese.
+  uint8_t refreshMinutes = 20;
+  uint16_t displaySeconds = 20;
+  char url[CLOCK_SCHOOL_URL_LENGTH] = "";
+};
+
 // Realtime blesky. Hodiny s LightningMaps nemluví samy: trvalé spojení drží
 // vlastní server z infra/lightning a hodiny se ho jen ptají. Bez adresy proto
 // funkce nejde zapnout.
@@ -518,7 +547,7 @@ struct ClockConfig {
       CLOCK_SCREEN_CLOCK,  CLOCK_SCREEN_RADAR,
       CLOCK_SCREEN_RSS,    CLOCK_SCREEN_FORECAST,
       CLOCK_SCREEN_PLANES, CLOCK_SCREEN_AGENDA,
-      CLOCK_SCREEN_SKY,    CLOCK_SCREEN_ORDER_UNUSED};
+      CLOCK_SCREEN_SKY,    CLOCK_SCREEN_SCHOOL};
   // Pole schématu 37 leží až za pořadím obrazovek, aby schéma 36 zůstalo
   // přesnou předponou.
   ClockAgendaConfig agenda;
@@ -550,6 +579,9 @@ struct ClockConfig {
   // a ukazuje jen mapu, případně s blesky. Leží v koncové výplni schématu 42,
   // takže migrace ho po zkopírování bajtů musí nastavit sama.
   bool radarPrecipitation = true;
+  // Pole schématu 44. Zarovnání na čtyři bajty ji staví přesně na konec
+  // uloženého záznamu schématu 43.
+  ClockSchoolConfig school;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -653,8 +685,14 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_42_SIZE =
     (offsetof(ClockConfig, radarPrecipitation) + alignof(ClockConfig) - 1) /
     alignof(ClockConfig) * alignof(ClockConfig);
 
-static_assert(CLOCK_CONFIG_SCHEMA_42_SIZE == sizeof(ClockConfig),
-              "Schema 43 must keep the size of schema 42.");
+// Schéma 43 mělo stejnou velikost jako 42: končilo vypínačem srážek a výplní.
+constexpr size_t CLOCK_CONFIG_SCHEMA_43_SIZE = offsetof(ClockConfig, school);
+
+static_assert(CLOCK_CONFIG_SCHEMA_43_SIZE == CLOCK_CONFIG_SCHEMA_42_SIZE &&
+                  CLOCK_CONFIG_SCHEMA_43_SIZE % alignof(ClockConfig) == 0 &&
+                  offsetof(ClockConfig, school) + sizeof(ClockSchoolConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 44 must preserve the complete schema 43 prefix.");
 
 // Devět slotů obrazovky HODNOTY v jedné řadě: indexy 0-7 leží v mřížce,
 // index 8 je hodnota pod ní. Díky tomu smyčky nemusí řešit, že poslední slot
@@ -720,6 +758,11 @@ bool clockConfigAgendaAvailable(const ClockConfig &config);
 bool clockConfigLightningAvailable(const ClockConfig &config);
 // Slunce a Měsíc se počítají z polohy, takže stačí zapnutá obrazovka.
 bool clockConfigSkyAvailable(const ClockConfig &config);
+// Škola potřebuje zapnutou obrazovku i adresu serveru, stejně jako agenda.
+bool clockConfigSchoolAvailable(const ClockConfig &config);
+// Adresa nese jméno a heslo ("https://user:heslo@server/..."). Po http:// by
+// heslo i data za ním šla sítí čitelně, proto je volající s http:// odmítá.
+bool clockConfigUrlHasCredentials(const char *url);
 // Heslo k soukromým kalendářům jde do HTTP hlavičky: jen tisknutelné ASCII
 // a nejvýš CLOCK_AGENDA_PRIVATE_KEY_LENGTH - 1 znaků. Prázdné je platné.
 bool clockConfigAgendaPrivateKeyValid(const char *key);
