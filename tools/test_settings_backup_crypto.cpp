@@ -245,12 +245,11 @@ void testEnvelopeParsing() {
          SettingsBackupEnvelopeStatus::Ok);
   assert(parsed.exportedAt[0] == '\0');
 
-  // Verze 3 se čte bez šifrovacích polí.
+  // Nešifrovanou verzi 3 hodiny neotevřou.
   const std::string plain =
       "{\"format\":\"waveshare-hodiny-settings\",\"version\":3,"
       "\"firmware\":\"2.1.2\",\"schema\":40,\"secrets\":true,\"data\":\"QUJD\"}";
-  assert(parse(plain, parsed) == SettingsBackupEnvelopeStatus::Ok);
-  assert(parsed.version == 3 && parsed.secrets && parsed.iterations == 0);
+  assert(parse(plain, parsed) == SettingsBackupEnvelopeStatus::Malformed);
 }
 
 // Celá cesta jako na hodinách: záloha, zapečetění, JSON, přečtení a otevření.

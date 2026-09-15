@@ -225,8 +225,16 @@ lv_obj_t *secondModeDropdown = nullptr;
 lv_obj_t *weatherIconModeDropdown = nullptr;
 lv_obj_t *automaticUpdateSwitch = nullptr;
 lv_obj_t *webModeDropdown = nullptr;
-constexpr uint8_t SETTINGS_PAGE_COUNT = 4;
+constexpr uint8_t SETTINGS_PAGE_COUNT = 5;
+// Strana s IP, pamětí a firmwarem; údaje se obnovují, jen když je vidět.
+constexpr uint8_t SETTINGS_PAGE_SYSTEM = 3;
 lv_obj_t *settingsContent[SETTINGS_PAGE_COUNT] = {};
+// Poslední strana: stav hesla webu a jeho smazání.
+lv_obj_t *webPasswordTitleLabel = nullptr;
+lv_obj_t *webPasswordStateLabel = nullptr;
+lv_obj_t *webPasswordResetButton = nullptr;
+lv_obj_t *webPasswordResetLabel = nullptr;
+lv_obj_t *webPasswordHintLabel = nullptr;
 lv_obj_t *settingsPreviousButton = nullptr;
 lv_obj_t *settingsNextButton = nullptr;
 lv_obj_t *settingsPageNumberLabel = nullptr;
@@ -436,6 +444,13 @@ RssVisibilityCallback agendaVisibilityCallback = nullptr;
 ForecastVisibilityCallback forecastVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
 RssVisibilityCallback planesVisibilityCallback = nullptr;
+WebPasswordResetCallback webPasswordResetCallback = nullptr;
+bool webPasswordConfigured = false;
+// Smazání chce druhé klepnutí do pěti sekund; 0 = nepotvrzuje se.
+constexpr unsigned long WEB_PASSWORD_RESET_CONFIRM_MS = 5000;
+unsigned long webPasswordResetArmedUntil = 0;
+enum class WebPasswordResetResult : uint8_t { None, Cleared, Failed };
+WebPasswordResetResult webPasswordResetResult = WebPasswordResetResult::None;
 
 bool redNightVisualEnabled() {
   return nightModeEnabled && nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
@@ -457,6 +472,7 @@ void updatePlanesClockLabel();
 void updateOverlayStatusLabels();
 const char *radarEmptyStateText(bool busy);
 void updateClockStyleCardSelection();
+void updateWebPasswordPage();
 void applyValuesPageColors();
 void alignCenter(lv_obj_t *object, int x, int y);
 void setTextColor(lv_obj_t *object, lv_color_t color);
@@ -575,6 +591,7 @@ void applyDashboardLanguage() {
     lv_label_set_text(firmwareUpdateTitleLabel,
                       english ? "FIRMWARE UPDATE"
                               : "AKTUALIZACE FIRMWARE");
+  updateWebPasswordPage();
   // Hláška prázdné obrazovky se překládá jen tehdy, když je opravdu vidět;
   // pod snímkem je skrytá a další snapshot si ji stejně přepíše.
   if (radarStatusLabel != nullptr &&
@@ -707,6 +724,80 @@ void setObjectVisible(lv_obj_t *object, bool visible) {
   } else {
     lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
   }
+}
+
+bool webPasswordResetArmed() {
+  return webPasswordResetArmedUntil != 0 &&
+         static_cast<long>(webPasswordResetArmedUntil - millis()) > 0;
+}
+
+void updateWebPasswordPage() {
+  if (webPasswordStateLabel == nullptr) return;
+  const bool english = englishLanguage();
+  const bool armed = webPasswordResetArmed();
+  lv_label_set_text(webPasswordTitleLabel,
+                    english ? "WEB PASSWORD" : "HESLO WEBU");
+  alignCenter(webPasswordTitleLabel, 0, -112);
+  lv_label_set_text(webPasswordStateLabel,
+                    webPasswordConfigured ? (english ? "SET" : "NASTAVENO")
+                                          : (english ? "NOT SET" : "NENASTAVENO"));
+  setTextColor(webPasswordStateLabel,
+               webPasswordConfigured ? COLOR_AIR : COLOR_ERROR);
+  alignCenter(webPasswordStateLabel, 0, -80);
+
+  setObjectVisible(webPasswordResetButton, webPasswordConfigured);
+  lv_obj_set_style_bg_color(webPasswordResetButton,
+                            armed ? COLOR_ERROR : COLOR_DIVIDER, 0);
+  lv_label_set_text(webPasswordResetLabel,
+                    armed ? (english ? "REALLY CLEAR?" : "OPRAVDU SMAZAT?")
+                          : (english ? "CLEAR PASSWORD" : "SMAZAT HESLO"));
+  lv_obj_center(webPasswordResetLabel);
+
+  const char *hint;
+  if (webPasswordResetResult == WebPasswordResetResult::Failed) {
+    hint = english ? "THE PASSWORD COULD NOT BE CLEARED."
+                   : "HESLO SE NEPODAŘILO SMAZAT.";
+  } else if (armed) {
+    hint = english ? "TAP AGAIN TO CONFIRM.\nTHE WEB PAGE WILL BE OPEN\nTO ANYONE ON THE NETWORK."
+                   : "KLEPNI ZNOVU PRO POTVRZENÍ.\nWEB PAK OTEVŘE KAŽDÝ\nV SÍTI.";
+  } else if (webPasswordConfigured) {
+    hint = english ? "PROTECTS THE WEB SETTINGS.\nCLEAR A FORGOTTEN\nPASSWORD HERE."
+                   : "CHRÁNÍ WEBOVÉ NASTAVENÍ.\nZAPOMENUTÉ HESLO\nTADY SMAŽEŠ.";
+  } else if (webPasswordResetResult == WebPasswordResetResult::Cleared) {
+    hint = english ? "PASSWORD CLEARED.\nSET A NEW ONE ON THE\nSYSTEM TAB OF THE WEB PAGE."
+                   : "HESLO SMAZÁNO.\nNOVÉ NASTAV NA WEBU\nV ZÁLOŽCE SYSTÉM.";
+  } else {
+    hint = english ? "THE WEB PAGE HAS NO PASSWORD.\nSET ONE ON THE SYSTEM TAB;\nBACKUPS NEED IT."
+                   : "WEB NEMÁ HESLO. NASTAV HO\nV ZÁLOŽCE SYSTÉM, BEZ NĚJ\nNEJDOU ZÁLOHY.";
+  }
+  lv_label_set_text(webPasswordHintLabel, hint);
+  alignCenter(webPasswordHintLabel, 0, webPasswordConfigured ? 60 : -10);
+}
+
+void disarmWebPasswordReset() {
+  if (webPasswordResetArmedUntil == 0) return;
+  webPasswordResetArmedUntil = 0;
+  updateWebPasswordPage();
+}
+
+void webPasswordResetEvent(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_SHORT_CLICKED ||
+      !webPasswordConfigured)
+    return;
+  webPasswordResetResult = WebPasswordResetResult::None;
+  if (!webPasswordResetArmed()) {
+    webPasswordResetArmedUntil =
+        (millis() + WEB_PASSWORD_RESET_CONFIRM_MS) | 1;
+    updateWebPasswordPage();
+    return;
+  }
+  webPasswordResetArmedUntil = 0;
+  const bool cleared =
+      webPasswordResetCallback != nullptr && webPasswordResetCallback();
+  if (cleared) webPasswordConfigured = false;
+  webPasswordResetResult =
+      cleared ? WebPasswordResetResult::Cleared : WebPasswordResetResult::Failed;
+  updateWebPasswordPage();
 }
 
 const char *roomIconGlyph(const char *icon) {
@@ -4194,6 +4285,7 @@ void createRadarPage(lv_obj_t *screen) {
 
 void closeSettings(bool saveChanges) {
   if (!settingsVisible) return;
+  disarmWebPasswordReset();
   if (saveChanges) {
     savedDayBrightness =
         static_cast<uint8_t>(lv_slider_get_value(dayBrightnessSlider));
@@ -4257,6 +4349,7 @@ void brightnessSliderEvent(lv_event_t *event) {
 }
 
 void showSettingsSubpage(uint8_t page) {
+  disarmWebPasswordReset();
   settingsPageIndex = constrain(page, static_cast<uint8_t>(0),
                                 static_cast<uint8_t>(SETTINGS_PAGE_COUNT - 1));
   for (uint8_t index = 0; index < SETTINGS_PAGE_COUNT; ++index) {
@@ -4695,6 +4788,28 @@ void createSettingsPage(lv_obj_t *screen) {
   lv_obj_set_style_text_align(firmwareStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(firmwareStatusLabel, "");
   alignCenter(firmwareStatusLabel, 0, 123);
+
+  webPasswordTitleLabel =
+      makeLabel(settingsContent[4], &clock_czech_16, COLOR_MUTED);
+  webPasswordStateLabel =
+      makeLabel(settingsContent[4], &lv_font_montserrat_28, COLOR_TEXT);
+  webPasswordResetButton = lv_btn_create(settingsContent[4]);
+  lv_obj_set_size(webPasswordResetButton, 240, 48);
+  alignCenter(webPasswordResetButton, 0, -20);
+  lv_obj_set_style_radius(webPasswordResetButton, 24, 0);
+  lv_obj_set_style_shadow_width(webPasswordResetButton, 0, 0);
+  lv_obj_set_style_border_width(webPasswordResetButton, 1, 0);
+  lv_obj_set_style_border_color(webPasswordResetButton, COLOR_ERROR, 0);
+  lv_obj_add_event_cb(webPasswordResetButton, webPasswordResetEvent,
+                      LV_EVENT_SHORT_CLICKED, nullptr);
+  webPasswordResetLabel =
+      makeLabel(webPasswordResetButton, &clock_czech_16, COLOR_TEXT);
+  lv_obj_clear_flag(webPasswordResetLabel, LV_OBJ_FLAG_CLICKABLE);
+  webPasswordHintLabel =
+      makeLabel(settingsContent[4], &clock_czech_16, COLOR_MUTED);
+  lv_obj_set_width(webPasswordHintLabel, 360);
+  lv_obj_set_style_text_align(webPasswordHintLabel, LV_TEXT_ALIGN_CENTER, 0);
+  updateWebPasswordPage();
 
   lv_obj_t *cancelButton = lv_btn_create(settingsPage);
   lv_obj_set_size(cancelButton, 64, 64);
@@ -5718,7 +5833,9 @@ void clockDashboardSetWeatherAnimation(const uint8_t *gifData, size_t size,
 void clockDashboardLoop() {
   if (firmwareUpdateActive) return;
   const unsigned long now = millis();
-  if (settingsVisible && settingsPageIndex == SETTINGS_PAGE_COUNT - 1 &&
+  if (webPasswordResetArmedUntil != 0 && !webPasswordResetArmed())
+    disarmWebPasswordReset();
+  if (settingsVisible && settingsPageIndex == SETTINGS_PAGE_SYSTEM &&
       now - lastSettingsInfoRefreshAt >= 500) {
     lastSettingsInfoRefreshAt = now;
     char info[64];
@@ -6627,6 +6744,18 @@ void clockDashboardSetWifiConnected(bool connected) {
   wifiConnected = connected;
   if (firmwareUpdateActive) return;
   applyDashboardColors();
+}
+
+void clockDashboardSetWebPasswordResetCallback(
+    WebPasswordResetCallback callback) {
+  webPasswordResetCallback = callback;
+}
+
+void clockDashboardSetWebPasswordConfigured(bool configured) {
+  webPasswordConfigured = configured;
+  webPasswordResetArmedUntil = 0;
+  webPasswordResetResult = WebPasswordResetResult::None;
+  updateWebPasswordPage();
 }
 
 void clockDashboardSetWebMode(uint8_t mode) {

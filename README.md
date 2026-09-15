@@ -658,10 +658,12 @@ deset minut po startu nebo aktivaci z displeje, případně jej úplně vypnout.
 Provozuj jej jen v důvěryhodné síti; aktivní web signalizuje ikona ozubeného
 kola na dashboardu.
 
-Webové nastavení lze chránit heslem o délce 6 až 20 znaků. Stav bez hesla je
-v záložce **Systém** označený červeně, aktivní ochrana zeleně. Heslo je uložené
-v zařízení jako odvozený hash a nelze je zpětně zobrazit. Do zálohy se dostane
-jen tehdy, když ho při zálohování zadáš (viz níže).
+Webové nastavení chrání **heslo webu** o délce 8 až 64 znaků. Bez něj nejdou
+vytvořit zálohy, protože nesou tokeny. Stav bez hesla je v záložce **Systém**
+označený červeně, nastavené heslo zeleně. Heslo je uložené v zařízení
+jako odvozený hash a nelze je zpětně zobrazit. Změna i vypnutí ochrany chtějí
+současné heslo. Zapomenuté heslo smažeš jen na displeji hodin: v nastavení na
+stránce 5 klepni na **Smazat heslo** a do pěti sekund klepnutí potvrď.
 
 ### Diagnostika
 
@@ -678,34 +680,31 @@ další plánovanou kontrolu, HTTP stav a právě zpracovávaný soubor.
 
 Zálohu skládají přímo hodiny z toho, co mají uložené, takže obsahuje **celé
 nastavení**: všechny hodnoty obou stránek, vzhled, pořadí obrazovek, adresy
-služeb i režim webu. Neobsahuje jen Wi-Fi a secret ovládacího API – ty si každé
-hodiny drží vlastní.
-
-Token Home Assistantu, exportní klíč TMEP.cz, heslo webu a adresu serveru pro
-zálohy záloha nese, **jen když při zálohování zadáš heslo webového nastavení**.
-Bez hesla se z hodin nedají dostat vůbec, takže je nemůže vytáhnout nikdo, kdo
-se jen dostane do stejné sítě. Obnova zálohy bez tokenů ponechá tokeny, které
-cílové hodiny už mají (token Home Assistantu jen při stejné adrese serveru).
+služeb, režim webu, token Home Assistantu, exportní klíč TMEP.cz, heslo agendy,
+hash hesla webu a adresu serveru pro zálohy. Neobsahuje jen Wi-Fi, název
+v síti a secret ovládacího API – ty si každé hodiny drží vlastní.
 
 Každá záloha je **zašifrovaná heslem zálohy** (8–64 znaků, AES-256-GCM, klíč
-z PBKDF2-SHA256). Soubor `.whbackup` ani záloha na serveru bez něj nejdou
-přečíst, a to ani s přístupem k serveru. Hodiny si heslo nepamatují: při obnově
-ho zadáš znovu, a když ho zapomeneš, záloha je ztracená. Tlačítko
-**Vygenerovat silné heslo** vytvoří náhodné heslo, které si ulož třeba do
-správce hesel. Popis zálohy (verze firmwaru, čas, zda nese tokeny) zůstává
-čitelný kvůli seznamu na serveru, ale je chráněný spolu s daty, takže ho nejde
-nepozorovaně změnit. Heslo webu tedy rozhoduje, co záloha smí nést, heslo zálohy
-chrání soubor, když už z hodin odešel. Zálohu jde ověřit a otevřít i bez hodin:
-`BACKUP_PASSWORD='…' node tools/decrypt_settings_backup.mjs zaloha.whbackup`.
+z PBKDF2-SHA256), které se zadává dvakrát, aby překlep nevyrobil zálohu, kterou
+nikdo neotevře. Hodiny si ho nepamatují a když ho zapomeneš, záloha je ztracená.
+Hodiny bez hesla webu zálohu nevytvoří – jinak by tokeny vytáhl kdokoli ze
+stejné sítě. Soubor `.whbackup` ani záloha na serveru bez hesla zálohy nejdou
+přečíst, a to ani s přístupem k serveru. Popis zálohy (verze
+firmwaru, čas) zůstává čitelný kvůli seznamu na serveru, ale je chráněný spolu
+s daty, takže ho nejde nepozorovaně změnit. Zálohu jde ověřit a otevřít i bez
+hodin: `BACKUP_PASSWORD='…' node tools/decrypt_settings_backup.mjs zaloha.whbackup`.
 
-Zálohu lze uložit do souboru, nebo na vlastní server a z jiných hodin ji
-stáhnout: v záložce **Systém** zadej adresu ve tvaru
-`https://hodiny:heslo@server/settings`, název zálohy a **Uložit na server**; na
-druhých hodinách stejnou adresu, **Načíst seznam** a **Nahrát do těchto hodin**.
-Zálohu vybranou v seznamu odstraní ze serveru **Smazat ze serveru**.
+V sekci **Vytvořit zálohu** zadej dvakrát heslo zálohy a zvol **Stáhnout do souboru**,
+nebo název zálohy a **Uložit na server** (bez názvu se použije název hodin
+v síti). V sekci **Obnovit zálohu** vyber soubor, nebo zálohu ze serveru; hodiny
+ukážou, odkud a z jakého firmwaru je, a zeptají se na heslo zálohy a na části,
+které se mají převzít. Obnovená část **Systém a přístup** převezme i heslo webu
+hodin, ze kterých záloha pochází. Server se zadává v sekci
+**Server pro sdílení** jako `https://hodiny:heslo@server/settings`. Zálohu
+vybranou v seznamu odstraní ze serveru **Smazat ze serveru**.
 Adresa musí být `https://` a hodiny si ji zapamatují po prvním úspěšném spojení.
 Serverová část je v `infra/settings/`. Starší nešifrované zálohy (verze 2 a 3)
-jde pořád importovat. Restart zařízení uložené nastavení nemaže.
+hodiny neotevřou. Restart zařízení uložené nastavení nemaže.
 
 ## Nastavení na displeji
 
@@ -738,7 +737,7 @@ Gesta se rozpoznávají v software z hrubých souřadnic dotyku, ne z gestového
 registru řadiče CST820. Vyhodnocují se až po zvednutí prstu, takže krátké tahy
 po zaobleném displeji nepropadnou a jedno gesto se nezopakuje dvakrát.
 
-Nastavení má tři stránky. Velká tlačítka se šipkami je přepínají; přetažení
+Nastavení má pět stránek. Velká tlačítka se šipkami je přepínají; přetažení
 prstu se uvnitř nastavení nepoužívá.
 
 <p align="center">
@@ -747,9 +746,11 @@ prstu se uvnitř nastavení nepoužívá.
   <img src="screenshots/device-settings-3.png" alt="Třetí stránka nastavení webu a OTA" width="31%">
 </p>
 
-První stránka ovládá denní a noční jas a automatický režim. Druhá přepíná
-vteřiny, jejich efekt a animované ikony. Třetí řídí režim webového serveru a
-ruční kontrolu OTA. IP adresa je na veřejném snímku záměrně skrytá.
+První stránka vybírá typ hodin, druhá denní a noční jas a automatický režim,
+třetí vteřiny a animované ikony. Čtvrtá řídí režim webového serveru a ruční
+kontrolu OTA. Pátá ukazuje, jestli mají hodiny heslo, a umí zapomenuté heslo
+smazat: první klepnutí na **Smazat heslo** tlačítko zčervená, druhé do pěti
+sekund heslo smaže. IP adresa je na veřejném snímku záměrně skrytá.
 Dvojklepnutí kamkoliv při vypnuté automatice přepíná denní a noční režim;
 jedno klepnutí ho nepřepíná, protože se pletlo s podržením prstu.
 

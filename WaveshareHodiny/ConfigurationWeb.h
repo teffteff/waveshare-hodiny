@@ -82,5 +82,9 @@ void configurationWebEnsureActive();
 void configurationWebExtendAvailability();
 ConfigurationWebMode configurationWebMode();
 bool configurationWebSetMode(ConfigurationWebMode mode);
+// Heslo webu chrání webové nastavení. Zapomenuté heslo jde smazat jen na
+// displeji hodin: kdo na ně sáhne, má k hodinám fyzický přístup.
+bool configurationWebPasswordConfigured();
+bool configurationWebClearPassword();
 void configurationWebLockForTest();
 void configurationWebUnlockForTest();

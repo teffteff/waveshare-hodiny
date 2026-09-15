@@ -98,8 +98,10 @@ SettingsBackupEnvelopeStatus settingsBackupParseEnvelope(
   uint32_t version = 0;
   if (!readUnsigned(begin, end, "version", 1000, version))
     return SettingsBackupEnvelopeStatus::Malformed;
-  if (version != SETTINGS_BACKUP_ENVELOPE_PLAIN &&
-      version != SETTINGS_BACKUP_ENVELOPE_ENCRYPTED)
+  // Nešifrované obálky starších verzí hodiny už neotevřou.
+  if (version < SETTINGS_BACKUP_ENVELOPE_ENCRYPTED)
+    return SettingsBackupEnvelopeStatus::Malformed;
+  if (version != SETTINGS_BACKUP_ENVELOPE_ENCRYPTED)
     return SettingsBackupEnvelopeStatus::UnsupportedVersion;
   envelope.version = static_cast<int>(version);
 
@@ -114,12 +116,6 @@ SettingsBackupEnvelopeStatus settingsBackupParseEnvelope(
   envelope.data = data.contentBegin();
   envelope.dataLength =
       static_cast<size_t>(data.contentEnd() - data.contentBegin());
-
-  // Popis verze 3 slouží jen člověku; obnova ho nepotřebuje.
-  if (envelope.version == SETTINGS_BACKUP_ENVELOPE_PLAIN) {
-    envelope.secrets = jsonReadBoolMember(begin, end, "secrets");
-    return SettingsBackupEnvelopeStatus::Ok;
-  }
 
   uint32_t schema = 0;
   const JsonValue secrets = jsonFindMember(begin, end, "secrets");

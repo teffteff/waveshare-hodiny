@@ -16,7 +16,7 @@ const char LOGIN_PAGE[] PROGMEM = R"HTML(
     main{width:min(440px,100%);padding:30px;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 18px 50px rgba(0,0,0,.32)}
     h1{margin:0 0 10px;font-size:28px;letter-spacing:-.025em}p{margin:0 0 24px;color:var(--muted);line-height:1.45}label{display:block;margin:0 0 8px;font-size:14px;font-weight:700}
     input,button{width:100%;height:48px;border-radius:var(--radius);font:inherit}input{padding:0 13px;border:1px solid #505a61;outline:0;background:var(--field);color:var(--text)}input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(76,203,236,.15)}
-    button{margin-top:16px;border:1px solid var(--cyan);background:var(--cyan);color:#092028;font-weight:750;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.feedback{min-height:20px;margin:14px 0 0;color:var(--muted);font-size:14px}.feedback.error{color:var(--error)}
+    button{margin-top:16px;border:1px solid var(--cyan);background:var(--cyan);color:#092028;font-weight:750;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.feedback{min-height:20px;margin:14px 0 0;color:var(--muted);font-size:14px}.feedback.error{color:var(--error)}.recovery{margin:14px 0 0;font-size:14px}
   </style>
 </head>
 <body>
@@ -24,11 +24,12 @@ const char LOGIN_PAGE[] PROGMEM = R"HTML(
   <h1>Waveshare Hodiny</h1>
   <p>Nastavení je chráněné heslem.</p>
   <form id="loginForm">
-    <label for="password">Heslo</label>
-    <input id="password" type="password" minlength="6" maxlength="20" autocomplete="current-password" autofocus required>
+    <label for="password">Heslo webu</label>
+    <input id="password" type="password" maxlength="64" autocomplete="current-password" autofocus required>
     <button id="loginButton" type="submit">Přihlásit</button>
     <div class="feedback" id="feedback" role="status"></div>
   </form>
+  <p class="recovery">Zapomenuté heslo smažeš na displeji hodin: Nastavení, strana 5.</p>
 </main>
 <script src="/ui-language.js"></script>
 <script>

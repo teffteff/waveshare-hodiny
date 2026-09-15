@@ -6,9 +6,8 @@
 // Šifrovaná obálka zálohy nastavení (verze 4).
 //
 // Samotná záloha (SettingsBackup.h) nese token Home Assistantu, heslo agendy
-// a adresy s hesly k serverům letadel a blesků. Do verze 3 ležela v souboru
-// i na serveru jen v base64, takže ji přečetl každý, kdo soubor získal. Od
-// verze 4 je zašifrovaná heslem zálohy, které hodiny nikam neukládají:
+// a adresy s hesly k serverům letadel a blesků. Proto je zašifrovaná heslem
+// zálohy, které hodiny nikam neukládají:
 //
 //   {"format":"waveshare-hodiny-settings","version":4,
 //    "firmware":"2.2.0","schema":41,"secrets":true,
@@ -27,7 +26,6 @@
 // Modul nesahá na Arduino ani na NVS a sůl s nonce dostává od volajícího, aby
 // šel celý otestovat na počítači proti mbedTLS.
 
-constexpr int SETTINGS_BACKUP_ENVELOPE_PLAIN = 3;
 constexpr int SETTINGS_BACKUP_ENVELOPE_ENCRYPTED = 4;
 
 constexpr size_t SETTINGS_BACKUP_SALT_SIZE = 16;
@@ -37,8 +35,7 @@ constexpr size_t SETTINGS_BACKUP_TAG_SIZE = 16;
 
 // Odvození klíče běží na ESP32-S3 mimo smyčku displeje a trvá zhruba
 // sekundu na deset tisíc iterací. Víc iterací by obnovu protáhlo, aniž by
-// zachránilo slabé heslo; proti hádání chrání hlavně délka hesla, proto
-// stránka umí vygenerovat silné.
+// zachránilo slabé heslo; proti hádání chrání hlavně délka hesla zálohy.
 constexpr uint32_t SETTINGS_BACKUP_KDF_ITERATIONS = 20000;
 // Obnova přijme jen rozumný rozsah: cizí soubor s miliardou iterací by jinak
 // zaměstnal hodiny na hodiny.
@@ -79,8 +76,7 @@ enum class SettingsBackupEnvelopeStatus : uint8_t {
   UnsupportedVersion,
 };
 
-// Přečte obálku verze 3 i 4 z JSONu. U verze 3 zůstanou šifrovací pole
-// prázdná.
+// Přečte obálku verze 4 z JSONu. Starší nešifrované verze jsou Malformed.
 SettingsBackupEnvelopeStatus settingsBackupParseEnvelope(
     const char *begin, const char *end, SettingsBackupEnvelope &envelope);
 
