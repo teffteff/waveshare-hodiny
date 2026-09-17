@@ -701,6 +701,16 @@ Co server posílá a proč tak:
   Počty z `/v1/user/notifications` se nepoužívají, s příznaky `read` nesedí.
 - **Známky** (`marks`, `markCount`) z posledních 14 dní (`SCHOOL_MARK_DAYS`):
   den, zkratka předmětu, známka a téma, nejvýš osm řádků.
+- **Nástěnka školky** (`notices`, `noticeCount`) z
+  [nasems.cz](https://nasems.cz/prihlaseno/nastenka), jen když je v
+  `school.env` vyplněné `NASEMS_LOGIN` a `NASEMS_PASSWORD`. Web API nemá:
+  server se přihlásí formulářem, drží si PHP session v cookie a čte HTML
+  nástěnky (`div.podnadpis` s titulkem a časem, text v `div.nastenka_obsah`).
+  Posílá oznámení z posledních 14 dní (`SCHOOL_NOTICE_DAYS`), nejvýš šest:
+  den, titulek a začátek textu bez oslovení („Vážení rodiče,“); hodiny řádek
+  zkrátí na šířku displeje. Stahuje se nejvýš jednou za dvě hodiny
+  (`NASEMS_POLL_MINUTES`), tedy asi 8–16 dotazů denně. Na displeji je pod
+  známkami.
 - Selže-li stažení zpráv nebo známek, rozvrh jede dál se staršími daty; po
   `SCHOOL_MAX_AGE_HOURS` se zahodí. `SCHOOL_MESSAGES=0` a `SCHOOL_MARKS=0`
   je vypnou úplně a hodiny druhou stránku nenabídnou.

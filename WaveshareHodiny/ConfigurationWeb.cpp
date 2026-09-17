@@ -2874,6 +2874,23 @@ void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
     }
     result += ']';
   }
+  if (feed.hasNotices) {
+    result += F(",\"noticeCount\":");
+    result += static_cast<unsigned>(feed.noticeTotal);
+    result += F(",\"notices\":[");
+    for (size_t index = 0; index < feed.noticeCount; ++index) {
+      const SchoolNotice &notice = feed.notices[index];
+      if (index > 0) result += ',';
+      result += F("{\"when\":\"");
+      result += jsonEscape(notice.when);
+      result += F("\",\"title\":\"");
+      result += jsonEscape(notice.title);
+      result += F("\",\"text\":\"");
+      result += jsonEscape(notice.text);
+      result += F("\"}");
+    }
+    result += ']';
+  }
   result += '}';
 }
 

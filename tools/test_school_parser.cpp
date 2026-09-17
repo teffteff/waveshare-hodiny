@@ -39,6 +39,10 @@ const char *const RESPONSE =
     "],\"markCount\":1,\"marks\":["
     "{\"when\":\"DNES\",\"subject\":\"Matematika\",\"abbrev\":\"M\","
     "\"mark\":\"1\",\"theme\":\"Násobilka\"}"
+    "],\"noticeCount\":2,\"notices\":["
+    "{\"when\":\"VČERA\",\"title\":\"Střevní problémy\","
+    "\"text\":\"děti v budově mají střevní problémy…\"},"
+    "{\"when\":\"DNES\",\"title\":\"\",\"text\":\"Bez titulku\"}"
     "],\"problem\":\"\"}";
 
 void testResponse() {
@@ -88,6 +92,12 @@ void testResponse() {
   assert(std::string(feed.marks[0].abbrev) == "M");
   assert(std::string(feed.marks[0].mark) == "1");
   assert(std::string(feed.marks[0].theme) == "Násobilka");
+  // Oznámení bez titulku se přeskočí, celkový počet drží server.
+  assert(feed.hasNotices && feed.noticeCount == 1 && feed.noticeTotal == 2);
+  assert(std::string(feed.notices[0].when) == "VČERA");
+  assert(std::string(feed.notices[0].title) == "Střevní problémy");
+  assert(std::string(feed.notices[0].text) ==
+         "děti v budově mají střevní problémy...");
 }
 
 void testBrokenResponses() {
@@ -105,7 +115,7 @@ void testBrokenResponses() {
          SchoolParseStatus::Ok);
   assert(feed.dayCount == 0 && feed.homeworkCount == 0);
   // Starší server bez zpráv a známek: druhá stránka se nenabízí.
-  assert(!feed.hasMessages && !feed.hasMarks);
+  assert(!feed.hasMessages && !feed.hasMarks && !feed.hasNotices);
   const char *empty = "{\"days\":[],\"messages\":[],\"marks\":[]}";
   assert(schoolParseFeed(empty, strlen(empty), feed) == SchoolParseStatus::Ok);
   assert(feed.hasMessages && feed.messageTotal == 0 && feed.hasMarks);
@@ -210,36 +220,63 @@ void testLayout() {
 
 SchoolListsResult lists(bool firstOn, uint8_t first, uint8_t firstTotal,
                         bool secondOn, uint8_t second, uint8_t secondTotal,
-                        int height) {
-  return schoolListsLayout(firstOn, first, firstTotal, secondOn, second,
-                           secondTotal,
-                           SchoolLayoutMetrics{LINE, HEADING, GAP, SECTION, height});
+                        int height, bool thirdOn = false, uint8_t third = 0,
+                        uint8_t thirdTotal = 0) {
+  const SchoolListInput inputs[SCHOOL_LIST_SECTIONS] = {
+      {firstOn, first, firstTotal},
+      {secondOn, second, secondTotal},
+      {thirdOn, third, thirdTotal},
+  };
+  return schoolListsLayout(
+      inputs, SchoolLayoutMetrics{LINE, HEADING, GAP, SECTION, height});
 }
 
 void testListsLayout() {
   // Všechno se vejde: 19 + 2 * 22 + 7 + 19 + 1 * 22 = 111.
   SchoolListsResult all = lists(true, 2, 2, true, 1, 1, 111);
-  assert(all.firstHeading && all.first == 2 && !all.firstEllipsis);
-  assert(all.secondHeading && all.second == 1 && !all.secondEllipsis);
+  const SchoolListResult &allMessages = all.sections[0];
+  const SchoolListResult &allMarks = all.sections[1];
+  assert(allMessages.heading && allMessages.rows == 2 && !allMessages.ellipsis);
+  assert(allMarks.heading && allMarks.rows == 1 && !allMarks.ellipsis);
+  assert(!all.sections[2].heading);
 
   // Hodně zpráv nevytlačí známky: ty si drží hlavičku a dva řádky.
   // 345 - (7 + 19 + 44) = 275 na zprávy -> (275 - 19) / 22 = 11 řádků.
   SchoolListsResult busy = lists(true, 6, 20, true, 8, 8, 345);
-  assert(busy.first == 6 && busy.firstEllipsis);
-  assert(busy.secondHeading && busy.second >= 2 && busy.secondEllipsis);
-  SchoolListsResult tight = lists(true, 6, 6, true, 8, 8, 19 + 3 * 22 + 7 + 19 + 2 * 22);
-  assert(tight.first == 3 && tight.firstEllipsis && tight.second == 2);
+  assert(busy.sections[0].rows == 6 && busy.sections[0].ellipsis);
+  assert(busy.sections[1].heading && busy.sections[1].rows >= 2 &&
+         busy.sections[1].ellipsis);
+  SchoolListsResult tight =
+      lists(true, 6, 6, true, 8, 8, 19 + 3 * 22 + 7 + 19 + 2 * 22);
+  assert(tight.sections[0].rows == 3 && tight.sections[0].ellipsis &&
+         tight.sections[1].rows == 2);
 
   // Prázdné sekce: jen hlavičky, bez mezery pod nimi.
   SchoolListsResult none = lists(true, 0, 0, true, 0, 0, 17 + 7 + 17);
-  assert(none.firstHeading && none.secondHeading && none.first == 0);
-  assert(!lists(true, 0, 0, true, 0, 0, 17 + 7 + 16).secondHeading);
+  assert(none.sections[0].heading && none.sections[1].heading &&
+         none.sections[0].rows == 0);
+  assert(!lists(true, 0, 0, true, 0, 0, 17 + 7 + 16).sections[1].heading);
 
   // Vypnutá sekce se vynechá a nic si nerezervuje.
   SchoolListsResult onlyMarks = lists(false, 0, 0, true, 3, 3, 200);
-  assert(!onlyMarks.firstHeading && onlyMarks.secondHeading && onlyMarks.second == 3);
+  assert(!onlyMarks.sections[0].heading && onlyMarks.sections[1].heading &&
+         onlyMarks.sections[1].rows == 3);
   SchoolListsResult onlyMessages = lists(true, 6, 6, false, 0, 0, 19 + 6 * 22);
-  assert(onlyMessages.first == 6 && !onlyMessages.secondHeading);
+  assert(onlyMessages.sections[0].rows == 6 && !onlyMessages.sections[1].heading);
+
+  // Nástěnka pod známkami: známky i zprávy jí nechají hlavičku a dva řádky.
+  // Zprávy 17, mezera 7, známky 19 + 8 * 22, mezera 7, nástěnka 19 + 2 * 22.
+  SchoolListsResult board =
+      lists(true, 0, 0, true, 8, 8, 17 + 7 + 19 + 4 * 22 + 7 + 19 + 2 * 22,
+            true, 5, 5);
+  assert(board.sections[0].heading && board.sections[1].rows == 4 &&
+         board.sections[1].ellipsis);
+  assert(board.sections[2].heading && board.sections[2].rows == 2 &&
+         board.sections[2].ellipsis);
+  // Bez zpráv a známek dostane nástěnka celý pás.
+  SchoolListsResult onlyBoard = lists(false, 0, 0, false, 0, 0, 345, true, 6, 6);
+  assert(!onlyBoard.sections[0].heading && !onlyBoard.sections[1].heading);
+  assert(onlyBoard.sections[2].rows == 6 && !onlyBoard.sections[2].ellipsis);
 }
 
 }  // namespace
