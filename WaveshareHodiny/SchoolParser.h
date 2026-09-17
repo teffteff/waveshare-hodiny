@@ -21,10 +21,14 @@
 //    "markCount":1,
 //    "marks":[{"when":"DNES","subject":"Matematika","abbrev":"M","mark":"1",
 //              "theme":"Násobilka"}],
+//    "noticeCount":1,
+//    "notices":[{"when":"VČERA","title":"Střevní problémy",
+//                "text":"děti v budově mají střevní problémy…"}],
 //    "problem":""}
 //
-// Zprávy a známky jsou nepovinné: bez klíče "messages" i "marks" server
-// druhou stránku obrazovky nenabízí (starší server, nebo je má vypnuté).
+// Zprávy, známky a nástěnka (nasems.cz) jsou nepovinné: bez klíčů "messages",
+// "marks" i "notices" hodiny druhou stránku obrazovky nenabízejí (starší
+// server, nebo je má vypnuté).
 //
 // Škola OnLine sama do hodin nikdy nedorazí: přihlášení, výběr dne, suplování
 // i popisky termínů řeší server. Firmware jen opisuje hotové řetězce, takže
@@ -56,6 +60,8 @@ constexpr size_t SCHOOL_MAX_MESSAGES = 6;
 constexpr size_t SCHOOL_MAX_MARKS = 8;
 constexpr size_t SCHOOL_SENDER_LENGTH = 32;
 constexpr size_t SCHOOL_MARK_LENGTH = 12;
+// Oznámení z nástěnky školky; server jich posílá nejvýš šest.
+constexpr size_t SCHOOL_MAX_NOTICES = 6;
 
 // Stav hodiny, jak ho posílá server.
 enum class SchoolLessonState : uint8_t {
@@ -97,6 +103,13 @@ struct SchoolMark {
   char theme[SCHOOL_TITLE_LENGTH] = "";
 };
 
+// Titulek a začátek textu oznámení; řádek si displej zkrátí sám.
+struct SchoolNotice {
+  char when[SCHOOL_DAY_LENGTH] = "";
+  char title[SCHOOL_TITLE_LENGTH] = "";
+  char text[SCHOOL_TITLE_LENGTH] = "";
+};
+
 struct SchoolDay {
   char day[SCHOOL_DAY_LENGTH] = "";
   // Jen u DNES a ZÍTRA, kde samotný popisek den v týdnu neřekne.
@@ -129,6 +142,10 @@ struct SchoolFeed {
   size_t markCount = 0;
   size_t markTotal = 0;
   SchoolMark marks[SCHOOL_MAX_MARKS];
+  bool hasNotices = false;
+  size_t noticeCount = 0;
+  size_t noticeTotal = 0;
+  SchoolNotice notices[SCHOOL_MAX_NOTICES];
 };
 
 enum class SchoolParseStatus : uint8_t {

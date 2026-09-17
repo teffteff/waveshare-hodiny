@@ -422,7 +422,7 @@ struct alignas(4) ClockSchoolConfig {
   bool automaticRotation = false;
   // Úkoly pod rozvrhem. Vypnuté dají celou obrazovku rozvrhu.
   bool showHomework = true;
-  // Server se Školy OnLine ptá po dvaceti minutách, častější dotaz hodin nic
+  // Server se Školy OnLine ptá po třech hodinách, častější dotaz hodin nic
   // nového nepřinese.
   uint8_t refreshMinutes = 20;
   uint16_t displaySeconds = 20;

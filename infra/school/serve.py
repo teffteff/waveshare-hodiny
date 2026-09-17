@@ -14,17 +14,20 @@ Server posloucha jen na 127.0.0.1 a Caddy ho pousti s heslem: odpoved nese
 jmeno ditete a jeho ukoly.
 
 Prihlaseni jde pres refresh token, heslem jen na zacatku a kdyz refresh
-selze. Spatne heslo se neopakuje kazdych dvacet minut - skolni system by ucet
+selze. Spatne heslo se neopakuje kazde tri hodiny - skolni system by ucet
 po serii chyb mohl zamknout a dite by se neprihlasilo ani samo. Po odmitnutem
 hesle proto server ceka AUTH_BACKOFF_HOURS a starsi data dal vydava, nejdyl
 ale MAX_AGE_HOURS. Pak radsi 503 nez vcerejsi rozvrh bez suplovani, ktery by
 se po dvou tydnech tvaril jako prazdniny.
 
-Skola OnLine je cizi server a neoficialni API, takze se pta co nejmene: dite
-se hleda v /v1/user jednou denne, ne pri kazdem stazeni; o vikendu a
-o prazdninach se stahuje zridka; chyby se opakuji s rostoucim odstupem.
-Zpravy a znamky (druha stranka obrazovky) se pripojuji k beznemu stazeni
-nejvys jednou za hodinu, respektive za tri, a v noci jen poprve.
+Skola OnLine je cizi server a neoficialni API, takze se pta co nejmene: kazdy
+zdroj nejvys jednou za tri hodiny, dite se hleda v /v1/user jednou denne, ne
+pri kazdem stazeni, o prazdninach se stahuje jeste zridkaveji a chyby se
+opakuji s rostoucim odstupem. Zpravy, znamky (druha stranka obrazovky)
+a nastenka materske skoly z nasems.cz (NASEMS_LOGIN, jen kdyz je vyplnene
+prihlaseni) se pripojuji k beznemu stazeni, kazda se svym vlastnim odstupem,
+a v noci jen poprve. Odstupy zustavaji zvlast pro kazdy zdroj, aby se daly
+menit jednotlive.
 
     python3.11 serve.py --probe   prihlasi se, vypise deti a tvar odpovedi
 
@@ -38,6 +41,7 @@ skutecna data (jmena, ukoly), takze patri jen do terminalu spravce.
 """
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import math
 import os
@@ -64,14 +68,14 @@ CLIENT_ID = "test_client"
 SCOPE = "openid offline_access profile sol_api"
 USER_AGENT = "WaveshareHodiny/1.0 (+https://github.com/teffteff/waveshare-hodiny)"
 TIMEOUT_SECONDS = 30
-# Ve dne se rozvrh meni (suplovani se vyvesi rano i vecer predtem), ukoly
-# pribyvaji po vyucovani. V noci se nedeje nic a skolni server nema duvod
-# dostavat dotazy i tehdy.
-DAY_POLL_MINUTES = int(os.environ.get("SCHOOL_DAY_POLL_MINUTES", "20"))
-NIGHT_POLL_MINUTES = int(os.environ.get("SCHOOL_NIGHT_POLL_MINUTES", "120"))
+# Kazdy zdroj se stahuje nejvys jednou za tri hodiny. Odstupy zustavaji
+# oddelene (den, noc, mimo vyucovani, prazdniny), aby sla frekvence menit
+# jednotlive, i kdyz jsou zatim stejne.
+DAY_POLL_MINUTES = int(os.environ.get("SCHOOL_DAY_POLL_MINUTES", "180"))
+NIGHT_POLL_MINUTES = int(os.environ.get("SCHOOL_NIGHT_POLL_MINUTES", "180"))
 # Ve dne mimo vyucovani a mimo odpoledne pred skolnim dnem (patek po skole,
 # sobota, nedelni dopoledne): nic, co by dite hned potrebovalo, neprijde.
-IDLE_POLL_MINUTES = int(os.environ.get("SCHOOL_IDLE_POLL_MINUTES", "120"))
+IDLE_POLL_MINUTES = int(os.environ.get("SCHOOL_IDLE_POLL_MINUTES", "180"))
 # V celem stazenem rozvrhu neni jedina hodina: prazdniny.
 HOLIDAY_POLL_MINUTES = int(os.environ.get("SCHOOL_HOLIDAY_POLL_MINUTES", "360"))
 DAY_HOURS = (6, 21)
@@ -82,7 +86,7 @@ POLL_JITTER_PERCENT = float(os.environ.get("SCHOOL_POLL_JITTER_PERCENT", "10"))
 # = bez ticha. Plati pro vsechno vcetne opakovani po chybe a startu sluzby:
 # kdo se v tichu probudi, pocka do konce a pak jeste nahodnou chvili, at se
 # rano nepta presne v pet.
-QUIET_HOURS = os.environ.get("SCHOOL_QUIET_HOURS", "23-5")
+QUIET_HOURS = os.environ.get("SCHOOL_QUIET_HOURS", "22-5")
 QUIET_SPREAD_MINUTES = 10
 # Chyba site nebo serveru: 10, 20, 40... minut, nejvys MAX_RETRY_MINUTES.
 RETRY_MINUTES = 10
@@ -91,8 +95,8 @@ AUTH_BACKOFF_HOURS = int(os.environ.get("SCHOOL_AUTH_BACKOFF_HOURS", "6"))
 # Dite se v /v1/user hleda jednou denne; trida se meni jednou za rok.
 STUDENT_REFRESH_HOURS = 24
 # Starsi snimek uz hodinam nevydavat. Ctrnact hodin prezije noc bez dotazu
-# (posledni prazdninove stazeni pred 17. hodinou, dalsi az po peti rano)
-# i jeden odklad po spatnem hesle, ale ne cely den bez suplovani.
+# (posledni stazeni pred 22. hodinou, dalsi az po peti rano) i jeden odklad
+# po spatnem hesle, ale ne cely den bez suplovani.
 MAX_AGE_HOURS = float(os.environ.get("SCHOOL_MAX_AGE_HOURS", "14"))
 # Kam se uklada posledni stazeny snimek; prazdne = jen v pameti. Soubor nese
 # jmeno ditete, rozvrh, ukoly, titulky zprav a znamky, proto 600.
@@ -102,11 +106,18 @@ STATE_VERSION = 1
 # i vec soukromi: titulky zprav a znamky pak nikdy neopusti Skolu OnLine.
 MESSAGES_ENABLED = os.environ.get("SCHOOL_MESSAGES", "1") != "0"
 MARKS_ENABLED = os.environ.get("SCHOOL_MARKS", "1") != "0"
-MESSAGES_POLL_MINUTES = int(os.environ.get("SCHOOL_MESSAGES_POLL_MINUTES", "60"))
+MESSAGES_POLL_MINUTES = int(os.environ.get("SCHOOL_MESSAGES_POLL_MINUTES", "180"))
 MARKS_POLL_MINUTES = int(os.environ.get("SCHOOL_MARKS_POLL_MINUTES", "180"))
 # Neprectene zpravy za dva tydny jsou mezi nejnovejsimi; tricet staci i pro
 # tridu, ktera pise casto.
 MESSAGES_PAGE_SIZE = 30
+# Nastenka materske skoly na nasems.cz. Prazdne prihlaseni = nestahuje se.
+# Web nema API: server se prihlasi formularem a cte HTML nastenky.
+NASEMS_URL = os.environ.get("NASEMS_URL", "https://nasems.cz").rstrip("/")
+NASEMS_LOGIN = os.environ.get("NASEMS_LOGIN", "")
+NASEMS_PASSWORD = os.environ.get("NASEMS_PASSWORD", "")
+NOTICES_ENABLED = bool(NASEMS_LOGIN and NASEMS_PASSWORD)
+NOTICES_POLL_MINUTES = int(os.environ.get("NASEMS_POLL_MINUTES", "180"))
 # Rozvrh na dva tydny dopredu: pres vikend a kratke volno se tak vzdycky najde
 # pristi skolni den. Delsi prazdniny hodiny poznaji podle prazdneho rozvrhu.
 TIMETABLE_DAYS = int(os.environ.get("SCHOOL_TIMETABLE_DAYS", "14"))
@@ -233,6 +244,48 @@ class Client:
         return self.get(path, {"SigningFilter": "all"})
 
 
+class NasemsClient:
+    """Prihlaseni do nasems.cz drzi PHP session v cookie. Dokud plati, stoji
+    jedno stazeni jediny dotaz; po vyprseni nastenka vrati prihlasovaci
+    formular a klient se prihlasi znovu."""
+
+    def __init__(self, login: str, password: str, base: str = NASEMS_URL):
+        self.login = login
+        self.password = password
+        self.base = base
+        self.cookies = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies))
+
+    def _open(self, url: str, data: bytes | None = None) -> str:
+        request = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
+        try:
+            with self.opener.open(request, timeout=TIMEOUT_SECONDS) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(charset, errors="replace")
+        except urllib.error.HTTPError as error:
+            raise SchoolError(f"nasems.cz vratil HTTP {error.code}",
+                              _retry_after(error.code, error.headers)) from error
+        except (urllib.error.URLError, OSError) as error:
+            raise SchoolError(f"nasems.cz neodpovida: {error}") from error
+
+    def _sign_in(self) -> None:
+        form = urllib.parse.urlencode({"login": self.login, "password": self.password}).encode()
+        self._open(f"{self.base}/", form)
+
+    def board(self) -> str:
+        url = f"{self.base}/prihlaseno/nastenka"
+        if not any(True for _ in self.cookies):
+            self._sign_in()
+        page = self._open(url)
+        if feed.is_nasems_login_page(page):
+            self._sign_in()
+            page = self._open(url)
+            if feed.is_nasems_login_page(page):
+                self.cookies.clear()
+                raise AuthError("nasems.cz odmitl prihlaseni")
+        return page
+
+
 def find_student(client: Client) -> dict:
     students = feed.students_from_user(client.user())
     student = feed.pick_student(students, STUDENT)
@@ -342,8 +395,10 @@ def jittered(seconds: float, percent: float | None = None, rng=random) -> float:
 
 
 class Poller:
-    def __init__(self, client: Client, state_path: str | None = None):
+    def __init__(self, client: Client, state_path: str | None = None,
+                 nasems: NasemsClient | None = None):
         self.client = client
+        self.nasems = nasems
         self.state_path = state_path
         self.lock = threading.Lock()
         self.snapshot: dict | None = None
@@ -452,7 +507,8 @@ class Poller:
         extras = {name: items for name, items in state.get("extras", {}).items()
                   if isinstance(items, list)}
         # Mezitim vypnute zpravy nebo znamky se nevydavaji ani z disku.
-        for name, enabled in (("messages", MESSAGES_ENABLED), ("marks", MARKS_ENABLED)):
+        for name, enabled in (("messages", MESSAGES_ENABLED), ("marks", MARKS_ENABLED),
+                              ("notices", self.nasems is not None)):
             if not enabled:
                 snapshot.pop(name, None)
                 extras.pop(name, None)
@@ -498,6 +554,8 @@ class Poller:
              lambda: feed.normalize_messages(self.client.messages())),
             ("marks", MARKS_ENABLED, MARKS_POLL_MINUTES,
              lambda: feed.normalize_marks(self.client.marks(student_id))),
+            ("notices", self.nasems is not None, NOTICES_POLL_MINUTES,
+             lambda: feed.normalize_notices(self.nasems.board())),
         )
         for name, enabled, minutes, fetch in sources:
             if not enabled:
@@ -610,13 +668,17 @@ def probe() -> None:
     if MARKS_ENABLED:
         snapshot["marks"] = feed.normalize_marks(client.marks(student["id"]))
         print("znamek:", len(snapshot["marks"]))
+    if NOTICES_ENABLED:
+        snapshot["notices"] = feed.normalize_notices(NasemsClient(NASEMS_LOGIN, NASEMS_PASSWORD).board())
+        print("oznameni na nastence:", len(snapshot["notices"]))
     print("odpoved pro hodiny:")
     print(json.dumps(feed.render(snapshot, now), ensure_ascii=False, indent=1))
 
 
 def main() -> None:
     state_path = os.path.join(STATE_DIR, "state.json") if STATE_DIR else None
-    poller = Poller(Client(USERNAME, PASSWORD), state_path)
+    nasems = NasemsClient(NASEMS_LOGIN, NASEMS_PASSWORD) if NOTICES_ENABLED else None
+    poller = Poller(Client(USERNAME, PASSWORD), state_path, nasems)
     poller.load_state()
     Handler.poller = poller
     # Port nejdriv: kdyby byl obsazeny, proces spadne driv, nez se zacne

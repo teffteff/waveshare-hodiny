@@ -4,6 +4,7 @@
 Tvar odpovedi kopiruje to, co o API Skoly OnLine rikaji neoficialni zdroje
 (viz feed.py); jmena a predmety jsou vymyslene.
 """
+import http.cookiejar
 import json
 import os
 import random
@@ -209,6 +210,101 @@ class MessagesAndMarksTest(unittest.TestCase):
         self.assertEqual((body["messageCount"], len(body["messages"])), (10, feed.MAX_MESSAGES))
 
 
+BOARD = """<div class='menu'><div class='modul_nazev'>Nástěnka</div></div>
+<div class='podnadpis flex space-between'>
+ <div class='left bold'>Střevní&nbsp;problémy </div>
+ <div class='right bold'>16.9.2026 11:01:13</div>
+</div>
+<div class='container' id='612'><div class='nastenka_obsah'>
+ <div class='section padding_informations justify'>
+ Vážení rodiče,
+děti v budově mají střevní problémy.<br>Děkujeme
+ </div>
+ <div class='media justified dashed_top dashed_bottom'></div>
+</div></div>
+<div class='podnadpis flex space-between'>
+ <div class='left bold'>Bez data</div><div class='right bold'></div>
+</div>
+<div class='podnadpis flex space-between'>
+ <div class='left bold'>Čaj o páté</div>
+ <div class='right bold'>31.8.2026 15:29:51</div>
+</div>
+<div class='container'><div class='nastenka_obsah'>
+ <div class='section'>Dobrý den, zvu Vás na &quot;Čaj o páté&quot;.</div>
+</div></div>
+<div class='podnadpis flex space-between'>
+ <div class='left bold'>Odstávka</div>
+ <div class='right bold'>17.9.2026 07:04:41</div>
+</div>
+<div class='container'><div class='nastenka_obsah'><div class='section'></div></div></div>
+"""
+LOGIN_PAGE = "<form action='https://nasems.cz/' method='post'><input type='password' class='pw' name='password' value='' /></form>"
+
+
+
+def session_cookie():
+    return http.cookiejar.Cookie(0, "PHPSESSID", "x", None, False, "nasems.test", False, False,
+                                 "/", False, False, None, False, None, None, {})
+
+
+class NoticesTest(unittest.TestCase):
+    def test_board_titles_dates_and_text_without_greeting(self):
+        notices = feed.normalize_notices(BOARD)
+        self.assertEqual(notices, [
+            {"posted": "2026-09-17T07:04", "title": "Odstávka", "text": ""},
+            {"posted": "2026-09-16T11:01", "title": "Střevní problémy",
+             "text": "děti v budově mají střevní problémy. Děkujeme"},
+            {"posted": "2026-08-31T15:29", "title": "Čaj o páté", "text": "zvu Vás na \"Čaj o páté\"."},
+        ])
+        self.assertEqual(feed.normalize_notices(""), [])
+        self.assertEqual(feed.normalize_notices(LOGIN_PAGE), [])
+
+    def test_login_page_is_recognised(self):
+        self.assertTrue(feed.is_nasems_login_page(LOGIN_PAGE))
+        self.assertFalse(feed.is_nasems_login_page(BOARD))
+
+    def test_render_two_week_window(self):
+        snap = {**snapshot(), "notices": feed.normalize_notices(BOARD)}
+        body = feed.render(snap, at("2026-09-17T12:00"))
+        self.assertEqual(body["noticeCount"], 2)
+        self.assertEqual([(notice["when"], notice["title"]) for notice in body["notices"]],
+                         [("DNES", "Odstávka"), ("VČERA", "Střevní problémy")])
+        self.assertNotIn("notices", feed.render(snapshot(), at("2026-09-17T12:00")))
+
+    def test_client_signs_in_again_when_session_expired(self):
+        class Fake(serve.NasemsClient):
+            def __init__(self, password):
+                super().__init__("rodic", password, "https://nasems.test")
+                self.requests = []
+                self.signed_in = False
+
+            def _open(self, url, data=None):
+                self.requests.append("POST" if data else "GET")
+                if data:
+                    self.signed_in = b"password=dobre" in data
+                    return ""
+                return BOARD if self.signed_in else LOGIN_PAGE
+
+        client = Fake("dobre")
+        # Prvni stazeni bez cookie: rovnou prihlaseni, pak nastenka.
+        client.board()
+        self.assertEqual(client.requests, ["POST", "GET"])
+        client.cookies.set_cookie(session_cookie())
+        client.requests.clear()
+        client.board()
+        self.assertEqual(client.requests, ["GET"])
+        # Vyprsela session: formular, prihlaseni, nastenka.
+        client.signed_in = False
+        client.requests.clear()
+        client.board()
+        self.assertEqual(client.requests, ["GET", "POST", "GET"])
+        wrong = Fake("spatne")
+        wrong.cookies.set_cookie(session_cookie())
+        with self.assertRaises(serve.AuthError):
+            wrong.board()
+        self.assertEqual(wrong.requests, ["GET", "POST", "GET"])
+
+
 class StudentTest(unittest.TestCase):
     def test_parent_account_lists_children(self):
         user = {"userType": "parent", "personID": "P1", "children": [
@@ -393,8 +489,16 @@ class PollerTest(unittest.TestCase):
                 self.marks_calls += 1
                 raise serve.SchoolError("HTTP 403")
 
+        class Nasems:
+            calls = 0
+
+            def board(self):
+                self.calls += 1
+                return BOARD
+
         client = Client()
-        poller = serve.Poller(client)
+        nasems = Nasems()
+        poller = serve.Poller(client, nasems=nasems)
         # V noci se zpravy po prvnim stazeni neobnovuji; test nesmi zaviset na hodine.
         day_hours = serve.DAY_HOURS
         serve.DAY_HOURS = (0, 24)
@@ -403,6 +507,8 @@ class PollerTest(unittest.TestCase):
         poller.poll_once()
         # Dve stazeni rozvrhu za sebou: zpravy i znamky jen jednou.
         self.assertEqual((client.messages_calls, client.marks_calls), (1, 1))
+        self.assertEqual(nasems.calls, 1)
+        self.assertEqual(len(poller.current()["notices"]), 3)
         current = poller.current()
         self.assertEqual(len(current["messages"]), 3)
         # Znamky selhaly, rozvrh i zpravy zustaly.
@@ -528,12 +634,17 @@ class PollerTest(unittest.TestCase):
         rng = random.Random(2)
         hour = 3600
         spread = serve.QUIET_SPREAD_MINUTES * 60
-        self.assertEqual(serve.quiet_wait(at("2026-09-15T22:59"), "23-5", rng), 0)
-        self.assertEqual(serve.quiet_wait(at("2026-09-15T05:00"), "23-5", rng), 0)
-        late = serve.quiet_wait(at("2026-09-15T23:30"), "23-5", rng)
+        self.assertEqual(serve.quiet_wait(at("2026-09-15T21:59"), "22-5", rng), 0)
+        self.assertEqual(serve.quiet_wait(at("2026-09-15T05:00"), "22-5", rng), 0)
+        # Vychozi ticho: ve 22:00 zacina a v 5:00 konci.
+        self.assertEqual(serve.QUIET_HOURS, "22-5")
+        late = serve.quiet_wait(at("2026-09-15T23:30"), "22-5", rng)
         self.assertTrue(5.5 * hour <= late <= 5.5 * hour + spread)
-        early = serve.quiet_wait(at("2026-09-16T04:59"), "23-5", rng)
+        early = serve.quiet_wait(at("2026-09-16T04:59"), "22-5", rng)
         self.assertTrue(60 <= early <= 60 + spread)
+        # Nova hodina ticha: ve 22:30 se ceka pres celou noc.
+        just_quiet = serve.quiet_wait(at("2026-09-15T22:30"), "22-5", rng)
+        self.assertTrue(6.5 * hour <= just_quiet <= 6.5 * hour + spread)
         # Okno ve dne bez prechodu pres pulnoc a vypnute ticho.
         self.assertTrue(serve.quiet_wait(at("2026-09-15T13:00"), "12-14", rng) >= hour)
         self.assertEqual(serve.quiet_wait(at("2026-09-15T01:00"), "", rng), 0)
@@ -542,7 +653,7 @@ class PollerTest(unittest.TestCase):
     def test_quiet_hours_across_daylight_saving_change(self):
         # 25. 10. 2026 ve 3:00 se hodiny vraci na 2:00: od 1:00 do 5:00 je pet
         # skutecnych hodin, ne ctyri.
-        wait = serve.quiet_wait(at("2026-10-25T01:00"), "23-5", random.Random(3))
+        wait = serve.quiet_wait(at("2026-10-25T01:00"), "22-5", random.Random(3))
         self.assertTrue(5 * 3600 <= wait <= 5 * 3600 + serve.QUIET_SPREAD_MINUTES * 60)
 
     def test_poll_interval_follows_school_days(self):
@@ -556,14 +667,24 @@ class PollerTest(unittest.TestCase):
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T11:00")), idle)
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T13:00")), day)
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T23:00")), serve.NIGHT_POLL_MINUTES)
-        # Po tichych hodinach se dalsi dotaz nepretahne pres sestou.
-        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:05")), 55)
-        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:54")), day)
+        # Pri tristi minutach je rano stejne jako zbytek dne.
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:05")), day)
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T02:00")), serve.NIGHT_POLL_MINUTES)
         # Streda po skole: zitra se neuci.
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-16T14:00")), idle)
         self.assertEqual(serve.poll_minutes({"lessons": []}, at("2026-07-15T10:00")),
                          serve.HOLIDAY_POLL_MINUTES)
+
+    def test_morning_wait_does_not_overshoot_the_day_window(self):
+        # Kratsi denni odstup (nez vychozi tri hodiny) nesmi rano prespat
+        # zacatek dne: v 5:05 se dalsi dotaz vejde do 6:00.
+        snap = snapshot()
+        for name, value in (("DAY_POLL_MINUTES", 20), ("NIGHT_POLL_MINUTES", 120)):
+            self.addCleanup(setattr, serve, name, getattr(serve, name))
+            setattr(serve, name, value)
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:05")), 55)
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:54")), 20)
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T02:00")), 120)
 
     def test_unexpected_shape_does_not_kill_thread(self):
         class Broken:

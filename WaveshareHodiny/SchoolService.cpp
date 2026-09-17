@@ -368,6 +368,10 @@ static bool schoolServiceDownload(const ClockSchoolConfig &config,
       detail += F(", známek: ");
       detail += parsed.markTotal;
     }
+    if (parsed.hasNotices) {
+      detail += F(", oznámení: ");
+      detail += parsed.noticeTotal;
+    }
     networkDiagnosticsSetDetail(diagnosticKind, detail);
   } else {
     // Poslední úspěšný rozvrh zůstává a hláška se ukáže, jen když žádný není.

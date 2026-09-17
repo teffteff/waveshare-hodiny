@@ -24,6 +24,7 @@ import html
 import os
 import re
 from datetime import date, datetime, timedelta
+from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo(os.environ.get("SCHOOL_TZ", "Europe/Prague"))
@@ -54,6 +55,10 @@ MARK_DAYS = int(os.environ.get("SCHOOL_MARK_DAYS", "14"))
 MAX_MESSAGES = 6
 MAX_MARKS = 8
 MAX_MARK = 8
+# Nastenka materske skoly (nasems.cz) pod znamkami. Oznameni starsi nez dva
+# tydny uz na hodinach jen visi.
+NOTICE_DAYS = int(os.environ.get("SCHOOL_NOTICE_DAYS", "14"))
+MAX_NOTICES = 6
 # Tituly pred jmenem ("Mgr.", "PaedDr.") a za nim ("Ph.D.") koncici teckou.
 _ACADEMIC_TITLE = re.compile(r"\S+\.$")
 
@@ -398,6 +403,91 @@ def normalize_marks(payload) -> list[dict]:
     return marks
 
 
+# --- nastenka nasems.cz ----------------------------------------------------------
+
+# Osloveni na zacatku oznameni ("Vazeni rodice,") nic nerika a na radku by
+# zabralo presne to misto, kam se vejde zacatek sdeleni.
+_GREETING = re.compile(r"^(vážení|milí|dobrý den|dobrý večer|ahoj)\b[^,.!\n]{0,30}[,.!]?\s*",
+                       re.IGNORECASE)
+
+
+class _NoticeParser(HTMLParser):
+    """Nastenka je serverem skladane HTML bez API. Kazde oznameni je
+    <div class='podnadpis'> s titulkem (left) a casem (right), za nim
+    <div class='nastenka_obsah'> s textem v <div class='section'>."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.notices: list[dict] = []
+        # Otevrene divy: (tridy, pole oznameni, do ktereho jde jejich text).
+        self._stack: list[tuple[list[str], str | None]] = []
+
+    def _inside(self, name: str) -> bool:
+        return any(name in classes for classes, _ in self._stack)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "br":
+            self.handle_data(" ")
+        if tag != "div":
+            return
+        classes = (dict(attrs).get("class") or "").split()
+        field = None
+        if "podnadpis" in classes:
+            self.notices.append({"title": "", "posted": "", "text": ""})
+        elif self.notices and self._inside("podnadpis"):
+            field = "title" if "left" in classes else "posted" if "right" in classes else None
+        elif self.notices and "section" in classes and self._inside("nastenka_obsah"):
+            field = "text"
+        self._stack.append((classes, field))
+
+    def handle_endtag(self, tag):
+        if tag == "div" and self._stack:
+            self._stack.pop()
+
+    def handle_data(self, data):
+        field = next((field for _, field in reversed(self._stack) if field), None)
+        if field and self.notices:
+            self.notices[-1][field] += data
+
+
+def is_nasems_login_page(page: str) -> bool:
+    """Neprihlasenemu nastenka vrati 200 s prihlasovacim formularem."""
+    return bool(re.search(r"name=['\"]password['\"]", page or ""))
+
+
+def notice_text(text: str) -> str:
+    """Zacatek sdeleni bez osloveni, na jeden radek."""
+    text = " ".join((text or "").split())
+    return _GREETING.sub("", text, count=1)
+
+
+def normalize_notices(page: str) -> list[dict]:
+    """Oznameni z nastenky s casem, nejnovejsi prvni. Hodiny dostanou titulek
+    a zacatek textu, radek si zkrati samy podle sirky pisma."""
+    parser = _NoticeParser()
+    parser.feed(page or "")
+    parser.close()
+    notices = []
+    for item in parser.notices:
+        title = plain_text(item["title"])
+        match = re.search(r"(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})(?:\s+(\d{1,2}):(\d{2}))?",
+                          item["posted"])
+        if not title or match is None:
+            continue
+        day, month, year, hour, minute = match.groups()
+        try:
+            posted = datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0))
+        except ValueError:
+            continue
+        notices.append({
+            "posted": posted.isoformat(timespec="minutes"),
+            "title": title,
+            "text": plain_text(notice_text(item["text"])),
+        })
+    notices.sort(key=lambda notice: notice["posted"], reverse=True)
+    return notices
+
+
 # --- odpoved pro hodiny ------------------------------------------------------
 
 def pick_day(lessons: list[dict], now: datetime) -> date | None:
@@ -527,4 +617,14 @@ def render(snapshot: dict, now: datetime | None = None) -> dict:
             "mark": mark.get("mark", ""),
             "theme": mark.get("theme", ""),
         } for mark in recent[:MAX_MARKS]]
+    if "notices" in snapshot:
+        horizon = today - timedelta(days=NOTICE_DAYS)
+        recent = [notice for notice in snapshot["notices"]
+                  if datetime.fromisoformat(notice["posted"]).date() >= horizon]
+        body["noticeCount"] = len(recent)
+        body["notices"] = [{
+            "when": day_label(datetime.fromisoformat(notice["posted"]).date(), today),
+            "title": notice.get("title", ""),
+            "text": notice.get("text", ""),
+        } for notice in recent[:MAX_NOTICES]]
     return body

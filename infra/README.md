@@ -644,23 +644,27 @@ sám, drží si token v paměti, stáhne rozvrh na dva týdny dopředu a aktivn�
 úkoly a hodinám vrací jen hotové řádky (`/school.json`, kolem kilobajtu).
 
 **Kolik dotazů jde do Školy OnLine.** Je to cizí server a neoficiální API,
-takže co nejméně. Jedno stažení jsou dva dotazy (rozvrh, úkoly) a zhruba
-jednou za hodinu obnova tokenu; dítě se v `/v1/user` hledá jednou denně.
-Často se ptá jen tehdy, když se může něco změnit a dítě to potřebuje vědět:
+takže co nejméně. Každý zdroj se stahuje **nejvýš jednou za tři hodiny**.
+Jedno stažení jsou dva dotazy (rozvrh, úkoly) a zhruba jednou za hodinu obnova
+tokenu; dítě se v `/v1/user` hledá jednou denně. Intervaly zůstávají jako
+samostatné proměnné, aby se daly měnit jednotlivě, i když jsou teď stejné:
 
 | Situace | Interval | Proměnná |
 | --- | --- | --- |
-| 6–21 h, dnes do konce vyučování nebo od poledne před školním dnem | 20 min | `SCHOOL_DAY_POLL_MINUTES` |
-| noc | 2 h | `SCHOOL_NIGHT_POLL_MINUTES` |
-| jindy ve dne (pátek po škole, sobota, neděle dopoledne) | 2 h | `SCHOOL_IDLE_POLL_MINUTES` |
+| 6–21 h, dnes do konce vyučování nebo od poledne před školním dnem | 3 h | `SCHOOL_DAY_POLL_MINUTES` |
+| noc (21–22 h, 5–6 h) | 3 h | `SCHOOL_NIGHT_POLL_MINUTES` |
+| jindy ve dne (pátek po škole, sobota, neděle dopoledne) | 3 h | `SCHOOL_IDLE_POLL_MINUTES` |
 | v celých dvou týdnech ani hodina (prázdniny) | 6 h | `SCHOOL_HOLIDAY_POLL_MINUTES` |
-| 23–5 h: žádný dotaz, ani opakování po chybě nebo po startu služby | — | `SCHOOL_QUIET_HOURS` |
+| 22–5 h: žádný dotaz, ani opakování po chybě nebo po startu služby | — | `SCHOOL_QUIET_HOURS` |
 
-Zprávy a známky se připojují k běžnému stažení, zprávy nejvýš jednou za
-hodinu (`SCHOOL_MESSAGES_POLL_MINUTES`), známky jednou za tři
-(`SCHOOL_MARKS_POLL_MINUTES`), v noci jen poprvé po startu. Mezi 23. a 5.
-hodinou nejde do Školy OnLine nic. Týden vyučování tak dá kolem 700 dotazů
-(zhruba 100 denně včetně zpráv a známek), prázdninový den kolem 15.
+Zprávy, známky a nástěnka se připojují k běžnému stažení, každá nejvýš jednou
+za tři hodiny (`SCHOOL_MESSAGES_POLL_MINUTES`, `SCHOOL_MARKS_POLL_MINUTES`,
+`NASEMS_POLL_MINUTES`), v noci jen poprvé po startu. Mezi 22. a 5. hodinou
+nejde do Školy OnLine ani na nasems.cz nic. Týden vyučování tak dá kolem 140
+dotazů do Školy OnLine (zhruba 20 denně včetně zpráv a známek) a kolem 23
+na nasems.cz (3 denně); prázdninový den kolem 12, respektive 2. Čísla
+vycházejí ze simulace týdne nad `poll_minutes` a `quiet_wait`, ne z odhadu —
+po změně intervalů ji spusť znovu.
 Chyba sítě nebo serveru se opakuje po 10, 20, 40… minutách, nejvýš po dvou
 hodinách, a `Retry-After` u 429/503 se dodrží. Každý odstup se náhodně
 prodlouží nebo zkrátí o až 10 % (`SCHOOL_POLL_JITTER_PERCENT`), takže dotazy
@@ -701,6 +705,17 @@ Co server posílá a proč tak:
   Počty z `/v1/user/notifications` se nepoužívají, s příznaky `read` nesedí.
 - **Známky** (`marks`, `markCount`) z posledních 14 dní (`SCHOOL_MARK_DAYS`):
   den, zkratka předmětu, známka a téma, nejvýš osm řádků.
+- **Nástěnka školky** (`notices`, `noticeCount`) z
+  [nasems.cz](https://nasems.cz/prihlaseno/nastenka), jen když je v
+  `school.env` vyplněné `NASEMS_LOGIN` a `NASEMS_PASSWORD`. Web API nemá:
+  server se přihlásí formulářem, drží si PHP session v cookie a čte HTML
+  nástěnky (`div.podnadpis` s titulkem a časem, text v `div.nastenka_obsah`).
+  Posílá oznámení z posledních 14 dní (`SCHOOL_NOTICE_DAYS`), nejvýš šest:
+  den, titulek a začátek textu bez oslovení („Vážení rodiče,“); hodiny řádek
+  zkrátí na šířku displeje. Stahuje se nejvýš jednou za tři hodiny
+  (`NASEMS_POLL_MINUTES`), tedy asi 3 stažení denně; jedno je jeden dotaz,
+  dokud drží session, po jejím vypršení dva až tři. Na displeji je pod
+  známkami.
 - Selže-li stažení zpráv nebo známek, rozvrh jede dál se staršími daty; po
   `SCHOOL_MAX_AGE_HOURS` se zahodí. `SCHOOL_MESSAGES=0` a `SCHOOL_MARKS=0`
   je vypnou úplně a hodiny druhou stránku nenabídnou.

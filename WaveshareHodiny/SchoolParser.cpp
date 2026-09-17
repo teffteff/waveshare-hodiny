@@ -190,6 +190,26 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
     }
     feed.markTotal = readTotal("markCount", feed.markCount);
   }
+
+  const JsonValue notices = jsonFindMember(begin, end, "notices");
+  if (notices.isArray()) {
+    feed.hasNotices = true;
+    JsonArrayCursor items = jsonOpenArray(notices);
+    while (feed.noticeCount < SCHOOL_MAX_NOTICES && jsonNextItem(items)) {
+      SchoolNotice &notice = feed.notices[feed.noticeCount];
+      notice = SchoolNotice{};
+      if (copyMember(items.itemBegin, items.itemEnd, "title", notice.title,
+                     sizeof(notice.title)) == 0) {
+        continue;
+      }
+      copyMember(items.itemBegin, items.itemEnd, "when", notice.when,
+                 sizeof(notice.when));
+      copyMember(items.itemBegin, items.itemEnd, "text", notice.text,
+                 sizeof(notice.text));
+      ++feed.noticeCount;
+    }
+    feed.noticeTotal = readTotal("noticeCount", feed.noticeCount);
+  }
   return SchoolParseStatus::Ok;
 }
 

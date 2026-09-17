@@ -1,5 +1,7 @@
 #pragma once
 
+#include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // Svislé rozvržení obrazovky Škola, oddělené od LVGL, aby šlo testovat na
@@ -70,65 +72,88 @@ inline SchoolLayoutResult schoolLayout(uint8_t lessonCount,
   return result;
 }
 
-// Druhá stránka obrazovky Škola: zprávy nahoře, známky pod nimi, každá sekce
-// s hlavičkou. Prázdná sekce má jen hlavičku ("ŽÁDNÉ NOVÉ ZPRÁVY"), vypnutá
-// (server data neposílá) se vynechá. Zprávy dostanou řádky první, ale nechají
-// známkám hlavičku a až dva řádky, aby je úplně nevytlačily. Tečky nahradí
-// poslední řádek sekce, když se všechny položky nevejdou.
-struct SchoolListsResult {
-  bool firstHeading = false;
-  uint8_t first = 0;
-  bool firstEllipsis = false;
-  bool secondHeading = false;
-  uint8_t second = 0;
-  bool secondEllipsis = false;
+// Levý okraj řádku na kruhovém displeji. Pás druhé stránky sahá od horního
+// okraje kruhu k dolnímu, takže nahoře a dole je kruh užší než uprostřed.
+// Řádek se posune doleva až na `target` (levý okraj sloupců rozvrhu, aby obě
+// stránky začínaly na stejné svislici), ale jen tam, kam se celý vejde;
+// u horního a dolního okraje zůstane o pár pixelů vpravo. `top` je horní
+// hrana řádku vůči středu kruhu, `height` jeho výška.
+inline int schoolRowLeft(int radius, int target, int top, int height,
+                         int margin = 1) {
+  const auto halfChord = [radius](int y) {
+    const int square = radius * radius - y * y;
+    return square <= 0 ? 0 : static_cast<int>(sqrt(static_cast<double>(square)));
+  };
+  // Užší ze dvou hran řádku: nad středem kroužek svírá horní, pod ním dolní.
+  const int top_half = halfChord(top);
+  const int bottom_half = halfChord(top + height);
+  int limit = (top_half < bottom_half ? top_half : bottom_half) - margin;
+  // Řádek mimo kruh: nesahat doleva vůbec, radši nic než mimo displej.
+  if (limit < 0) limit = 0;
+  return -limit < target ? target : -limit;
+}
+
+// Druhá stránka obrazovky Škola: zprávy, pod nimi známky a nástěnka školky,
+// každá sekce s hlavičkou. Prázdná sekce má jen hlavičku ("ŽÁDNÉ NOVÉ
+// ZPRÁVY"), vypnutá (server data neposílá) se vynechá. Vyšší sekce dostane
+// řádky dřív, ale každé zapnuté pod sebou nechá hlavičku a až dva řádky, aby
+// ji úplně nevytlačila. Tečky nahradí poslední řádek sekce, když se všechny
+// položky nevejdou.
+constexpr size_t SCHOOL_LIST_SECTIONS = 3;
+
+struct SchoolListInput {
+  bool enabled = false;
+  uint8_t count = 0;
+  // Položek celkem podle serveru, i těch, které hodiny neuložily.
+  uint8_t total = 0;
 };
 
-inline SchoolListsResult schoolListsLayout(bool firstEnabled,
-                                           uint8_t firstCount,
-                                           uint8_t firstTotal,
-                                           bool secondEnabled,
-                                           uint8_t secondCount,
-                                           uint8_t secondTotal,
-                                           const SchoolLayoutMetrics &metrics) {
+struct SchoolListResult {
+  bool heading = false;
+  uint8_t rows = 0;
+  bool ellipsis = false;
+};
+
+struct SchoolListsResult {
+  SchoolListResult sections[SCHOOL_LIST_SECTIONS];
+};
+
+inline SchoolListsResult schoolListsLayout(
+    const SchoolListInput sections[SCHOOL_LIST_SECTIONS],
+    const SchoolLayoutMetrics &metrics) {
   SchoolListsResult result;
   const int row = metrics.lineHeight + metrics.rowGap;
   const auto heading = [&](uint8_t count) {
     return metrics.headingHeight + (count > 0 ? metrics.rowGap : 0);
   };
-  constexpr uint8_t SECOND_RESERVED_ROWS = 2;
-  int reserve = 0;
-  if (secondEnabled) {
-    const uint8_t rows =
-        secondCount < SECOND_RESERVED_ROWS ? secondCount : SECOND_RESERVED_ROWS;
-    reserve = (firstEnabled ? metrics.sectionGap : 0) + heading(secondCount) +
-              rows * row;
-  }
+  constexpr uint8_t RESERVED_ROWS = 2;
   int used = 0;
-  if (firstEnabled && metrics.headingHeight <= metrics.blockHeight) {
-    result.firstHeading = true;
-    used = heading(firstCount);
-    while (result.first < firstCount &&
+  bool anyHeading = false;
+  for (size_t index = 0; index < SCHOOL_LIST_SECTIONS; ++index) {
+    const SchoolListInput &section = sections[index];
+    if (!section.enabled) continue;
+    const int start = used + (anyHeading ? metrics.sectionGap : 0);
+    if (start + metrics.headingHeight > metrics.blockHeight) break;
+    // Místo pro hlavičky a první řádky zapnutých sekcí níž.
+    int reserve = 0;
+    for (size_t later = index + 1; later < SCHOOL_LIST_SECTIONS; ++later) {
+      const SchoolListInput &below = sections[later];
+      if (!below.enabled) continue;
+      const uint8_t rows =
+          below.count < RESERVED_ROWS ? below.count : RESERVED_ROWS;
+      reserve += metrics.sectionGap + heading(below.count) + rows * row;
+    }
+    SchoolListResult &shown = result.sections[index];
+    shown.heading = anyHeading = true;
+    used = start + heading(section.count);
+    while (shown.rows < section.count &&
            used + row + reserve <= metrics.blockHeight) {
       used += row;
-      ++result.first;
+      ++shown.rows;
     }
-    const uint8_t total = firstTotal > firstCount ? firstTotal : firstCount;
-    result.firstEllipsis = result.first > 0 && result.first < total;
-  }
-  if (secondEnabled) {
-    const int start = used + (result.firstHeading ? metrics.sectionGap : 0);
-    if (start + metrics.headingHeight <= metrics.blockHeight) {
-      result.secondHeading = true;
-      used = start + heading(secondCount);
-      while (result.second < secondCount && used + row <= metrics.blockHeight) {
-        used += row;
-        ++result.second;
-      }
-      const uint8_t total =
-          secondTotal > secondCount ? secondTotal : secondCount;
-      result.secondEllipsis = result.second > 0 && result.second < total;
-    }
+    const uint8_t total =
+        section.total > section.count ? section.total : section.count;
+    shown.ellipsis = shown.rows > 0 && shown.rows < total;
   }
   return result;
 }
