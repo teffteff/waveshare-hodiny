@@ -634,12 +634,17 @@ class PollerTest(unittest.TestCase):
         rng = random.Random(2)
         hour = 3600
         spread = serve.QUIET_SPREAD_MINUTES * 60
-        self.assertEqual(serve.quiet_wait(at("2026-09-15T22:59"), "23-5", rng), 0)
-        self.assertEqual(serve.quiet_wait(at("2026-09-15T05:00"), "23-5", rng), 0)
-        late = serve.quiet_wait(at("2026-09-15T23:30"), "23-5", rng)
+        self.assertEqual(serve.quiet_wait(at("2026-09-15T21:59"), "22-5", rng), 0)
+        self.assertEqual(serve.quiet_wait(at("2026-09-15T05:00"), "22-5", rng), 0)
+        # Vychozi ticho: ve 22:00 zacina a v 5:00 konci.
+        self.assertEqual(serve.QUIET_HOURS, "22-5")
+        late = serve.quiet_wait(at("2026-09-15T23:30"), "22-5", rng)
         self.assertTrue(5.5 * hour <= late <= 5.5 * hour + spread)
-        early = serve.quiet_wait(at("2026-09-16T04:59"), "23-5", rng)
+        early = serve.quiet_wait(at("2026-09-16T04:59"), "22-5", rng)
         self.assertTrue(60 <= early <= 60 + spread)
+        # Nova hodina ticha: ve 22:30 se ceka pres celou noc.
+        just_quiet = serve.quiet_wait(at("2026-09-15T22:30"), "22-5", rng)
+        self.assertTrue(6.5 * hour <= just_quiet <= 6.5 * hour + spread)
         # Okno ve dne bez prechodu pres pulnoc a vypnute ticho.
         self.assertTrue(serve.quiet_wait(at("2026-09-15T13:00"), "12-14", rng) >= hour)
         self.assertEqual(serve.quiet_wait(at("2026-09-15T01:00"), "", rng), 0)
@@ -648,7 +653,7 @@ class PollerTest(unittest.TestCase):
     def test_quiet_hours_across_daylight_saving_change(self):
         # 25. 10. 2026 ve 3:00 se hodiny vraci na 2:00: od 1:00 do 5:00 je pet
         # skutecnych hodin, ne ctyri.
-        wait = serve.quiet_wait(at("2026-10-25T01:00"), "23-5", random.Random(3))
+        wait = serve.quiet_wait(at("2026-10-25T01:00"), "22-5", random.Random(3))
         self.assertTrue(5 * 3600 <= wait <= 5 * 3600 + serve.QUIET_SPREAD_MINUTES * 60)
 
     def test_poll_interval_follows_school_days(self):
@@ -662,14 +667,24 @@ class PollerTest(unittest.TestCase):
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T11:00")), idle)
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T13:00")), day)
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T23:00")), serve.NIGHT_POLL_MINUTES)
-        # Po tichych hodinach se dalsi dotaz nepretahne pres sestou.
-        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:05")), 55)
-        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:54")), day)
+        # Pri tristi minutach je rano stejne jako zbytek dne.
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:05")), day)
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T02:00")), serve.NIGHT_POLL_MINUTES)
         # Streda po skole: zitra se neuci.
         self.assertEqual(serve.poll_minutes(snap, at("2026-09-16T14:00")), idle)
         self.assertEqual(serve.poll_minutes({"lessons": []}, at("2026-07-15T10:00")),
                          serve.HOLIDAY_POLL_MINUTES)
+
+    def test_morning_wait_does_not_overshoot_the_day_window(self):
+        # Kratsi denni odstup (nez vychozi tri hodiny) nesmi rano prespat
+        # zacatek dne: v 5:05 se dalsi dotaz vejde do 6:00.
+        snap = snapshot()
+        for name, value in (("DAY_POLL_MINUTES", 20), ("NIGHT_POLL_MINUTES", 120)):
+            self.addCleanup(setattr, serve, name, getattr(serve, name))
+            setattr(serve, name, value)
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:05")), 55)
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T05:54")), 20)
+        self.assertEqual(serve.poll_minutes(snap, at("2026-09-15T02:00")), 120)
 
     def test_unexpected_shape_does_not_kill_thread(self):
         class Broken:

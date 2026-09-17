@@ -14,19 +14,20 @@ Server posloucha jen na 127.0.0.1 a Caddy ho pousti s heslem: odpoved nese
 jmeno ditete a jeho ukoly.
 
 Prihlaseni jde pres refresh token, heslem jen na zacatku a kdyz refresh
-selze. Spatne heslo se neopakuje kazdych dvacet minut - skolni system by ucet
+selze. Spatne heslo se neopakuje kazde tri hodiny - skolni system by ucet
 po serii chyb mohl zamknout a dite by se neprihlasilo ani samo. Po odmitnutem
 hesle proto server ceka AUTH_BACKOFF_HOURS a starsi data dal vydava, nejdyl
 ale MAX_AGE_HOURS. Pak radsi 503 nez vcerejsi rozvrh bez suplovani, ktery by
 se po dvou tydnech tvaril jako prazdniny.
 
-Skola OnLine je cizi server a neoficialni API, takze se pta co nejmene: dite
-se hleda v /v1/user jednou denne, ne pri kazdem stazeni; o vikendu a
-o prazdninach se stahuje zridka; chyby se opakuji s rostoucim odstupem.
-Zpravy a znamky (druha stranka obrazovky) se pripojuji k beznemu stazeni
-nejvys jednou za hodinu, respektive za tri, a v noci jen poprve. Stejne
-se pripojuje nastenka materske skoly z nasems.cz (NASEMS_LOGIN), jen kdyz je
-vyplnene prihlaseni, nejvys jednou za dve hodiny.
+Skola OnLine je cizi server a neoficialni API, takze se pta co nejmene: kazdy
+zdroj nejvys jednou za tri hodiny, dite se hleda v /v1/user jednou denne, ne
+pri kazdem stazeni, o prazdninach se stahuje jeste zridkaveji a chyby se
+opakuji s rostoucim odstupem. Zpravy, znamky (druha stranka obrazovky)
+a nastenka materske skoly z nasems.cz (NASEMS_LOGIN, jen kdyz je vyplnene
+prihlaseni) se pripojuji k beznemu stazeni, kazda se svym vlastnim odstupem,
+a v noci jen poprve. Odstupy zustavaji zvlast pro kazdy zdroj, aby se daly
+menit jednotlive.
 
     python3.11 serve.py --probe   prihlasi se, vypise deti a tvar odpovedi
 
@@ -40,12 +41,12 @@ skutecna data (jmena, ukoly), takze patri jen do terminalu spravce.
 """
 from __future__ import annotations
 
+import http.cookiejar
 import json
 import math
 import os
 import random
 import sys
-import http.cookiejar
 import threading
 import time
 import urllib.error
@@ -67,14 +68,14 @@ CLIENT_ID = "test_client"
 SCOPE = "openid offline_access profile sol_api"
 USER_AGENT = "WaveshareHodiny/1.0 (+https://github.com/teffteff/waveshare-hodiny)"
 TIMEOUT_SECONDS = 30
-# Ve dne se rozvrh meni (suplovani se vyvesi rano i vecer predtem), ukoly
-# pribyvaji po vyucovani. V noci se nedeje nic a skolni server nema duvod
-# dostavat dotazy i tehdy.
-DAY_POLL_MINUTES = int(os.environ.get("SCHOOL_DAY_POLL_MINUTES", "20"))
-NIGHT_POLL_MINUTES = int(os.environ.get("SCHOOL_NIGHT_POLL_MINUTES", "120"))
+# Kazdy zdroj se stahuje nejvys jednou za tri hodiny. Odstupy zustavaji
+# oddelene (den, noc, mimo vyucovani, prazdniny), aby sla frekvence menit
+# jednotlive, i kdyz jsou zatim stejne.
+DAY_POLL_MINUTES = int(os.environ.get("SCHOOL_DAY_POLL_MINUTES", "180"))
+NIGHT_POLL_MINUTES = int(os.environ.get("SCHOOL_NIGHT_POLL_MINUTES", "180"))
 # Ve dne mimo vyucovani a mimo odpoledne pred skolnim dnem (patek po skole,
 # sobota, nedelni dopoledne): nic, co by dite hned potrebovalo, neprijde.
-IDLE_POLL_MINUTES = int(os.environ.get("SCHOOL_IDLE_POLL_MINUTES", "120"))
+IDLE_POLL_MINUTES = int(os.environ.get("SCHOOL_IDLE_POLL_MINUTES", "180"))
 # V celem stazenem rozvrhu neni jedina hodina: prazdniny.
 HOLIDAY_POLL_MINUTES = int(os.environ.get("SCHOOL_HOLIDAY_POLL_MINUTES", "360"))
 DAY_HOURS = (6, 21)
@@ -85,7 +86,7 @@ POLL_JITTER_PERCENT = float(os.environ.get("SCHOOL_POLL_JITTER_PERCENT", "10"))
 # = bez ticha. Plati pro vsechno vcetne opakovani po chybe a startu sluzby:
 # kdo se v tichu probudi, pocka do konce a pak jeste nahodnou chvili, at se
 # rano nepta presne v pet.
-QUIET_HOURS = os.environ.get("SCHOOL_QUIET_HOURS", "23-5")
+QUIET_HOURS = os.environ.get("SCHOOL_QUIET_HOURS", "22-5")
 QUIET_SPREAD_MINUTES = 10
 # Chyba site nebo serveru: 10, 20, 40... minut, nejvys MAX_RETRY_MINUTES.
 RETRY_MINUTES = 10
@@ -94,8 +95,8 @@ AUTH_BACKOFF_HOURS = int(os.environ.get("SCHOOL_AUTH_BACKOFF_HOURS", "6"))
 # Dite se v /v1/user hleda jednou denne; trida se meni jednou za rok.
 STUDENT_REFRESH_HOURS = 24
 # Starsi snimek uz hodinam nevydavat. Ctrnact hodin prezije noc bez dotazu
-# (posledni prazdninove stazeni pred 17. hodinou, dalsi az po peti rano)
-# i jeden odklad po spatnem hesle, ale ne cely den bez suplovani.
+# (posledni stazeni pred 22. hodinou, dalsi az po peti rano) i jeden odklad
+# po spatnem hesle, ale ne cely den bez suplovani.
 MAX_AGE_HOURS = float(os.environ.get("SCHOOL_MAX_AGE_HOURS", "14"))
 # Kam se uklada posledni stazeny snimek; prazdne = jen v pameti. Soubor nese
 # jmeno ditete, rozvrh, ukoly, titulky zprav a znamky, proto 600.
@@ -105,7 +106,7 @@ STATE_VERSION = 1
 # i vec soukromi: titulky zprav a znamky pak nikdy neopusti Skolu OnLine.
 MESSAGES_ENABLED = os.environ.get("SCHOOL_MESSAGES", "1") != "0"
 MARKS_ENABLED = os.environ.get("SCHOOL_MARKS", "1") != "0"
-MESSAGES_POLL_MINUTES = int(os.environ.get("SCHOOL_MESSAGES_POLL_MINUTES", "60"))
+MESSAGES_POLL_MINUTES = int(os.environ.get("SCHOOL_MESSAGES_POLL_MINUTES", "180"))
 MARKS_POLL_MINUTES = int(os.environ.get("SCHOOL_MARKS_POLL_MINUTES", "180"))
 # Neprectene zpravy za dva tydny jsou mezi nejnovejsimi; tricet staci i pro
 # tridu, ktera pise casto.
@@ -116,7 +117,7 @@ NASEMS_URL = os.environ.get("NASEMS_URL", "https://nasems.cz").rstrip("/")
 NASEMS_LOGIN = os.environ.get("NASEMS_LOGIN", "")
 NASEMS_PASSWORD = os.environ.get("NASEMS_PASSWORD", "")
 NOTICES_ENABLED = bool(NASEMS_LOGIN and NASEMS_PASSWORD)
-NOTICES_POLL_MINUTES = int(os.environ.get("NASEMS_POLL_MINUTES", "120"))
+NOTICES_POLL_MINUTES = int(os.environ.get("NASEMS_POLL_MINUTES", "180"))
 # Rozvrh na dva tydny dopredu: pres vikend a kratke volno se tak vzdycky najde
 # pristi skolni den. Delsi prazdniny hodiny poznaji podle prazdneho rozvrhu.
 TIMETABLE_DAYS = int(os.environ.get("SCHOOL_TIMETABLE_DAYS", "14"))

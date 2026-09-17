@@ -373,13 +373,13 @@ fi
 
 # --- rozvrh a úkoly ---------------------------------------------------------
 # Škola nese jméno dítěte a jeho úkoly, takže bez hesla musí přijít 401. S heslem
-# z .env (SCHOOL_PASSWORD) se kontroluje čerstvost. Ve dne je práh 3 h (nejdelší
-# odstup jsou dvě hodiny), o prázdninách 7 h (po šesti), v tichu 23–6 h 9 h
-# a o prázdninové noci 13 h, protože se mezi 23. a 5. hodinou nestahuje vůbec.
+# z .env (SCHOOL_PASSWORD) se kontroluje čerstvost. Ve dne je práh 4 h (nejdelší
+# odstup jsou tři hodiny), o prázdninách 7 h (po šesti), v tichu 22–6 h 10 h
+# a o prázdninové noci 14 h, protože se mezi 22. a 5. hodinou nestahuje vůbec.
 # SCHOOL_MAX_AGE_HOURS mění jen denní práh. Neprázdné "problem"
 # říká, že poslední stažení ze Školy OnLine selhalo a hodiny ukazují starší data.
 # Prázdný rozvrh je legitimní (prázdniny), proto se nepočítá.
-SCHOOL_MAX_AGE_HOURS="${SCHOOL_MAX_AGE_HOURS:-3}"
+SCHOOL_MAX_AGE_HOURS="${SCHOOL_MAX_AGE_HOURS:-4}"
 school_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$SCHOOL_URL")"
 if [ "$school_public_code" = "401" ]; then
   ok "rozvrh je bez hesla nedostupný (401)"
@@ -417,13 +417,13 @@ except Exception:
 hours = (datetime.now(timezone.utc) - generated).total_seconds() / 3600
 problem = 1 if data.get("problem") else 0
 local = datetime.now(ZoneInfo("Europe/Prague"))
-quiet = local.hour >= 23 or local.hour < 6
+quiet = local.hour >= 22 or local.hour < 6
 holidays = not data["days"]
 limit = float(os.environ["SCHOOL_DAY_LIMIT"])
 if holidays:
-    limit = max(limit, 13.0 if quiet else 7.0)
+    limit = max(limit, 14.0 if quiet else 7.0)
 elif quiet:
-    limit = max(limit, 9.0)
+    limit = max(limit, 10.0)
 print(f"OK {hours:.1f} {lessons} {homework} {problem} {limit:g}")
 ')"
   read -r school_status school_hours school_lessons school_homework school_problem school_limit <<< "$school_report"
