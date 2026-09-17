@@ -6906,7 +6906,7 @@ void createSatellitesPage(lv_obj_t *screen) {
       satellitesPage, &clock_czech_14, COLOR_OUTSIDE, SATELLITES_STATUS_OFFSET_Y);
   lv_label_set_recolor(satellitesStatusLabel, true);
   satellitesPassLabel = makePlanesOverlayLabel(
-      satellitesPage, &clock_czech_16, COLOR_ROOM, SATELLITES_PASS_OFFSET_Y);
+      satellitesPage, &clock_czech_16, COLOR_OUTSIDE, SATELLITES_PASS_OFFSET_Y);
   lv_label_set_recolor(satellitesPassLabel, true);
   lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
 
@@ -7083,7 +7083,7 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
              riseLocal.tm_hour, riseLocal.tm_min,
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);
   }
-  setTextColor(satellitesPassLabel, redNight ? COLOR_ERROR : COLOR_ROOM);
+  setTextColor(satellitesPassLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesPassLabel, text);
   alignCenter(satellitesPassLabel, 0, SATELLITES_PASS_OFFSET_Y);
   lv_obj_clear_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
