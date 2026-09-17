@@ -1,5 +1,6 @@
 #pragma once
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -69,6 +70,27 @@ inline SchoolLayoutResult schoolLayout(uint8_t lessonCount,
   // úkoly má, a podívá se do aplikace.
   result.homeworkEllipsis = fit < homeworkCount || fit < homeworkTotal;
   return result;
+}
+
+// Levý okraj řádku na kruhovém displeji. Pás druhé stránky sahá od horního
+// okraje kruhu k dolnímu, takže nahoře a dole je kruh užší než uprostřed.
+// Řádek se posune doleva až na `target` (levý okraj sloupců rozvrhu, aby obě
+// stránky začínaly na stejné svislici), ale jen tam, kam se celý vejde;
+// u horního a dolního okraje zůstane o pár pixelů vpravo. `top` je horní
+// hrana řádku vůči středu kruhu, `height` jeho výška.
+inline int schoolRowLeft(int radius, int target, int top, int height,
+                         int margin = 1) {
+  const auto halfChord = [radius](int y) {
+    const int square = radius * radius - y * y;
+    return square <= 0 ? 0 : static_cast<int>(sqrt(static_cast<double>(square)));
+  };
+  // Užší ze dvou hran řádku: nad středem kroužek svírá horní, pod ním dolní.
+  const int top_half = halfChord(top);
+  const int bottom_half = halfChord(top + height);
+  int limit = (top_half < bottom_half ? top_half : bottom_half) - margin;
+  // Řádek mimo kruh: nesahat doleva vůbec, radši nic než mimo displej.
+  if (limit < 0) limit = 0;
+  return -limit < target ? target : -limit;
 }
 
 // Druhá stránka obrazovky Škola: zprávy, pod nimi známky a nástěnka školky,

@@ -3093,6 +3093,9 @@ constexpr int SCHOOL_COLUMN_GAP = 4;
 // Mezera mezi popiskem dne a koncem vyučování.
 constexpr int SCHOOL_END_GAP = 6;
 constexpr int SCHOOL_DUE_WIDTH = 74;
+// Druhá stránka začíná na stejné svislici jako sloupce rozvrhu; u horního
+// a dolního okraje kruhu ustoupí schoolRowLeft() jen o pár pixelů vpravo.
+constexpr int SCHOOL_NEWS_LEFT = SCHOOL_TWO_DAY_LEFT;
 constexpr int SCHOOL_ROW_GAP = 2;
 constexpr int SCHOOL_SECTION_GAP = 8;
 constexpr int SCHOOL_BLOCK_TOP = -172;
@@ -3296,11 +3299,12 @@ bool schoolNewsAvailable() {
 }
 
 // Řádky jedné sekce druhé stránky: termín vlevo, text vedle. Poslední
-// viditelný řádek nahradí tečky, když se všechny položky nevejdou.
+// viditelný řádek nahradí tečky, když se všechny položky nevejdou. Každý
+// řádek si bere tolik místa vlevo, kolik v jeho výšce kruh dovolí.
 int layoutSchoolNewsRows(lv_obj_t **whenLabels, lv_obj_t **textLabels,
                          size_t capacity, uint8_t visible, bool ellipsis,
                          int cursorY) {
-  const int line = schoolLineHeight() + SCHOOL_ROW_GAP;
+  const int height = schoolLineHeight();
   for (size_t index = 0; index < capacity; ++index) {
     const bool shown = index < visible;
     const bool moreMark = shown && ellipsis && index + 1 == visible;
@@ -3308,11 +3312,13 @@ int layoutSchoolNewsRows(lv_obj_t **whenLabels, lv_obj_t **textLabels,
     setObjectVisible(textLabels[index], shown);
     if (!shown) continue;
     if (moreMark) lv_label_set_text(textLabels[index], SCHOOL_MORE_MARK);
-    placeSchoolLabel(whenLabels[index], SCHOOL_LEFT, cursorY);
-    placeSchoolLabel(textLabels[index],
-                     SCHOOL_LEFT + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP,
-                     cursorY);
-    cursorY += line;
+    const int left =
+        schoolRowLeft(SCHOOL_RADIUS, SCHOOL_NEWS_LEFT, cursorY, height);
+    const int textLeft = left + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP;
+    placeSchoolLabel(whenLabels[index], left, cursorY);
+    lv_obj_set_width(textLabels[index], SCHOOL_RIGHT - textLeft);
+    placeSchoolLabel(textLabels[index], textLeft, cursorY);
+    cursorY += height + SCHOOL_ROW_GAP;
   }
   return cursorY;
 }
@@ -3365,7 +3371,10 @@ void layoutSchoolNewsPage(bool shown, bool english) {
       if (anyHeading) cursorY += SCHOOL_SECTION_GAP;
       anyHeading = true;
       lv_label_set_text(headings[section].label, headings[section].text);
-      placeSchoolLabel(headings[section].label, SCHOOL_LEFT, cursorY);
+      const int left = schoolRowLeft(SCHOOL_RADIUS, SCHOOL_NEWS_LEFT, cursorY,
+                                     schoolHeadingHeight());
+      lv_obj_set_width(headings[section].label, SCHOOL_RIGHT - left);
+      placeSchoolLabel(headings[section].label, left, cursorY);
       cursorY += schoolHeadingHeight() +
                  (headings[section].count > 0 ? SCHOOL_ROW_GAP : 0);
     }

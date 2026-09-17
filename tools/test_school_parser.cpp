@@ -279,6 +279,21 @@ void testListsLayout() {
   assert(onlyBoard.sections[2].rows == 6 && !onlyBoard.sections[2].ellipsis);
 }
 
+void testRowLeft() {
+  // Uprostřed pásu se řádek dostane až na svislici sloupců rozvrhu.
+  assert(schoolRowLeft(240, -172, 0, 19) == -172);
+  assert(schoolRowLeft(240, -172, -153, 19) == -172);
+  // U horního a dolního okraje kruhu ustoupí vpravo, aby se celý vešel.
+  assert(schoolRowLeft(240, -172, -172, 17) == -166);
+  assert(schoolRowLeft(240, -172, 154, 19) == -165);
+  // Nad středem svírá řádek jeho horní hrana, pod středem dolní: vyšší řádek
+  // u dolního okraje proto musí zůstat víc vpravo.
+  assert(schoolRowLeft(240, -240, -200, 19) == schoolRowLeft(240, -240, -200, 1));
+  assert(schoolRowLeft(240, -240, 200, 19) > schoolRowLeft(240, -240, 200, 1));
+  // Řádek úplně mimo kruh nesmí sahat doleva vůbec.
+  assert(schoolRowLeft(240, -172, 240, 19) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -288,5 +303,6 @@ int main() {
   testCurrentLesson();
   testLayout();
   testListsLayout();
+  testRowLeft();
   return 0;
 }
