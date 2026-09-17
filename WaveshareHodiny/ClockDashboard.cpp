@@ -221,11 +221,15 @@ constexpr int SCREEN_DOT_BACKING_PADDING = 4;
 // oč je zdejší písmo vyšší než vestavěné GFX. Čísla musí sedět s výškami
 // clock_czech_20 (24 px) a clock_czech_16 (20 px) plus 2 px odsazení nahoře
 // i dole - jinak si dva pásy vlezou do sebe.
-// Mezera mezi časem a venkovní teplotou ve stavovém řádku. Sdílí ji radar
-// i hlavička předpovědi, aby na obou obrazovkách seděl stejný odstup; mezery
-// jsou v proporcionálním písmu úzké, takže jich pár musí být.
+// Mezera mezi datem, časem a venkovní teplotou ve stavovém řádku. Sdílí ji
+// radar i hlavička předpovědi, aby na obou obrazovkách seděl stejný odstup;
+// mezery jsou v proporcionálním písmu úzké, takže jich pár musí být.
 constexpr char STATUS_LINE_GAP[] = "      ";
-constexpr int RADAR_CLOCK_OFFSET_Y = -186;
+// Svislá poloha řádku s datem, časem a teplotou na všech obrazovkách, které ho
+// mají. Musí být jedna: při přepínání obrazovek by jinak řádek poskakoval.
+// Horní okraj (s podkladem radaru -202) se nesmí dotknout podkladu ukazatele
+// obrazovek a spodní (-176) obsahu pod ním - pás agendy začíná na -172.
+constexpr int STATUS_LINE_Y = -188;
 constexpr int RADAR_FRAME_DOTS_OFFSET_Y = -162;
 constexpr int RADAR_FRAME_LABEL_OFFSET_Y = -140;
 constexpr int RADAR_RANGE_LABEL_OFFSET_Y = 164;
@@ -523,36 +527,53 @@ void updateForecastPage();
 void updateForecastHeaderLabel();
 void updateRssHeaderLabel();
 
-// Hlavička celoobrazovkových stránek: čas a venkovní teplota v jednom
-// řádku, teplota obarvená recolor značkou. Ukáže jen tu polovinu, kterou
-// zařízení už zná - půl řádku je pořád lepší než prázdné místo. Skládá ji
-// jedno místo, aby předpověď, agenda i zprávy měly tentýž řádek.
-bool composeHeaderStatusText(char *text, size_t capacity) {
+bool englishLanguage() { return language == CLOCK_LANGUAGE_ENGLISH; }
+
+// Řádek s datem, časem a venkovní teplotou nahoře na celoobrazovkových
+// stránkách. Ukáže jen to, co zařízení už zná - část řádku je pořád lepší než
+// prázdné místo. Skládá ho jedno místo, aby radary, předpověď, agenda i zprávy
+// měly tentýž řádek; barvu mu dává statusLineColor().
+bool composeStatusLineText(char *text, size_t capacity) {
   // "--:--" drží místo, dokud se čas nesynchronizuje; jako údaj nemá cenu.
+  // Datum se ukazuje jen se synchronizovaným časem, jinak by bylo z roku 1970.
   const bool haveTime = displayedTimeText[0] != '\0' &&
                         strcmp(displayedTimeText, "--:--") != 0;
+  char date[12] = "";
+  const time_t now = time(nullptr);
+  struct tm local;
+  if (haveTime && localtime_r(&now, &local) != nullptr) {
+    if (englishLanguage())
+      snprintf(date, sizeof(date), "%d/%d", local.tm_mon + 1, local.tm_mday);
+    else
+      snprintf(date, sizeof(date), "%d.%d.", local.tm_mday, local.tm_mon + 1);
+  }
   char temperature[12] = "";
   const float degrees = currentValues.outsideTemperatureC;
+  // Zaokrouhluje se na celé stupně: desetina je u venkovní teploty šum a dva
+  // znaky navíc rozhodují o tom, jestli se řádek do kruhu vejde.
   if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
     snprintf(temperature, sizeof(temperature), "%d°C",
              static_cast<int>(std::lround(degrees)));
   }
-  char tag[10];
-  forecastAppendColorTag(tag, sizeof(tag), forecastTemperatureColor(degrees));
-  if (haveTime && temperature[0] != '\0') {
-    snprintf(text, capacity, "%s%s%s%s#", displayedTimeText,
-             STATUS_LINE_GAP, tag, temperature);
-  } else if (haveTime) {
-    snprintf(text, capacity, "%s", displayedTimeText);
-  } else if (temperature[0] != '\0') {
-    snprintf(text, capacity, "%s%s#", tag, temperature);
-  } else {
-    text[0] = '\0';
+  const char *const parts[] = {date, haveTime ? displayedTimeText : "",
+                               temperature};
+  text[0] = '\0';
+  for (const char *part : parts) {
+    if (part[0] == '\0') continue;
+    if (text[0] != '\0') strlcat(text, STATUS_LINE_GAP, capacity);
+    strlcat(text, part, capacity);
   }
   return text[0] != '\0';
 }
 
-bool englishLanguage() { return language == CLOCK_LANGUAGE_ENGLISH; }
+// Celý řádek - datum, čas i teplota - má barvu venkovní teploty, stejnou
+// škálu jako předpověď. Bez teploty zůstane bílý; v noci je červený.
+lv_color_t statusLineColor() {
+  const float degrees = currentValues.outsideTemperatureC;
+  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f)
+    return forecastTemperatureColor(degrees);
+  return redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT;
+}
 
 void applyDashboardLanguage() {
   const bool english = englishLanguage();
@@ -2430,7 +2451,7 @@ void applyDashboardColors() {
         humidityValueLabel, humidityUnitLabel,
     };
     for (lv_obj_t *label : coloredLabels) setTextColor(label, COLOR_ERROR);
-    setTextColor(radarClockLabel, COLOR_ERROR);
+    setTextColor(radarClockLabel, statusLineColor());
     setTextColor(radarTitleLabel, COLOR_ERROR);
     setTextColor(radarRangeLabel, COLOR_ERROR);
     setTextColor(radarStatusLabel, COLOR_ERROR);
@@ -2450,7 +2471,7 @@ void applyDashboardColors() {
         metricColorForValue(currentValues.rightTemperatureC,
                             rightValueColorScale);
     setTextColor(timeLabel, configuredColor(timeColor));
-    setTextColor(radarClockLabel, COLOR_TEXT);
+    setTextColor(radarClockLabel, statusLineColor());
     setTextColor(radarTitleLabel, COLOR_OUTSIDE);
     setTextColor(radarRangeLabel, COLOR_OUTSIDE);
     setTextColor(radarStatusLabel, COLOR_OUTSIDE);
@@ -2562,11 +2583,8 @@ constexpr int RSS_RADIUS = 240;
 constexpr int RSS_INSET = 14;
 constexpr int RSS_ROW_GAP = 14;
 constexpr int RSS_BLOCK_CENTER_Y = 0;
-// Posunuto o 6 px dolů, aby se hlavička nedotýkala podkladu pod ukazatelem
-// obrazovek, který sahá k y=34.
-constexpr int RSS_HEADER_Y = -190;
 // Kam nejvýš smí sahat první zpráva, aby se nedotkla hlavičky.
-constexpr int RSS_BLOCK_TOP_LIMIT_Y = RSS_HEADER_Y + 16;
+constexpr int RSS_BLOCK_TOP_LIMIT_Y = STATUS_LINE_Y + 14;
 constexpr int RSS_MIN_ROW_WIDTH = 140;
 // Mezera mezi časem a titulkem na prvním řádku.
 constexpr char RSS_TIME_SEPARATOR[] = "  ";
@@ -2626,12 +2644,11 @@ void rssAppendEscaped(String &target, const char *text) {
 void updateRssHeaderLabel() {
   if (rssHeaderLabel == nullptr) return;
   char text[48];
-  if (!composeHeaderStatusText(text, sizeof(text))) {
+  if (!composeStatusLineText(text, sizeof(text))) {
     setObjectVisible(rssHeaderLabel, false);
     return;
   }
-  setTextColor(rssHeaderLabel,
-               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  setTextColor(rssHeaderLabel, statusLineColor());
   lv_label_set_text(rssHeaderLabel, text);
   setObjectVisible(rssHeaderLabel, true);
 }
@@ -2701,9 +2718,8 @@ void createRssPage(lv_obj_t *screen) {
   lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_SCROLLABLE);
 
   rssHeaderLabel = makeLabel(rssPage, &clock_czech_20, COLOR_TEXT);
-  lv_label_set_recolor(rssHeaderLabel, true);
   lv_label_set_text(rssHeaderLabel, "");
-  alignCenter(rssHeaderLabel, 0, RSS_HEADER_Y);
+  alignCenter(rssHeaderLabel, 0, STATUS_LINE_Y);
 
   rssStatusLabel = makeLabel(rssPage, &clock_czech_16, COLOR_OUTSIDE);
   lv_label_set_long_mode(rssStatusLabel, LV_LABEL_LONG_WRAP);
@@ -2758,7 +2774,6 @@ constexpr int AGENDA_DAY_GAP = 7;
 // Hlavička a legenda jsou u samého okraje: obě jsou krátké a vejdou se i tam,
 // kde by se celý řádek agendy už nevešel. Uvolněné místo uprostřed je přesně
 // to, co pojme další události.
-constexpr int AGENDA_HEADER_Y = -196;
 constexpr int AGENDA_LEGEND_Y = 186;
 // Svislý pás mezi hlavičkou a legendou. Plní se, dokud je místo; co se do něj
 // nevejde, se neukáže - řádek přes legendu je horší než o událost méně. Pravidla
@@ -2929,11 +2944,10 @@ void updateAgendaLegendLabel() {
 void updateAgendaHeaderLabel() {
   if (agendaHeaderLabel == nullptr) return;
   char text[48];
-  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  const bool haveText = composeStatusLineText(text, sizeof(text));
   setObjectVisible(agendaHeaderLabel, haveText);
   if (!haveText) return;
-  setTextColor(agendaHeaderLabel,
-               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  setTextColor(agendaHeaderLabel, statusLineColor());
   lv_label_set_text(agendaHeaderLabel, text);
 }
 
@@ -2962,9 +2976,8 @@ void createAgendaPage(lv_obj_t *screen) {
   lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_SCROLLABLE);
 
   agendaHeaderLabel = makeLabel(agendaPage, &clock_czech_20, COLOR_TEXT);
-  lv_label_set_recolor(agendaHeaderLabel, true);
   lv_label_set_text(agendaHeaderLabel, "");
-  alignCenter(agendaHeaderLabel, 0, AGENDA_HEADER_Y);
+  alignCenter(agendaHeaderLabel, 0, STATUS_LINE_Y);
 
   agendaStatusLabel = makeLabel(agendaPage, &clock_czech_16, COLOR_MUTED);
   lv_label_set_long_mode(agendaStatusLabel, LV_LABEL_LONG_WRAP);
@@ -3082,7 +3095,6 @@ constexpr int SCHOOL_END_GAP = 6;
 constexpr int SCHOOL_DUE_WIDTH = 74;
 constexpr int SCHOOL_ROW_GAP = 2;
 constexpr int SCHOOL_SECTION_GAP = 8;
-constexpr int SCHOOL_HEADER_Y = -196;
 constexpr int SCHOOL_BLOCK_TOP = -172;
 constexpr int SCHOOL_BLOCK_HEIGHT = 345;
 constexpr char SCHOOL_MORE_MARK[] = "...";
@@ -3248,11 +3260,10 @@ void updateSchoolHighlight(bool force = false) {
 void updateSchoolHeaderLabel() {
   if (schoolHeaderLabel == nullptr) return;
   char text[48];
-  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  const bool haveText = composeStatusLineText(text, sizeof(text));
   setObjectVisible(schoolHeaderLabel, haveText);
   if (haveText) {
-    setTextColor(schoolHeaderLabel,
-                 redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+    setTextColor(schoolHeaderLabel, statusLineColor());
     lv_label_set_text(schoolHeaderLabel, text);
   }
   updateSchoolHighlight();
@@ -3508,9 +3519,8 @@ void createSchoolPage(lv_obj_t *screen) {
   lv_obj_clear_flag(schoolPage, LV_OBJ_FLAG_SCROLLABLE);
 
   schoolHeaderLabel = makeLabel(schoolPage, &clock_czech_20, COLOR_TEXT);
-  lv_label_set_recolor(schoolHeaderLabel, true);
   lv_label_set_text(schoolHeaderLabel, "");
-  alignCenter(schoolHeaderLabel, 0, SCHOOL_HEADER_Y);
+  alignCenter(schoolHeaderLabel, 0, STATUS_LINE_Y);
 
   schoolStatusLabel = makeLabel(schoolPage, &clock_czech_16, COLOR_MUTED);
   lv_label_set_long_mode(schoolStatusLabel, LV_LABEL_LONG_WRAP);
@@ -3570,7 +3580,6 @@ void createSchoolPage(lv_obj_t *screen) {
 // kvalitě ovzduší zbude - je ve WeatherForecastLayout.h, aby ho šlo testovat
 // bez LVGL; tady zůstávají jen vodorovné sloupce a kreslení.
 constexpr int FORECAST_ROW_HEIGHT = WEATHER_FORECAST_ROW_HEIGHT;
-constexpr int FORECAST_HEADER_Y = -190;
 constexpr int FORECAST_AIR_LINE_COUNT = WEATHER_FORECAST_AIR_LINE_COUNT;
 constexpr int FORECAST_AIR_LINE_HEIGHT = WEATHER_FORECAST_AIR_LINE_HEIGHT;
 constexpr int FORECAST_AIR_TOP_Y = WEATHER_FORECAST_AIR_TOP_Y;
@@ -3882,9 +3891,8 @@ void createForecastPage(lv_obj_t *screen) {
   lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_SCROLLABLE);
 
   forecastHeaderLabel = makeLabel(forecastPage, &clock_czech_20, COLOR_TEXT);
-  lv_label_set_recolor(forecastHeaderLabel, true);
   lv_label_set_text(forecastHeaderLabel, "");
-  alignCenter(forecastHeaderLabel, 0, FORECAST_HEADER_Y);
+  alignCenter(forecastHeaderLabel, 0, STATUS_LINE_Y);
 
   forecastMessageLabel =
       makeLabel(forecastPage, &clock_czech_20, COLOR_OUTSIDE);
@@ -4034,11 +4042,10 @@ void formatSkyDate(int64_t epoch, char *text, size_t capacity) {
 void updateSkyHeaderLabel() {
   if (skyHeaderLabel == nullptr) return;
   char text[48];
-  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  const bool haveText = composeStatusLineText(text, sizeof(text));
   setObjectVisible(skyHeaderLabel, haveText);
   if (!haveText) return;
-  setTextColor(skyHeaderLabel,
-               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  setTextColor(skyHeaderLabel, statusLineColor());
   lv_label_set_text(skyHeaderLabel, text);
 }
 
@@ -4162,9 +4169,8 @@ void createSkyPage(lv_obj_t *screen) {
   lv_obj_clear_flag(skyPage, LV_OBJ_FLAG_SCROLLABLE);
 
   skyHeaderLabel = makeLabel(skyPage, &clock_czech_20, COLOR_TEXT);
-  lv_label_set_recolor(skyHeaderLabel, true);
   lv_label_set_text(skyHeaderLabel, "");
-  alignCenter(skyHeaderLabel, 0, FORECAST_HEADER_Y);
+  alignCenter(skyHeaderLabel, 0, STATUS_LINE_Y);
 
   skySunTitleLabel = makeLabel(skyPage, &clock_czech_16, COLOR_SUN);
   alignCenter(skySunTitleLabel, 0, SKY_SUN_TITLE_Y);
@@ -4226,9 +4232,8 @@ void createSkyPage(lv_obj_t *screen) {
 // Mapa i letadla přijdou hotové z PlaneRadarService jako buffer RGB565; tady
 // se jen podloží pod canvas. Text kolem je LVGL, protože drobné mapové písmo
 // neumí malá písmena ani diakritiku, a jména měst z trasy je potřebují.
-constexpr int PLANES_CLOCK_OFFSET_Y = -186;
-// Řádek s počtem letadel sedí těsně pod hodinami: podklad hodin sahá k y=68,
-// řádek při písmu 14 měří 22 px, takže -158 nechá mezi oběma proužky 2 px.
+// Řádek s počtem letadel sedí těsně pod hodinami: podklad hodin sahá k y=66,
+// řádek při písmu 14 měří 22 px, takže -158 nechá mezi oběma proužky 4 px.
 // Výš už to nejde, aniž by se podklady slily do jednoho bloku.
 constexpr int PLANES_STATUS_OFFSET_Y = -158;
 constexpr int PLANES_RANGE_OFFSET_Y = 164;
@@ -4295,7 +4300,7 @@ void createPlanesPage(lv_obj_t *screen) {
   lv_obj_clear_flag(planesCanvas, LV_OBJ_FLAG_CLICKABLE);
 
   planesClockLabel = makePlanesOverlayLabel(planesPage, &clock_czech_20,
-                                            COLOR_TEXT, PLANES_CLOCK_OFFSET_Y);
+                                            COLOR_TEXT, STATUS_LINE_Y);
   lv_obj_add_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
   planesStatusLabel = makePlanesOverlayLabel(
       planesPage, &clock_czech_14, COLOR_OUTSIDE, PLANES_STATUS_OFFSET_Y);
@@ -4381,13 +4386,12 @@ void createPlanesPage(lv_obj_t *screen) {
 void updateForecastHeaderLabel() {
   if (forecastHeaderLabel == nullptr) return;
   char text[48];
-  const bool haveText = composeHeaderStatusText(text, sizeof(text));
+  const bool haveText = composeStatusLineText(text, sizeof(text));
   setObjectVisible(forecastHeaderLabel, haveText);
   if (!haveText) return;
-  setTextColor(forecastHeaderLabel,
-               redNightVisualEnabled() ? COLOR_ERROR : COLOR_TEXT);
+  setTextColor(forecastHeaderLabel, statusLineColor());
   lv_label_set_text(forecastHeaderLabel, text);
-  alignCenter(forecastHeaderLabel, 0, FORECAST_HEADER_Y);
+  alignCenter(forecastHeaderLabel, 0, STATUS_LINE_Y);
 }
 
 // Srážky pod desetinu milimetru nejsou déšť, jen vlhko ve vzduchu. Prázdný
@@ -4665,55 +4669,32 @@ const char *radarEmptyStateText(bool busy) {
   return englishLanguage() ? "No radar frame yet" : "Radar zatím nemá snímek";
 }
 
-// Čas a venkovní teplota do jednoho řádku. Ukáže jen tu polovinu, kterou už
-// zařízení zná - půl řádku je pořád lepší než prázdné místo.
-// Čas a venkovní teplota do jednoho řádku. Používá ho stavový řádek
-// meteoradaru i radaru letadel, aby obě mapy ukazovaly totéž stejně.
-bool composeStatusLineText(char *text, size_t capacity) {
-  // "--:--" drží místo, dokud se čas nesynchronizuje; jako údaj nemá cenu.
-  const bool haveTime = displayedTimeText[0] != '\0' &&
-                        strcmp(displayedTimeText, "--:--") != 0;
-  char temperature[12] = "";
-  const float degrees = currentValues.outsideTemperatureC;
-  // Zaokrouhluje se na celé stupně: desetina je u venkovní teploty šum a dva
-  // znaky navíc rozhodují o tom, jestli se řádek do kruhu vejde.
-  if (!std::isnan(degrees) && degrees > -60.0f && degrees < 60.0f) {
-    snprintf(temperature, sizeof(temperature), "%d°C",
-             static_cast<int>(std::lround(degrees)));
-  }
-  if (haveTime && temperature[0] != '\0') {
-    snprintf(text, capacity, "%s%s%s", displayedTimeText, STATUS_LINE_GAP,
-             temperature);
-  } else if (haveTime) {
-    snprintf(text, capacity, "%s", displayedTimeText);
-  } else {
-    snprintf(text, capacity, "%s", temperature);
-  }
-  return text[0] != '\0';
-}
-
 void updateRadarClockLabel() {
   if (radarClockLabel == nullptr) return;
-  char text[32];
-  if (!radarStatusLineEnabled || !composeStatusLineText(text, sizeof(text))) {
+  char text[48];
+  if (!radarStatusLineEnabled ||
+      !composeStatusLineText(text, sizeof(text))) {
     lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
+  setTextColor(radarClockLabel, statusLineColor());
   lv_label_set_text(radarClockLabel, text);
-  alignCenter(radarClockLabel, 0, RADAR_CLOCK_OFFSET_Y);
+  alignCenter(radarClockLabel, 0, STATUS_LINE_Y);
   lv_obj_clear_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
 void updatePlanesClockLabel() {
   if (planesClockLabel == nullptr) return;
-  char text[32];
+  char text[48];
   // Stejný přepínač jako u meteoradaru: je to tentýž řádek na téže mapě.
-  if (!radarStatusLineEnabled || !composeStatusLineText(text, sizeof(text))) {
+  if (!radarStatusLineEnabled ||
+      !composeStatusLineText(text, sizeof(text))) {
     lv_obj_add_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
+  setTextColor(planesClockLabel, statusLineColor());
   lv_label_set_text(planesClockLabel, text);
-  alignCenter(planesClockLabel, 0, PLANES_CLOCK_OFFSET_Y);
+  alignCenter(planesClockLabel, 0, STATUS_LINE_Y);
   lv_obj_clear_flag(planesClockLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -4826,7 +4807,7 @@ void createRadarPage(lv_obj_t *screen) {
   lv_obj_set_style_bg_opa(radarClockLabel, LV_OPA_80, 0);
   lv_obj_set_style_pad_hor(radarClockLabel, 8, 0);
   lv_obj_set_style_pad_ver(radarClockLabel, 2, 0);
-  alignCenter(radarClockLabel, 0, RADAR_CLOCK_OFFSET_Y);
+  alignCenter(radarClockLabel, 0, STATUS_LINE_Y);
   lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
 
   radarTitleLabel = makeLabel(radarPage, &clock_czech_16, COLOR_OUTSIDE);
@@ -6870,7 +6851,6 @@ namespace {
 
 // --- Družice ------------------------------------------------------------------
 // Pásy jako u radaru letadel: čas, pod ním počet družic, dole přelet ISS.
-constexpr int SATELLITES_CLOCK_OFFSET_Y = -186;
 constexpr int SATELLITES_STATUS_OFFSET_Y = -158;
 // Níž je displej užší: nejdelší řádek (ZÍTRA … VIDITELNÁ) má 284 px z 301.
 constexpr int SATELLITES_PASS_OFFSET_Y = 180;
@@ -6900,7 +6880,7 @@ void createSatellitesPage(lv_obj_t *screen) {
   lv_obj_clear_flag(satellitesCanvas, LV_OBJ_FLAG_CLICKABLE);
 
   satellitesClockLabel = makePlanesOverlayLabel(
-      satellitesPage, &clock_czech_20, COLOR_TEXT, SATELLITES_CLOCK_OFFSET_Y);
+      satellitesPage, &clock_czech_20, COLOR_TEXT, STATUS_LINE_Y);
   lv_obj_add_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
   satellitesStatusLabel = makePlanesOverlayLabel(
       satellitesPage, &clock_czech_14, COLOR_OUTSIDE, SATELLITES_STATUS_OFFSET_Y);
@@ -6955,14 +6935,16 @@ void createSatellitesPage(lv_obj_t *screen) {
 
 void updateSatellitesClockLabel() {
   if (satellitesClockLabel == nullptr) return;
-  char text[32];
+  char text[48];
   // Stejný přepínač stavového řádku jako na obou radarech.
-  if (!radarStatusLineEnabled || !composeStatusLineText(text, sizeof(text))) {
+  if (!radarStatusLineEnabled ||
+      !composeStatusLineText(text, sizeof(text))) {
     lv_obj_add_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
+  setTextColor(satellitesClockLabel, statusLineColor());
   lv_label_set_text(satellitesClockLabel, text);
-  alignCenter(satellitesClockLabel, 0, SATELLITES_CLOCK_OFFSET_Y);
+  alignCenter(satellitesClockLabel, 0, STATUS_LINE_Y);
   lv_obj_clear_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
