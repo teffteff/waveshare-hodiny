@@ -511,7 +511,7 @@ void reserveChromeBands(MapLabelPlacer &placer) {
       {0, 18, SATELLITE_SKY_WIDTH, 22},   // tečky obrazovek
       {0, 40, SATELLITE_SKY_WIDTH, 28},   // čas
       {0, 69, SATELLITE_SKY_WIDTH, 26},   // počet družic
-      {0, 392, SATELLITE_SKY_WIDTH, 30},  // přelet ISS
+      {0, 406, SATELLITE_SKY_WIDTH, 30},  // přelet ISS
   };
   for (const MapLabelBox &band : bands) placer.claim(band);
 }

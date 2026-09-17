@@ -6872,7 +6872,8 @@ namespace {
 // Pásy jako u radaru letadel: čas, pod ním počet družic, dole přelet ISS.
 constexpr int SATELLITES_CLOCK_OFFSET_Y = -186;
 constexpr int SATELLITES_STATUS_OFFSET_Y = -158;
-constexpr int SATELLITES_PASS_OFFSET_Y = 166;
+// Níž je displej užší: nejdelší řádek (ZÍTRA … VIDITELNÁ) má 284 px z 301.
+constexpr int SATELLITES_PASS_OFFSET_Y = 180;
 // Šest řádků a nadpis; rohy panelu 330x260 leží uvnitř kruhu displeje.
 constexpr int SATELLITES_DETAIL_WIDTH = 330;
 constexpr int SATELLITES_DETAIL_HEIGHT = 260;
@@ -6905,7 +6906,7 @@ void createSatellitesPage(lv_obj_t *screen) {
       satellitesPage, &clock_czech_14, COLOR_OUTSIDE, SATELLITES_STATUS_OFFSET_Y);
   lv_label_set_recolor(satellitesStatusLabel, true);
   satellitesPassLabel = makePlanesOverlayLabel(
-      satellitesPage, &clock_czech_16, COLOR_ROOM, SATELLITES_PASS_OFFSET_Y);
+      satellitesPage, &clock_czech_16, COLOR_OUTSIDE, SATELLITES_PASS_OFFSET_Y);
   lv_label_set_recolor(satellitesPassLabel, true);
   lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
 
@@ -7062,13 +7063,13 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
   const char *visibleColor = redNight ? "FF4848" : "65C744";
   char visibleText[40] = "";
   if (pass.visible) {
-    snprintf(visibleText, sizeof(visibleText), "  #%s %s#", visibleColor,
+    snprintf(visibleText, sizeof(visibleText), " #%s %s#", visibleColor,
              english ? "VISIBLE" : "VIDITELNÁ");
   }
   char text[96];
   if (static_cast<int64_t>(now) >= pass.rise) {
-    snprintf(text, sizeof(text), "ISS %s  max %u°%s",
-             english ? "OVERHEAD" : "NAD OBZOREM",
+    snprintf(text, sizeof(text), "ISS %s max %u°%s",
+             english ? "NOW" : "TEĎ",
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);
   } else {
     const time_t rise = static_cast<time_t>(pass.rise);
@@ -7077,12 +7078,12 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
     localtime_r(&rise, &riseLocal);
     localtime_r(&now, &nowLocal);
     const bool tomorrow = riseLocal.tm_yday != nowLocal.tm_yday;
-    snprintf(text, sizeof(text), "ISS %s%02d:%02d  max %u°%s",
-             tomorrow ? (english ? "TOMORROW " : "ZÍTRA ") : "",
+    snprintf(text, sizeof(text), "ISS %s%02d:%02d max %u°%s",
+             tomorrow ? (english ? "TMRW " : "ZÍTRA ") : "",
              riseLocal.tm_hour, riseLocal.tm_min,
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);
   }
-  setTextColor(satellitesPassLabel, redNight ? COLOR_ERROR : COLOR_ROOM);
+  setTextColor(satellitesPassLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesPassLabel, text);
   alignCenter(satellitesPassLabel, 0, SATELLITES_PASS_OFFSET_Y);
   lv_obj_clear_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
