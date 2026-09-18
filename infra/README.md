@@ -53,6 +53,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Rozvrh a úkoly | 8094, jen loopback | `/opt/school/serve.py`, `feed.py`, `school-web.service`, přihlášení v `/opt/school/school.env` | `school/` |
 | Družice | 8095, jen loopback | `/opt/satellites/serve.py`, `requirements.txt`, `.venv`, `satellites-web.service`, dráhy v `/var/cache/satellites/` | `satellites/` |
+| Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/` | `backup/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
@@ -898,6 +899,88 @@ kvůli ní přidávat nemají.
 Nový ed25519 klíč přidat do `authorized_keys`, přepnout `CLOCK_SSH_KEY`
 v `.env` a starý klíč z OCI konzole pak odebrat.
 
+## Zálohy dat
+
+Tenhle adresář umí obnovit **software**. Neumí obnovit **data** — a několik
+věcí na serveru nemá kopii nikde jinde:
+
+| Co | Kde | Proč to jinde není |
+|---|---|---|
+| Konfigurace Home Assistanta | `/path/to/your/config` (bind-mount kontejneru) | `configuration.yaml`, `secrets.yaml`, automatizace a hlavně `.storage` — registr entit, uživatelé, tokeny a integrace naklikané v UI. Bez `.storage` je obnovené HA prázdné, i když YAML sedí. |
+| Historie senzorů | `home-assistant_v2.db` | Grafy a statistiky. Šablonové senzory na ní nestojí. |
+| Stav hlídačů | `/opt/watch/state.db`, `/opt/ou-watch/state.db` | Co už hlídač viděl. Bez toho přijde po restartu buď záplava „novinek“, nebo se dávka tiše ztratí. |
+| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, obě `watch.env` | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
+
+Naopak se zálohovat nemusí: dráhy družic a registr poloh zpráv se stáhnou
+samy, certifikáty si Caddy vyžádá znovu přes ACME a kód služeb je v `infra/`
+a v repozitářích hlídačů (`hlidac-novinek`, `hlidac-ondrejov`).
+
+**Na serveru** běží `backup.timer` každou noc ve 03:20 UTC — mimo okna
+`news.timer` i `agenda.timer`, aby se snímky sqlite nepraly o zámek.
+`backup.sh` složí archiv do `/opt/backup/data/` (práva 700, archivy 600)
+a smaže, co je starší než `BACKUP_KEEP_DAYS` (7 dní). Prořezává se podle
+**stáří, ne podle počtu** — při ručním spuštění během dne by počítání
+nejnovějších ubralo i archivy mladší než týden. `BACKUP_KEEP_MIN` (3) je
+pojistka: samotné „smaž starší než 7 dní“ by při delším výpadku smazalo
+i poslední zálohu, kterou máme, zrovna ve chvíli, kdy už žádná nová nevzniká.
+Nejnovější tři kusy proto přežijí bez ohledu na věk. Živé databáze se kopírují přes
+`sqlite3 .backup`, ne `cp`: prostý `cp` za běhu utrhne stránku uprostřed
+transakce a výsledek je nepoužitelný. Každý snímek se ověří
+`PRAGMA integrity_check` a výsledek je vidět v `MANIFEST` uvnitř archivu.
+
+**Stáhnout pryč je ta důležitá část.** Archiv na stejném disku jako originál
+neochrání před ničím kromě vlastního `rm`:
+
+```sh
+tools/pull-backup.sh          # stáhne nejnovější archiv sem
+tools/pull-backup.sh --run    # nejdřív spustí zálohu na serveru, pak stáhne
+tools/pull-backup.sh --list   # jen vypíše, co na serveru leží
+```
+
+Stahuje do `BACKUP_LOCAL_DIR` z kořenového `.env` (jinak `~/waveshare-zalohy`),
+adresář dostane 700 a archiv 600, a po stažení ověří, že jde rozbalit. Prořezává
+se stejně jako na serveru — `BACKUP_LOCAL_KEEP_DAYS` (7) a `BACKUP_LOCAL_KEEP_MIN`
+(3). **Archiv nese hesla a klíče v otevřené podobě** — nepatří do repozitáře ani
+do sdílené složky.
+
+### Denní stahování na Macu
+
+Aby na to nikdo nemusel myslet, stahování obsluhuje launchd:
+
+```sh
+tools/install-pull-backup-agent.sh              # nainstaluje a spustí
+tools/install-pull-backup-agent.sh --status     # jak si stojí + konec logu
+tools/install-pull-backup-agent.sh --uninstall  # odebere
+```
+
+Agent `cz.majnr.hodiny.pull-backup` běží každý den v 10:00 (hodinu změní
+`PULL_BACKUP_HOUR`). Server sype archiv ve 03:20 UTC, takže dopoledne je
+vždycky hotový. Když Mac v tu dobu spí nebo je vypnutý, launchd úlohu spustí
+jednou hned po probuzení — „jednou denně, když Mac běží“ tedy platí i pro
+stroj, který přes noc nesvítí. Log je v `~/Library/Logs/hodiny-pull-backup.log`.
+
+Plist se generuje instalačním skriptem a v repozitáři neleží: nese absolutní
+cestu k tomuhle klonu, která je na každém stroji jiná — stejně jako `{{DOMAIN}}`
+v Caddyfile.
+
+**Past: SSH klíč v `~/Documents` (přečti, než začneš „opravovat“ launchd).**
+Agent na klíč v `~/Documents`, `~/Desktop` nebo `~/Downloads` **nedosáhne**.
+Tyhle adresáře hlídá macOS TCC a úloha z launchd nedědí povolení, které má
+Terminál, takže `ssh` skončí na `Load key ...: Operation not permitted`
+a hned za tím `Permission denied (publickey)`. Ručně týž skript projde, což
+vede k hledání chyby na špatném místě. Klíč proto patří do `~/.ssh`
+(`CLOCK_SSH_KEY=$HOME/.ssh/majnr-oracle.key`) — ten adresář TCC nehlídá.
+Rozšiřovat Full Disk Access na `/bin/bash` kvůli jednomu klíči je horší lék
+než nemoc.
+
+Nastavení je v `/opt/backup/backup.env`, vzor je `backup/backup.env.example`.
+Svět Minecraftu tam schválně není: je řádově v GB a mění se pořád, takže patří
+do `BACKUP_EXTRA` jen s vědomím, o kolik každý archiv naroste.
+
+**Obnova z archivu:** rozbal ho a vrať soubory z `files/` na stejné cesty,
+práva podle oddílu „Zabezpečení stroje“ (hesla 600, `key.json` 600 vlastník
+`agenda`). Kód služeb v archivu není, ten se nasadí z repozitáře.
+
 ## Kontrola
 
 ```sh
@@ -940,7 +1023,14 @@ skript řekne, jestli je vadný kanál, generátor, proxy nebo certifikát.
 7. Družice (nepovinné): viz „Družice“ — `.venv` z `satellites/requirements.txt`,
    `SATELLITES_HASH` do `/etc/caddy/caddy.env`. Dráhy se stáhnou samy při
    prvním dotazu hodin.
-8. `tools/check-stack.sh --deep`.
+8. Zálohy: `backup/backup.sh` do `/opt/backup/` (adresář 700, skript 700
+   vlastník root), `backup.env.example` → `/opt/backup/backup.env` s cestou
+   ke konfiguraci HA (práva 600), jednotky do `/etc/systemd/system/`,
+   `restorecon -v /opt/backup/backup.sh`, `systemctl enable --now
+   backup.timer`. Data z posledního staženého archivu vrať podle oddílu
+   „Zálohy dat“ — hesla a `key.json` z něj ušetří většinu kroků výše.
+   Na Macu pak `tools/install-pull-backup-agent.sh`, ať se stahuje dál samo.
+9. `tools/check-stack.sh --deep`.
 
 **Python na tom stroji:** `python3` je 3.6.8, který nemá `zoneinfo` a tiše
 nainstaluje roky staré verze knihoven. Obě `.venv` se proto stavějí výslovně
