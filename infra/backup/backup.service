@@ -1,0 +1,33 @@
+[Unit]
+Description=Zaloha dat serveru hodin (HA, hlidaci, hesla)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root, na rozdil od ostatnich jednotek v infra/. Zaloha musi precist
+# /etc/caddy/caddy.env (600 root), /opt/agenda/key.json (600 agenda),
+# state.db hlidacu (640 watch) a konfiguraci HA, kterou vlastni root.
+# Zadny servisni uzivatel nevidi do vseho zaroven, a delat druhou skupinu
+# nad vsemi hesly by bylo horsi nez tahle jedna jednotka.
+User=root
+Group=root
+EnvironmentFile=/opt/backup/backup.env
+ExecStart=/opt/backup/backup.sh
+Nice=15
+# Snimky sqlite a gzip nad konfiguraci HA; na volnem aarch64 stroji jde
+# o jednotky minut, ale na zaseknutem .backup se ceka nejvys tohle.
+TimeoutStartSec=1800
+# Archiv a adresar data/ vznikaji rovnou 600/700 i bez chmod ve skriptu.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+# /usr, /boot a /etc jen ke cteni - zaloha z nich jen cte a zapisuje vyhradne
+# do /opt/backup/data.
+ProtectSystem=full
+# Ne "true": pod tim by /home zmizelo a svety Minecraftu pridane do
+# BACKUP_EXTRA by se tise zalohovaly jako prazdne.
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

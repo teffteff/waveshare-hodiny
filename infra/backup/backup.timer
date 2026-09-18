@@ -1,0 +1,12 @@
+[Unit]
+Description=Spousti zalohu dat serveru kazdou noc
+
+[Timer]
+# 03:20 UTC. Mimo spousteni news.timer i agenda.timer, aby se snimky sqlite
+# nepraly o zamek s hlidaci.
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

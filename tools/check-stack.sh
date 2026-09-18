@@ -468,7 +468,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service caddy.service; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service caddy.service backup.timer; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -477,7 +477,7 @@ if [ "$MODE" = "--deep" ]; then
       fi
     done
 
-    for unit in news.service agenda.service; do
+    for unit in news.service agenda.service backup.service; do
       last_run="$(ssh_run "systemctl show $unit -p ExecMainStatus --value")"
       if [ "$last_run" = "0" ]; then
         ok "poslední běh $unit skončil úspěšně"
@@ -504,7 +504,7 @@ if [ "$MODE" = "--deep" ]; then
     head_ "Shoda infra/ se serverem"
     # Přes sudo: /opt/agenda, /opt/settings a /opt/school jsou jen pro své služby (750/700),
     # opc do nich bez sudo nevidí.
-    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /opt/satellites/serve.py /opt/satellites/satellites-web.service /opt/satellites/requirements.txt /etc/caddy/Caddyfile /etc/systemd/system/caddy.service')"
+    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /opt/satellites/serve.py /opt/satellites/satellites-web.service /opt/satellites/requirements.txt /etc/caddy/Caddyfile /etc/systemd/system/caddy.service /opt/backup/backup.sh /etc/systemd/system/backup.service /etc/systemd/system/backup.timer')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -521,6 +521,8 @@ if [ "$MODE" = "--deep" ]; then
           /opt/satellites/*)              local_path="infra/satellites/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
+          /opt/backup/*)                  local_path="infra/backup/$(basename "$path")" ;;
+          /etc/systemd/system/backup.*)   local_path="infra/backup/$(basename "$path")" ;;
           *) continue ;;
         esac
         if [ "$local_path" = "infra/caddy/Caddyfile" ]; then
