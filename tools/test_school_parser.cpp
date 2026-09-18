@@ -100,6 +100,22 @@ void testResponse() {
          "děti v budově mají střevní problémy...");
 }
 
+// Služba parsuje každé obnovení do téhož bufferu; oznámení se dřív
+// přičítala k předchozím a po prvním obnovení byla na displeji dvakrát.
+void testReparseReplacesLists() {
+  SchoolFeed feed;
+  for (int pass = 0; pass < 3; ++pass) {
+    assert(schoolParseFeed(RESPONSE, strlen(RESPONSE), feed) ==
+           SchoolParseStatus::Ok);
+    assert(feed.messageCount == 1 && feed.markCount == 1);
+    assert(feed.noticeCount == 1 && feed.noticeTotal == 2);
+  }
+  const char *withoutNotices = "{\"days\":[]}";
+  assert(schoolParseFeed(withoutNotices, strlen(withoutNotices), feed) ==
+         SchoolParseStatus::Ok);
+  assert(!feed.hasNotices && feed.noticeCount == 0 && feed.noticeTotal == 0);
+}
+
 void testBrokenResponses() {
   SchoolFeed feed;
   feed.dayCount = 5;
@@ -298,6 +314,7 @@ void testRowLeft() {
 
 int main() {
   testResponse();
+  testReparseReplacesLists();
   testBrokenResponses();
   testHomeworkOverCapIsCounted();
   testCurrentLesson();

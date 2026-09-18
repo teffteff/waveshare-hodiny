@@ -53,6 +53,9 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   feed.hasMarks = false;
   feed.markCount = 0;
   feed.markTotal = 0;
+  feed.hasNotices = false;
+  feed.noticeCount = 0;
+  feed.noticeTotal = 0;
   if (payload == nullptr || length == 0) return SchoolParseStatus::NotJson;
   const char *end = payload + length;
   const char *begin = jsonSkipWhitespace(payload, end);
