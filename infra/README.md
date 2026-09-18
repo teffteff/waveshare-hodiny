@@ -940,8 +940,37 @@ tools/pull-backup.sh --list   # jen vypíše, co na serveru leží
 Stahuje do `BACKUP_LOCAL_DIR` z kořenového `.env` (jinak `~/waveshare-zalohy`),
 adresář dostane 700 a archiv 600, a po stažení ověří, že jde rozbalit. Prořezává
 se stejně jako na serveru — `BACKUP_LOCAL_KEEP_DAYS` (7) a `BACKUP_LOCAL_KEEP_MIN`
-(3). **Archiv nese hesla a klíče v otevřené podobě** — nepatří do repozitáře ani
-do sdílené složky.
+(3).
+
+### Čím je archiv chráněný
+
+**Archiv nese hesla a klíče v otevřené podobě** — heslo do Školy OnLine, klíč
+Gemini, servisní účet Google, tokeny Home Assistanta. Je to nejhustší snůška
+tajemství, jakou kolem hodin máme, a stojí na čtyřech věcech:
+
+| Vrstva | Co kryje |
+|---|---|
+| Práva 700/600, vlastník root | Ostatní účty na serveru i na Macu |
+| SSH | Přenos |
+| FileVault na Macu | Ukradený nebo vypnutý notebook |
+| Vyloučení z Time Machine | Záložní disk, který bývá nešifrovaný a nosí se z domu |
+
+Poslední řádek nastavuje `pull-backup.sh` sám při každém běhu. Není to
+nastavení Time Machine, ale `xattr` na adresáři — když adresář někdo smaže
+a založí znovu, vyloučení zmizí, proto se kontroluje pokaždé. Ověřit jde
+`tmutil isexcluded ~/waveshare-zalohy`.
+
+Archivy se **nešifrují**, a je to vědomé rozhodnutí. U noční úlohy bez obsluhy
+by heslo muselo ležet na serveru vedle toho, co šifruje, takže by nekrylo nic;
+smysl by dávalo jedině šifrování veřejným klíčem, kde server dostane jen tu
+půlku, kterou se zašifrovat dá. Za to se platí tím, že ztráta soukromého klíče
+znamená ztrátu všech archivů najednou — a to je horší riziko než to, které by
+řešilo, dokud se zálohy nedostanou někam mimo Mac a server.
+
+**Až je někam pošleš** — Object Storage, cizí disk, jiný stroj —, tahle úvaha
+přestane platit a šifrování je potřeba doplnit. Totéž platí pro každou další
+zálohovací službu na Macu (Backblaze a spol.): vyloučit `~/waveshare-zalohy`
+stejně jako u Time Machine, jinak tajemství odtečou tam.
 
 ### Denní stahování na Macu
 

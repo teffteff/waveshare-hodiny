@@ -76,6 +76,16 @@ fi
 name="$(basename "$newest")"
 mkdir -p "$LOCAL_DIR"
 chmod 700 "$LOCAL_DIR"
+# Archivy nesou hesla v otevřené podobě, takže nemají co dělat na záložním
+# disku Time Machine — ten bývá nešifrovaný a odnáší se z domu. Vyloučení je
+# xattr na adresáři, ne nastavení Time Machine: zmizí, když adresář někdo smaže
+# a založí znovu, proto se kontroluje při každém běhu, ne jednorázově.
+if command -v tmutil >/dev/null 2>&1; then
+  if ! tmutil isexcluded "$LOCAL_DIR" 2>/dev/null | grep -q 'Excluded'; then
+    tmutil addexclusion "$LOCAL_DIR" 2>/dev/null \
+      && printf 'Adresář %s vyloučen ze záloh Time Machine.\n' "$LOCAL_DIR"
+  fi
+fi
 target="$LOCAL_DIR/$name"
 
 if [ -f "$target" ]; then
