@@ -549,6 +549,27 @@ void normalizeConfig(ClockConfig &config) {
   config.satellites.displaySeconds =
       constrain(config.satellites.displaySeconds, 10, 3600);
   clockConfigNormalizeScreenSchedule(config.screenSchedule);
+  // Bez adresy serveru se upozornění na déšť nedá zapnout: předpověď nemá
+  // odkud vzít. Stejně jako u blesků.
+  if (config.rainAlert.url[0] == '\0') config.rainAlert.enabled = false;
+  config.rainAlert.horizonMinutes =
+      constrain(config.rainAlert.horizonMinutes, CLOCK_RAIN_HORIZON_MIN_MINUTES,
+                CLOCK_RAIN_HORIZON_MAX_MINUTES);
+  config.rainAlert.minimumDbz =
+      constrain(config.rainAlert.minimumDbz, CLOCK_RAIN_DBZ_MIN,
+                CLOCK_RAIN_DBZ_MAX);
+  config.rainAlert.holdMinutes =
+      constrain(config.rainAlert.holdMinutes, CLOCK_RAIN_HOLD_MIN_MINUTES,
+                CLOCK_RAIN_HOLD_MAX_MINUTES);
+  config.rainAlert.cooldownMinutes =
+      constrain(config.rainAlert.cooldownMinutes, static_cast<uint8_t>(0),
+                CLOCK_RAIN_COOLDOWN_MAX_MINUTES);
+  config.rainAlert.refreshMinutes =
+      constrain(config.rainAlert.refreshMinutes, CLOCK_RAIN_REFRESH_MIN_MINUTES,
+                CLOCK_RAIN_REFRESH_MAX_MINUTES);
+  config.rainAlert.radiusKm =
+      constrain(config.rainAlert.radiusKm, CLOCK_RAIN_RADIUS_MIN_KM,
+                CLOCK_RAIN_RADIUS_MAX_KM);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -961,6 +982,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV46 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_46_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV45 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -996,6 +1024,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV46) ||
          storedSize == sizeof(ConfigRecordV45) ||
          storedSize == sizeof(ConfigRecordV44) ||
          storedSize == sizeof(ConfigRecordV43) ||
@@ -1035,6 +1064,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 46 je přesnou předponou schématu 47; upozornění na déšť si po
+  // zkopírování bajtů podrží výchozí hodnoty, tedy vypnuté a bez adresy.
+  const ConfigRecordV46 &legacyV46 =
+      *reinterpret_cast<const ConfigRecordV46 *>(&record);
+  uint32_t embeddedSchemaV46 = 0;
+  if (readComplete && storedSize == sizeof(legacyV46))
+    memcpy(&embeddedSchemaV46, legacyV46.config, sizeof(embeddedSchemaV46));
+  if (readComplete && storedSize == sizeof(legacyV46) &&
+      legacyV46.magic == CONFIG_MAGIC && legacyV46.schemaVersion == 46 &&
+      embeddedSchemaV46 == 46 &&
+      legacyV46.checksum ==
+          bytesChecksum(legacyV46.config, sizeof(legacyV46.config))) {
+    memcpy(&config, legacyV46.config, sizeof(legacyV46.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 45 je přesnou předponou schématu 46; výchozí obrazovka a plán si po

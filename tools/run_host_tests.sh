@@ -72,6 +72,7 @@ run_test agenda_layout || failures=$((failures + 1))
 run_test school_parser "$FIRMWARE_DIR/SchoolParser.cpp" "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test lightning_feed "$FIRMWARE_DIR/LightningFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test satellite_feed "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+run_test rain_alert "$FIRMWARE_DIR/RainAlert.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then

@@ -53,6 +53,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Rozvrh a úkoly | 8094, jen loopback | `/opt/school/serve.py`, `feed.py`, `school-web.service`, přihlášení v `/opt/school/school.env` | `school/` |
 | Družice | 8095, jen loopback | `/opt/satellites/serve.py`, `requirements.txt`, `.venv`, `satellites-web.service`, dráhy v `/var/cache/satellites/` | `satellites/` |
+| Srážková předpověď | 8096, jen loopback | `/opt/rain/serve.py`, `rain-web.service` | `rain/` |
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/` | `backup/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
@@ -99,6 +100,7 @@ https://hodiny:$PLANES_PASSWORD@$CLOCK_HOST/planes.json  letadla (nepovinné)
 https://hodiny:$LIGHTNING_PASSWORD@$CLOCK_HOST/lightning.json  blesky (nepovinné)
 https://hodiny:$SCHOOL_PASSWORD@$CLOCK_HOST/school.json  rozvrh a úkoly (nepovinné)
 https://hodiny:$SATELLITES_PASSWORD@$CLOCK_HOST/satellites.json  družice (nepovinné)
+https://hodiny:$RAIN_PASSWORD@$CLOCK_HOST/rain.json  srážková předpověď (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -133,8 +135,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090, 8092, 8093, 8094 a 8095 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami, rozvrhem a družicemi poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093, 8094, 8095 a 8096 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami, rozvrhem, družicemi a srážkami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -544,6 +546,90 @@ změn z repozitáře“), **až po** zapsání `SATELLITES_HASH`. Do hodin se pa
 `sgp4` a `numpy` (stejné verze jako `requirements.txt`):
 `python -m unittest infra/satellites/test_serve.py`.
 
+## Srážky
+
+Volba **přepnout na radar, když se blíží déšť** potřebuje vědět, jestli bude
+pršet — a to už někdo počítá. ČHMÚ vedle aktuální kompozice publikuje i vlastní
+extrapolaci radaru:
+
+```
+composite/fct_maxz/png/pacz2gmaps3.fct_z_max.YYYYMMDD.HHMM.ft60s10.tar
+```
+
+tedy `tar` se šesti snímky na **+10 až +60 minut**, nový každých pět minut.
+Snímky mají přesně tutéž geometrii i paletu jako kompozice `maxz`, kterou
+firmware už dnes dekóduje: 680 × 460, osmibitová paleta, stejná projekce.
+
+Hodiny by to zvládly samy, jenže draho: 235 kB taru každých pět minut, šest
+dekódovaných PNG navíc v PSRAM a korelace, která by musela uprostřed uvolňovat
+watchdog. `rain/serve.py` proto stáhne tar jednou za všechny hodiny
+v domácnosti, přečte z každého snímku okolí jejich polohy a pošle dál dvě
+stovky bajtů:
+
+```sh
+curl -s '127.0.0.1:8096/rain.json?lat=49.90461&lon=14.7842&r=5'
+{"time":1789916045,"slot":1789915800,"covered":true,"step":10,
+ "now":24,"steps":[20,24,12,12,24,24]}
+```
+
+`now` a `steps` jsou odrazivost v dBZ; `0` znamená „žádný odraz“, `-1` „snímek
+chybí“. `slot` je čas analýzy, ze které předpověď vyšla, takže hodiny poznají
+stará data. **Rozhodnutí „přepnout obrazovku“ tady nepadne** — práh, dohled
+i prodlevu si firmware bere z vlastního nastavení, stejně jako u blesků, kde
+server vozí údery a poplach vyhlašují hodiny.
+
+**Paleta je sama stupnice.** Index 182 je pásmo 56–60 dBZ a každý další index
+o čtyři dBZ níž, až po 195 = 4–8 dBZ; index 0 je bez odrazu. Ověřeno proti
+`scl/scl-dbz-mmh.png`, kterou ČHMÚ publikuje vedle dat. Podél horního a pravého
+okraje snímku leží svislé řezy („CZRAD – Z: MAX“), ne mapa; server si je maskuje
+stejnými konstantami jako `ChmiRadarService.cpp` (`LON_DATA_RIGHT`,
+`LAT_DATA_TOP`).
+
+**Poloměr `r`** (1 až 30 km, výchozí 5) rozhoduje víc, než se čeká: nad jednou
+polohou dalo 20. 9. 2026 `r=1` dvanáct dBZ a `r=30` třicet dva. Menší okolí
+odpovídá na „prší na mě“, větší varuje dřív, ale častěji zbytečně. Bere se
+maximum přes čtverec, aby jediný šumivý pixel nespustil poplach.
+
+**`covered: false`** znamená, že poloha leží mimo dosah českých radarů (250 km
+od Brd nebo Skalek) nebo úplně mimo snímek. Prázdno tam není sucho, jen slepé
+místo — hodiny z něj nesmí udělat závěr „neprší“.
+
+**Žádný venv.** PNG se dekóduje `zlib`em ze standardní knihovny a tar `tarfile`em,
+takže služba nepotřebuje ani NumPy, ani Pillow — stejně jako letadla. Stažení
+a dekódování sedmi snímků trvalo 0,6 s.
+
+**Kolik dotazů jde na ČHMÚ.** Nic se nestahuje dopředu: když se žádné hodiny
+neptají, server mlčí. Odpovědi se drží 4 minuty (krok publikace je 5), takže víc
+hodin v domácnosti sdílí jedno stažení; po chybě se poslední snímky půjčují
+ještě 20 minut. Nejnovější slot se hledá čtyři sloty zpět, protože tar bývá
+hotový tři až čtyři minuty po čase analýzy — stejně jako `NEWEST_SLOT_PROBES`
+ve firmwaru.
+
+**Stav** ukáže přímo na serveru `curl -s 127.0.0.1:8096/rain/status`: slot,
+stáří, které předstihy jsou načtené a kolik pokusů za sebou selhalo. Caddy tuhle
+cestu ven nepouští.
+
+Zavedení (jednou):
+
+```sh
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/rain --shell /sbin/nologin rain \
+    && sudo install -d -o root -g rain -m 750 /opt/rain'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/rain/serve.py infra/rain/rain-web.service "$CLOCK_SSH:"
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py rain-web.service /opt/rain/ \
+    && rm serve.py rain-web.service'
+NEW="$(openssl rand -hex 24)"   # do .env jako RAIN_PASSWORD
+SSH "$CLOCK_SSH" "echo RAIN_HASH=\$(caddy hash-password --plaintext '$NEW') | sudo tee -a /etc/caddy/caddy.env >/dev/null"
+SSH "$CLOCK_SSH" 'sudo cp /opt/rain/rain-web.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now rain-web.service && sudo systemctl restart caddy'
+```
+
+Caddyfile s blokem `/rain.json` se nasazuje jako obvykle (viz „Nasazení změn
+z repozitáře“), **až po** zapsání `RAIN_HASH`. Testy bez sítě:
+`python3 -m unittest infra/rain/test_serve.py`.
+
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
 U Home Assistanta v `caddy/Caddyfile` kdysi stály tyhle dvě řádky:
@@ -843,6 +929,27 @@ Samostatné `caddy validate` tu schválně není: Caddyfile od zaheslování age
 obsahuje `{env.AGENDA_HASH}` a v obyčejném shellu ta proměnná není, takže by
 validace spadla na prázdném hesle. `systemctl reload` konfiguraci ověří sám
 a při chybě skončí nenulově — běžet přitom dál zůstane ta stará.
+
+**Nový hash v `caddy.env` potřebuje `restart`, ne `reload`.** Proměnné z
+`EnvironmentFile` čte systemd jen při startu procesu, takže po přidání řádku
+`*_HASH` se `reload` sice provede, ale nový `{env.*_HASH}` je pro běžící Caddy
+prázdný a celá konfigurace se odmítne:
+
+```
+http_basic: account 0: username and password are required
+```
+
+Zní to, jako by byl špatně Caddyfile, ale chybí jen heslo v prostředí. Stalo se
+to při zavádění srážek 20. 9. 2026. Caddy přitom běží dál se starou konfigurací
+— jenže v `/etc/caddy/Caddyfile` už leží ta nová, takže se to musí dorovnat
+hned, jinak spadne až příští restart, klidně za měsíc při aktualizaci:
+
+```sh
+SSH "$CLOCK_SSH" 'sudo systemctl restart caddy'
+```
+
+Proto mají návody na zavedení nové služby na konci `restart caddy`, kdežto
+běžná změna Caddyfile bez nového hesla si vystačí s `reload`.
 
 Jednotky (`news.service`, `news.timer`, `news-web.service`) leží na serveru
 ve dvou místech: kopie v `/opt/news/` je ta, kterou porovnává `--deep`, běhová

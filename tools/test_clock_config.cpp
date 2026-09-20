@@ -1344,7 +1344,81 @@ void testScreenSchedulePersistenceAndMigration() {
   assert(loaded.screenSchedule.startupScreen == CLOCK_SCREEN_CLOCK);
 }
 
+void testRainAlertPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.rainAlert.enabled);
+  assert(defaults.rainAlert.url[0] == '\0');
+  assert(defaults.rainAlert.horizonMinutes == 30);
+  assert(defaults.rainAlert.minimumDbz == 28);
+
+  // Schéma 46 je předponou 47: plán obrazovek zůstane, upozornění na déšť je
+  // vypnuté a bez adresy.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.screenSchedule.startupScreen = CLOCK_SCREEN_RADAR;
+  source.screenSchedule.rules[0].screen = CLOCK_SCREEN_SATELLITES;
+  source.screenSchedule.rules[0].startEvent = CLOCK_SCHEDULE_CIVIL_DUSK;
+  source.satellites.enabled = true;
+  seed(legacyRecord(source, 46, CLOCK_CONFIG_SCHEMA_46_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  // Starší záznam si podržel všechno, co v něm bylo.
+  assert(migrated.satellites.enabled);
+  assert(migrated.screenSchedule.startupScreen == CLOCK_SCREEN_RADAR);
+  assert(migrated.screenSchedule.rules[0].screen == CLOCK_SCREEN_SATELLITES);
+  assert(migrated.screenSchedule.rules[0].startEvent ==
+         CLOCK_SCHEDULE_CIVIL_DUSK);
+  // A nové pole má výchozí hodnoty, ne smetí z výplně.
+  assert(!migrated.rainAlert.enabled);
+  assert(migrated.rainAlert.url[0] == '\0');
+  assert(migrated.rainAlert.horizonMinutes == 30);
+  assert(migrated.rainAlert.radiusKm == 5);
+
+  // Uloží se a načte beze změny.
+  migrated.rainAlert.enabled = true;
+  strcpy(migrated.rainAlert.url, "https://hodiny:heslo@example.net/rain.json");
+  migrated.rainAlert.horizonMinutes = 60;
+  migrated.rainAlert.minimumDbz = 36;
+  migrated.rainAlert.radiusKm = 12;
+  migrated.rainAlert.holdMinutes = 20;
+  migrated.rainAlert.cooldownMinutes = 45;
+  migrated.rainAlert.refreshMinutes = 10;
+  migrated.rainAlert.quietAtNight = true;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.rainAlert.enabled);
+  assert(strcmp(loaded.rainAlert.url,
+                "https://hodiny:heslo@example.net/rain.json") == 0);
+  assert(loaded.rainAlert.horizonMinutes == 60);
+  assert(loaded.rainAlert.minimumDbz == 36);
+  assert(loaded.rainAlert.radiusKm == 12);
+  assert(loaded.rainAlert.holdMinutes == 20);
+  assert(loaded.rainAlert.cooldownMinutes == 45);
+  assert(loaded.rainAlert.refreshMinutes == 10);
+  assert(loaded.rainAlert.quietAtNight);
+
+  // Bez adresy se upozornění nedá zapnout a hodnoty mimo rozsah se srovnají.
+  loaded.rainAlert.url[0] = '\0';
+  loaded.rainAlert.horizonMinutes = 200;
+  loaded.rainAlert.minimumDbz = 250;
+  loaded.rainAlert.radiusKm = 200;
+  loaded.rainAlert.refreshMinutes = 1;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(!clamped.rainAlert.enabled);
+  assert(clamped.rainAlert.horizonMinutes == CLOCK_RAIN_HORIZON_MAX_MINUTES);
+  assert(clamped.rainAlert.minimumDbz == CLOCK_RAIN_DBZ_MAX);
+  assert(clamped.rainAlert.radiusKm == CLOCK_RAIN_RADIUS_MAX_KM);
+  assert(clamped.rainAlert.refreshMinutes == CLOCK_RAIN_REFRESH_MIN_MINUTES);
+}
+
 int main() {
+  testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();
   testSatellitesPersistenceAndMigration();
   testSchoolPersistenceAndMigration();

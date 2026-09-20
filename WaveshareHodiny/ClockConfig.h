@@ -49,6 +49,8 @@ constexpr size_t CLOCK_LIGHTNING_URL_LENGTH = 192;
 constexpr size_t CLOCK_SCHOOL_URL_LENGTH = 192;
 // Adresa serveru družic i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_SATELLITES_URL_LENGTH = 192;
+// Adresa serveru se srážkovou předpovědí i se jménem a heslem pro basic_auth.
+constexpr size_t CLOCK_RAIN_URL_LENGTH = 192;
 // Skupiny družic jako bity. Pořadí bitů je pořadí skupin na serveru
 // (SatelliteFeed.h), takže se nesmí měnit.
 constexpr uint8_t CLOCK_SATELLITE_GROUP_STATIONS = 0x01;
@@ -145,7 +147,7 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // that hold a screen on the display). The schema 45 record stays an exact
 // prefix; the startup screen is the clock face and every rule starts off, so
 // an upgrade behaves exactly as before.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 46;
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 47;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -552,6 +554,52 @@ static_assert(sizeof(ClockScreenScheduleRule) == 8 &&
                   sizeof(ClockScreenScheduleConfig) == 36,
               "The screen schedule is part of the stored record.");
 
+// Přepnutí na radar, když se blíží déšť. Předpověď počítá ČHMÚ a vozí ji
+// vlastní server (infra/rain); hodiny z ní čtou odrazivost v dBZ na dnešek
+// a na +10 až +60 minut a rozhodují se samy - stejně jako u blesků, kde server
+// vozí údery a poplach vyhlašuje ciferník. Bez adresy proto funkce nejde
+// zapnout.
+//
+// Zarovnání na čtyři bajty staví strukturu přesně na konec záznamu schématu
+// 46, který končí plánem obrazovek bez koncové výplně.
+struct alignas(4) ClockRainAlertConfig {
+  bool enabled = false;
+  // Jak daleko dopředu se kouká. ČHMÚ dál než hodinu nevidí.
+  uint8_t horizonMinutes = 30;
+  // Od jaké odrazivosti se to počítá za déšť. Spodek stupnice je většinou
+  // odraz ve výšce, který na zem nedopadne, proto ne nejnižší pásmo.
+  uint8_t minimumDbz = 28;
+  // Jak dlouho radar po spuštění drží obrazovku.
+  uint8_t holdMinutes = 10;
+  // Nejkratší odstup dvou spuštění, aby jedna fronta nepřepínala pořád dokola.
+  uint8_t cooldownMinutes = 30;
+  // Jak často se server ptá. Krok publikace ČHMÚ je pět minut, častěji nemá
+  // co nového říct.
+  uint8_t refreshMinutes = 5;
+  // Okolí polohy, ze kterého se bere nejsilnější odraz. Menší odpovídá na
+  // "prší na mě", větší varuje dřív, ale častěji zbytečně.
+  uint8_t radiusKm = 5;
+  // V noci nepřepínat. Kdo spí, radar nepotřebuje.
+  bool quietAtNight = false;
+  char url[CLOCK_RAIN_URL_LENGTH] = "";
+};
+
+static_assert(sizeof(ClockRainAlertConfig) == 200,
+              "The rain alert is part of the stored record.");
+
+// Meze, ve kterých smí nastavení ležet. Stejné hodnoty hlídá web i normalizace.
+constexpr uint8_t CLOCK_RAIN_HORIZON_MIN_MINUTES = 10;
+constexpr uint8_t CLOCK_RAIN_HORIZON_MAX_MINUTES = 60;
+constexpr uint8_t CLOCK_RAIN_DBZ_MIN = 4;
+constexpr uint8_t CLOCK_RAIN_DBZ_MAX = 60;
+constexpr uint8_t CLOCK_RAIN_HOLD_MIN_MINUTES = 1;
+constexpr uint8_t CLOCK_RAIN_HOLD_MAX_MINUTES = 120;
+constexpr uint8_t CLOCK_RAIN_COOLDOWN_MAX_MINUTES = 240;
+constexpr uint8_t CLOCK_RAIN_REFRESH_MIN_MINUTES = 5;
+constexpr uint8_t CLOCK_RAIN_REFRESH_MAX_MINUTES = 60;
+constexpr uint8_t CLOCK_RAIN_RADIUS_MIN_KM = 1;
+constexpr uint8_t CLOCK_RAIN_RADIUS_MAX_KM = 30;
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -695,6 +743,9 @@ struct ClockConfig {
   // Pole schématu 46. Blok pořadí má osm bajtů a končil záznam bez výplně,
   // takže výchozí obrazovka a plán začínají přesně na jeho konci.
   ClockScreenScheduleConfig screenSchedule;
+  // Pole schématu 47. Plán obrazovek má 36 bajtů, tedy násobek čtyř, takže
+  // upozornění na déšť začíná přesně na konci záznamu schématu 46.
+  ClockRainAlertConfig rainAlert;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -827,8 +878,19 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_45_SIZE =
 static_assert(CLOCK_CONFIG_SCHEMA_45_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_45_SIZE +
                           sizeof(ClockScreenScheduleConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, rainAlert),
               "Schema 46 must preserve the complete schema 45 prefix.");
+
+// Schéma 46 končilo plánem obrazovek. Ten má 36 bajtů a zarovnání dvě, ale
+// leží na násobku čtyř a jeho velikost je násobkem čtyř taky, takže za ním
+// žádná koncová výplň nebyla.
+constexpr size_t CLOCK_CONFIG_SCHEMA_46_SIZE = offsetof(ClockConfig, rainAlert);
+
+static_assert(CLOCK_CONFIG_SCHEMA_46_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_46_SIZE +
+                          sizeof(ClockRainAlertConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 47 must preserve the complete schema 46 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.

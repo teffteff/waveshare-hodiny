@@ -1,0 +1,31 @@
+[Unit]
+Description=Srazkova predpoved CHMU pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Sluzba nic nezapisuje,
+# kod patri rootovi.
+User=rain
+Group=rain
+Environment=RAIN_PORT=8096
+# Jen pro Caddy na stejnem stroji. Sluzba chodi ven na opendata.chmi.cz, takze
+# na verejne IP by z ni byl otevreny prevypravec pro kohokoli.
+Environment=RAIN_BIND=127.0.0.1
+# Zadny venv: PNG se dekoduje zlibem ze standardni knihovny a tar tarfilem,
+# takze sluzba nepotrebuje ani numpy, ani Pillow - stejne jako letadla.
+#
+# Interpret je vyslovne 3.11. Na Oracle Linuxu 8 je /usr/bin/python3 porad
+# jeste 3.6, ktera neumi ani "from __future__ import annotations"; sluzba by
+# se rozbila az za behu, ne pri nasazeni.
+ExecStart=/usr/bin/python3.11 /opt/rain/serve.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

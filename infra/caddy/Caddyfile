@@ -87,6 +87,17 @@
 		}
 		reverse_proxy 127.0.0.1:8095
 	}
+	# Srazkova predpoved z opendata.chmi.cz (infra/rain). Data jsou verejna,
+	# takze heslo tu nechrani obsah, ale stroj: server stahuje pro libovolnou
+	# polohu a kazda mina cache znamena dalsich 235 kB z CHMU pod nasi IP.
+	# Dotaz navic nese polohu hodin. Vlastni hash (RAIN_HASH), aby adresa
+	# srazek opsana do hodin nestacila na nic jineho. /rain/status ven nevede.
+	handle /rain.json {
+		basic_auth {
+			hodiny {env.RAIN_HASH}
+		}
+		reverse_proxy 127.0.0.1:8096
+	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

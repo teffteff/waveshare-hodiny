@@ -76,6 +76,10 @@ uint8_t clockDashboardWeatherIconStyle(uint8_t configuredStyle);
 void clockDashboardHandleDoubleTap();
 bool clockDashboardRadarVisible();
 void clockDashboardSetRadarVisible(bool visible);
+// Krátká poznámka do stavového řádku meteoradaru, třeba "Déšť za 20 min".
+// Patří jen na radar, ne na ostatní obrazovky se stejným řádkem: vysvětluje,
+// proč se hodiny samy přepnuly. Prázdný řetězec ji zase schová.
+void clockDashboardSetRainAlertNote(const char *note);
 bool clockDashboardRssVisible();
 void clockDashboardSetRssVisible(bool visible);
 // Kanál bez adresy nebo vypnutý se do rotace ani pod gesto nepustí.
