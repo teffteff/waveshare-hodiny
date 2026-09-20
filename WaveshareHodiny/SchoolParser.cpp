@@ -233,6 +233,7 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
                  sizeof(meal.when));
       copyMember(items.itemBegin, items.itemEnd, "who", meal.who,
                  sizeof(meal.who));
+      meal.today = jsonReadBoolMember(items.itemBegin, items.itemEnd, "today");
       ++feed.mealCount;
     }
   }

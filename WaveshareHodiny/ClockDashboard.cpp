@@ -3149,6 +3149,11 @@ bool schoolHasHomework = false;
 uint8_t schoolHomeworkCount = 0;
 uint8_t schoolHomeworkTotal = 0;
 uint8_t schoolMealCount = 0;
+// Které jídlo je dnešní. Po hodině z nastavení (school.mealNextDayHour)
+// dnešní obědy ustoupí zítřejším; kolik jich právě ustoupilo, drží
+// schoolMealsHidden a přepočítá ho každé rozvržení.
+bool schoolMealToday[SCHOOL_MAX_MEALS] = {};
+uint8_t schoolMealsHidden = 0;
 // Které jídlo otevírá nový den, a nese tedy nad sebou řádek s dnem.
 bool schoolMealNewDay[SCHOOL_MAX_MEALS] = {};
 // Kolik řádků které jídlo zabere: den nad ním plus jeden či dva řádky názvu.
@@ -3291,6 +3296,15 @@ void applySchoolColors() {
 void updateSchoolHighlight(bool force = false) {
   if (schoolPage == nullptr) return;
   const int minute = schoolMinuteOfDay();
+  // Hodina, kdy dnešní oběd ustoupí zítřejšímu, padne mezi dvě stažení.
+  // Rozvržení se proto přepočítá hned, jak nastane; layoutSchoolPage() si
+  // schoolMealsHidden srovná a tohle volání se podruhé nespustí.
+  if (schoolReady &&
+      schoolMealsHiddenByHour(
+          schoolMealToday, schoolMealCount, minute,
+          dashboardRuntimeConfig.school.mealNextDayHour) != schoolMealsHidden) {
+    layoutSchoolPage();
+  }
   bool changed = force;
   for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
     int highlighted = -1;
@@ -3429,6 +3443,13 @@ void layoutSchoolPage() {
   for (size_t day = 0; day < schoolDayCount; ++day)
     if (schoolLessonCounts[day] > rows) rows = schoolLessonCounts[day];
   const bool haveDays = schoolReady && schoolDayCount > 0;
+  // Kolik obědů schová hodina přepnutí na zítřek. Počítá se při rozvržení,
+  // ne při stažení: ta hodina přijde uprostřed intervalu stahování.
+  schoolMealsHidden = static_cast<uint8_t>(schoolMealsHiddenByHour(
+      schoolMealToday, schoolMealCount, schoolMinuteOfDay(),
+      dashboardRuntimeConfig.school.mealNextDayHour));
+  const uint8_t mealsShown =
+      static_cast<uint8_t>(schoolMealCount - schoolMealsHidden);
   // O prázdninách bez úkolů stačí "Žádné vyučování" uprostřed; "ŽÁDNÉ ÚKOLY"
   // patří jen pod rozvrh.
   schoolVisible = schoolLayout(
@@ -3439,8 +3460,8 @@ void layoutSchoolPage() {
       SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
                           SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
                           SCHOOL_BLOCK_HEIGHT},
-      schoolReady ? schoolMealCount : 0,
-      schoolReady ? schoolMealRows : nullptr);
+      schoolReady ? mealsShown : 0,
+      schoolReady ? schoolMealRows + schoolMealsHidden : nullptr);
   // Na druhé stránce se rozvrh schová celý, včetně hlášky uprostřed.
   if (newsPage) schoolVisible = SchoolLayoutResult{};
   const bool showMessage =
@@ -3543,9 +3564,13 @@ void layoutSchoolPage() {
     cursorY += schoolHeadingHeight() + SCHOOL_ROW_GAP;
   }
   for (size_t index = 0; index < SCHOOL_MAX_MEALS; ++index) {
-    const bool visible = index < schoolVisible.meals;
+    // Schované dnešní obědy zůstávají v labelech, jen se nekreslí.
+    const bool visible = index >= schoolMealsHidden &&
+                         index - schoolMealsHidden < schoolVisible.meals;
     // Den stojí jen u prvního jídla toho dne, a na vlastním řádku nad ním.
-    const bool opensDay = visible && schoolMealNewDay[index];
+    // První ukázané jídlo ho nese vždycky, i když se celý dnešek schoval.
+    const bool opensDay =
+        visible && (schoolMealNewDay[index] || index == schoolMealsHidden);
     setObjectVisible(schoolMealWhenLabels[index], opensDay);
     setObjectVisible(schoolMealTextLabels[index], visible);
     if (!visible) continue;
@@ -7584,6 +7609,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
     schoolHomeworkCount = 0;
     schoolHomeworkTotal = 0;
     schoolMealCount = 0;
+    for (bool &today : schoolMealToday) today = false;
     for (bool &newDay : schoolMealNewDay) newDay = false;
     for (uint8_t &rows : schoolMealRows) rows = 0;
     for (uint8_t &lines : schoolMealTextLines) lines = 0;
@@ -7667,6 +7693,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   for (size_t index = 0; index < feed->mealCount; ++index) {
     const SchoolMeal &meal = feed->meals[index];
     // Den se píše jednou za den, nad jídla, která pod něj patří.
+    schoolMealToday[index] = meal.today;
     schoolMealNewDay[index] =
         index == 0 || strcmp(meal.when, feed->meals[index - 1].when) != 0;
     lv_label_set_text(schoolMealWhenLabels[index], meal.when);

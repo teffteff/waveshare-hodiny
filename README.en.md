@@ -531,13 +531,28 @@ does not all fit, the last line becomes three dots. When there is none,
 switched off on the tab; a server that does not fetch it (`SCHOOL_HOMEWORK=0`)
 does not send it at all, and then the heading stays hidden too.
 
-Between the timetable and the homework is **lunch** for today and tomorrow:
+Between the timetable and the homework is **lunch** for the next two days on
+which the kitchen cooks:
 the main course from the school canteen (`ZŠ`) and the kindergarten (`MŠ`),
 without soup, allergens and drinks. The day stands on a line of its own above
 the meals that belong to it, and the dish then gets a whole line starting at
 the timetable's left edge; beside the day a longer menu did not fit and ended
 in three dots. The server fetches the menus and the clock only copies the
 finished rows; a server without menus configured leaves the section out.
+
+That is usually today and tomorrow, but tomorrow need not be a day with
+cooking: on Friday the timetable carries Friday and `PO 21.9.` below it, and
+when Monday is a holiday, `ÚT 22.9.`. A day without cooking is skipped - the
+one whose menu says `Státní svátek` (state holiday) instead of a dish as well -
+and the search goes up to a week ahead. An empty spot would say less about
+tomorrow than Monday's menu does.
+
+In the afternoon today's lunch is long eaten, so from the hour set on the
+**Škola** tab (16 by default, `0` switches it off) today drops out and only the
+next one stays - just like the timetable, which moves on to the next school day
+once the last lesson ends. On Friday afternoon Monday's lunch shows under the
+timetable. Each clock decides for itself; the server sends both days and, for
+every dish, only whether it belongs to today.
 
 Swiping sideways switches to a second page (like the second set of values on
 the VALUES face): **unread messages** and **marks** from the last two weeks.

@@ -1620,6 +1620,8 @@ void handleGetConfig() {
   result += jsonEscape(config.school.url);
   result += F("\",\"schoolShowHomework\":");
   result += config.school.showHomework ? F("true") : F("false");
+  result += F(",\"schoolMealNextDayHour\":");
+  result += config.school.mealNextDayHour;
   result += F(",\"schoolRefreshMinutes\":");
   result += config.school.refreshMinutes;
   result += F(",\"schoolDisplaySeconds\":");
@@ -2332,9 +2334,21 @@ void handleSaveConfig() {
       sendError(400, F("Doba zobrazení rozvrhu musí být od 10 do 3600 sekund."));
       return;
     }
+    // Chybějící pole nechá hodinu, jaká je: starší formulář ji nemá a nula
+    // by ji tiše vypnula.
+    const int schoolMealNextDayHour =
+        server.hasArg("schoolMealNextDayHour")
+            ? server.arg("schoolMealNextDayHour").toInt()
+            : config.school.mealNextDayHour;
+    if (schoolMealNextDayHour < 0 || schoolMealNextDayHour > 23) {
+      sendError(400, F("Hodina přepnutí obědů musí být od 0 do 23."));
+      return;
+    }
     config.school.enabled = schoolEnabled;
     clockConfigCopy(config.school.url, sizeof(config.school.url), schoolUrl);
     config.school.showHomework = server.arg("schoolShowHomework") == "1";
+    config.school.mealNextDayHour =
+        static_cast<uint8_t>(schoolMealNextDayHour);
     config.school.refreshMinutes = static_cast<uint8_t>(schoolRefreshMinutes);
     config.school.displaySeconds = static_cast<uint16_t>(schoolDisplaySeconds);
     config.school.automaticRotation =

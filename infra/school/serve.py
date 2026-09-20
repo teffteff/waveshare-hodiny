@@ -20,7 +20,8 @@ hesle proto server ceka AUTH_BACKOFF_HOURS a starsi data dal vydava, nejdyl
 ale MAX_AGE_HOURS. Pak radsi 503 nez vcerejsi rozvrh bez suplovani, ktery by
 se po dvou tydnech tvaril jako prazdniny.
 
-Pod rozvrh patri obedy na dnes a zitra: skolni jidelna z iCanteenu
+Pod rozvrh patri obedy na nejblizsi dva dny, kdy se vari (v patek tedy patek
+a pondeli): skolni jidelna z iCanteenu
 (SCHOOL_CANTEEN_URL, verejna stranka bez prihlaseni) a skolka z jidelnicku
 nasems.cz (stejne prihlaseni jako nastenka). Oba se stahuji nejvys jednou
 za MEALS_POLL_MINUTES. SCHOOL_HOMEWORK=0 ukoly vypne uplne: do Skoly OnLine
@@ -305,15 +306,15 @@ class NasemsClient:
         return self._page("/prihlaseno/nastenka")
 
     def menu(self, today) -> list[dict]:
-        """Hlavni chody skolky. Stranka ukazuje aktualni tyden; v nedeli je
-        zitrek uz za nim, a jen tehdy se zvlast nacte pristi tyden - stejnym
-        AJAXem, jakym ho nacita tlacitko na webu."""
+        """Hlavni chody skolky. Stranka ukazuje aktualni tyden; jakmile nektery
+        z dnu, ktere hodiny ukazuji, lezi za nim - v patek uz pondeli - nacte se
+        zvlast pristi tyden, stejnym AJAXem, jakym ho nacita tlacitko na webu."""
         page = self._page("/prihlaseno/jidelnicek")
         meals = feed.normalize_nasems_menu(page)
         covered = {meal["date"] for meal in meals}
         last = max(covered, default="")
-        wanted = [day for day in (today, today + timedelta(days=1))
-                  if day.weekday() < 5 and day.isoformat() > last]
+        wanted = [day for day in feed.meal_weekdays(today)
+                  if day.isoformat() > last]
         week = feed.nasems_next_week(page)
         if wanted and week:
             form = urllib.parse.urlencode({"ajax": "ajax", "what": "jidelnicek",

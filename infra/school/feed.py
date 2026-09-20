@@ -59,13 +59,19 @@ MAX_MARK = 8
 # tydny uz na hodinach jen visi.
 NOTICE_DAYS = int(os.environ.get("SCHOOL_NOTICE_DAYS", "14"))
 MAX_NOTICES = 6
-# Obedy pod rozvrhem: dnes a zitra, u kazdeho dne skolni jidelna a skolka.
+# Obedy pod rozvrhem: nejblizsi dva dny, kdy se vari, u kazdeho dne skolni
+# jidelna a skolka. Obvykle to je dnesek a zitrek; v patek pondeli, a kdyz je
+# pondeli svatek, utery. Prazdna sekce by v patek odpoledne rekla min nez
+# jidelnicek na pondeli.
 # Popisky stoji na displeji pred jidlem, takze musi byt kratke.
 CANTEEN_LABEL = os.environ.get("SCHOOL_CANTEEN_LABEL", "ZŠ")
 NASEMS_MENU_LABEL = os.environ.get("NASEMS_MENU_LABEL", "MŠ")
 # Ktere jidlo z iCanteenu: jidelna vari dve, dite ma jedno.
 CANTEEN_MEAL = os.environ.get("SCHOOL_CANTEEN_MEAL", "Oběd1")
 MEAL_DAYS = 2
+# Jak daleko se za temi dvema dny kouka. Tyden prekleni vikend i svatecni
+# pondeli; delsi prazdniny jidelnicek stejne nema.
+MEAL_HORIZON_DAYS = 7
 # Tituly pred jmenem ("Mgr.", "PaedDr.") a za nim ("Ph.D.") koncici teckou.
 _ACADEMIC_TITLE = re.compile(r"\S+\.$")
 
@@ -508,13 +514,43 @@ _CANTEEN_ALLERGENS = re.compile(r"/\s*\d[\d.,\s]*(?:/|$)")
 # Cislo jidla pred hlavnim chodem: "polévka …/1- Bramborové špecle".
 _CANTEEN_MAIN = re.compile(r"(?:^|\s)\d+\s*-\s*")
 _MENU_DATE = re.compile(r"(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})")
+# Den bez obeda: jidelnicky misto jidla napisou, proc se nevari ("Státní
+# svátek", "Ředitelské volno - zavřeno"). Radek "ZŠ: Státní svátek" by na
+# displeji zabral misto dne, kdy se opravdu vari, takze se takovy den
+# preskoci. Posuzuje se cely popis, ne jeho cast: "svíčková" ani "volské oko"
+# tim propadnout nesmi.
+_NO_MEAL_SPLIT = re.compile(r"[,;]|\s+[-–—]\s+")
+_NO_MEAL = re.compile(
+    r"(?:státní\s+)?svátek|prázdniny|(?:ředitelské\s+)?volno|zavřeno|"
+    r"nevaří\s+se|dovolená|sanitární\s+den", re.IGNORECASE)
 
 
 def meal_text(text: str) -> str:
-    """Jidlo na jeden radek: bez alergenu a napoju, s carkami po cesku."""
+    """Jidlo na jeden radek: bez alergenu a napoju, s carkami po cesku.
+    Den, kdy se nevari, vraci prazdno - hodiny pak misto nej ukazou nejblizsi
+    dalsi den s jidlem."""
     parts = [" ".join(part.split()) for part in (text or "").split(",")]
     kept = [part for part in parts if part and not _DRINK.match(part)]
-    return plain_text(", ".join(kept))
+    text = plain_text(", ".join(kept))
+    pieces = [piece.strip() for piece in _NO_MEAL_SPLIT.split(text)]
+    pieces = [piece for piece in pieces if piece]
+    if pieces and all(_NO_MEAL.fullmatch(piece) for piece in pieces):
+        return ""
+    return text
+
+
+def meal_weekdays(today: date, count: int = MEAL_DAYS) -> list[date]:
+    """Dny, na ktere se shani jidelnicek: dnesek a dalsi vsedni dny, dokud
+    jich neni `count`. V patek to je patek a pondeli, takze uz v patek musi
+    byt stazeny i pristi tyden. Svatky se tady nehlidaji - o tom, ze se ten
+    den nevari, rekne az jidelnicek."""
+    days = []
+    day = today
+    while len(days) < count:
+        if day.weekday() < 5:
+            days.append(day)
+        day += timedelta(days=1)
+    return days
 
 
 def _menu_date(text: str) -> date | None:
@@ -796,18 +832,33 @@ def render(snapshot: dict, now: datetime | None = None) -> dict:
     # "ŽÁDNÉ ÚKOLY", ktere by o ukolech nic nerikalo.
     if snapshot.get("homeworkEnabled") is False:
         del body["homework"]
-    # Obedy dnes a zitra, u kazdeho dne jidelna a skolka. Den bez jidla
-    # (vikend, prazdniny) se vynecha; hodiny z prazdneho pole nic nekresli.
+    # Obedy na nejblizsi dva dny, kdy se vari: obvykle dnes a zitra, v patek
+    # patek a pondeli. U kazdeho dne jidelna a skolka; hodiny z prazdneho pole
+    # nic nekresli.
+    # "today" rika, ktera jidla patri dnesku: hodiny je odpoledne schovaji,
+    # kdyz je v nastaveni hodina prepnuti na zitrek. Rozhodnout to tady nejde,
+    # odpoved je spolecna pro vsechny hodiny a kazde muze byt nastavena jinak.
     menus = [(label, snapshot[key]) for key, label in
              (("canteen", CANTEEN_LABEL), ("kindermenu", NASEMS_MENU_LABEL)) if key in snapshot]
     if menus:
         meals = []
-        for offset in range(MEAL_DAYS):
+        days = 0
+        for offset in range(MEAL_HORIZON_DAYS):
+            if days >= MEAL_DAYS:
+                break
             day = today + timedelta(days=offset)
+            rows = []
             for label, items in menus:
                 item = next((item for item in items if item.get("date") == day.isoformat()), None)
                 if item and item.get("text"):
-                    meals.append({"when": day_label(day, today), "who": label, "text": item["text"]})
+                    rows.append({"when": day_label(day, today), "today": day == today,
+                                 "who": label, "text": item["text"]})
+            # Den bez jidla (vikend, svatek, prazdniny) se nepocita: misto nej
+            # se kouka o den dal, at v patek odpoledne sviti pondeli.
+            if not rows:
+                continue
+            meals += rows
+            days += 1
         body["meals"] = meals
     if "notices" in snapshot:
         horizon = today - timedelta(days=NOTICE_DAYS)

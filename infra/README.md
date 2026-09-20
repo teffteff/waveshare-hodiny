@@ -803,8 +803,13 @@ Co server posílá a proč tak:
   (`NASEMS_POLL_MINUTES`), tedy asi 3 stažení denně; jedno je jeden dotaz,
   dokud drží session, po jejím vypršení dva až tři. Na displeji je pod
   známkami.
-- **Obědy** (`meals`) pod rozvrhem místo úkolů: dnes a zítra, u každého dne
-  školní jídelna a školka, jeden řádek `{"when":"DNES","who":"ZŠ","text":…}`.
+- **Obědy** (`meals`) pod rozvrhem místo úkolů: nejbližší dva dny, kdy se vaří
+  (obvykle dnes a zítra, v pátek dnes a pondělí), u každého dne školní jídelna
+  a školka, jeden řádek
+  `{"when":"DNES","today":true,"who":"ZŠ","text":…}`. `today` říká, která jídla
+  patří dnešku; odpoledne je hodiny podle vlastního nastavení schovají, aby
+  zbyl jen zítřek. Rozhodují samy: odpověď je společná pro všechny hodiny
+  v domácnosti a každé můžou mít nastavenou jinou hodinu.
   Jídelna běží na iCanteenu (`SCHOOL_CANTEEN_URL`, např.
   `https://jidelna.zsondrejov.cz/`), který jídelníček na tři týdny ukazuje
   i bez přihlášení — server nic neposílá a žádné heslo nepotřebuje. Bere se
@@ -816,7 +821,10 @@ Co server posílá a proč tak:
   a nápoje („ovocný čaj“, „voda“) se zahazují. Obojí se stahuje nejvýš
   jednou za 6 hodin (`SCHOOL_MEALS_POLL_MINUTES`), v noci jen poprvé po
   startu: kolem 3 dotazů denně na jídelnu a 3 až 4 na nasems.cz navíc.
-  Den bez jídla (víkend, svátek bez záznamu) se vynechá.
+  Den bez jídla se vynechá a hledá se o den dál, nejvýš týden dopředu: víkend,
+  svátek i den, kdy jídelníček místo jídla píše „Státní svátek“ nebo
+  „Ředitelské volno“. Kvůli pondělí se jídelníček školky na příští týden
+  dotahuje už v pátek, ne až v neděli.
 - **Úkoly vypnuté** (`SCHOOL_HOMEWORK=0`): server se na ně Školy OnLine vůbec
   neptá a klíč `homework` nepošle; hodiny pak nepíšou ani „ŽÁDNÉ ÚKOLY“.
   Kód zůstává, zapnutí je jen smazání proměnné a restart služby.

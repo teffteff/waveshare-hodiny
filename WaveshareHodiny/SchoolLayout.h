@@ -8,8 +8,8 @@
 // počítači - stejně jako AgendaLayout.h.
 //
 // Pás pod hlavičkou dostane nejdřív rozvrh: ten je na obrazovce hlavní a den
-// s osmi hodinami se má vejít celý. Pod ním obědy (dnes a zítra pro školu
-// i školku), pak úkoly z toho, co zbude. Když se všechny úkoly nevejdou,
+// s osmi hodinami se má vejít celý. Pod ním obědy (nejbližší dva dny, kdy se
+// vaří, pro školu i školku), pak úkoly z toho, co zbude. Když se všechny úkoly nevejdou,
 // poslední viditelný řádek nahradí tři tečky - úkol, který by jen zmizel, je
 // horší než upozornění, že jich je víc. Obědy tečky nemají: chybějící řádek
 // je zítřek, a ten řekne i prázdné místo. Kam by se vešla jen hlavička sekce
@@ -96,6 +96,23 @@ inline SchoolLayoutResult schoolLayout(uint8_t lessonCount,
   // úkoly má, a podívá se do aplikace.
   result.homeworkEllipsis = fit < homeworkCount || fit < homeworkTotal;
   return result;
+}
+
+// Kolik jídel na začátku seznamu se přeskočí: po nastavené hodině je dnešní
+// oběd dávno snědený a místo pod rozvrhem patří zítřku. Server posílá jídla
+// seřazená ode dneška, takže stačí zahodit ta, která nesou `today`.
+//
+// `hour` je hodina přepnutí z nastavení; nula znamená nepřepínat (přepnutí
+// o půlnoci je totéž co nepřepínat, den se tam mění sám). `minuteOfDay` je
+// místní čas v minutách, nebo -1, když hodiny čas ještě neznají - dokud ho
+// neznají, nezahazuje se nic.
+inline size_t schoolMealsHiddenByHour(const bool *today, size_t count,
+                                      int minuteOfDay, uint8_t hour) {
+  if (today == nullptr || hour == 0 || hour > 23) return 0;
+  if (minuteOfDay < 0 || minuteOfDay < hour * 60) return 0;
+  size_t hidden = 0;
+  while (hidden < count && today[hidden]) ++hidden;
+  return hidden;
 }
 
 // Levý okraj řádku na kruhovém displeji. Pás druhé stránky sahá od horního
