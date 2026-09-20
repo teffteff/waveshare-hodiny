@@ -548,6 +548,7 @@ void normalizeConfig(ClockConfig &config) {
   if (config.satellites.topBearingDeg >= 360) config.satellites.topBearingDeg = 0;
   config.satellites.displaySeconds =
       constrain(config.satellites.displaySeconds, 10, 3600);
+  clockConfigNormalizeScreenSchedule(config.screenSchedule);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -720,6 +721,33 @@ void clockConfigNormalizeScreenOrder(uint8_t *order) {
     normalized[count++] = CLOCK_SCREEN_ORDER_UNUSED;
   }
   memcpy(order, normalized, sizeof(normalized));
+}
+
+void clockConfigNormalizeScreenSchedule(ClockScreenScheduleConfig &schedule) {
+  if (schedule.startupScreen >= CLOCK_SCREEN_ORDER_COUNT)
+    schedule.startupScreen = CLOCK_SCREEN_CLOCK;
+  memset(schedule.reserved, 0, sizeof(schedule.reserved));
+  const auto normalizeValue = [](uint8_t &event, int16_t &value) {
+    if (event >= CLOCK_SCHEDULE_EVENT_COUNT) {
+      event = CLOCK_SCHEDULE_TIME;
+      value = 0;
+    }
+    if (event == CLOCK_SCHEDULE_TIME) {
+      value = constrain(value, static_cast<int16_t>(0),
+                        static_cast<int16_t>(CLOCK_SCHEDULE_MINUTES_PER_DAY - 1));
+    } else {
+      value = constrain(value,
+                        static_cast<int16_t>(-CLOCK_SCHEDULE_MAX_OFFSET_MINUTES),
+                        CLOCK_SCHEDULE_MAX_OFFSET_MINUTES);
+    }
+  };
+  for (ClockScreenScheduleRule &rule : schedule.rules) {
+    if (rule.screen >= CLOCK_SCREEN_ORDER_COUNT)
+      rule.screen = CLOCK_SCREEN_ORDER_UNUSED;
+    rule.reserved = 0;
+    normalizeValue(rule.startEvent, rule.startValue);
+    normalizeValue(rule.endEvent, rule.endValue);
+  }
 }
 
 void clockConfigReadScreenOrder(const ClockConfig &config, uint8_t *order) {
@@ -933,6 +961,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV45 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_45_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV44 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -961,6 +996,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV45) ||
          storedSize == sizeof(ConfigRecordV44) ||
          storedSize == sizeof(ConfigRecordV43) ||
          storedSize == sizeof(ConfigRecordV41) ||
@@ -999,6 +1035,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 45 je přesnou předponou schématu 46; výchozí obrazovka a plán si po
+  // zkopírování bajtů podrží výchozí hodnoty: ciferník a vypnutá pravidla.
+  const ConfigRecordV45 &legacyV45 =
+      *reinterpret_cast<const ConfigRecordV45 *>(&record);
+  uint32_t embeddedSchemaV45 = 0;
+  if (readComplete && storedSize == sizeof(legacyV45))
+    memcpy(&embeddedSchemaV45, legacyV45.config, sizeof(embeddedSchemaV45));
+  if (readComplete && storedSize == sizeof(legacyV45) &&
+      legacyV45.magic == CONFIG_MAGIC && legacyV45.schemaVersion == 45 &&
+      embeddedSchemaV45 == 45 &&
+      legacyV45.checksum ==
+          bytesChecksum(legacyV45.config, sizeof(legacyV45.config))) {
+    memcpy(&config, legacyV45.config, sizeof(legacyV45.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Starší záznam druhý blok pořadí obrazovek nemá. Výchozí hodnoty v něm už

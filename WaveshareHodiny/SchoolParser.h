@@ -24,11 +24,14 @@
 //    "noticeCount":1,
 //    "notices":[{"when":"VČERA","title":"Střevní problémy",
 //                "text":"děti v budově mají střevní problémy…"}],
+//    "meals":[{"when":"DNES","who":"ZŠ","text":"Kuře na paprice, těstoviny"}],
 //    "problem":""}
 //
 // Zprávy, známky a nástěnka (nasems.cz) jsou nepovinné: bez klíčů "messages",
 // "marks" i "notices" hodiny druhou stránku obrazovky nenabízejí (starší
-// server, nebo je má vypnuté).
+// server, nebo je má vypnuté). Stejně nepovinné jsou obědy pod rozvrhem
+// ("meals") a úkoly ("homework"): server s vypnutými úkoly klíč neposílá
+// a hodiny pak nepíšou ani "ŽÁDNÉ ÚKOLY".
 //
 // Škola OnLine sama do hodin nikdy nedorazí: přihlášení, výběr dne, suplování
 // i popisky termínů řeší server. Firmware jen opisuje hotové řetězce, takže
@@ -62,6 +65,11 @@ constexpr size_t SCHOOL_SENDER_LENGTH = 32;
 constexpr size_t SCHOOL_MARK_LENGTH = 12;
 // Oznámení z nástěnky školky; server jich posílá nejvýš šest.
 constexpr size_t SCHOOL_MAX_NOTICES = 6;
+// Obědy dnes a zítra pro školu a školku, tedy čtyři řádky; dva navíc pro
+// případ, že server přidá další jídelnu.
+constexpr size_t SCHOOL_MAX_MEALS = 6;
+// Popisek jídelny před jídlem ("ZŠ", "MŠ").
+constexpr size_t SCHOOL_MEAL_WHO_LENGTH = 16;
 
 // Stav hodiny, jak ho posílá server.
 enum class SchoolLessonState : uint8_t {
@@ -110,6 +118,13 @@ struct SchoolNotice {
   char text[SCHOOL_TITLE_LENGTH] = "";
 };
 
+// Jedno jídlo: den, pro koho a hlavní chod bez alergenů a nápojů.
+struct SchoolMeal {
+  char when[SCHOOL_DAY_LENGTH] = "";
+  char who[SCHOOL_MEAL_WHO_LENGTH] = "";
+  char text[SCHOOL_TITLE_LENGTH] = "";
+};
+
 struct SchoolDay {
   char day[SCHOOL_DAY_LENGTH] = "";
   // Jen u DNES a ZÍTRA, kde samotný popisek den v týdnu neřekne.
@@ -127,6 +142,9 @@ struct SchoolFeed {
   // Žádný den znamená, že se v dohledné době neučí (prázdniny).
   size_t dayCount = 0;
   SchoolDay days[SCHOOL_MAX_DAYS];
+  // Server úkoly posílá. Bez klíče "homework" je má vypnuté a displej
+  // nepíše ani "ŽÁDNÉ ÚKOLY".
+  bool hasHomework = false;
   size_t homeworkCount = 0;
   // Všechny úkoly s titulkem v odpovědi, i ty nad SCHOOL_MAX_HOMEWORK. Podle
   // toho rozvržení pozná, že má místo posledního řádku ukázat tečky.
@@ -146,6 +164,10 @@ struct SchoolFeed {
   size_t noticeCount = 0;
   size_t noticeTotal = 0;
   SchoolNotice notices[SCHOOL_MAX_NOTICES];
+  // Server obědy stahuje; prázdné pole je víkend nebo den bez jídelníčku.
+  bool hasMeals = false;
+  size_t mealCount = 0;
+  SchoolMeal meals[SCHOOL_MAX_MEALS];
 };
 
 enum class SchoolParseStatus : uint8_t {

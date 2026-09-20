@@ -411,9 +411,11 @@ try:
     data = json.loads(sys.stdin.read())
     generated = datetime.fromisoformat(data["generated"])
     lessons = sum(len(day["lessons"]) for day in data["days"])
-    homework = len(data["homework"])
+    # Server s vypnutymi ukoly klic "homework" neposila (SCHOOL_HOMEWORK=0).
+    homework = len(data["homework"]) if "homework" in data else "vypnuto"
+    meals = len(data["meals"]) if "meals" in data else "vypnuto"
 except Exception:
-    print("BAD 0 0 0 0"); raise SystemExit
+    print("BAD 0 0 0 0 0 0"); raise SystemExit
 hours = (datetime.now(timezone.utc) - generated).total_seconds() / 3600
 problem = 1 if data.get("problem") else 0
 local = datetime.now(ZoneInfo("Europe/Prague"))
@@ -424,17 +426,17 @@ if holidays:
     limit = max(limit, 14.0 if quiet else 7.0)
 elif quiet:
     limit = max(limit, 10.0)
-print(f"OK {hours:.1f} {lessons} {homework} {problem} {limit:g}")
+print(f"OK {hours:.1f} {lessons} {homework} {meals} {problem} {limit:g}")
 ')"
-  read -r school_status school_hours school_lessons school_homework school_problem school_limit <<< "$school_report"
+  read -r school_status school_hours school_lessons school_homework school_meals school_problem school_limit <<< "$school_report"
   if [ "${school_status:-BAD}" = "BAD" ]; then
-    bad "rozvrh odpovídá, ale není to JSON s generated, days a homework"
+    bad "rozvrh odpovídá, ale není to JSON s generated a days"
   elif awk -v a="$school_hours" -v m="$school_limit" 'BEGIN{exit !(a > m)}'; then
     bad "rozvrh je starý $school_hours h (práh $school_limit h) — stahování ze Školy OnLine padá, viz journalctl -u school-web"
   elif [ "$school_problem" = "1" ]; then
     warn "rozvrh je z doby před $school_hours h, poslední stažení selhalo — journalctl -u school-web"
   else
-    ok "rozvrh je čerstvý, stáří $school_hours h, hodin: $school_lessons, úkolů: $school_homework"
+    ok "rozvrh je čerstvý, stáří $school_hours h, hodin: $school_lessons, úkolů: $school_homework, obědů: $school_meals"
   fi
 fi
 

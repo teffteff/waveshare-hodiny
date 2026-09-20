@@ -14,6 +14,7 @@ struct SchoolStatus {
   // Hodiny všech zobrazených dnů dohromady.
   size_t lessonCount = 0;
   size_t homeworkCount = 0;
+  size_t mealCount = 0;
   bool ready = false;
   bool loading = false;
   // Stáří posledního úspěšného stažení; platí jen s lastSuccessAvailable.

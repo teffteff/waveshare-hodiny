@@ -1282,7 +1282,70 @@ void testSatellitesPersistenceAndMigration() {
   assert(!clockConfigSatellitesAvailable(loaded));
 }
 
+void testScreenSchedulePersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.screenSchedule.startupScreen == CLOCK_SCREEN_CLOCK);
+  for (const ClockScreenScheduleRule &rule : defaults.screenSchedule.rules)
+    assert(rule.screen == CLOCK_SCREEN_ORDER_UNUSED);
+
+  // Schéma 45 je předponou 46: družice i pořadí zůstanou, výchozí obrazovka
+  // je ciferník a plán je vypnutý.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.satellites.enabled = true;
+  source.screenOrderTail[0] = CLOCK_SCREEN_SATELLITES;
+  seed(legacyRecord(source, 45, CLOCK_CONFIG_SCHEMA_45_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.satellites.enabled);
+  assert(clockConfigScreenAt(migrated, 8) == CLOCK_SCREEN_SATELLITES);
+  assert(migrated.screenSchedule.startupScreen == CLOCK_SCREEN_CLOCK);
+  for (const ClockScreenScheduleRule &rule : migrated.screenSchedule.rules)
+    assert(rule.screen == CLOCK_SCREEN_ORDER_UNUSED);
+
+  // Družice od soumraku do svítání, letadla přes den; uloží se a načtou.
+  migrated.screenSchedule.startupScreen = CLOCK_SCREEN_PLANES;
+  ClockScreenScheduleRule &night = migrated.screenSchedule.rules[0];
+  night.screen = CLOCK_SCREEN_SATELLITES;
+  night.startEvent = CLOCK_SCHEDULE_CIVIL_DUSK;
+  night.endEvent = CLOCK_SCHEDULE_CIVIL_DAWN;
+  night.startValue = 15;
+  // Hodnoty mimo rozsah se srovnají, neznámá obrazovka pravidlo vypne.
+  ClockScreenScheduleRule &broken = migrated.screenSchedule.rules[1];
+  broken.screen = 42;
+  ClockScreenScheduleRule &clamped = migrated.screenSchedule.rules[2];
+  clamped.screen = CLOCK_SCREEN_RADAR;
+  clamped.startEvent = CLOCK_SCHEDULE_TIME;
+  clamped.startValue = 2000;
+  clamped.endEvent = 9;
+  clamped.endValue = 77;
+  ClockScreenScheduleRule &offset = migrated.screenSchedule.rules[3];
+  offset.screen = CLOCK_SCREEN_CLOCK;
+  offset.startEvent = CLOCK_SCHEDULE_SUNSET;
+  offset.startValue = -500;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.screenSchedule.startupScreen == CLOCK_SCREEN_PLANES);
+  assert(loaded.screenSchedule.rules[0].screen == CLOCK_SCREEN_SATELLITES);
+  assert(loaded.screenSchedule.rules[0].startEvent == CLOCK_SCHEDULE_CIVIL_DUSK);
+  assert(loaded.screenSchedule.rules[0].startValue == 15);
+  assert(loaded.screenSchedule.rules[1].screen == CLOCK_SCREEN_ORDER_UNUSED);
+  assert(loaded.screenSchedule.rules[2].startValue == 1439);
+  assert(loaded.screenSchedule.rules[2].endEvent == CLOCK_SCHEDULE_TIME);
+  assert(loaded.screenSchedule.rules[2].endValue == 0);
+  assert(loaded.screenSchedule.rules[3].startValue ==
+         -CLOCK_SCHEDULE_MAX_OFFSET_MINUTES);
+  loaded.screenSchedule.startupScreen = 200;
+  clockConfigNormalizeScreenSchedule(loaded.screenSchedule);
+  assert(loaded.screenSchedule.startupScreen == CLOCK_SCREEN_CLOCK);
+}
+
 int main() {
+  testScreenSchedulePersistenceAndMigration();
   testSatellitesPersistenceAndMigration();
   testSchoolPersistenceAndMigration();
   testRadarPrecipitationPersistenceAndMigration();

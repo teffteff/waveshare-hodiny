@@ -3112,6 +3112,10 @@ lv_obj_t *schoolHourLabels[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
 lv_obj_t *schoolSubjectLabels[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
 lv_obj_t *schoolDueLabels[SCHOOL_MAX_HOMEWORK] = {};
 lv_obj_t *schoolTaskLabels[SCHOOL_MAX_HOMEWORK] = {};
+// Obědy pod rozvrhem: den vlevo (jen u prvního jídla dne), vedle "ZŠ: jídlo".
+lv_obj_t *schoolMealsHeading = nullptr;
+lv_obj_t *schoolMealWhenLabels[SCHOOL_MAX_MEALS] = {};
+lv_obj_t *schoolMealTextLabels[SCHOOL_MAX_MEALS] = {};
 // Druhá stránka: nepřečtené zprávy, nové známky a nástěnka školky, přepíná
 // se tažením prstu stejně jako druhá sada hodnot. Obrazovka se vždycky
 // otevírá na rozvrhu.
@@ -3138,8 +3142,10 @@ char schoolEndTimes[SCHOOL_MAX_DAYS][SCHOOL_TIME_LENGTH] = {};
 // Popisek dne, jak ho skládá clockDashboardSetSchool. Šířka se měří z téhle
 // kopie: v režimu LV_LABEL_LONG_DOT může label vracet text už s tečkami.
 char schoolHeadings[SCHOOL_MAX_DAYS][2 * SCHOOL_DAY_LENGTH + 4] = {};
+bool schoolHasHomework = false;
 uint8_t schoolHomeworkCount = 0;
 uint8_t schoolHomeworkTotal = 0;
+uint8_t schoolMealCount = 0;
 bool schoolHasMessages = false;
 uint8_t schoolMessageCount = 0;
 uint8_t schoolMessageTotal = 0;
@@ -3216,6 +3222,12 @@ void applySchoolColors() {
   const lv_color_t text = redNight ? COLOR_ERROR : COLOR_TEXT;
   setTextColor(schoolStatusLabel, muted);
   setTextColor(schoolHomeworkHeading, muted);
+  setTextColor(schoolMealsHeading, muted);
+  for (size_t index = 0; index < SCHOOL_MAX_MEALS; ++index) {
+    setTextColor(schoolMealWhenLabels[index],
+                 redNight ? COLOR_ERROR : COLOR_ROOM);
+    setTextColor(schoolMealTextLabels[index], text);
+  }
   for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
     setTextColor(schoolDayLabels[day], muted);
     setTextColor(schoolEndLabels[day], text);
@@ -3394,7 +3406,9 @@ void layoutSchoolPage() {
   if (!schoolNewsAvailable()) schoolPageIndex = 0;
   const bool newsPage = schoolPageIndex == 1;
   layoutSchoolNewsPage(newsPage, english);
-  const bool homeworkShown = dashboardRuntimeConfig.school.showHomework;
+  // Server s vypnutými úkoly klíč neposílá; pak se neukáže ani hlavička.
+  const bool homeworkShown =
+      dashboardRuntimeConfig.school.showHomework && schoolHasHomework;
   uint8_t rows = 0;
   for (size_t day = 0; day < schoolDayCount; ++day)
     if (schoolLessonCounts[day] > rows) rows = schoolLessonCounts[day];
@@ -3408,12 +3422,13 @@ void layoutSchoolPage() {
       haveDays && homeworkShown,
       SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
                           SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
-                          SCHOOL_BLOCK_HEIGHT});
+                          SCHOOL_BLOCK_HEIGHT},
+      schoolReady ? schoolMealCount : 0);
   // Na druhé stránce se rozvrh schová celý, včetně hlášky uprostřed.
   if (newsPage) schoolVisible = SchoolLayoutResult{};
   const bool showMessage =
-      !newsPage &&
-      (!schoolReady || (!haveDays && schoolVisible.homework == 0));
+      !newsPage && (!schoolReady || (!haveDays && schoolVisible.homework == 0 &&
+                                     schoolVisible.meals == 0));
   setObjectVisible(schoolStatusLabel, showMessage);
   if (showMessage) {
     const char *text;
@@ -3496,6 +3511,41 @@ void layoutSchoolPage() {
   }
 
   int cursorY = lessonsTop + schoolVisible.lessons * line;
+  const bool mealsHeading = schoolVisible.meals > 0;
+  setObjectVisible(schoolMealsHeading, mealsHeading);
+  if (mealsHeading) {
+    cursorY += SCHOOL_SECTION_GAP;
+    lv_label_set_text(schoolMealsHeading, english ? "LUNCH" : "OBĚDY");
+    placeSchoolLabel(schoolMealsHeading,
+                     schoolRowLeft(SCHOOL_RADIUS, SCHOOL_LEFT, cursorY,
+                                   schoolHeadingHeight()),
+                     cursorY);
+    cursorY += schoolHeadingHeight() + SCHOOL_ROW_GAP;
+  }
+  for (size_t index = 0; index < SCHOOL_MAX_MEALS; ++index) {
+    const bool visible = index < schoolVisible.meals;
+    // Den stojí jen u prvního jídla toho dne; pod ním by jen opakoval.
+    const bool repeatedDay =
+        index > 0 &&
+        strcmp(lv_label_get_text(schoolMealWhenLabels[index]),
+               lv_label_get_text(schoolMealWhenLabels[index - 1])) == 0;
+    setObjectVisible(schoolMealWhenLabels[index], visible && !repeatedDay);
+    setObjectVisible(schoolMealTextLabels[index], visible);
+    if (!visible) continue;
+    // Obědy leží u spodního okraje, kde je kruh užší: řádek se vejde celý
+    // a tečky LONG_DOT padnou ještě na displej, ne za jeho okraj.
+    const int height = schoolLineHeight();
+    const int left = schoolRowLeft(SCHOOL_RADIUS, SCHOOL_LEFT, cursorY, height);
+    const int limit =
+        -schoolRowLeft(SCHOOL_RADIUS, -SCHOOL_RADIUS, cursorY, height);
+    const int right = limit < SCHOOL_RIGHT ? limit : SCHOOL_RIGHT;
+    const int textLeft = left + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP;
+    placeSchoolLabel(schoolMealWhenLabels[index], left, cursorY);
+    lv_obj_set_width(schoolMealTextLabels[index],
+                     right > textLeft ? right - textLeft : 1);
+    placeSchoolLabel(schoolMealTextLabels[index], textLeft, cursorY);
+    cursorY += line;
+  }
   const bool homeworkHeading =
       schoolVisible.homework > 0 || schoolVisible.homeworkEmpty;
   setObjectVisible(schoolHomeworkHeading, homeworkHeading);
@@ -3592,6 +3642,14 @@ void createSchoolPage(lv_obj_t *screen) {
     schoolDueLabels[index] = makeSchoolLabel(&clock_czech_16, SCHOOL_DUE_WIDTH,
                                              LV_TEXT_ALIGN_LEFT);
     schoolTaskLabels[index] =
+        makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
+  }
+  schoolMealsHeading =
+      makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+  for (size_t index = 0; index < SCHOOL_MAX_MEALS; ++index) {
+    schoolMealWhenLabels[index] = makeSchoolLabel(
+        &clock_czech_16, SCHOOL_DUE_WIDTH, LV_TEXT_ALIGN_LEFT);
+    schoolMealTextLabels[index] =
         makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
   }
   schoolMessagesHeading =
@@ -7485,8 +7543,10 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
           sizeof(schoolMessage));
   if (feed == nullptr) {
     schoolDayCount = 0;
+    schoolHasHomework = false;
     schoolHomeworkCount = 0;
     schoolHomeworkTotal = 0;
+    schoolMealCount = 0;
     schoolHasMessages = schoolHasMarks = schoolHasNotices = false;
     schoolMessageCount = schoolMessageTotal = 0;
     schoolMarkCount = schoolMarkTotal = 0;
@@ -7545,6 +7605,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
       lv_label_set_text(schoolSubjectLabels[dayIndex][index], text);
     }
   }
+  schoolHasHomework = feed->hasHomework;
   schoolHomeworkCount = static_cast<uint8_t>(feed->homeworkCount);
   schoolHomeworkTotal = static_cast<uint8_t>(
       feed->homeworkTotal < UINT8_MAX ? feed->homeworkTotal : UINT8_MAX);
@@ -7562,6 +7623,18 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   const auto clampCount = [](size_t value) {
     return static_cast<uint8_t>(value < UINT8_MAX ? value : UINT8_MAX);
   };
+  schoolMealCount = clampCount(feed->mealCount);
+  for (size_t index = 0; index < feed->mealCount; ++index) {
+    const SchoolMeal &meal = feed->meals[index];
+    lv_label_set_text(schoolMealWhenLabels[index], meal.when);
+    char text[SCHOOL_MEAL_WHO_LENGTH + SCHOOL_TITLE_LENGTH + 4];
+    if (meal.who[0] != '\0') {
+      snprintf(text, sizeof(text), "%s: %s", meal.who, meal.text);
+    } else {
+      strlcpy(text, meal.text, sizeof(text));
+    }
+    lv_label_set_text(schoolMealTextLabels[index], text);
+  }
   schoolHasMessages = feed->hasMessages;
   schoolMessageCount = clampCount(feed->messageCount);
   schoolMessageTotal = clampCount(feed->messageTotal);

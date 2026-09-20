@@ -38,6 +38,7 @@
 #include "TmepService.h"
 #include "WifiOnboarding.h"
 #include "WifiProvisioning.h"
+#include "ScreenSchedule.h"
 #include "WeatherAnimationService.h"
 #include "WeatherForecastService.h"
 #include "WeatherIconMapping.h"
@@ -169,6 +170,15 @@ uint16_t displayedPlanesRangeKm = 0;
 bool displayedPlanesLoading = false;
 unsigned long displayModeStartedAt = 0;
 bool radarRotationWaitingForCycle = false;
+// Plán obrazovek. Obrazovka, kterou právě drží okno plánu, nebo
+// CLOCK_SCREEN_ORDER_UNUSED mimo okno. Dokud ji drží, automatické střídání
+// stojí; ruční přepnutí platí, ale po SCHEDULE_RETURN_MS bez dalšího se
+// hodiny k obrazovce plánu vrátí.
+uint8_t scheduleHeldScreen = CLOCK_SCREEN_ORDER_UNUSED;
+bool scheduleCheckPending = true;
+unsigned long scheduleCheckedAt = 0;
+unsigned long lastManualScreenChangeAt = 0;
+bool startupScreenShown = false;
 uint32_t radarRotationCycleAtTimeout = 0;
 bool radarRedNightModeApplied = false;
 
@@ -506,6 +516,8 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarSource);
   applyPlaneRadarState(dashboardConfigBuffer);
   applySatellitesState(dashboardConfigBuffer);
+  // Nový plán nebo vypnutá obrazovka platí hned, ne až při další kontrole.
+  scheduleCheckPending = true;
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
   // panelu. Provádíme ji až po dokončení obsluhy HTTP požadavku.
   LCD_Resync();
@@ -1200,9 +1212,10 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     SchoolStatus status;
     // Zamčená mezipaměť neznamená prázdný rozvrh; zkusí se za chvíli znovu.
     if (!schoolServiceStatus(status)) return false;
-    // O prázdninách bez úkolů by obrazovka řekla jen "žádné vyučování";
-    // ruční gesto na ni pustí pořád.
-    return status.ready && (status.lessonCount > 0 || status.homeworkCount > 0);
+    // O prázdninách bez úkolů a obědů by obrazovka řekla jen "žádné
+    // vyučování"; ruční gesto na ni pustí pořád.
+    return status.ready && (status.lessonCount > 0 || status.homeworkCount > 0 ||
+                            status.mealCount > 0);
   }
   if (screen == ROTATION_SCREEN_SATELLITES) {
     // Dráhy z řídkého stahování na pozadí musí pokrývat tuhle chvíli; prázdná
@@ -1255,9 +1268,11 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_SKY) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES);
+  // Okno plánu drží svou obrazovku; střídání se rozběhne až po něm.
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
-                       clockDashboardAutomaticRotationAllowed();
+                       clockDashboardAutomaticRotationAllowed() &&
+                       scheduleHeldScreen == CLOCK_SCREEN_ORDER_UNUSED;
   if (!allowed) {
     automaticRotationPaused = true;
     radarRotationWaitingForCycle = false;
@@ -1328,6 +1343,7 @@ void maintainDisplayGestures() {
       showRotationScreen(candidate);
       displayModeStartedAt = millis();
       radarRotationWaitingForCycle = false;
+      lastManualScreenChangeAt = millis();
       break;
     }
   }
@@ -1350,6 +1366,88 @@ void maintainDisplayGestures() {
   if (displayDriverTakeShortTap(tapX, tapY))
     clockDashboardHandleSingleTap(tapX, tapY);
   if (displayDriverTakeDoubleTap()) clockDashboardHandleDoubleTap();
+}
+
+// Přepne na obrazovku, pokud je zapnutá. Nastavení na displeji zavře; když
+// běží aktualizace firmwaru, nepřepne nic.
+bool switchToScreen(const ClockConfig &config, uint8_t screen) {
+  if (screen >= CLOCK_SCREEN_ORDER_COUNT ||
+      !rotationScreenAvailable(config, screen) ||
+      !clockDashboardManualScreenChangeAllowed())
+    return false;
+  showRotationScreen(screen);
+  displayModeStartedAt = millis();
+  radarRotationWaitingForCycle = false;
+  return true;
+}
+
+// Přepnutí z webu nebo z ovládacího API se počítá jako ruční: plán se k své
+// obrazovce vrátí za pět minut, stejně jako po přetažení prstem.
+bool showScreenFromWeb(uint8_t screen) {
+  if (!switchToScreen(loopConfigSnapshot(), screen)) return false;
+  lastManualScreenChangeAt = millis();
+  return true;
+}
+
+uint8_t currentScreenForWeb() {
+  const uint8_t screen = activeRotationScreen();
+  return screen == ROTATION_SCREEN_SETTINGS ? CLOCK_SCREEN_ORDER_COUNT : screen;
+}
+
+constexpr unsigned long SCHEDULE_CHECK_MS = 30UL * 1000UL;
+constexpr unsigned long SCHEDULE_RETURN_MS = 5UL * 60UL * 1000UL;
+
+// Výchozí obrazovka po startu a plán obrazovek. Plán se počítá z času
+// a polohy, takže se po restartu uprostřed okna chytí sám; kontroluje se
+// jednou za půl minuty a hned po změně nastavení.
+void maintainScreenSchedule() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  if (!startupScreenShown) {
+    // Hned po startu, ještě bez času ze sítě: plán se chytí, jakmile čas
+    // dorazí, a výchozí obrazovku případně vystřídá.
+    startupScreenShown = true;
+    const uint8_t startup = config.screenSchedule.startupScreen;
+    if (startup != CLOCK_SCREEN_CLOCK) switchToScreen(config, startup);
+  }
+  if (!timeWasSynchronized) return;
+
+  if (scheduleCheckPending || now - scheduleCheckedAt >= SCHEDULE_CHECK_MS) {
+    scheduleCheckPending = false;
+    scheduleCheckedAt = now;
+    const int rule = screenScheduleActiveRule(
+        config.screenSchedule, static_cast<int64_t>(time(nullptr)),
+        config.openMeteoLatitude, config.openMeteoLongitude);
+    uint8_t screen = rule >= 0 ? config.screenSchedule.rules[rule].screen
+                               : CLOCK_SCREEN_ORDER_UNUSED;
+    // Pravidlo pro vypnutou obrazovku nic nedrží, jinak by stálo i střídání.
+    if (screen != CLOCK_SCREEN_ORDER_UNUSED &&
+        !rotationScreenAvailable(config, screen))
+      screen = CLOCK_SCREEN_ORDER_UNUSED;
+    if (screen != scheduleHeldScreen) {
+      const bool ended = scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED &&
+                         screen == CLOCK_SCREEN_ORDER_UNUSED;
+      scheduleHeldScreen = screen;
+      if (!clockDashboardSettingsVisible()) {
+        if (screen != CLOCK_SCREEN_ORDER_UNUSED) {
+          switchToScreen(config, screen);
+        } else if (ended) {
+          // Konec okna vrací výchozí obrazovku a střídání jede od ní dál.
+          if (!switchToScreen(config, config.screenSchedule.startupScreen))
+            switchToScreen(config, CLOCK_SCREEN_CLOCK);
+        }
+      }
+    }
+  }
+
+  // Ručně odbočené hodiny se k obrazovce plánu vrátí po pěti minutách.
+  // Otevřené nastavení na displeji se nezavírá: kdo v něm je, něco dělá.
+  if (scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED &&
+      !clockDashboardSettingsVisible() &&
+      activeRotationScreen() != scheduleHeldScreen &&
+      now - lastManualScreenChangeAt >= SCHEDULE_RETURN_MS) {
+    switchToScreen(config, scheduleHeldScreen);
+  }
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
@@ -3443,6 +3541,7 @@ void setup() {
   configurationWebSetSatellitesProbe(runSatellitesProbeFromWeb);
   configurationWebSetBackgroundWork(runBackgroundWorkFromWeb);
   configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
+  configurationWebSetScreenControl(showScreenFromWeb, currentScreenForWeb);
   // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
   // stojí stejně zásobníku jako u kanálu zpráv.
   xTaskCreatePinnedToCoreWithCaps(
@@ -3513,6 +3612,7 @@ void loop() {
   maintainAgendaDisplay();
   maintainSchoolDisplay();
   maintainForecastDisplay();
+  maintainScreenSchedule();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
   // pozastavení LVGL timerů zabrání tomu, aby GIF dekodér soupeřil s USB CDC;

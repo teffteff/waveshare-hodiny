@@ -63,9 +63,11 @@ changes the system text and verbal date shown on the display.
 - a news screen fed by any RSS or Atom feed,
 - an agenda screen fed by Google Calendar, merged across several calendars and
   coloured by the one each event came from,
-- a school screen with the timetable and homework from Škola OnLine through
-  your own server, with substitutions, cancelled lessons and the current lesson
-  highlighted,
+- a school screen with the timetable, lunch from the school canteen and the
+  kindergarten, and homework from Škola OnLine through your own server, with
+  substitutions, cancelled lessons and the current lesson highlighted,
+- a startup screen, switching the screen from the web or Home Assistant, and a
+  screen schedule by time or by the sun (for example satellites from dusk),
 - a forecast screen with hourly and daily Open-Meteo data, optionally with air
   quality, PM2.5 and grass pollen — and nine hours instead of six without it,
 - an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by
@@ -487,6 +489,22 @@ rotating to a page that only reports emptiness is not worth a slot — the finge
 hold still reaches it whenever you want. After a failure the firmware retries in
 two minutes and keeps the last successfully loaded events on screen.
 
+### Screen on the display and the screen schedule
+
+On the **Screens** tab the display can be switched right away (**Show now**),
+without saving; automatic rotation then carries on as usual. The **Default
+screen** comes up after the clock starts and when a schedule window ends.
+
+The **Screen schedule** has four rows. Each holds one screen during a
+"from–to" window whose edges are a fixed time, or sunrise, sunset, civil dawn
+or civil dusk with an offset in minutes. A window may cross midnight, for
+example satellites from civil dusk to dawn and planes from dawn to dusk. The
+sun is computed on the clock for the location set for the weather. During a
+window automatic rotation stops; you can still switch by hand or from the web,
+and after five minutes without another switch the clock returns to the
+scheduled screen. When windows overlap, the higher row wins. A rule for a
+disabled screen is skipped.
+
 ### School timetable and homework
 
 The **School** screen shows one child's timetable for two school days side by
@@ -506,7 +524,14 @@ cancelled lesson is dimmed with `odpadá` after the subject. Below the timetable
 **homework** due from today over the next two weeks, as much as fits; when it
 does not all fit, the last line becomes three dots. When there is none,
 `ŽÁDNÉ ÚKOLY` (no homework) stands below the timetable. Homework can be
-switched off on the tab.
+switched off on the tab; a server that does not fetch it (`SCHOOL_HOMEWORK=0`)
+does not send it at all, and then the heading stays hidden too.
+
+Between the timetable and the homework is **lunch** for today and tomorrow:
+the main course from the school canteen (`ZŠ`) and the kindergarten (`MŠ`),
+without soup, allergens and drinks. The day label stands only at the first
+meal of each day. The server fetches the menus and the clock only copies the
+finished rows; a server without menus configured leaves the section out.
 
 Swiping sideways switches to a second page (like the second set of values on
 the VALUES face): **unread messages** and **marks** from the last two weeks.
@@ -853,6 +878,11 @@ automatic updates use the same implementation and validation.
 The web interface shows a control endpoint containing a random 128-bit secret.
 It can refresh data, control the backlight and invoke other supported actions.
 Treat the URL as a credential and never publish it in screenshots, logs or Git.
+
+`POST …/api/control/<secret>/screen/<name>` switches the screen, where the name
+is `clock`, `radar`, `rss`, `forecast`, `planes`, `agenda`, `sky`, `school` or
+`satellites`; a disabled screen answers 409. Useful in automations, for example
+the radar when it rains.
 
 ## Building from source
 

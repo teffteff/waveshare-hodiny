@@ -59,6 +59,13 @@ MAX_MARK = 8
 # tydny uz na hodinach jen visi.
 NOTICE_DAYS = int(os.environ.get("SCHOOL_NOTICE_DAYS", "14"))
 MAX_NOTICES = 6
+# Obedy pod rozvrhem: dnes a zitra, u kazdeho dne skolni jidelna a skolka.
+# Popisky stoji na displeji pred jidlem, takze musi byt kratke.
+CANTEEN_LABEL = os.environ.get("SCHOOL_CANTEEN_LABEL", "ZŠ")
+NASEMS_MENU_LABEL = os.environ.get("NASEMS_MENU_LABEL", "MŠ")
+# Ktere jidlo z iCanteenu: jidelna vari dve, dite ma jedno.
+CANTEEN_MEAL = os.environ.get("SCHOOL_CANTEEN_MEAL", "Oběd1")
+MEAL_DAYS = 2
 # Tituly pred jmenem ("Mgr.", "PaedDr.") a za nim ("Ph.D.") koncici teckou.
 _ACADEMIC_TITLE = re.compile(r"\S+\.$")
 
@@ -488,6 +495,174 @@ def normalize_notices(page: str) -> list[dict]:
     return notices
 
 
+# --- jidelnicky ------------------------------------------------------------------
+
+# Napoje jidelnicky pisou mezi jidla ("..., těstoviny, ovocný čaj, voda").
+# Na displeji by jen zabraly misto, kam se vejde zbytek jidla. Polozka se
+# zahodi jen cela: "rýže na mléce" je jidlo, "mléko" napoj.
+_DRINK = re.compile(
+    r"^(?:[\w-]+(?:\.\s*|\s+)){0,2}(?:čaj|voda|mléko|kakao|káva|šťáva|džus|sirup|"
+    r"nápoj|limonáda|mošt|melta)(?:\s+s\s+[\w.]+)?$", re.IGNORECASE)
+# iCanteen pise alergeny za jidlo mezi lomitka: "parmezán/1.1, 3, 7/".
+_CANTEEN_ALLERGENS = re.compile(r"/\s*\d[\d.,\s]*(?:/|$)")
+# Cislo jidla pred hlavnim chodem: "polévka …/1- Bramborové špecle".
+_CANTEEN_MAIN = re.compile(r"(?:^|\s)\d+\s*-\s*")
+_MENU_DATE = re.compile(r"(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})")
+
+
+def meal_text(text: str) -> str:
+    """Jidlo na jeden radek: bez alergenu a napoju, s carkami po cesku."""
+    parts = [" ".join(part.split()) for part in (text or "").split(",")]
+    kept = [part for part in parts if part and not _DRINK.match(part)]
+    return plain_text(", ".join(kept))
+
+
+def _menu_date(text: str) -> date | None:
+    match = _MENU_DATE.search(text or "")
+    if match is None:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+class _CanteenParser(HTMLParser):
+    """iCanteen ukazuje jidelnicek na tydny dopredu i neprihlasenemu, primo na
+    prihlasovaci strance. Den je <div class="jidelnicekDen"> s datem v id
+    "day-2026-09-21", jidla jsou <div class="container"> s nazvem
+    ("Oběd1") ve shrinkedColumn a popisem v column."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.days: list[dict] = []
+        self._stack: list[str | None] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "div":
+            return
+        attributes = dict(attrs)
+        classes = (attributes.get("class") or "").split()
+        field = None
+        match = re.fullmatch(r"day-(\d{4}-\d{2}-\d{2})", attributes.get("id") or "")
+        if match:
+            self.days.append({"date": match.group(1), "meals": []})
+        elif self.days and "container" in classes:
+            self.days[-1]["meals"].append({"name": "", "text": ""})
+        elif self.days and self.days[-1]["meals"] and "jidelnicekItem" in classes:
+            field = "name" if "shrinkedColumn" in classes else "text"
+        self._stack.append(field)
+
+    def handle_endtag(self, tag):
+        if tag == "div" and self._stack:
+            self._stack.pop()
+
+    def handle_data(self, data):
+        field = next((field for field in reversed(self._stack) if field), None)
+        if field and self.days and self.days[-1]["meals"]:
+            self.days[-1]["meals"][-1][field] += data
+
+
+def normalize_canteen(page: str, meal: str | None = None) -> list[dict]:
+    """Hlavni chod jednoho jidla (CANTEEN_MEAL) po dnech, bez polevky,
+    alergenu a napoju."""
+    wanted = "".join((meal or CANTEEN_MEAL).split()).lower()
+    parser = _CanteenParser()
+    parser.feed(page or "")
+    parser.close()
+    meals = []
+    for day in parser.days:
+        for item in day["meals"]:
+            if "".join(item["name"].split()).lower() != wanted:
+                continue
+            text = _CANTEEN_ALLERGENS.sub(" ", " ".join(item["text"].split()))
+            # Polevka stoji pred cislem jidla. Kdyby cislo chybelo, zustane
+            # cely text: radsi polevka navic nez prazdny radek.
+            parts = _CANTEEN_MAIN.split(text, maxsplit=1)
+            text = meal_text(parts[1] if len(parts) == 2 else text)
+            if text:
+                meals.append({"date": day["date"], "text": text})
+            break
+    return meals
+
+
+class _NasemsMenuParser(HTMLParser):
+    """Jidelnicek skolky: <div class='podnadpis'> s dnem ("Pondělí -
+    14.9.2026") v left_side, pod nim tabulka: nazev chodu ve <span>
+    ("Hlavní chod:"), popis v <div class='bold'>, alergeny v
+    <div class='alergeny'>."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.days: list[dict] = []
+        self._stack: list[tuple[str, str | None]] = []
+
+    def handle_starttag(self, tag, attrs):
+        classes = (dict(attrs).get("class") or "").split()
+        field = None
+        if tag == "div" and "podnadpis" in classes:
+            self.days.append({"day": "", "courses": []})
+        elif self.days and tag == "div" and "left_side" in classes and not self.days[-1]["courses"]:
+            field = "day"
+        elif self.days and tag == "tr":
+            self.days[-1]["courses"].append({"name": "", "text": ""})
+        elif self.days and self.days[-1]["courses"] and tag == "span" and "coloured" in classes:
+            field = "name"
+        elif self.days and self.days[-1]["courses"] and tag == "div" and "bold" in classes:
+            field = "text"
+        if tag in ("div", "span", "tr", "td", "table"):
+            self._stack.append((tag, field))
+
+    def handle_endtag(self, tag):
+        # Uzavre posledni otevreny prvek stejneho jmena; HTML nasems.cz je
+        # uzavrene poradne, ale spatny konec nesmi rozbit zbytek stranky.
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index][0] == tag:
+                del self._stack[index:]
+                break
+
+    def handle_data(self, data):
+        field = next((field for _, field in reversed(self._stack) if field), None)
+        if field is None or not self.days:
+            return
+        day = self.days[-1]
+        if field == "day":
+            day["day"] += data
+        elif day["courses"]:
+            day["courses"][-1][field] += data
+
+
+def normalize_nasems_menu(page: str) -> list[dict]:
+    """Hlavni chod skolky po dnech, bez alergenu a napoju."""
+    parser = _NasemsMenuParser()
+    parser.feed(page or "")
+    parser.close()
+    meals = []
+    for day in parser.days:
+        when = _menu_date(day["day"])
+        if when is None:
+            continue
+        for course in day["courses"]:
+            name = " ".join(course["name"].split()).rstrip(":").lower()
+            if name != "hlavní chod":
+                continue
+            text = meal_text(course["text"])
+            if text:
+                meals.append({"date": when.isoformat(), "text": text})
+            break
+    return meals
+
+
+def nasems_next_week(page: str) -> str:
+    """Hodnota tlacitka "Následující týden" (unixovy cas zacatku tydne),
+    nebo prazdny retezec. Pristi tyden se nacita AJAXem pres tuto hodnotu.
+    Tlacitko zpet ma pred popiskem ikonu, takze se s timhle nesplete."""
+    match = re.search(r"data-polozka='(\d+)'>\s*<div class='button_description'>\s*Následující",
+                      page or "")
+    return match.group(1) if match else ""
+
+
 # --- odpoved pro hodiny ------------------------------------------------------
 
 def pick_day(lessons: list[dict], now: datetime) -> date | None:
@@ -617,6 +792,23 @@ def render(snapshot: dict, now: datetime | None = None) -> dict:
             "mark": mark.get("mark", ""),
             "theme": mark.get("theme", ""),
         } for mark in recent[:MAX_MARKS]]
+    # Server s vypnutymi ukoly klic neposila: hodiny pak nepisou ani
+    # "ŽÁDNÉ ÚKOLY", ktere by o ukolech nic nerikalo.
+    if snapshot.get("homeworkEnabled") is False:
+        del body["homework"]
+    # Obedy dnes a zitra, u kazdeho dne jidelna a skolka. Den bez jidla
+    # (vikend, prazdniny) se vynecha; hodiny z prazdneho pole nic nekresli.
+    menus = [(label, snapshot[key]) for key, label in
+             (("canteen", CANTEEN_LABEL), ("kindermenu", NASEMS_MENU_LABEL)) if key in snapshot]
+    if menus:
+        meals = []
+        for offset in range(MEAL_DAYS):
+            day = today + timedelta(days=offset)
+            for label, items in menus:
+                item = next((item for item in items if item.get("date") == day.isoformat()), None)
+                if item and item.get("text"):
+                    meals.append({"when": day_label(day, today), "who": label, "text": item["text"]})
+        body["meals"] = meals
     if "notices" in snapshot:
         horizon = today - timedelta(days=NOTICE_DAYS)
         recent = [notice for notice in snapshot["notices"]

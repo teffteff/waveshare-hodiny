@@ -1312,6 +1312,13 @@ void planeRadarTask(void *) {
     if (settingsChanged) {
       lastRevision = revision;
       fetchNow = true;
+      // Kruhy, mapa a tečky dosahu v novém měřítku hned, ne až po stažení,
+      // které trvá vteřiny. Žádost se čte znovu, protože přetažení prstem
+      // mohlo přijít až po kopii na začátku průchodu.
+      if (wantVisible &&
+          currentRequest(planes, feedUrl, sizeof(feedUrl), latitude, longitude,
+                         night, wantVisible, wantActive))
+        renderFrame(planes, latitude, longitude, night);
     }
 
     const bool nightChanged = night != lastNight;
@@ -1642,6 +1649,10 @@ void planeRadarServiceChangeRange(int8_t direction) {
       ++requestRevision;
       fetchNowRequested = true;
       redrawRequested = true;
+      // Letadla z minulého stažení patří k jinému dosahu: na novém měřítku by
+      // sedla jinam a jejich počet by nesouhlasil. Do stažení se proto
+      // nekreslí a místo počtu svítí "Načítám letadla...".
+      aircraftStale = true;
       notify = true;
     }
   }

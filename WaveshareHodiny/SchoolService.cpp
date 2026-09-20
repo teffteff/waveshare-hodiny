@@ -167,6 +167,7 @@ bool schoolServiceStatus(SchoolStatus &status) {
     for (size_t index = 0; index < schoolCache->feed.dayCount; ++index)
       status.lessonCount += schoolCache->feed.days[index].lessonCount;
     status.homeworkCount = schoolCache->feed.homeworkCount;
+    status.mealCount = schoolCache->feed.mealCount;
     strlcpy(status.message, schoolCache->message, sizeof(status.message));
   }
   xSemaphoreGive(schoolMutex);
@@ -358,8 +359,14 @@ static bool schoolServiceDownload(const ClockSchoolConfig &config,
     detail += parsed.dayCount;
     detail += F(", hodin: ");
     detail += lessons;
-    detail += F(", úkolů: ");
-    detail += parsed.homeworkCount;
+    if (parsed.hasHomework) {
+      detail += F(", úkolů: ");
+      detail += parsed.homeworkCount;
+    }
+    if (parsed.hasMeals) {
+      detail += F(", obědů: ");
+      detail += parsed.mealCount;
+    }
     if (parsed.hasMessages) {
       detail += F(", zpráv: ");
       detail += parsed.messageTotal;
