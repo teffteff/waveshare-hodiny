@@ -2034,6 +2034,12 @@ void handleSaveConfig() {
     sendError(400, F("Rozsah meteoradaru není platný."));
     return;
   }
+  // Nula je "celá ČR" s pevným středem Česka; mimo něj by ukazovala cizí zemi.
+  if (radarRadiusKm == 0 && !clockConfigWholeCountryRangeAvailable(config)) {
+    sendError(400,
+              F("Rozsah celé ČR je dostupný jen pro polohu v České republice."));
+    return;
+  }
   config.radarRadiusKm = static_cast<uint16_t>(radarRadiusKm);
   const int radarFrameCount = server.arg("radarFrameCount").toInt();
   if (radarFrameCount < 1 || radarFrameCount > 15) {
@@ -3470,6 +3476,12 @@ void handleRadarRangePreview() {
   const int radiusKm = server.arg("radiusKm").toInt();
   if (!validRadarRadius(radiusKm)) {
     sendError(400, F("Rozsah meteoradaru není platný."));
+    return;
+  }
+  if (radiusKm == 0 &&
+      !clockConfigWholeCountryRangeAvailable(currentConfig())) {
+    sendError(409,
+              F("Rozsah celé ČR je dostupný jen pro polohu v České republice."));
     return;
   }
   if (currentRadarRangePreviewCallback == nullptr ||

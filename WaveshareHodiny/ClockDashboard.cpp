@@ -4807,14 +4807,27 @@ void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber) {
 
 void updateRadarRangeDots(uint16_t radiusKm) {
   const int gap = 16;
-  const int firstX = -((RADAR_RANGE_DOT_COUNT - 1) * gap) / 2;
+  // Poslední tečka patří rozsahu "celá ČR". Ten má pevný střed Česka, takže
+  // se mimo něj vůbec nenabízí; tečka, která by nikdy nesvítila, by na řadě
+  // jen matoucně přebývala. Řada se proto zkrátí a znovu vystředí, stejně
+  // jako to dělají tečky snímků při kratší animaci.
+  const uint8_t shown =
+      dashboardRuntimeConfigAvailable &&
+              !clockConfigWholeCountryRangeAvailable(dashboardRuntimeConfig)
+          ? RADAR_RANGE_DOT_COUNT - 1
+          : RADAR_RANGE_DOT_COUNT;
+  const int firstX = -((shown - 1) * gap) / 2;
   const lv_color_t accent =
       redNightVisualEnabled() ? COLOR_ERROR : COLOR_OUTSIDE;
-  layoutRadarDotBacking(radarRangeDotsBacking, RADAR_RANGE_DOT_COUNT, gap, 6,
+  layoutRadarDotBacking(radarRangeDotsBacking, shown, gap, 6,
                         RADAR_RANGE_DOTS_OFFSET_Y);
   for (uint8_t index = 0; index < RADAR_RANGE_DOT_COUNT; ++index) {
     lv_obj_t *dot = radarRangeDots[index];
     if (dot == nullptr) continue;
+    if (index >= shown) {
+      lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
     lv_obj_set_style_bg_color(
         dot, RADAR_RANGE_DOT_RADII[index] == radiusKm ? accent : COLOR_DIVIDER,
         0);

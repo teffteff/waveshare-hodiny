@@ -973,14 +973,18 @@ void handleRadarRangeChange(int8_t direction) {
   static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 200, 0};
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigRadarAvailable(config)) return;
+  // Poslední rozsah je "celá ČR" s pevným středem Česka; mimo něj řada končí
+  // u 200 km, aby swipe nepřehodil obraz na cizí zemi.
+  const size_t rangeCount =
+      clockConfigWholeCountryRangeAvailable(config) ? 5 : 4;
   size_t index = 1;
-  for (size_t candidate = 0; candidate < 5; ++candidate) {
+  for (size_t candidate = 0; candidate < rangeCount; ++candidate) {
     if (RADAR_RADII[candidate] == config.radarRadiusKm) {
       index = candidate;
       break;
     }
   }
-  if (direction > 0 && index + 1 < 5)
+  if (direction > 0 && index + 1 < rangeCount)
     ++index;
   else if (direction < 0 && index > 0)
     --index;

@@ -980,6 +980,10 @@ ClockConfigRecordStatus clockConfigDecodeRecord(const uint8_t *bytes,
                                                 size_t size,
                                                 ClockConfig &config);
 bool clockConfigRadarAvailable(const ClockConfig &config);
+// Rozsah "celá ČR" má pevný střed uprostřed Česka, ať už ho kreslí kompozice
+// ČHMÚ, nebo dlaždice RainVieweru. Mimo Česko by tedy místo okolí hodin ukazoval
+// cizí zemi, proto se tam vůbec nenabízí a řada rozsahů končí u 200 km.
+bool clockConfigWholeCountryRangeAvailable(const ClockConfig &config);
 // Obrazovka zpráv se kreslí jen se zapnutým kanálem a vyplněnou adresou.
 bool clockConfigRssAvailable(const ClockConfig &config);
 // Předpověď stojí na Open-Meteo, takže se kreslí jen se zapnutou obrazovkou.
