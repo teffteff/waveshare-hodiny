@@ -14,7 +14,7 @@ constexpr int64_t MAX_EPOCH = 4102444800LL;  // rok 2100
 constexpr uint16_t MAX_STEP_SECONDS = 120;
 
 constexpr const char *GROUP_NAMES[SATELLITE_GROUP_COUNT] = {
-    "stations", "visual", "weather", "gnss", "amateur", "starlink"};
+    "stations", "visual", "weather", "gnss", "amateur", "starlink", "satgus"};
 
 // Celé číslo i se znaménkem. JsonScan čte do floatu, který by unixový čas
 // zaokrouhlil o dvě minuty.
@@ -105,7 +105,8 @@ bool parseTrack(const char *itemBegin, const char *itemEnd, uint8_t sampleCount,
   return true;
 }
 
-void parsePass(const JsonValue &value, SatellitePass &pass) {
+void parsePass(const JsonValue &value, SatellitePass &pass,
+               const char *fallbackName) {
   pass = SatellitePass{};
   if (!value.isObject()) return;
   const char *begin = value.begin;
@@ -124,13 +125,39 @@ void parsePass(const JsonValue &value, SatellitePass &pass) {
   if (!readIntegerMember(begin, end, "maxTime", maxTime) || maxTime < rise ||
       maxTime > set)
     maxTime = rise + (set - rise) / 2;
-  int64_t visible = 0;
+  int64_t flag = 0;
   pass.rise = rise;
   pass.set = set;
   pass.maxTime = maxTime;
   pass.maxElevationDeg = static_cast<uint8_t>(maxElevation);
-  pass.visible = readIntegerMember(begin, end, "vis", visible) && visible == 1;
+  pass.visible = readIntegerMember(begin, end, "vis", flag) && flag == 1;
+  pass.preferred = readIntegerMember(begin, end, "pref", flag) && flag == 1;
+  copyName(begin, end, pass.name, sizeof(pass.name));
+  if (pass.name[0] == '\0')
+    snprintf(pass.name, sizeof(pass.name), "%s", fallbackName);
   pass.valid = true;
+}
+
+// Seznam "passes"; starší server ho nezná a posílá jen ISS v "pass".
+void parsePasses(const char *objectBegin, const char *objectEnd,
+                 SatelliteFeedInfo &info) {
+  const JsonValue list = jsonFindMember(objectBegin, objectEnd, "passes");
+  if (list.isArray()) {
+    JsonArrayCursor cursor = jsonOpenArray(list);
+    while (info.passCount < SATELLITE_MAX_PASSES && jsonNextItem(cursor)) {
+      JsonValue item;
+      item.begin = cursor.itemBegin;
+      item.end = cursor.itemEnd;
+      SatellitePass pass;
+      parsePass(item, pass, "");
+      if (!pass.valid || pass.name[0] == '\0') continue;
+      info.passes[info.passCount++] = pass;
+    }
+    return;
+  }
+  SatellitePass pass;
+  parsePass(jsonFindMember(objectBegin, objectEnd, "pass"), pass, "ISS");
+  if (pass.valid) info.passes[info.passCount++] = pass;
 }
 
 }  // namespace
@@ -186,7 +213,7 @@ SatelliteParseStatus satelliteParseFeed(const char *begin, const char *end,
     JsonArrayCursor cursor = jsonOpenArray(pending);
     info.pending = jsonNextItem(cursor);
   }
-  parsePass(jsonFindMember(objectBegin, objectEnd, "pass"), info.pass);
+  parsePasses(objectBegin, objectEnd, info);
 
   JsonArrayCursor cursor = jsonOpenArray(list);
   while (info.count < capacity && jsonNextItem(cursor)) {
@@ -292,4 +319,32 @@ void satelliteShortName(const char *name, char *output, size_t capacity) {
   if (length >= capacity) length = capacity - 1;
   memcpy(output, name, length);
   output[length] = '\0';
+}
+
+const SatellitePass *satellitePickPass(const SatelliteFeedInfo &info,
+                                       int64_t now) {
+  const SatellitePass *best = nullptr;
+  for (uint8_t index = 0; index < info.passCount; ++index) {
+    const SatellitePass &pass = info.passes[index];
+    // Přelet, který už skončil, server posílat nemá; kdyby přece, zahodí se.
+    if (!pass.valid || pass.set <= now) continue;
+    if (best == nullptr) {
+      best = &pass;
+      continue;
+    }
+    // Probíhající přelet je vždycky zajímavější než ten, co teprve přijde.
+    const bool running = pass.rise <= now;
+    const bool bestRunning = best->rise <= now;
+    if (running != bestRunning) {
+      if (running) best = &pass;
+      continue;
+    }
+    // Dřív začínající přelet vyhrává; domácí družice dostane náskok, jinak by
+    // ji druhá družice vytlačila skoro pokaždé.
+    const int64_t head = pass.preferred ? SATELLITE_PASS_PREFER_SECONDS : 0;
+    const int64_t bestHead =
+        best->preferred ? SATELLITE_PASS_PREFER_SECONDS : 0;
+    if (pass.rise - head < best->rise - bestHead) best = &pass;
+  }
+  return best;
 }

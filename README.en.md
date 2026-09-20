@@ -83,8 +83,9 @@ changes the system text and verbal date shown on the display.
 - a satellite screen: the sky above the clock as a circle with the zenith in the
   middle, showing the ISS and bright, weather, navigation, amateur radio and
   Starlink satellites with their path two minutes ahead, which ones can be seen
-  with the naked eye right now and the time of the next ISS pass; the orbits
-  are computed by your own server from CelesTrak data,
+  with the naked eye right now and the time of the next pass of the ISS or of
+  SATGUS, the household's own satellite; the orbits are computed by your own
+  server from CelesTrak data,
 - a sun and moon screen: rise and set times of both, civil dawn and dusk, day
   length, moon phase and illumination and the next full and new moon, computed
   on the device,
@@ -742,9 +743,12 @@ on the **Satellites** tab; with a password it must start with `https://`. The
 **Test the satellites** button asks the server before you save and shows what is
 above the horizon right now.
 
-**Groups.** Space stations (yellow), bright satellites visible to the naked eye
-(blue), weather (green), GPS, Galileo, GLONASS and BeiDou navigation (violet),
-amateur radio (orange) and Starlink (grey). The first three are on by default.
+**Groups.** SATGUS (white), space stations (yellow), bright satellites visible
+to the naked eye (blue), weather (green), GPS, Galileo, GLONASS and BeiDou
+navigation (violet), amateur radio (orange) and Starlink (grey). The first four
+are on by default. SATGUS (NORAD 62713) is our own satellite, which photographs
+pictures uploaded from home above the Earth; it belongs to no CelesTrak group,
+so the server downloads it on its own by catalogue number.
 Starlink is off on purpose: hundreds are usually above the horizon, so they are
 drawn as small dots without labels or paths and only get the room left over by
 the other groups (the cap is 150 satellites). A satellite in two groups is shown
@@ -757,8 +761,13 @@ empty ring is in Earth's shadow. Satellites below the minimum elevation (10° by
 default, a dotted circle on the display) are not drawn. A faint line shows where
 the satellite will be in two minutes. The line under the clock tells how many
 satellites are shown and, after dark, how many can be seen by eye. At the bottom
-is the **next ISS pass** above 10°: the time, the highest elevation and whether
-it will be visible.
+is the **next pass** above 10°: the satellite's name, the time, the highest
+elevation and whether it will be visible. There is one such line and it belongs
+to whichever pass starts first; SATGUS wins it even when it starts up to half an
+hour after the ISS, because the household's own satellite is the more
+interesting one. A pass already in progress always wins. A pass is only
+announced for a group that is switched on, so with SATGUS or the space stations
+off the line stays empty.
 
 Tap a satellite to open its details: elevation, azimuth with the compass
 direction, orbital altitude, range, group, NORAD catalogue number and whether it

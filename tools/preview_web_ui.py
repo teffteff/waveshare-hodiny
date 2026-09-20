@@ -187,7 +187,7 @@ def stub_config() -> dict:
         "schoolAutomaticRotation": False,
         "satellitesEnabled": True,
         "satellitesUrl": "https://hodiny:heslo@server.example/satellites.json",
-        "satellitesGroups": "stations,visual,weather",
+        "satellitesGroups": "satgus,stations,visual,weather",
         "satellitesMinElevation": 10,
         "satellitesRefreshSeconds": 60,
         "satellitesTopBearing": 0,
@@ -439,8 +439,15 @@ class PreviewHandler(BaseHTTPRequestHandler):
             self._json({
                 "ok": True, "count": 9, "total": 9, "ageHours": 3, "dark": True,
                 "pending": False, "problem": "",
-                "pass": {"rise": 1789508390, "set": 1789508779, "max": 48, "visible": True},
+                "passes": [
+                    {"name": "SATGUS", "rise": 1789509900, "set": 1789510300,
+                     "max": 31, "visible": True},
+                    {"name": "ISS", "rise": 1789508390, "set": 1789508779,
+                     "max": 48, "visible": True},
+                ],
                 "satellites": [
+                    {"name": "SATGUS", "group": "satgus", "elevation": 62,
+                     "azimuth": 158, "sunlit": True},
                     {"name": "ISS (ZARYA)", "group": "stations", "elevation": 54,
                      "azimuth": 212, "sunlit": True},
                     {"name": "NOAA 19", "group": "weather", "elevation": 31,

@@ -488,12 +488,23 @@ Obrazovka **Družice** ukazuje oblohu nad hodinami. Hodiny se ptají
 `GET /satellites.json?lat=…&lon=…&groups=…&minel=…` a `satellites/serve.py`
 jim vrátí pro každou družici nad obzorem azimut a výšku v desetinách stupně po
 15 s na 3 minuty dopředu (`p`), výšku dráhy, vzdálenost, jestli je na Slunci,
-výšku Slunce u pozorovatele a nejbližší přelet ISS nad 10°. Hodiny mezi body
-interpolují a ptají se jednou za minutu.
+výšku Slunce u pozorovatele a v `passes` nejbližší přelet nad 10° u ISS
+a SATGUS. Hodiny mezi body interpolují a ptají se jednou za minutu.
+
+**Přelety.** V `passes` je pro každou zapnutou skupinu s hlídanou družicí jeden
+záznam: `rise`, `set`, `maxTime`, `max`, `vis` (družice na Slunci a pozorovatel
+ve tmě) a u SATGUSu `pref`, podle kterého hodiny na jediný řádek pod oblohou
+vyberou radši ji. Tentýž záznam ISS jde navíc ve starém klíči `pass`, protože
+starší firmware seznam nezná a popisek u něj má napevno ISS. Přelet se
+počítá po deseti sekundách na 36 hodin dopředu a drží se v paměti do svého
+konce.
 
 **Odkud jsou dráhy.** Z [CelesTraku](https://celestrak.org/NORAD/elements/),
 skupiny `stations`, `visual`, `weather`, `gnss`, `amateur` a `starlink`, ve
-formátu OMM (JSON). TLE se nepoužívá: katalogová čísla nad 99999 se do něj
+formátu OMM (JSON). Skupina `satgus` je jediná družice: SATGUS (NORAD 62713,
+2025-009DJ) v žádné skupině CelesTraku není, takže se stahuje dotazem
+`CATNR=62713` a jinak se chová jako ostatní skupiny (stejná obnova, cache
+i záloha na disku). TLE se nepoužívá: katalogová čísla nad 99999 se do něj
 nevejdou. Poloha se počítá knihovnou `sgp4` (referenční implementace SGP4) pro
 celou skupinu naráz přes NumPy; převod TEME → souřadnice pozorovatele je ve
 `serve.py` a proti Skyfieldu sedí na setiny stupně (ověřeno 15. 9. 2026).
@@ -538,6 +549,12 @@ SSH "$CLOCK_SSH" "echo SATELLITES_HASH=\$(caddy hash-password --plaintext '$NEW'
 SSH "$CLOCK_SSH" 'sudo cp /opt/satellites/satellites-web.service /etc/systemd/system/ && sudo systemctl daemon-reload \
     && sudo systemctl enable --now satellites-web.service && sudo systemctl restart caddy'
 ```
+
+Aktualizace `serve.py` je `scp` na server, `sudo install` do `/opt/satellites/`
+a `sudo systemctl restart satellites-web.service`. Novou skupinu (naposledy
+`satgus`) nasaď **dřív, než se flashnou hodiny**: starší server odpoví na
+neznámé jméno skupiny 400 a obrazovka družic na takových hodinách zůstane
+prázdná, dokud se nasazení nedokončí.
 
 Caddyfile s blokem `/satellites.json` se nasazuje jako obvykle (viz „Nasazení
 změn z repozitáře“), **až po** zapsání `SATELLITES_HASH`. Do hodin se pak opíše

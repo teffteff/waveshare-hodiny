@@ -51,9 +51,12 @@ void testParsesTracksAndMetadata() {
   assert(info.total == 3 && info.ageHours == 2);
   assert(info.pending);
   assert(strcmp(info.problem, "weather elements are 8 days old") == 0);
-  assert(info.pass.valid && info.pass.visible);
-  assert(info.pass.rise == 1789508390LL && info.pass.set == 1789508779LL);
-  assert(info.pass.maxTime == 1789508587LL && info.pass.maxElevationDeg == 48);
+  // Starší server posílá jen "pass"; popisek u něj patří ISS.
+  assert(info.passCount == 1 && info.passes[0].valid && info.passes[0].visible);
+  assert(strcmp(info.passes[0].name, "ISS") == 0 && !info.passes[0].preferred);
+  assert(info.passes[0].rise == 1789508390LL && info.passes[0].set == 1789508779LL);
+  assert(info.passes[0].maxTime == 1789508587LL &&
+         info.passes[0].maxElevationDeg == 48);
 
   assert(tracks[0].noradId == 25544 && strcmp(tracks[0].name, "ISS (ZARYA)") == 0);
   assert(tracks[0].group == SATELLITE_GROUP_STATIONS);
@@ -89,7 +92,7 @@ void testCapacityAndInvalidDocuments() {
   // Neplatný přelet se zahodí, zbytek odpovědi platí.
   assert(parse(feed("", ",\"pass\":{\"rise\":1789508390,\"set\":1789508000,\"max\":48}"),
                tracks, 1, info) == SatelliteParseStatus::Ok);
-  assert(!info.pass.valid && info.count == 0);
+  assert(info.passCount == 0 && info.count == 0);
   // Jméno s řídicím znakem se nerozbije.
   assert(parse(feed("{\"id\":7,\"n\":\"A\\u0007B\",\"g\":2,\"p\":[0,0,0,0]}"),
                tracks, 1, info) == SatelliteParseStatus::Ok);
@@ -106,7 +109,12 @@ void testUrl() {
                                url, sizeof(url)));
   assert(strcmp(url, "http://host/s?x=1&lat=-33.50&lon=-70.25&groups=starlink&minel=0") == 0);
   assert(!satelliteFeedBuildUrl("http://host/s", 1, 1, 0, 10, url, sizeof(url)));
-  assert(!satelliteFeedBuildUrl("http://host/s", 1, 1, 0b11000000, 10, url, sizeof(url)));
+  assert(!satelliteFeedBuildUrl("http://host/s", 1, 1, 0b10000000, 10, url, sizeof(url)));
+  assert(satelliteFeedBuildUrl("http://host/s", 1, 1, 0b01000000, 10, url, sizeof(url)));
+  assert(strcmp(url, "http://host/s?lat=1.00&lon=1.00&groups=satgus&minel=10") == 0);
+  // Všechny skupiny najednou se do vnitřního bufferu vejdou.
+  assert(satelliteFeedBuildUrl("http://host/s", 1, 1, 0b01111111, 10, url,
+                               sizeof(url)));
   assert(!satelliteFeedBuildUrl("", 1, 1, 1, 10, url, sizeof(url)));
   assert(!satelliteFeedBuildUrl("http://host/s", NAN, 1, 1, 10, url, sizeof(url)));
   char tiny[20];
@@ -152,6 +160,50 @@ void testProjectionAndInterpolation() {
   assert(satelliteFeedEndEpoch(info) == 1789507215.0);
 }
 
+// Řádek pod oblohou: nejbližší přelet, ale domácí družice má náskok.
+void testPickPass() {
+  SatelliteTrack tracks[1];
+  SatelliteFeedInfo info;
+  const std::string both = feed(
+      "",
+      ",\"passes\":[{\"id\":62713,\"n\":\"SATGUS\",\"rise\":1789510000,"
+      "\"set\":1789510400,\"maxTime\":1789510200,\"max\":31,\"vis\":1,"
+      "\"pref\":1},"
+      "{\"id\":25544,\"n\":\"ISS\",\"rise\":1789509000,\"set\":1789509400,"
+      "\"maxTime\":1789509200,\"max\":48,\"vis\":0}],"
+      "\"pass\":{\"id\":25544,\"n\":\"ISS\",\"rise\":1789509000,"
+      "\"set\":1789509400,\"maxTime\":1789509200,\"max\":48,\"vis\":0}");
+  assert(parse(both, tracks, 1, info) == SatelliteParseStatus::Ok);
+  assert(info.passCount == 2);
+  assert(strcmp(info.passes[0].name, "SATGUS") == 0 && info.passes[0].preferred);
+  assert(info.passes[0].visible && info.passes[0].maxElevationDeg == 31);
+  assert(!info.passes[1].preferred);
+  // ISS začíná o necelou půlhodinu dřív, přesto vyhraje SATGUS.
+  const SatellitePass *pick = satellitePickPass(info, 1789508000LL);
+  assert(pick != nullptr && strcmp(pick->name, "SATGUS") == 0);
+  // Hodinu před ISS už je náskok malý.
+  info.passes[0].rise = info.passes[1].rise + 3600;
+  info.passes[0].set = info.passes[0].rise + 400;
+  pick = satellitePickPass(info, 1789508000LL);
+  assert(pick != nullptr && strcmp(pick->name, "ISS") == 0);
+  // Probíhající přelet vyhraje i nad domácí družicí, která přijde za chvíli.
+  pick = satellitePickPass(info, info.passes[1].rise + 10);
+  assert(pick != nullptr && strcmp(pick->name, "ISS") == 0);
+  // Po konci ISS zbude SATGUS, po obou nezbude nic.
+  pick = satellitePickPass(info, info.passes[1].set + 1);
+  assert(pick != nullptr && strcmp(pick->name, "SATGUS") == 0);
+  assert(satellitePickPass(info, info.passes[0].set + 1) == nullptr);
+
+  // Přelet bez jména se v seznamu zahodí; starší tvar "pass" se nečte.
+  SatelliteFeedInfo nameless;
+  assert(parse(feed("", ",\"passes\":[{\"id\":62713,\"rise\":1789510000,"
+                        "\"set\":1789510400,\"max\":31}],"
+                        "\"pass\":{\"id\":25544,\"n\":\"ISS\","
+                        "\"rise\":1789509000,\"set\":1789509400,\"max\":48}"),
+               tracks, 1, nameless) == SatelliteParseStatus::Ok);
+  assert(nameless.passCount == 0 && satellitePickPass(nameless, 1789508000LL) == nullptr);
+}
+
 void testShortName() {
   char text[25];
   satelliteShortName("ISS (ZARYA)", text, sizeof(text));
@@ -173,6 +225,7 @@ int main() {
   testCapacityAndInvalidDocuments();
   testUrl();
   testProjectionAndInterpolation();
+  testPickPass();
   testShortName();
   puts("satellite feed OK");
   return 0;

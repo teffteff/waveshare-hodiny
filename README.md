@@ -88,7 +88,8 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - obrazovku s družicemi nad hodinami: obloha jako kruh se zenitem uprostřed,
   ISS, jasné, meteorologické, navigační, radioamatérské družice i Starlink
   s dráhou na dvě minuty dopředu, vyznačením, co jde právě vidět okem,
-  a časem příštího přeletu ISS; dráhy počítá vlastní server z dat CelesTrak,
+  a časem příštího přeletu ISS nebo domácí družice SATGUS; dráhy počítá
+  vlastní server z dat CelesTrak,
 - obrazovku se Sluncem a Měsícem: východ a západ obou, občanské svítání
   a soumrak, délka dne, fáze a osvětlení Měsíce a data příštího úplňku a novu,
   počítané přímo na zařízení,
@@ -741,9 +742,12 @@ v záložce **Družice**; s heslem musí začínat `https://`. Tlačítko
 **Vyzkoušet družice** se serveru zeptá ještě před uložením a ukáže, co je
 právě nad obzorem.
 
-**Skupiny.** Vesmírné stanice (žlutě), jasné družice viditelné okem (modře),
-meteorologické (zeleně), navigační GPS, Galileo, GLONASS a BeiDou (fialově),
-radioamatérské (oranžově) a Starlink (šedě). Výchozí jsou první tři. Starlink
+**Skupiny.** SATGUS (bíle), vesmírné stanice (žlutě), jasné družice viditelné
+okem (modře), meteorologické (zeleně), navigační GPS, Galileo, GLONASS a BeiDou
+(fialově), radioamatérské (oranžově) a Starlink (šedě). Výchozí jsou první
+čtyři. SATGUS (NORAD 62713) je naše družice, která nad Zemí fotí snímky nahrané
+z domova; v žádné skupině CelesTraku není, takže si ji server stahuje podle
+katalogového čísla zvlášť. Starlink
 je schválně vypnutý: nad obzorem jich bývají stovky, takže se kreslí jen jako
 drobné tečky bez popisků a drah a dostanou jen místo, které zbude po ostatních
 skupinách (strop je 150 družic). Družice ve dvou skupinách se ukáže jednou.
@@ -754,8 +758,12 @@ Plná tečka bez svatozáře je na Slunci, ale obloha je ještě světlá, práz
 kroužek je ve stínu Země. Pod nastavenou nejmenší výškou (výchozí 10°,
 na displeji tečkovaná kružnice) se družice nekreslí. Slabá čára ukazuje, kam
 družice za dvě minuty doletí. Řádek pod časem říká, kolik družic je vidět,
-za tmy i kolik z nich okem. Dole je **příští přelet ISS** nad 10°: čas, nejvyšší
-výška a jestli bude viditelný.
+za tmy i kolik z nich okem. Dole je **příští přelet** nad 10°: jméno družice,
+čas, nejvyšší výška a jestli bude viditelný. Řádek je jeden a patří tomu
+přeletu, který začíná dřív; SATGUS na něm vyhraje i tehdy, když začíná až půl
+hodiny po ISS — domácí družice je zajímavější. Probíhající přelet má přednost
+vždycky. Přelet se hlásí jen u zapnuté skupiny, takže vypnutá SATGUS nebo
+vesmírné stanice řádek neukážou.
 
 Klepnutím na družici se otevře detail: výška nad obzorem, azimut se světovou
 stranou, výška dráhy, vzdálenost, skupina, katalogové číslo NORAD a jestli je

@@ -217,6 +217,66 @@ class ResponseTest(unittest.TestCase):
         groups = [item["g"] for item in body["sats"]]
         self.assertEqual(groups, sorted(groups, key=lambda g: serve.PRIORITY.index(serve.GROUPS[g][0])))
 
+    def test_passes_prefer_the_home_satellite(self):
+        epoch, _ = self.find_overhead_epoch()
+        catalog = catalog_with({"stations": [ISS_OMM],
+                                "satgus": [element(62713, "SATGUS", 120.0, 300.0)]}, epoch)
+        _, body = serve.build_response(
+            catalog, *ONDREJOV, ["stations", "satgus"], 10, epoch)
+        names = [entry["n"] for entry in body["passes"]]
+        self.assertEqual(names, ["SATGUS", "ISS"])
+        satgus, iss = body["passes"]
+        self.assertEqual(satgus["pref"], 1)
+        self.assertNotIn("pref", iss)
+        for entry in body["passes"]:
+            self.assertLessEqual(entry["rise"], entry["maxTime"])
+            self.assertLess(entry["maxTime"], entry["set"])
+            self.assertGreater(entry["set"], epoch)
+        # Starsi firmware cte jen "pass" a popisek ma napevno ISS.
+        self.assertEqual(body["pass"], iss)
+        json.dumps(body)
+
+    def test_pass_only_for_requested_groups(self):
+        epoch, _ = self.find_overhead_epoch()
+        catalog = catalog_with({"stations": [ISS_OMM],
+                                "satgus": [element(62713, "SATGUS", 120.0, 300.0)]}, epoch)
+        _, body = serve.build_response(catalog, *ONDREJOV, ["satgus"], 10, epoch)
+        self.assertEqual([entry["n"] for entry in body["passes"]], ["SATGUS"])
+        self.assertNotIn("pass", body)
+
+    def test_single_satellite_is_downloaded_by_catalogue_number(self):
+        seen = []
+
+        class Answer:
+            status = 200
+
+            def read(self, limit):
+                return json.dumps([element(62713, "SATGUS")]).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout):
+            seen.append(request.full_url)
+            return Answer()
+
+        original = serve.urllib.request.urlopen
+        serve.urllib.request.urlopen = fake_urlopen
+        try:
+            status, payload = serve.download_group("satgus")
+            serve.download_group("stations")
+        finally:
+            serve.urllib.request.urlopen = original
+        self.assertEqual(status, 200)
+        self.assertEqual(serve.Group("satgus", serve.parse_catalog(payload), EPOCH).names,
+                         ["SATGUS"])
+        self.assertIn("CATNR=62713", seen[0])
+        self.assertIn("GROUP=stations", seen[1])
+        self.assertTrue(all("FORMAT=json" in url for url in seen))
+
     def test_pending_and_stale(self):
         catalog = catalog_with({})
         status, body = serve.build_response(catalog, *ONDREJOV, ["stations"], 10, EPOCH)

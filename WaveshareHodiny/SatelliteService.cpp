@@ -76,6 +76,7 @@ constexpr uint16_t GROUP_COLORS[SATELLITE_GROUP_COUNT] = {
     0xc31f,  // navigace: fialová
     0xfd20,  // radioamatéři: oranžová
     0x9cf3,  // Starlink: šedá
+    0xffff,  // SATGUS: bílá
 };
 
 // --- Stav -------------------------------------------------------------------
@@ -511,7 +512,7 @@ void reserveChromeBands(MapLabelPlacer &placer) {
       {0, 18, SATELLITE_SKY_WIDTH, 22},   // tečky obrazovek
       {0, 40, SATELLITE_SKY_WIDTH, 28},   // čas
       {0, 69, SATELLITE_SKY_WIDTH, 26},   // počet družic
-      {0, 406, SATELLITE_SKY_WIDTH, 30},  // přelet ISS
+      {0, 388, SATELLITE_SKY_WIDTH, 30},  // přelet družice
   };
   for (const MapLabelBox &band : bands) placer.claim(band);
 }
@@ -763,7 +764,9 @@ void runProbe() {
       result.serverTotal = info.total;
       result.elementAgeHours = info.ageHours;
       result.pending = info.pending;
-      result.pass = info.pass;
+      for (uint8_t index = 0; index < info.passCount; ++index)
+        result.passes[index] = info.passes[index];
+      result.passCount = info.passCount;
       result.observerDark =
           info.hasSunElevation && info.sunElevationDeg <= DARK_SUN_ELEVATION;
       strlcpy(result.problem, info.problem, sizeof(result.problem));
@@ -1057,9 +1060,13 @@ void satelliteServiceSnapshot(SatelliteSnapshot &snapshot) {
   snapshot.shownCount = shownCount;
   snapshot.visibleCount = visibleCount;
   snapshot.observerDark = observerDark;
-  snapshot.passWanted =
-      (requestConfig.groups & CLOCK_SATELLITE_GROUP_STATIONS) != 0;
-  snapshot.pass = haveTracks ? liveInfo.pass : SatellitePass{};
+  // Server posílá přelety jen pro zapnuté skupiny, takže stačí vybrat ten,
+  // který je na řadě.
+  const SatellitePass *pass =
+      (haveTracks && haveEpoch)
+          ? satellitePickPass(liveInfo, static_cast<int64_t>(epoch))
+          : nullptr;
+  snapshot.pass = pass != nullptr ? *pass : SatellitePass{};
   strlcpy(snapshot.message, statusMessage, sizeof(snapshot.message));
   snapshot.detail = SatelliteDetail{};
   if (selectedId != 0 && selectionDetail.noradId == selectedId) {

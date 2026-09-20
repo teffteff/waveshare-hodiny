@@ -59,7 +59,9 @@ constexpr uint8_t CLOCK_SATELLITE_GROUP_WEATHER = 0x04;
 constexpr uint8_t CLOCK_SATELLITE_GROUP_GNSS = 0x08;
 constexpr uint8_t CLOCK_SATELLITE_GROUP_AMATEUR = 0x10;
 constexpr uint8_t CLOCK_SATELLITE_GROUP_STARLINK = 0x20;
-constexpr uint8_t CLOCK_SATELLITE_GROUP_ALL = 0x3F;
+// Jediná družice, ne skupina: SATGUS fotí nad Zemí snímky nahrané z domova.
+constexpr uint8_t CLOCK_SATELLITE_GROUP_SATGUS = 0x40;
+constexpr uint8_t CLOCK_SATELLITE_GROUP_ALL = 0x7F;
 // Nejmenší výška nad obzorem. Nad šedesát stupňů by zbyl kruh bez družic.
 constexpr uint8_t CLOCK_SATELLITES_MAX_MIN_ELEVATION = 60;
 // Server posílá dráhu na tři minuty dopředu. Obnova po dvou minutách nechá
@@ -156,7 +158,12 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // record keeps the size of schema 47 and only the schema number tells the two
 // apart; the padding of an older record holds anything, so the hour is set
 // outright while migrating.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 48;
+// Schema 49 adds SATGUS to the satellite groups. The bit lands in the group
+// mask of schema 48, so the record keeps its size and only the schema number
+// tells the two apart; the bit was always zero there, so migrating switches the
+// satellite on outright - it is the household's own satellite, and a clock that
+// shows the sky should announce its passes without anyone ticking a box.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 49;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -467,7 +474,7 @@ struct alignas(4) ClockSatellitesConfig {
   // Bity CLOCK_SATELLITE_GROUP_*. Starlink je ve výchozím stavu vypnutý: jeho
   // stovky teček by zakryly všechno ostatní.
   uint8_t groups = CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_VISUAL |
-                   CLOCK_SATELLITE_GROUP_WEATHER;
+                   CLOCK_SATELLITE_GROUP_WEATHER | CLOCK_SATELLITE_GROUP_SATGUS;
   // Pod touhle výškou se družice nekreslí. Deset stupňů schová to, co stejně
   // zakryjí domy a stromy.
   uint8_t minElevationDeg = 10;

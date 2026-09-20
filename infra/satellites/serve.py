@@ -49,19 +49,25 @@ USER_AGENT = os.environ.get(
 
 # Skupiny v poradi, ve kterem maji prednost. Index je soucasti odpovedi (klic
 # "g") a firmware podle nej barvi, takze se poradi nesmi menit, jen pridavat na
-# konec. Jmeno vlevo posilaji hodiny, vpravo je skupina CelesTraku.
+# konec. Jmeno vlevo posilaji hodiny, vpravo je dotaz na CelesTrak: bud cela
+# skupina (GROUP=), nebo jedina druzice podle katalogoveho cisla (CATNR=).
 GROUPS = (
-    ("stations", "stations"),
-    ("visual", "visual"),
-    ("weather", "weather"),
-    ("gnss", "gnss"),
-    ("amateur", "amateur"),
-    ("starlink", "starlink"),
+    ("stations", "GROUP=stations"),
+    ("visual", "GROUP=visual"),
+    ("weather", "GROUP=weather"),
+    ("gnss", "GROUP=gnss"),
+    ("amateur", "GROUP=amateur"),
+    ("starlink", "GROUP=starlink"),
+    # SATGUS (2025-009DJ) neni v zadne skupine CelesTraku, takze se stahuje
+    # sama. Je to druzice, ktera fotky nahrane z domova snima nad Zemi, proto
+    # ma na obrazovce prednost pred vsemi ostatnimi.
+    ("satgus", "CATNR=62713"),
 )
 GROUP_INDEX = {name: index for index, (name, _) in enumerate(GROUPS)}
 # Pri stropu na pocet druzic vyhravaji stanice a jasne druzice; Starlink doplni
 # jen zbyle misto, jinak by jeho stovky nad obzorem vytlacily vsechno ostatni.
-PRIORITY = ("stations", "visual", "weather", "amateur", "gnss", "starlink")
+PRIORITY = ("satgus", "stations", "visual", "weather", "amateur", "gnss",
+            "starlink")
 
 STEP_SECONDS = 15
 SAMPLE_COUNT = 13  # 0 az 180 s
@@ -94,9 +100,17 @@ RESPONSE_CACHE_ENTRIES = 64
 # jen bralo procesor ostatnim sluzbam.
 COMPUTE_SLOTS = threading.BoundedSemaphore(2)
 
-# Prelet ISS: vyska, od ktere se prelet pocita. Pod deset stupnu ji skryji
-# stromy a domy, stejne jako to pocita Heavens-Above.
-PASS_NORAD_ID = 25544
+# Prelety, na ktere hodiny upozornuji radkem pod oblohou: klic je skupina,
+# ve ktere druzice prijde, a "pref" rika, ze se ma ukazat i tehdy, kdyz druhy
+# prelet zacina o neco driv - domaci druzice je zajimavejsi nez ISS. Vyska je
+# ta, od ktere se prelet pocita: pod deset stupnu ho skryji stromy a domy,
+# stejne jako to pocita Heavens-Above.
+PASS_SATELLITES = (
+    ("satgus", 62713, "SATGUS", True),
+    ("stations", 25544, "ISS", False),
+)
+# Starsi firmware cte jen "pass" a popisek ma napevno ISS, takze tam patri ISS.
+LEGACY_PASS_NORAD_ID = 25544
 PASS_MIN_ELEVATION = 10.0
 PASS_STEP_SECONDS = 10
 PASS_SEARCH_SECONDS = 36 * 3600
@@ -437,8 +451,7 @@ class Catalog:
 
 
 def download_group(name: str) -> tuple[int, bytes]:
-    upstream_group = dict(GROUPS)[name]
-    url = f"{UPSTREAM}?GROUP={upstream_group}&FORMAT=json"
+    url = f"{UPSTREAM}?{dict(GROUPS)[name]}&FORMAT=json"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
@@ -528,6 +541,7 @@ def build_response(catalog: Catalog, latitude: float, longitude: float,
     pending = []
     oldest = None
     candidates = []
+    usable: dict[str, Group] = {}
     seen: set[int] = set()
     for name in sorted(names, key=PRIORITY.index):
         group = groups.get(name)
@@ -539,6 +553,7 @@ def build_response(catalog: Catalog, latitude: float, longitude: float,
             problems.append(f"{name} elements are {int(age // 86400)} days old")
             continue
         oldest = age if oldest is None else max(oldest, age)
+        usable[name] = group
         positions, azimuth, elevation, distance, valid = sky_tracks(
             group, epochs, latitude, longitude)
         keep = valid & (elevation.max(axis=1) >= min_elevation)
@@ -583,13 +598,25 @@ def build_response(catalog: Catalog, latitude: float, longitude: float,
         "age": int((oldest or 0) // 3600),
         "sats": candidates[:MAX_SATELLITES],
     }
-    stations = groups.get("stations")
-    if stations is not None and "stations" in names:
-        matches = np.nonzero(stations.ids == PASS_NORAD_ID)[0]
-        if len(matches):
-            upcoming = pass_cache.get(stations, latitude, longitude, now)
-            if upcoming is not None:
-                body["pass"] = {"id": PASS_NORAD_ID, "n": "ISS", **upcoming}
+    passes = []
+    for name, norad_id, label, preferred in PASS_SATELLITES:
+        group = usable.get(name)
+        if group is None or not len(np.nonzero(group.ids == norad_id)[0]):
+            continue
+        upcoming = pass_cache.get(group, norad_id, latitude, longitude, now)
+        if upcoming is None:
+            continue
+        entry = {"id": norad_id, "n": label, **upcoming}
+        if preferred:
+            entry["pref"] = 1
+        passes.append(entry)
+    if passes:
+        body["passes"] = passes
+        # Starsi firmware zna jen "pass" a popisek u nej ma napevno ISS,
+        # takze tam nesmi skoncit jina druzice.
+        legacy = [entry for entry in passes if entry["id"] == LEGACY_PASS_NORAD_ID]
+        if legacy:
+            body["pass"] = legacy[0]
     if problems:
         body["problem"] = "; ".join(problems)[:120]
     if pending:
@@ -604,14 +631,15 @@ class PassCache:
         self.lock = threading.Lock()
         self.entries: dict[tuple, dict | None] = {}
 
-    def get(self, stations: Group, latitude: float, longitude: float, now: float):
-        key = (round(latitude, 2), round(longitude, 2), id(stations))
+    def get(self, group: Group, norad_id: int, latitude: float, longitude: float,
+            now: float):
+        key = (round(latitude, 2), round(longitude, 2), id(group), norad_id)
         with self.lock:
             entry = self.entries.get(key)
         if entry is not None and entry["validUntil"] > now:
             return entry["pass"]
-        index = int(np.nonzero(stations.ids == PASS_NORAD_ID)[0][0])
-        upcoming = next_pass(stations.satellites[index], now, latitude, longitude)
+        index = int(np.nonzero(group.ids == norad_id)[0][0])
+        upcoming = next_pass(group.satellites[index], now, latitude, longitude)
         valid_until = upcoming["set"] if upcoming else now + 1800
         with self.lock:
             if len(self.entries) > 64:
