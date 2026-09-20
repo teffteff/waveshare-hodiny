@@ -374,10 +374,10 @@ KINDER_NEXT = kinder_day("Pondělí - 21.9.2026", "Kuřecí řízek ,kaše")
 
 class MealsTest(unittest.TestCase):
     def test_canteen_first_meal_without_soup_allergens_and_drinks(self):
+        # 28. 9. je v jidelnicku "Státní svátek": den bez obeda, ne jidlo.
         self.assertEqual(feed.normalize_canteen(CANTEEN, "Oběd1"), [
             {"date": "2026-09-17", "text": "Bramborové špecle se špenátem, parmezán"},
             {"date": "2026-09-18", "text": "Kuře na paprice, těstoviny"},
-            {"date": "2026-09-28", "text": "Státní svátek"},
         ])
         self.assertEqual(feed.normalize_canteen(CANTEEN, "Oběd 2")[0]["text"],
                          "Fazole, celozrnná houska")
@@ -396,17 +396,53 @@ class MealsTest(unittest.TestCase):
                          "Krupicová kaše s kakaem")
         self.assertEqual(feed.meal_text("rýže na mléce, kompot, bílá káva"), "rýže na mléce, kompot")
 
+    def test_closed_day_is_not_a_meal(self):
+        self.assertEqual(feed.meal_text("Státní svátek"), "")
+        self.assertEqual(feed.meal_text("Ředitelské volno - zavřeno"), "")
+        self.assertEqual(feed.meal_text("prázdniny"), "")
+        # Jidlo, ktere ma nektere slovo v nazvu, jidlem zustava.
+        self.assertEqual(feed.meal_text("Svíčková na smetaně, knedlík"),
+                         "Svíčková na smetaně, knedlík")
+        self.assertEqual(feed.meal_text("Volské oko, brambory"), "Volské oko, brambory")
+
+    def test_lunch_skips_to_the_next_cooking_day(self):
+        # V patek uz je dnesni obed snedeny a sobotni neni zadny: pod rozvrhem
+        # ma stat pondeli, a kdyz je pondeli svatek, utery.
+        def canteen(*days):
+            return [{"date": day, "text": text} for day, text in days]
+
+        week = canteen(("2026-09-18", "Kuře na paprice"),
+                       ("2026-09-21", "Rajská omáčka"),
+                       ("2026-09-22", "Čočka na kyselo"))
+        friday = feed.render({**snapshot(), "canteen": week}, at("2026-09-18T12:00"))
+        self.assertEqual([(meal["when"], meal["today"]) for meal in friday["meals"]],
+                         [("DNES", True), ("PO 21.9.", False)])
+        # Sobota a nedele: dnesek zadny obed nema, tak se ukazou dva dalsi dny.
+        saturday = feed.render({**snapshot(), "canteen": week}, at("2026-09-19T09:00"))
+        self.assertEqual([meal["when"] for meal in saturday["meals"]],
+                         ["PO 21.9.", "ÚT 22.9."])
+        # Pondeli svatek: jidelnicek ten den zadne jidlo nema, prijde utery.
+        holiday = canteen(("2026-09-18", "Kuře na paprice"),
+                          ("2026-09-22", "Čočka na kyselo"))
+        body = feed.render({**snapshot(), "canteen": holiday}, at("2026-09-18T12:00"))
+        self.assertEqual([meal["when"] for meal in body["meals"]], ["DNES", "ÚT 22.9."])
+        # Cely tyden bez vareni: radsi prazdno nez jidelnicek za deset dnu.
+        far = canteen(("2026-09-30", "Guláš"))
+        self.assertEqual(feed.render({**snapshot(), "canteen": far},
+                                     at("2026-09-18T12:00"))["meals"], [])
+
     def test_render_today_and_tomorrow_per_kid(self):
         snap = {**snapshot(), "canteen": feed.normalize_canteen(CANTEEN),
                 "kindermenu": feed.normalize_nasems_menu(KINDER_WEEK)}
         body = feed.render(snap, at("2026-09-17T12:00"))
         self.assertEqual(body["meals"], [
-            {"when": "DNES", "who": "ZŠ", "text": "Bramborové špecle se špenátem, parmezán"},
-            {"when": "DNES", "who": "MŠ", "text": "Sekaná pečeně, brambory"},
-            {"when": "ZÍTRA", "who": "ZŠ", "text": "Kuře na paprice, těstoviny"},
-            {"when": "ZÍTRA", "who": "MŠ", "text": "Rizoto, sýr"},
+            {"when": "DNES", "today": True, "who": "ZŠ",
+             "text": "Bramborové špecle se špenátem, parmezán"},
+            {"when": "DNES", "today": True, "who": "MŠ", "text": "Sekaná pečeně, brambory"},
+            {"when": "ZÍTRA", "today": False, "who": "ZŠ", "text": "Kuře na paprice, těstoviny"},
+            {"when": "ZÍTRA", "today": False, "who": "MŠ", "text": "Rizoto, sýr"},
         ])
-        # Patek: zitra je sobota, jidlo jen dnes. Vikend: prazdne pole.
+        # Patek: pristi tyden jidelnicek v teto ukazce nema, zustane jen dnesek.
         self.assertEqual(len(feed.render(snap, at("2026-09-18T08:00"))["meals"]), 2)
         self.assertEqual(feed.render(snap, at("2026-09-19T08:00"))["meals"], [])
         self.assertNotIn("meals", feed.render(snapshot(), at("2026-09-17T12:00")))
@@ -417,7 +453,7 @@ class MealsTest(unittest.TestCase):
         self.assertNotIn("homework", body)
         self.assertIn("homework", feed.render(snapshot(), at("2026-09-15T12:00")))
 
-    def test_kindergarten_next_week_only_when_tomorrow_needs_it(self):
+    def test_kindergarten_next_week_only_when_a_shown_day_needs_it(self):
         class Fake(serve.NasemsClient):
             def __init__(self):
                 super().__init__("rodic", "heslo", "https://nasems.test")
@@ -434,11 +470,9 @@ class MealsTest(unittest.TestCase):
         client = Fake()
         # Ctvrtek: dnes i zitra jsou na strance, pristi tyden se nenacita.
         self.assertEqual(len(client.menu(date(2026, 9, 17))), 2)
-        # Sobota: dnes ani zitra se nevari.
-        client.menu(date(2026, 9, 19))
         self.assertEqual(client.posts, [])
-        # Nedele: zitrejsi pondeli je az v pristim tydnu.
-        meals = client.menu(date(2026, 9, 20))
+        # Patek: pondeli uz hodiny ukazuji, a to je az v pristim tydnu.
+        meals = client.menu(date(2026, 9, 18))
         self.assertEqual(client.posts, ["ajax=ajax&what=jidelnicek&action=load_html_jidelnicek"
                                         "&polozka=1789941600"])
         self.assertEqual(meals[-1], {"date": "2026-09-21", "text": "Kuřecí řízek, kaše"})
@@ -494,7 +528,8 @@ class MealsTest(unittest.TestCase):
         # Vypnute ukoly: do Skoly OnLine se na ne vubec nepta.
         self.assertEqual(client.homework_calls, 0)
         current = poller.current()
-        self.assertEqual(len(current["canteen"]), 3)
+        # Ze tri dnu jidelnicku je jeden statni svatek, tedy den bez obeda.
+        self.assertEqual(len(current["canteen"]), 2)
         self.assertEqual(len(current["kindermenu"]), 2)
         self.assertNotIn("homework", feed.render(current, at("2026-09-17T12:00")))
         # Jidelnicek skolky jde vypnout zvlast od nastenky.

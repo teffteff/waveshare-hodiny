@@ -119,9 +119,11 @@ void testReparseReplacesLists() {
 void testMealsAndMissingHomework() {
   const char *payload =
       "{\"days\":[],\"meals\":["
-      "{\"when\":\"DNES\",\"who\":\"ZŠ\",\"text\":\"Kuře na paprice\"},"
-      "{\"when\":\"DNES\",\"who\":\"MŠ\",\"text\":\"\"},"
-      "{\"when\":\"ZÍTRA\",\"who\":\"MŠ\",\"text\":\"Rizoto, sýr\"}]}";
+      "{\"when\":\"DNES\",\"today\":true,\"who\":\"ZŠ\","
+      "\"text\":\"Kuře na paprice\"},"
+      "{\"when\":\"DNES\",\"today\":true,\"who\":\"MŠ\",\"text\":\"\"},"
+      "{\"when\":\"ZÍTRA\",\"today\":false,\"who\":\"MŠ\","
+      "\"text\":\"Rizoto, sýr\"}]}";
   SchoolFeed feed;
   for (int pass = 0; pass < 2; ++pass) {
     assert(schoolParseFeed(payload, strlen(payload), feed) ==
@@ -130,9 +132,19 @@ void testMealsAndMissingHomework() {
     assert(feed.hasMeals && feed.mealCount == 2);
   }
   assert(strcmp(feed.meals[0].who, "ZŠ") == 0);
+  assert(feed.meals[0].today && !feed.meals[1].today);
   assert(strcmp(feed.meals[1].when, "ZÍTRA") == 0);
   assert(strcmp(feed.meals[1].text, "Rizoto, sýr") == 0);
+  // Starší server klíč "today" neposílá; pak není co schovávat.
+  const char *withoutFlag =
+      "{\"days\":[],\"meals\":[{\"when\":\"DNES\",\"who\":\"ZŠ\","
+      "\"text\":\"Kuře na paprice\"}]}";
+  assert(schoolParseFeed(withoutFlag, strlen(withoutFlag), feed) ==
+         SchoolParseStatus::Ok);
+  assert(feed.mealCount == 1 && !feed.meals[0].today);
   // Server s vypnutými úkoly klíč neposílá.
+  assert(schoolParseFeed(payload, strlen(payload), feed) ==
+         SchoolParseStatus::Ok);
   assert(!feed.hasHomework);
   assert(schoolParseFeed(RESPONSE, strlen(RESPONSE), feed) ==
          SchoolParseStatus::Ok);
@@ -294,6 +306,28 @@ void testLayout() {
   assert(schoolLayout(6, 0, 0, false, noWrapRoom, 4, secondWraps).meals == 1);
 }
 
+// Po nastavené hodině ustoupí dnešní oběd zítřejšímu.
+void testMealsGiveWayToTomorrow() {
+  const bool today[4] = {true, true, false, false};
+  // Před hodinou se nezahazuje nic, od ní oba dnešní řádky.
+  assert(schoolMealsHiddenByHour(today, 4, 15 * 60 + 59, 16) == 0);
+  assert(schoolMealsHiddenByHour(today, 4, 16 * 60, 16) == 2);
+  assert(schoolMealsHiddenByHour(today, 4, 23 * 60 + 59, 16) == 2);
+  // Nula je vypnuto, stejně jako hodina mimo den.
+  assert(schoolMealsHiddenByHour(today, 4, 20 * 60, 0) == 0);
+  assert(schoolMealsHiddenByHour(today, 4, 20 * 60, 24) == 0);
+  // Dokud hodiny neznají čas, drží se toho, co poslal server.
+  assert(schoolMealsHiddenByHour(today, 4, -1, 16) == 0);
+  // Víkend: dnešek v seznamu není a schovávat se nemá co.
+  const bool tomorrowOnly[2] = {false, false};
+  assert(schoolMealsHiddenByHour(tomorrowOnly, 2, 20 * 60, 16) == 0);
+  // Jen dnešek (pátek odpoledne): zmizí celá sekce, prázdno je správná
+  // odpověď na "co je zítra k obědu".
+  const bool todayOnly[2] = {true, true};
+  assert(schoolMealsHiddenByHour(todayOnly, 2, 20 * 60, 16) == 2);
+  assert(schoolMealsHiddenByHour(nullptr, 2, 20 * 60, 16) == 0);
+}
+
 SchoolListsResult lists(bool firstOn, uint8_t first, uint8_t firstTotal,
                         bool secondOn, uint8_t second, uint8_t secondTotal,
                         int height, bool thirdOn = false, uint8_t third = 0,
@@ -377,6 +411,7 @@ int main() {
   testReparseReplacesLists();
   testBrokenResponses();
   testMealsAndMissingHomework();
+  testMealsGiveWayToTomorrow();
   testHomeworkOverCapIsCounted();
   testCurrentLesson();
   testLayout();

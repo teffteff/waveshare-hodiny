@@ -537,6 +537,9 @@ void normalizeConfig(ClockConfig &config) {
   config.school.refreshMinutes = constrain(config.school.refreshMinutes, 5, 120);
   config.school.displaySeconds =
       constrain(config.school.displaySeconds, 10, 3600);
+  // Hodina přepnutí obědů na zítřek; nad 23 by neplatila nikdy, tak radši
+  // vypnout.
+  if (config.school.mealNextDayHour > 23) config.school.mealNextDayHour = 0;
   config.satellites.groups &= CLOCK_SATELLITE_GROUP_ALL;
   config.satellites.minElevationDeg =
       constrain(config.satellites.minElevationDeg, static_cast<uint8_t>(0),
@@ -1064,6 +1067,20 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 47 má stejnou velikost jako 48: hodina přepnutí obědů leží v jeho
+  // koncové výplni. Obsah výplně je nejistý, proto se u 47 nastaví natvrdo na
+  // výchozí hodnotu, stejně jako kdysi vypínač srážek u schématu 42.
+  if (readComplete && storedSize == sizeof(record) &&
+      record.magic == CONFIG_MAGIC && record.schemaVersion == 47 &&
+      record.config.schemaVersion == 47 &&
+      record.checksum == configChecksum(record.config)) {
+    config = record.config;
+    config.school.mealNextDayHour = ClockSchoolConfig{}.mealNextDayHour;
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 46 je přesnou předponou schématu 47; upozornění na déšť si po

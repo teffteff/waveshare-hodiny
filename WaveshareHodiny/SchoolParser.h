@@ -24,7 +24,8 @@
 //    "noticeCount":1,
 //    "notices":[{"when":"VČERA","title":"Střevní problémy",
 //                "text":"děti v budově mají střevní problémy…"}],
-//    "meals":[{"when":"DNES","who":"ZŠ","text":"Kuře na paprice, těstoviny"}],
+//    "meals":[{"when":"DNES","today":true,"who":"ZŠ",
+//              "text":"Kuře na paprice, těstoviny"}],
 //    "problem":""}
 //
 // Zprávy, známky a nástěnka (nasems.cz) jsou nepovinné: bez klíčů "messages",
@@ -65,7 +66,7 @@ constexpr size_t SCHOOL_SENDER_LENGTH = 32;
 constexpr size_t SCHOOL_MARK_LENGTH = 12;
 // Oznámení z nástěnky školky; server jich posílá nejvýš šest.
 constexpr size_t SCHOOL_MAX_NOTICES = 6;
-// Obědy dnes a zítra pro školu a školku, tedy čtyři řádky; dva navíc pro
+// Obědy na dva dny pro školu a školku, tedy čtyři řádky; dva navíc pro
 // případ, že server přidá další jídelnu.
 constexpr size_t SCHOOL_MAX_MEALS = 6;
 // Popisek jídelny před jídlem ("ZŠ", "MŠ").
@@ -121,6 +122,9 @@ struct SchoolNotice {
 // Jedno jídlo: den, pro koho a hlavní chod bez alergenů a nápojů.
 struct SchoolMeal {
   char when[SCHOOL_DAY_LENGTH] = "";
+  // Dnešní oběd. Odpoledne, po hodině nastavené v konfiguraci, ustoupí
+  // zítřejšímu; starší server klíč neposílá a pak se nic neschovává.
+  bool today = false;
   char who[SCHOOL_MEAL_WHO_LENGTH] = "";
   char text[SCHOOL_TITLE_LENGTH] = "";
 };

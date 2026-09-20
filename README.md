@@ -552,12 +552,25 @@ rozvrhem `ŽÁDNÉ ÚKOLY`. Úkoly jdou v záložce vypnout; server, který je
 nestahuje (`SCHOOL_HOMEWORK=0`), je hodinám vůbec nepošle a neukáže se ani
 hlavička.
 
-Mezi rozvrhem a úkoly jsou **obědy** na dnes a zítra: hlavní chod ze školní
+Mezi rozvrhem a úkoly jsou **obědy** na nejbližší dva dny, kdy se vaří: hlavní chod ze školní
 jídelny (`ZŠ`) a ze školky (`MŠ`), bez polévky, alergenů a nápojů. Den stojí
 na vlastním řádku nad jídly, která pod něj patří, a název jídla má pak celý
 řádek od levého okraje rozvrhu; vedle dne se delší jídelníček nevešel a končil
 třemi tečkami. Jídelníčky stahuje server, hodiny jen opisují hotové řádky;
 server bez nastavených jídelníčků sekci nepošle.
+
+Obvykle to je dnes a zítra, ale zítřek nemusí být den, kdy se vaří: v pátek
+pod rozvrhem stojí pátek a `PO 21.9.`, a když je pondělí svátek, `ÚT 22.9.`.
+Den, kdy se nevaří, se přeskočí - i ten, kde jídelníček místo jídla píše
+`Státní svátek` - a hledá se až týden dopředu. Prázdné místo by o zítřku
+řeklo míň než jídelníček na pondělí.
+
+Odpoledne je dnešní oběd dávno snědený, a tak od hodiny nastavené v záložce
+**Škola** (výchozí 16, `0` = nepřepínat) dnešek z obědů zmizí a zůstane jen
+ten příští - stejně jako rozvrh, který se po poslední hodině posune na další
+školní den. V pátek odpoledne tak pod rozvrhem svítí pondělní oběd. Kdy
+přepnout, ví každé hodiny samy; server posílá oba dny a u každého jídla jen
+to, jestli je dnešní.
 
 Tažením prstu do strany se obrazovka přepne na druhou stránku (stejně jako
 druhá sada hodnot na ciferníku HODNOTY): **nepřečtené zprávy** a **známky**

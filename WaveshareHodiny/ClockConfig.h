@@ -147,7 +147,16 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // that hold a screen on the display). The schema 45 record stays an exact
 // prefix; the startup screen is the clock face and every rule starts off, so
 // an upgrade behaves exactly as before.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 47;
+// Schema 47 appends the rain alert (the radar takes over the display when rain
+// is on its way). The schema 46 record stays an exact prefix; the alert starts
+// off without an address, so an upgrade neither contacts a new server nor
+// switches a screen on its own.
+// Schema 48 appends the hour at which the school screen swaps today's lunch for
+// tomorrow's. It lands in the trailing padding of the school block, so the
+// record keeps the size of schema 47 and only the schema number tells the two
+// apart; the padding of an older record holds anything, so the hour is set
+// outright while migrating.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 48;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -433,7 +442,16 @@ struct alignas(4) ClockSchoolConfig {
   uint8_t refreshMinutes = 20;
   uint16_t displaySeconds = 20;
   char url[CLOCK_SCHOOL_URL_LENGTH] = "";
+  // Od které hodiny ustoupí dnešní oběd zítřejšímu. Odpoledne už je dnešní
+  // snědený a večer se balí taška na zítřek, takže má smysl ukázat zítřek
+  // dřív než o půlnoci. Nula znamená nepřepínat; přepnutí o půlnoci by bylo
+  // totéž, den se tam mění sám. Bajt leží v koncové výplni struktury, takže
+  // záznam nemění velikost.
+  uint8_t mealNextDayHour = 16;
 };
+
+static_assert(sizeof(ClockSchoolConfig) == 200,
+              "The school block keeps the size it had in schema 44.");
 
 // Obrazovka družic: obloha nad hodinami s družicemi a jejich dráhou. Polohu
 // počítá vlastní server (infra/satellites) z drah CelesTraku, hodiny jen

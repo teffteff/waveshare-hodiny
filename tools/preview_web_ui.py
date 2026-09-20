@@ -181,6 +181,7 @@ def stub_config() -> dict:
         "schoolEnabled": True,
         "schoolUrl": "https://hodiny:heslo@server.example/school.json",
         "schoolShowHomework": True,
+        "schoolMealNextDayHour": 16,
         "schoolRefreshMinutes": 20,
         "schoolDisplaySeconds": 20,
         "schoolAutomaticRotation": False,

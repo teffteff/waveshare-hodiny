@@ -1166,6 +1166,7 @@ void testSchoolPersistenceAndMigration() {
   clockConfigApplyDefaults(defaults);
   assert(!defaults.school.enabled && defaults.school.url[0] == '\0');
   assert(defaults.school.showHomework);
+  assert(defaults.school.mealNextDayHour == 16);
   assert(!clockConfigSchoolAvailable(defaults));
 
   // Schéma 43 je předponou 44: škola zůstane vypnutá a bez adresy, pořadí
@@ -1205,6 +1206,29 @@ void testSchoolPersistenceAndMigration() {
   assert(loaded.school.displaySeconds == 3600);
   assert(strcmp(loaded.school.url,
                 "https://hodiny:heslo@example.test/school.json") == 0);
+
+  // Schéma 47 má stejnou velikost jako 48: hodina přepnutí obědů leží v jeho
+  // koncové výplni, takže se po migraci nastaví natvrdo, ať v ní leželo cokoli.
+  hostPreferencesReset();
+  ClockConfig legacy;
+  clockConfigApplyDefaults(legacy);
+  legacy.school.enabled = true;
+  clockConfigCopy(legacy.school.url, sizeof(legacy.school.url),
+                  "https://example.test/school.json");
+  legacy.school.mealNextDayHour = 9;
+  seed(legacyRecord(legacy, 47, sizeof(ClockConfig)));
+  ClockConfig fromSchema47;
+  assert(clockConfigLoad(fromSchema47));
+  assert(fromSchema47.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(fromSchema47.school.enabled);
+  assert(fromSchema47.school.mealNextDayHour == 16);
+
+  // Hodina mimo den se čte jako "nepřepínat".
+  fromSchema47.school.mealNextDayHour = 30;
+  assert(clockConfigSave(fromSchema47));
+  ClockConfig reloaded;
+  assert(clockConfigLoad(reloaded));
+  assert(reloaded.school.mealNextDayHour == 0);
 
   assert(clockConfigUrlHasCredentials("http://hodiny:heslo@server/school.json"));
   assert(clockConfigUrlHasCredentials("https://hodiny@server"));
