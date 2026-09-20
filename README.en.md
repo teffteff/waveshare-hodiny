@@ -529,8 +529,10 @@ does not send it at all, and then the heading stays hidden too.
 
 Between the timetable and the homework is **lunch** for today and tomorrow:
 the main course from the school canteen (`ZŠ`) and the kindergarten (`MŠ`),
-without soup, allergens and drinks. The day label stands only at the first
-meal of each day. The server fetches the menus and the clock only copies the
+without soup, allergens and drinks. The day stands on a line of its own above
+the meals that belong to it, and the dish then gets a whole line starting at
+the timetable's left edge; beside the day a longer menu did not fit and ended
+in three dots. The server fetches the menus and the clock only copies the
 finished rows; a server without menus configured leaves the section out.
 
 Swiping sideways switches to a second page (like the second set of values on

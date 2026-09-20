@@ -14,6 +14,12 @@
 // horší než upozornění, že jich je víc. Obědy tečky nemají: chybějící řádek
 // je zítřek, a ten řekne i prázdné místo. Kam by se vešla jen hlavička sekce
 // bez jediného řádku, nekreslí se ani ta.
+//
+// Jídlo zabírá celý řádek od levého okraje rozvrhu: vedle dne zbývalo na název
+// sotva dvě třetiny šířky a delší jídelníček se do řádku nevešel. Den proto
+// stojí na vlastním řádku nad jídly toho dne a dlouhý název se zalomí do dvou
+// řádků. Kolik řádků které jídlo potřebuje, spočítá volající: jen on umí změřit
+// text ve svém fontu.
 
 struct SchoolLayoutMetrics {
   int lineHeight;
@@ -42,12 +48,15 @@ struct SchoolLayoutResult {
 // jich server poslal. Tečky přijdou, když se nevejdou všechny uložené, nebo
 // když server poslal víc, než se uložilo. emptyNotice říká, že se prázdné
 // úkoly mají ohlásit hlavičkou; bez ní se sekce úkolů vynechá.
+// mealRows[i] je, kolik řádků i-té jídlo zabere: řádek se dnem, když ho
+// otevírá, plus jeden nebo dva řádky názvu. Bez pole připadá na jídlo řádek.
 inline SchoolLayoutResult schoolLayout(uint8_t lessonCount,
                                        uint8_t homeworkCount,
                                        uint8_t homeworkTotal,
                                        bool emptyNotice,
                                        const SchoolLayoutMetrics &metrics,
-                                       uint8_t mealCount = 0) {
+                                       uint8_t mealCount = 0,
+                                       const uint8_t *mealRows = nullptr) {
   SchoolLayoutResult result;
   const int row = metrics.lineHeight + metrics.rowGap;
   int used = metrics.headingHeight + metrics.rowGap;
@@ -58,8 +67,11 @@ inline SchoolLayoutResult schoolLayout(uint8_t lessonCount,
   if (mealCount > 0) {
     int mealsUsed =
         used + metrics.sectionGap + metrics.headingHeight + metrics.rowGap;
-    while (result.meals < mealCount && mealsUsed + row <= metrics.blockHeight) {
-      mealsUsed += row;
+    while (result.meals < mealCount) {
+      const int rows = mealRows != nullptr ? mealRows[result.meals] : 1;
+      const int needed = (rows > 0 ? rows : 1) * row;
+      if (mealsUsed + needed > metrics.blockHeight) break;
+      mealsUsed += needed;
       ++result.meals;
     }
     if (result.meals > 0) used = mealsUsed;

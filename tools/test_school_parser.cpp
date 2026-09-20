@@ -268,6 +268,30 @@ void testLayout() {
   const SchoolLayoutMetrics tight{LINE, HEADING, GAP, SECTION, 151 + 7 + 19 + 21};
   SchoolLayoutResult noRoom = schoolLayout(6, 0, 0, true, tight, 4);
   assert(noRoom.meals == 0 && noRoom.homeworkEmpty);
+
+  // Den má vlastní řádek nad jídly, takže dnes a zítra po dvou jídlech stojí
+  // šest řádků: 151 + 7 + 19 + 6 * 22 = 309.
+  const uint8_t twoDays[4] = {2, 1, 2, 1};
+  const SchoolLayoutMetrics days{LINE, HEADING, GAP, SECTION, 309};
+  assert(schoolLayout(6, 0, 0, false, days, 4, twoDays).meals == 4);
+  // O řádek míň a zítřejší školka vypadne; den bez jídla se pak nekreslí.
+  const SchoolLayoutMetrics oneShort{LINE, HEADING, GAP, SECTION, 308};
+  assert(schoolLayout(6, 0, 0, false, oneShort, 4, twoDays).meals == 3);
+  // Na jídlo, které otevírá den, musí zbýt oba řádky, ne jen jeho vlastní:
+  // do 286 se sám vejde (243 + 22), se svým dnem ne (243 + 44 = 287).
+  const SchoolLayoutMetrics halfDay{LINE, HEADING, GAP, SECTION, 286};
+  assert(schoolLayout(6, 0, 0, false, halfDay, 4, twoDays).meals == 2);
+
+  // Dlouhý název se láme do dvou řádků a vezme si je celé: dnešní škola tak
+  // stojí tři řádky (den a dva), dohromady sedm a 331 bodů.
+  const uint8_t wrapped[4] = {3, 1, 2, 1};
+  const SchoolLayoutMetrics wrapping{LINE, HEADING, GAP, SECTION, 331};
+  assert(schoolLayout(6, 0, 0, false, wrapping, 4, wrapped).meals == 4);
+  // Zalomené jídlo se nesmí vejít po půlce: 177 + 44 = 221 na první, druhé
+  // chce 66 a do 286 se nevejde.
+  const SchoolLayoutMetrics noWrapRoom{LINE, HEADING, GAP, SECTION, 286};
+  const uint8_t secondWraps[4] = {2, 3, 2, 1};
+  assert(schoolLayout(6, 0, 0, false, noWrapRoom, 4, secondWraps).meals == 1);
 }
 
 SchoolListsResult lists(bool firstOn, uint8_t first, uint8_t firstTotal,
