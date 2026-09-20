@@ -295,6 +295,15 @@ range rather than exactly the number you set - the caption therefore shows the
 radius actually reached. Tiles are not cached, so changing the range downloads
 the animation again.
 
+With RainViewer on, automatic rotation through the radar keeps working abroad
+too - what switches it off is an unavailable radar, not a foreign location by
+itself. The **whole of Czechia** range is the exception: its centre is fixed
+in the middle of the country, so outside it the screen would show a foreign
+region. For a foreign location it therefore disappears from the choices (both
+in the settings and from the row of dots under the map) and the ranges stop at
+200 km, which are measured from the saved position. A stored "whole of
+Czechia" range turns into 200 km by itself once the location moves abroad.
+
 ### Intensity scale
 
 An optional scale along the left edge shows six shades with reflectivity in

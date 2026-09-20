@@ -494,13 +494,16 @@ void normalizeConfig(ClockConfig &config) {
     // Každé nové vyhledání už ukládá výslovný country_code z Open-Meteo.
     config.openMeteoCountry = CLOCK_LOCATION_COUNTRY_CZECHIA;
   }
-  if (config.openMeteoCountry != CLOCK_LOCATION_COUNTRY_CZECHIA)
-    config.automaticRadarRotation = false;
   if (config.radarRadiusKm != 0 && config.radarRadiusKm != 25 &&
       config.radarRadiusKm != 50 &&
       config.radarRadiusKm != 100 && config.radarRadiusKm != 200) {
     config.radarRadiusKm = 50;
   }
+  // Rozsah "celá ČR" kreslí pevný střed Česka. Mimo něj by tedy hodiny místo
+  // svého okolí ukazovaly cizí zemi, takže se nahradí nejširším rozsahem,
+  // který se počítá z uložené polohy.
+  if (config.radarRadiusKm == 0 && !clockConfigWholeCountryRangeAvailable(config))
+    config.radarRadiusKm = 200;
   config.radarFrameCount = constrain(config.radarFrameCount, 1, 15);
   config.clockDisplaySeconds =
       constrain(config.clockDisplaySeconds, 10, 3600);
@@ -510,6 +513,12 @@ void normalizeConfig(ClockConfig &config) {
   config.radarPauseSeconds = constrain(config.radarPauseSeconds, 0, 30);
   if (config.radarSource > CLOCK_RADAR_SOURCE_RAINVIEWER)
     config.radarSource = CLOCK_RADAR_SOURCE_CHMI;
+  // Automatické střídání smí běžet jen tam, kde je radar vůbec dostupný.
+  // Ptá se proto na zdroj srážek, ne jen na zemi: RainViewer kreslí i za
+  // hranicemi, takže po přestěhování polohy do ciziny střídání zůstává.
+  // Musí to být až za srovnáním radarSource, jinak by nesmyslný bajt ze
+  // starého záznamu vypadal jako ČHMÚ a střídání by zhaslo i s RainViewerem.
+  if (!clockConfigRadarAvailable(config)) config.automaticRadarRotation = false;
   config.rss.itemCount = constrain(config.rss.itemCount, CLOCK_RSS_MIN_ITEMS,
                                    CLOCK_RSS_MAX_ITEMS);
   config.rss.refreshMinutes = constrain(config.rss.refreshMinutes, 5, 120);
@@ -653,6 +662,12 @@ bool clockConfigRadarAvailable(const ClockConfig &config) {
   // RainViewer pokrývá celou Evropu, a proto tuhle podmínku obchází - právě
   // kvůli tomu je druhý zdroj v nastavení.
   if (config.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER) return true;
+  return config.openMeteoCountry == CLOCK_LOCATION_COUNTRY_CZECHIA;
+}
+
+bool clockConfigWholeCountryRangeAvailable(const ClockConfig &config) {
+  // Na zdroji srážek tentokrát nezáleží: pevný střed Česka je stejně mimo
+  // obraz i tehdy, když dlaždice RainVieweru pokrývají celou Evropu.
   return config.openMeteoCountry == CLOCK_LOCATION_COUNTRY_CZECHIA;
 }
 

@@ -1466,6 +1466,90 @@ void testRainAlertPersistenceAndMigration() {
   assert(clamped.rainAlert.refreshMinutes == CLOCK_RAIN_REFRESH_MIN_MINUTES);
 }
 
+// Poloha mimo Česko nesmí zhasnout automatické střídání radaru, když srážky
+// kreslí RainViewer - ten za hranicemi data má. S kompozicí ČHMÚ, která
+// končí na hranicích, střídání naopak zhasnout musí.
+void testAutomaticRadarRotationFollowsRadarSource() {
+  hostPreferencesReset();
+  ClockConfig abroad;
+  clockConfigApplyDefaults(abroad);
+  abroad.openMeteoCountry = CLOCK_LOCATION_COUNTRY_OTHER;
+  abroad.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  abroad.automaticRadarRotation = true;
+  assert(clockConfigSave(abroad));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.automaticRadarRotation);
+
+  hostPreferencesReset();
+  ClockConfig chmi;
+  clockConfigApplyDefaults(chmi);
+  chmi.openMeteoCountry = CLOCK_LOCATION_COUNTRY_OTHER;
+  chmi.radarSource = CLOCK_RADAR_SOURCE_CHMI;
+  chmi.automaticRadarRotation = true;
+  assert(clockConfigSave(chmi));
+
+  ClockConfig chmiLoaded;
+  assert(clockConfigLoad(chmiLoaded));
+  assert(!chmiLoaded.automaticRadarRotation);
+
+  // Doma zůstává zapnuté u obou zdrojů.
+  hostPreferencesReset();
+  ClockConfig home;
+  clockConfigApplyDefaults(home);
+  home.openMeteoCountry = CLOCK_LOCATION_COUNTRY_CZECHIA;
+  home.radarSource = CLOCK_RADAR_SOURCE_CHMI;
+  home.automaticRadarRotation = true;
+  assert(clockConfigSave(home));
+
+  ClockConfig homeLoaded;
+  assert(clockConfigLoad(homeLoaded));
+  assert(homeLoaded.automaticRadarRotation);
+}
+
+// Rozsah "celá ČR" má pevný střed Česka, takže mimo něj musí ustoupit
+// nejširšímu rozsahu počítanému z uložené polohy. Doma zůstává beze změny.
+void testWholeCountryRangeOnlyAtHome() {
+  hostPreferencesReset();
+  ClockConfig abroad;
+  clockConfigApplyDefaults(abroad);
+  abroad.openMeteoCountry = CLOCK_LOCATION_COUNTRY_OTHER;
+  abroad.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  abroad.radarRadiusKm = 0;
+  assert(!clockConfigWholeCountryRangeAvailable(abroad));
+  assert(clockConfigSave(abroad));
+
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.radarRadiusKm == 200);
+
+  // Konkrétní rozsah se nesmí přepsat ani v cizině.
+  hostPreferencesReset();
+  ClockConfig chosen;
+  clockConfigApplyDefaults(chosen);
+  chosen.openMeteoCountry = CLOCK_LOCATION_COUNTRY_OTHER;
+  chosen.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  chosen.radarRadiusKm = 50;
+  assert(clockConfigSave(chosen));
+
+  ClockConfig chosenLoaded;
+  assert(clockConfigLoad(chosenLoaded));
+  assert(chosenLoaded.radarRadiusKm == 50);
+
+  hostPreferencesReset();
+  ClockConfig home;
+  clockConfigApplyDefaults(home);
+  home.openMeteoCountry = CLOCK_LOCATION_COUNTRY_CZECHIA;
+  home.radarRadiusKm = 0;
+  assert(clockConfigWholeCountryRangeAvailable(home));
+  assert(clockConfigSave(home));
+
+  ClockConfig homeLoaded;
+  assert(clockConfigLoad(homeLoaded));
+  assert(homeLoaded.radarRadiusKm == 0);
+}
+
 int main() {
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();
@@ -1497,5 +1581,7 @@ int main() {
   testSchema37MigrationKeepsAskingAdsbDirectly();
   testPlanesFeedUrlRoundTrip();
   testScreenOrderRoundTripAndNormalization();
+  testAutomaticRadarRotationFollowsRadarSource();
+  testWholeCountryRangeOnlyAtHome();
   return 0;
 }

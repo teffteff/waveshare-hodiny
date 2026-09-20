@@ -311,6 +311,14 @@ dostupný rozsah, a ne přesně číslo z nastavení; popisek nahoře proto ukaz
 poloměr, který opravdu vyšel. Dlaždice se necachují, takže změna rozsahu
 znamená stažení animace znovu.
 
+Automatické střídání s radarem zůstává se zapnutým RainViewerem dostupné
+i v cizině - vypíná ho až nedostupný radar, ne samotná zahraniční poloha.
+Rozsah **celá ČR** je ale výjimka: má pevný střed uprostřed Česka, takže by
+mimo republiku ukazoval cizí zemi. U zahraniční polohy proto z nabídky mizí
+(v nastavení i na řadě teček pod mapou) a řada rozsahů končí u 200 km, které
+se počítají z uložené polohy. Uložený rozsah "celá ČR" se při změně polohy do
+ciziny sám změní na 200 km.
+
 ### Vrstvy na mapě
 
 Záložka Meteoradar má tři vypínače vrstev: **Srážky**, **Blesky** a

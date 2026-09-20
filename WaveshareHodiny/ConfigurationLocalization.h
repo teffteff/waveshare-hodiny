@@ -111,6 +111,12 @@ const char CONFIGURATION_LOCALIZATION_JS[] PROGMEM = R"JS(
     if (match) return `Preview: ${match[1]}`;
     match = value.match(/^Načteno zpráv: (\d+)$/);
     if (match) return `News items loaded: ${match[1]}`;
+    // Delší tvary musí stát před obecným "Vybraná lokalita", jinak by si jejich
+    // druhou větu spolkl jako součást názvu místa a nechal ji česky.
+    match = value.match(/^Vybraná lokalita: (.+) · Zdroj srážek přepnut na RainViewer, ČHMÚ za hranicemi data nemá\.$/);
+    if (match) return `Selected location: ${match[1]} · The precipitation source switched to RainViewer, ČHMÚ has no data beyond the border.`;
+    match = value.match(/^Vybraná lokalita: (.+) · Zdroj srážek vrácen na ČHMÚ, který je nad Českem ostřejší\.$/);
+    if (match) return `Selected location: ${match[1]} · The precipitation source switched back to ČHMÚ, which is sharper over Czechia.`;
     match = value.match(/^Vybraná lokalita: (.+)$/);
     if (match) return `Selected location: ${match[1]}`;
     match = value.match(/^Přepínám meteoradar na (.+)…$/);
