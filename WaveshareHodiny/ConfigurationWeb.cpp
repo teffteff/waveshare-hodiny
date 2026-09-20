@@ -3131,17 +3131,25 @@ void handleSatellitesTest() {
   result += F(",\"problem\":\"");
   result += jsonEscape(probeResult.problem);
   result += '"';
-  if (probeResult.pass.valid) {
-    result += F(",\"pass\":{\"rise\":");
-    result += String(static_cast<unsigned long>(probeResult.pass.rise));
+  result += F(",\"passes\":[");
+  uint8_t writtenPasses = 0;
+  for (uint8_t index = 0; index < probeResult.passCount; ++index) {
+    const SatellitePass &pass = probeResult.passes[index];
+    if (!pass.valid) continue;
+    if (writtenPasses++ > 0) result += ',';
+    result += F("{\"name\":\"");
+    result += jsonEscape(pass.name);
+    result += F("\",\"rise\":");
+    result += String(static_cast<unsigned long>(pass.rise));
     result += F(",\"set\":");
-    result += String(static_cast<unsigned long>(probeResult.pass.set));
+    result += String(static_cast<unsigned long>(pass.set));
     result += F(",\"max\":");
-    result += probeResult.pass.maxElevationDeg;
+    result += pass.maxElevationDeg;
     result += F(",\"visible\":");
-    result += probeResult.pass.visible ? F("true") : F("false");
+    result += pass.visible ? F("true") : F("false");
     result += '}';
   }
+  result += ']';
   result += F(",\"satellites\":[");
   for (uint8_t index = 0; index < probeResult.entryCount; ++index) {
     const SatelliteProbeEntry &entry = probeResult.entries[index];

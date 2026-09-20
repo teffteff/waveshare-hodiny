@@ -14,8 +14,12 @@
 //   {"v":1,"time":1789507185,"step":15,"samples":13,"sun":-334,"total":12,
 //    "age":3,"sats":[{"id":25544,"n":"ISS (ZARYA)","g":0,"h":418,"r":1210,
 //    "l":1,"p":[2750,153,2761,189,...]}],
-//    "pass":{"id":25544,"n":"ISS","rise":...,"set":...,"maxTime":...,
-//    "max":48,"vis":0},"problem":"...","pending":["starlink"]}
+//    "passes":[{"id":62713,"n":"SATGUS","rise":...,"set":...,"maxTime":...,
+//    "max":31,"vis":1,"pref":1},{"id":25544,"n":"ISS",...}],
+//    "pass":{"id":25544,...},"problem":"...","pending":["starlink"]}
+//
+// "passes" nese nejbližší přelet každé družice, na kterou se hlásí upozornění;
+// "pass" je tentýž záznam ISS pro starší firmware, který seznam ještě nezná.
 
 // Stejné stropy jako na serveru. Víc družic by se na kruh stejně nevešlo.
 constexpr size_t SATELLITE_MAX_TRACKS = 150;
@@ -31,7 +35,10 @@ enum SatelliteGroup : uint8_t {
   SATELLITE_GROUP_GNSS = 3,
   SATELLITE_GROUP_AMATEUR = 4,
   SATELLITE_GROUP_STARLINK = 5,
-  SATELLITE_GROUP_COUNT = 6,
+  // Jediná družice, ne skupina CelesTraku: SATGUS (NORAD 62713) fotí nad Zemí
+  // snímky nahrané z domova, takže má na obrazovce vlastní barvu i upozornění.
+  SATELLITE_GROUP_SATGUS = 6,
+  SATELLITE_GROUP_COUNT = 7,
 };
 
 // Jméno skupiny, jak ho čte server v parametru groups. Mimo rozsah nullptr.
@@ -49,15 +56,23 @@ struct SatelliteTrack {
   int16_t elevationTenths[SATELLITE_MAX_SAMPLES] = {};
 };
 
-// Nejbližší přelet ISS. Časy jsou unixové sekundy.
+// Delší jméno server u přeletu neposílá; "SATGUS" je zatím nejdelší.
+constexpr size_t SATELLITE_PASS_NAME_LENGTH = 13;
+// Kolik přeletů najednou (ISS a SATGUS); víc by se na jeden řádek nevešlo.
+constexpr size_t SATELLITE_MAX_PASSES = 2;
+
+// Nejbližší přelet jedné družice. Časy jsou unixové sekundy.
 struct SatellitePass {
   bool valid = false;
+  char name[SATELLITE_PASS_NAME_LENGTH] = "";
   int64_t rise = 0;
   int64_t set = 0;
   int64_t maxTime = 0;
   uint8_t maxElevationDeg = 0;
   // Aspoň část přeletu je družice na Slunci a pozorovatel ve tmě.
   bool visible = false;
+  // Domácí družice: když začínají skoro současně, píše se radši tahle.
+  bool preferred = false;
 };
 
 struct SatelliteFeedInfo {
@@ -72,7 +87,8 @@ struct SatelliteFeedInfo {
   size_t count = 0;
   // Některou skupinu server ještě stahuje z CelesTraku.
   bool pending = false;
-  SatellitePass pass;
+  SatellitePass passes[SATELLITE_MAX_PASSES];
+  uint8_t passCount = 0;
   char problem[64] = "";
 };
 
@@ -119,3 +135,12 @@ double satelliteFeedEndEpoch(const SatelliteFeedInfo &info);
 
 // Krátké jméno na popisek: bez závorky na konci, "ISS (ZARYA)" -> "ISS".
 void satelliteShortName(const char *name, char *output, size_t capacity);
+
+// Přelet na řádek pod oblohou: ten, který začíná nejdřív a ještě neskončil.
+// Domácí družice vyhraje i tehdy, když začíná o něco později než druhá - jinak
+// by ji ISS vytlačila skoro pokaždé. Vrací nullptr, když žádný nezbyl.
+const SatellitePass *satellitePickPass(const SatelliteFeedInfo &info,
+                                       int64_t now);
+
+// O kolik smí domácí družice začínat později a přesto vyhrát.
+constexpr int64_t SATELLITE_PASS_PREFER_SECONDS = 30 * 60;

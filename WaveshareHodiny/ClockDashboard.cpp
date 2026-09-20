@@ -7021,10 +7021,11 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
 namespace {
 
 // --- Družice ------------------------------------------------------------------
-// Pásy jako u radaru letadel: čas, pod ním počet družic, dole přelet ISS.
+// Pásy jako u radaru letadel: čas, pod ním počet družic, dole přelet družice.
 constexpr int SATELLITES_STATUS_OFFSET_Y = -158;
-// Níž je displej užší: nejdelší řádek (ZÍTRA … VIDITELNÁ) má 284 px z 301.
-constexpr int SATELLITES_PASS_OFFSET_Y = 180;
+// Níž je displej užší, a nejdelší řádek (SATGUS ZÍTRA … VIDITELNÁ) měří 327 px.
+// Na 180 px pod středem by se do kruhu nevešel, o dvacet výš ano.
+constexpr int SATELLITES_PASS_OFFSET_Y = 162;
 // Šest řádků a nadpis; rohy panelu 330x260 leží uvnitř kruhu displeje.
 constexpr int SATELLITES_DETAIL_WIDTH = 330;
 constexpr int SATELLITES_DETAIL_HEIGHT = 260;
@@ -7201,12 +7202,13 @@ void updateSatellitesDetail(const SatelliteDetail &detail) {
   lv_obj_move_foreground(satellitesDetailPanel);
 }
 
-// Přelet ISS pod oblohou. Časy jsou v místním čase hodin.
+// Přelet družice pod oblohou: ISS, nebo domácí SATGUS. Služba už vybrala ten,
+// který je na řadě. Časy jsou v místním čase hodin.
 void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
   if (satellitesPassLabel == nullptr) return;
   const SatellitePass &pass = snapshot.pass;
   const time_t now = time(nullptr);
-  if (!snapshot.passWanted || !pass.valid || now < 1700000000 ||
+  if (!pass.valid || now < 1700000000 ||
       static_cast<int64_t>(now) > pass.set) {
     lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -7219,9 +7221,9 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
     snprintf(visibleText, sizeof(visibleText), " #%s %s#", visibleColor,
              english ? "VISIBLE" : "VIDITELNÁ");
   }
-  char text[96];
+  char text[128];
   if (static_cast<int64_t>(now) >= pass.rise) {
-    snprintf(text, sizeof(text), "ISS %s max %u°%s",
+    snprintf(text, sizeof(text), "%s %s max %u°%s", pass.name,
              english ? "NOW" : "TEĎ",
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);
   } else {
@@ -7231,7 +7233,7 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
     localtime_r(&rise, &riseLocal);
     localtime_r(&now, &nowLocal);
     const bool tomorrow = riseLocal.tm_yday != nowLocal.tm_yday;
-    snprintf(text, sizeof(text), "ISS %s%02d:%02d max %u°%s",
+    snprintf(text, sizeof(text), "%s %s%02d:%02d max %u°%s", pass.name,
              tomorrow ? (english ? "TMRW " : "ZÍTRA ") : "",
              riseLocal.tm_hour, riseLocal.tm_min,
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);

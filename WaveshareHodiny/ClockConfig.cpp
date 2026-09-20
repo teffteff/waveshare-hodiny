@@ -1069,15 +1069,20 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     return ConfigRecordDecode::Current;
   }
 
-  // Schéma 47 má stejnou velikost jako 48: hodina přepnutí obědů leží v jeho
-  // koncové výplni. Obsah výplně je nejistý, proto se u 47 nastaví natvrdo na
-  // výchozí hodnotu, stejně jako kdysi vypínač srážek u schématu 42.
+  // Schémata 47 a 48 mají stejnou velikost jako 49 a liší se jen tím, co bylo
+  // ve dvou bajtech: u 47 leží hodina přepnutí obědů v koncové výplni školy,
+  // jejíž obsah je nejistý, takže se nastaví natvrdo na výchozí hodnotu
+  // (stejně jako kdysi vypínač srážek u schématu 42). Bit SATGUS byl do
+  // schématu 48 vždycky nula, takže se domácí družice při migraci zapne.
   if (readComplete && storedSize == sizeof(record) &&
-      record.magic == CONFIG_MAGIC && record.schemaVersion == 47 &&
-      record.config.schemaVersion == 47 &&
+      record.magic == CONFIG_MAGIC &&
+      (record.schemaVersion == 47 || record.schemaVersion == 48) &&
+      record.config.schemaVersion == record.schemaVersion &&
       record.checksum == configChecksum(record.config)) {
     config = record.config;
-    config.school.mealNextDayHour = ClockSchoolConfig{}.mealNextDayHour;
+    if (record.schemaVersion == 47)
+      config.school.mealNextDayHour = ClockSchoolConfig{}.mealNextDayHour;
+    config.satellites.groups |= CLOCK_SATELLITE_GROUP_SATGUS;
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
     return ConfigRecordDecode::Migrated;
@@ -1096,6 +1101,8 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
       legacyV46.checksum ==
           bytesChecksum(legacyV46.config, sizeof(legacyV46.config))) {
     memcpy(&config, legacyV46.config, sizeof(legacyV46.config));
+    // Družice ve zkopírovaných bajtech bit SATGUS nemají, viz schéma 49.
+    config.satellites.groups |= CLOCK_SATELLITE_GROUP_SATGUS;
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
     return ConfigRecordDecode::Migrated;
@@ -1114,6 +1121,8 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
       legacyV45.checksum ==
           bytesChecksum(legacyV45.config, sizeof(legacyV45.config))) {
     memcpy(&config, legacyV45.config, sizeof(legacyV45.config));
+    // Družice ve zkopírovaných bajtech bit SATGUS nemají, viz schéma 49.
+    config.satellites.groups |= CLOCK_SATELLITE_GROUP_SATGUS;
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
     return ConfigRecordDecode::Migrated;

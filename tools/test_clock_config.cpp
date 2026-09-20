@@ -1246,7 +1246,7 @@ void testSatellitesPersistenceAndMigration() {
   assert(!defaults.satellites.enabled && defaults.satellites.url[0] == '\0');
   assert(defaults.satellites.groups ==
          (CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_VISUAL |
-          CLOCK_SATELLITE_GROUP_WEATHER));
+          CLOCK_SATELLITE_GROUP_WEATHER | CLOCK_SATELLITE_GROUP_SATGUS));
   assert(defaults.satellites.showTracks);
   assert(!clockConfigSatellitesAvailable(defaults));
 
@@ -1304,6 +1304,31 @@ void testSatellitesPersistenceAndMigration() {
   // Bez jediné skupiny není co stahovat ani ukazovat.
   loaded.satellites.groups = 0;
   assert(!clockConfigSatellitesAvailable(loaded));
+
+  // Schéma 48 má stejnou velikost jako 49 a bit SATGUS v něm byl vždycky nula:
+  // migrace domácí družici zapne, ostatní skupiny nechá být.
+  hostPreferencesReset();
+  ClockConfig schema48;
+  clockConfigApplyDefaults(schema48);
+  schema48.satellites.enabled = true;
+  clockConfigCopy(schema48.satellites.url, sizeof(schema48.satellites.url),
+                  "https://example.test/satellites.json");
+  schema48.satellites.groups =
+      CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_STARLINK;
+  seed(legacyRecord(schema48, 48, sizeof(ClockConfig)));
+  ClockConfig fromSchema48;
+  assert(clockConfigLoad(fromSchema48));
+  assert(fromSchema48.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(fromSchema48.satellites.enabled);
+  assert(fromSchema48.satellites.groups ==
+         (CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_STARLINK |
+          CLOCK_SATELLITE_GROUP_SATGUS));
+  // Vypnutá družice se dá uložit a po načtení zůstane vypnutá.
+  fromSchema48.satellites.groups &= ~CLOCK_SATELLITE_GROUP_SATGUS;
+  assert(clockConfigSave(fromSchema48));
+  ClockConfig withoutSatgus;
+  assert(clockConfigLoad(withoutSatgus));
+  assert((withoutSatgus.satellites.groups & CLOCK_SATELLITE_GROUP_SATGUS) == 0);
 }
 
 void testScreenSchedulePersistenceAndMigration() {

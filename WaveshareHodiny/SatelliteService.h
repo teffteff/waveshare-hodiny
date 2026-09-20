@@ -12,7 +12,7 @@
 //
 // Kreslí se stejně jako radar letadel: služba vykreslí oblohu i družice do
 // bufferu RGB565 a obrazovka ho jen podloží pod LVGL canvas. Text kolem (čas,
-// počet družic, přelet ISS, detail) kreslí ClockDashboard, protože umí
+// počet družic, přelet družice, detail) kreslí ClockDashboard, protože umí
 // diakritiku.
 
 constexpr uint16_t SATELLITE_SKY_WIDTH = 480;
@@ -46,8 +46,8 @@ struct SatelliteSnapshot {
   // Slunce aspoň šest stupňů pod obzorem; jen tehdy má smysl psát, kolik
   // družic jde vidět.
   bool observerDark = false;
-  // Skupina stanic je zapnutá, takže má smysl psát přelet ISS.
-  bool passWanted = false;
+  // Přelet na řádek pod oblohou; neplatný, když žádný nezbyl nebo je skupina
+  // té družice vypnutá. Vybírá ho satellitePickPass().
   SatellitePass pass;
   char message[64] = "";
   SatelliteDetail detail;
@@ -91,7 +91,8 @@ struct SatelliteProbeResult {
   bool observerDark = false;
   bool pending = false;
   char problem[64] = "";
-  SatellitePass pass;
+  SatellitePass passes[SATELLITE_MAX_PASSES];
+  uint8_t passCount = 0;
   uint8_t entryCount = 0;
   SatelliteProbeEntry entries[SATELLITE_PROBE_ENTRIES];
 };
