@@ -8,10 +8,12 @@
 // počítači - stejně jako AgendaLayout.h.
 //
 // Pás pod hlavičkou dostane nejdřív rozvrh: ten je na obrazovce hlavní a den
-// s osmi hodinami se má vejít celý. Úkoly dostanou, co zbude. Když se všechny
-// nevejdou, poslední viditelný řádek nahradí tři tečky - úkol, který by jen
-// zmizel, je horší než upozornění, že jich je víc. Kam by se vešla jen
-// hlavička úkolů bez jediného řádku, nekreslí se ani ta.
+// s osmi hodinami se má vejít celý. Pod ním obědy (dnes a zítra pro školu
+// i školku), pak úkoly z toho, co zbude. Když se všechny úkoly nevejdou,
+// poslední viditelný řádek nahradí tři tečky - úkol, který by jen zmizel, je
+// horší než upozornění, že jich je víc. Obědy tečky nemají: chybějící řádek
+// je zítřek, a ten řekne i prázdné místo. Kam by se vešla jen hlavička sekce
+// bez jediného řádku, nekreslí se ani ta.
 
 struct SchoolLayoutMetrics {
   int lineHeight;
@@ -25,6 +27,8 @@ struct SchoolLayoutMetrics {
 
 struct SchoolLayoutResult {
   uint8_t lessons = 0;
+  // Kolik řádků obědů se kreslí; nula znamená ani hlavičku.
+  uint8_t meals = 0;
   // Kolik řádků úkolů se kreslí, včetně řádku se třemi tečkami.
   uint8_t homework = 0;
   bool homeworkEllipsis = false;
@@ -42,13 +46,23 @@ inline SchoolLayoutResult schoolLayout(uint8_t lessonCount,
                                        uint8_t homeworkCount,
                                        uint8_t homeworkTotal,
                                        bool emptyNotice,
-                                       const SchoolLayoutMetrics &metrics) {
+                                       const SchoolLayoutMetrics &metrics,
+                                       uint8_t mealCount = 0) {
   SchoolLayoutResult result;
   const int row = metrics.lineHeight + metrics.rowGap;
   int used = metrics.headingHeight + metrics.rowGap;
   while (result.lessons < lessonCount && used + row <= metrics.blockHeight) {
     used += row;
     ++result.lessons;
+  }
+  if (mealCount > 0) {
+    int mealsUsed =
+        used + metrics.sectionGap + metrics.headingHeight + metrics.rowGap;
+    while (result.meals < mealCount && mealsUsed + row <= metrics.blockHeight) {
+      mealsUsed += row;
+      ++result.meals;
+    }
+    if (result.meals > 0) used = mealsUsed;
   }
   if (homeworkCount == 0) {
     result.homeworkEmpty =

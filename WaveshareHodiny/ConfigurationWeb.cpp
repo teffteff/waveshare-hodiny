@@ -318,6 +318,8 @@ TaskHandle_t agendaTaskForDiagnostics = nullptr;
 AgendaProbeCallback agendaProbeCallback = nullptr;
 TaskHandle_t schoolTaskForDiagnostics = nullptr;
 SchoolProbeCallback schoolProbeCallback = nullptr;
+ScreenShowCallback screenShowCallback = nullptr;
+CurrentScreenCallback currentScreenCallback = nullptr;
 SatellitesProbeCallback satellitesProbeCallback = nullptr;
 SettingsShareCallback settingsShareCallback = nullptr;
 BackgroundWorkCallback backgroundWorkCallback = nullptr;
@@ -1691,6 +1693,36 @@ void handleGetConfig() {
     result += '"';
   }
   result += ']';
+  // Výchozí obrazovka a plán, obrazovky zase jménem. Vypnuté pravidlo nese
+  // prázdné jméno.
+  result += F(",\"startupScreen\":\"");
+  result += clockScreenName(config.screenSchedule.startupScreen);
+  result += F("\",\"screenSchedule\":[");
+  for (size_t index = 0; index < CLOCK_SCREEN_SCHEDULE_COUNT; ++index) {
+    const ClockScreenScheduleRule &rule = config.screenSchedule.rules[index];
+    if (index > 0) result += ',';
+    result += F("{\"screen\":\"");
+    if (rule.screen < CLOCK_SCREEN_ORDER_COUNT)
+      result += clockScreenName(rule.screen);
+    result += F("\",\"startEvent\":\"");
+    result += clockScheduleEventName(rule.startEvent);
+    result += F("\",\"startValue\":");
+    result += rule.startValue;
+    result += F(",\"endEvent\":\"");
+    result += clockScheduleEventName(rule.endEvent);
+    result += F("\",\"endValue\":");
+    result += rule.endValue;
+    result += '}';
+  }
+  result += ']';
+  // Co je na displeji právě teď; "settings", když je otevřené nastavení.
+  if (currentScreenCallback != nullptr) {
+    const uint8_t current = currentScreenCallback();
+    result += F(",\"currentScreen\":\"");
+    result += current < CLOCK_SCREEN_ORDER_COUNT ? clockScreenName(current)
+                                                 : "settings";
+    result += '"';
+  }
   // Kolik hodin se na obrazovku vejde pro každou kombinaci kvality ovzduší a
   // počtu dní. Počítá to rozvržení obrazovky, aby si web nemusel držet vlastní
   // kopii stejného vzorce; index je (kvalita ovzduší ? 5 : 0) + počet dní.
@@ -2421,6 +2453,15 @@ void handleSaveConfig() {
     // Pořadí leží ve dvou blocích záznamu; zapsat se musí oba.
     clockConfigWriteScreenOrder(config, screenOrder);
   }
+  {
+    String scheduleError;
+    if (readScreenScheduleFromSource(serverFormSource(), config.screenSchedule,
+                                     scheduleError) ==
+        ScreenScheduleFormResult::Invalid) {
+      sendError(400, scheduleError);
+      return;
+    }
+  }
 
   const String submittedTmepUrl = server.arg("tmepExportUrl");
   if (!submittedTmepUrl.isEmpty()) {
@@ -2823,8 +2864,11 @@ void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
     }
     result += F("]}");
   }
-  result += F("],\"homework\":[");
-  for (size_t index = 0; index < feed.homeworkCount; ++index) {
+  result += ']';
+  // Server s vypnutými úkoly klíč neposílá; náhled pak nepíše "Žádné úkoly".
+  if (feed.hasHomework) result += F(",\"homework\":[");
+  for (size_t index = 0; feed.hasHomework && index < feed.homeworkCount;
+       ++index) {
     const SchoolHomework &task = feed.homework[index];
     if (index > 0) result += ',';
     result += F("{\"due\":\"");
@@ -2835,7 +2879,7 @@ void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
     result += jsonEscape(task.title);
     result += F("\"}");
   }
-  result += ']';
+  if (feed.hasHomework) result += ']';
   if (feed.hasMessages) {
     result += F(",\"messageCount\":");
     result += static_cast<unsigned>(feed.messageTotal);
@@ -2870,6 +2914,21 @@ void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
       result += jsonEscape(mark.mark);
       result += F("\",\"theme\":\"");
       result += jsonEscape(mark.theme);
+      result += F("\"}");
+    }
+    result += ']';
+  }
+  if (feed.hasMeals) {
+    result += F(",\"meals\":[");
+    for (size_t index = 0; index < feed.mealCount; ++index) {
+      const SchoolMeal &meal = feed.meals[index];
+      if (index > 0) result += ',';
+      result += F("{\"when\":\"");
+      result += jsonEscape(meal.when);
+      result += F("\",\"who\":\"");
+      result += jsonEscape(meal.who);
+      result += F("\",\"text\":\"");
+      result += jsonEscape(meal.text);
       result += F("\"}");
     }
     result += ']';
@@ -3966,6 +4025,37 @@ void handleDiagnostics() {
   sendJson(200, result);
 }
 
+// Přepne obrazovku hned. Rotace i plán pak pokračují po svém: plán se po
+// pěti minutách vrátí ke své obrazovce stejně jako po přetažení prstem.
+bool showScreenByName(const String &name, int &status, String &message) {
+  uint8_t screen = 0;
+  if (!clockScreenFromName(name, screen)) {
+    status = 400;
+    message = F("Neznámá obrazovka.");
+    return false;
+  }
+  if (screenShowCallback == nullptr || !screenShowCallback(screen)) {
+    status = 409;
+    message = F("Obrazovka je vypnutá, nebo se teď přepnout nedá.");
+    return false;
+  }
+  status = 200;
+  message = F("{\"ok\":true,\"screen\":\"");
+  message += clockScreenName(screen);
+  message += F("\"}");
+  return true;
+}
+
+void handleShowScreen() {
+  int status = 0;
+  String message;
+  if (showScreenByName(server.arg("screen"), status, message)) {
+    sendJson(status, message);
+  } else {
+    sendError(status, message);
+  }
+}
+
 void handleDayNightRefresh() {
   if (homeAssistantRefreshCallback == nullptr ||
       !homeAssistantRefreshCallback()) {
@@ -4009,6 +4099,18 @@ void handleControlRequest() {
   }
   if (command == "/day-night/refresh") {
     handleDayNightRefresh();
+    return;
+  }
+  constexpr char SCREEN_COMMAND[] = "/screen/";
+  if (command.startsWith(SCREEN_COMMAND)) {
+    int status = 0;
+    String message;
+    if (showScreenByName(command.substring(strlen(SCREEN_COMMAND)), status,
+                         message)) {
+      sendJson(status, message);
+    } else {
+      sendError(status, message);
+    }
     return;
   }
   sendError(404, F("Příkaz ovládacího API neexistuje."));
@@ -4930,6 +5032,9 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   registerBoundedPost("/api/clock-appearance/preview", []() {
     if (requireConfigurationAccess()) handleClockAppearancePreview();
   });
+  registerBoundedPost("/api/screen/show", []() {
+    if (requireConfigurationAccess()) handleShowScreen();
+  });
   registerBoundedPost("/api/restart", []() {
     if (requireConfigurationAccess()) handleRestart();
   });
@@ -4998,6 +5103,12 @@ void configurationWebSetAgendaProbe(AgendaProbeCallback callback) {
 
 void configurationWebSetSettingsShare(SettingsShareCallback callback) {
   settingsShareCallback = callback;
+}
+
+void configurationWebSetScreenControl(ScreenShowCallback show,
+                                      CurrentScreenCallback current) {
+  screenShowCallback = show;
+  currentScreenCallback = current;
 }
 
 void configurationWebSetBackgroundWork(BackgroundWorkCallback callback) {

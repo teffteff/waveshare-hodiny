@@ -141,7 +141,11 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // array sits in the middle of the record and its reserve ran out with schema
 // 44. The schema 44 record stays an exact prefix; the screen starts disabled
 // without an address and lands at the end of the rotation order.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 45;
+// Schema 46 appends the startup screen and the screen schedule (time windows
+// that hold a screen on the display). The schema 45 record stays an exact
+// prefix; the startup screen is the clock face and every rule starts off, so
+// an upgrade behaves exactly as before.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 46;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -507,6 +511,47 @@ struct ClockPlanesConfig {
   char watchCallsign[CLOCK_PLANE_CALLSIGN_LENGTH] = "";
 };
 
+// Plán obrazovek: okno od události do události, po které hodiny drží jednu
+// obrazovku. Událost je pevný čas, nebo východ, západ, občanské svítání či
+// soumrak s posunem v minutách. Okno může přes půlnoc (od soumraku do
+// svítání). Pravidla se čtou shora, první platné vyhrává.
+constexpr size_t CLOCK_SCREEN_SCHEDULE_COUNT = 4;
+
+enum ClockScheduleEvent : uint8_t {
+  // Hodnota je minuta dne 0-1439 místního času.
+  CLOCK_SCHEDULE_TIME = 0,
+  // Hodnota je posun od události v minutách, záporný dřív.
+  CLOCK_SCHEDULE_SUNRISE = 1,
+  CLOCK_SCHEDULE_SUNSET = 2,
+  CLOCK_SCHEDULE_CIVIL_DAWN = 3,
+  CLOCK_SCHEDULE_CIVIL_DUSK = 4,
+  CLOCK_SCHEDULE_EVENT_COUNT = 5,
+};
+
+constexpr int16_t CLOCK_SCHEDULE_MAX_OFFSET_MINUTES = 180;
+constexpr int16_t CLOCK_SCHEDULE_MINUTES_PER_DAY = 1440;
+
+struct ClockScreenScheduleRule {
+  // ClockOrderedScreen, nebo CLOCK_SCREEN_ORDER_UNUSED pro vypnuté pravidlo.
+  uint8_t screen = CLOCK_SCREEN_ORDER_UNUSED;
+  uint8_t startEvent = CLOCK_SCHEDULE_TIME;
+  uint8_t endEvent = CLOCK_SCHEDULE_TIME;
+  uint8_t reserved = 0;
+  int16_t startValue = 0;
+  int16_t endValue = 0;
+};
+
+struct ClockScreenScheduleConfig {
+  // Obrazovka po startu hodin a po konci okna plánu.
+  uint8_t startupScreen = CLOCK_SCREEN_CLOCK;
+  uint8_t reserved[3] = {};
+  ClockScreenScheduleRule rules[CLOCK_SCREEN_SCHEDULE_COUNT];
+};
+
+static_assert(sizeof(ClockScreenScheduleRule) == 8 &&
+                  sizeof(ClockScreenScheduleConfig) == 36,
+              "The screen schedule is part of the stored record.");
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -647,6 +692,9 @@ struct ClockConfig {
       CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED,
       CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED,
       CLOCK_SCREEN_ORDER_UNUSED, CLOCK_SCREEN_ORDER_UNUSED};
+  // Pole schématu 46. Blok pořadí má osm bajtů a končil záznam bez výplně,
+  // takže výchozí obrazovka a plán začínají přesně na jeho konci.
+  ClockScreenScheduleConfig screenSchedule;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -769,8 +817,18 @@ static_assert(CLOCK_CONFIG_SCHEMA_44_SIZE ==
                           sizeof(ClockSatellitesConfig) &&
                   offsetof(ClockConfig, screenOrderTail) +
                           CLOCK_SCREEN_ORDER_TAIL_CAPACITY ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, screenSchedule),
               "Schema 45 must preserve the complete schema 44 prefix.");
+
+// Schéma 45 končilo druhým blokem pořadí obrazovek, bez koncové výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_45_SIZE =
+    offsetof(ClockConfig, screenSchedule);
+
+static_assert(CLOCK_CONFIG_SCHEMA_45_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_45_SIZE +
+                          sizeof(ClockScreenScheduleConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 46 must preserve the complete schema 45 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
@@ -875,6 +933,9 @@ void clockConfigNormalizeScreenOrder(uint8_t *order);
 // Pořadí z obou bloků konfigurace do jednoho pole a zpátky. Pole má
 // CLOCK_SCREEN_ORDER_CAPACITY bajtů.
 void clockConfigReadScreenOrder(const ClockConfig &config, uint8_t *order);
+// Srovná výchozí obrazovku a pravidla plánu do platných rozsahů. Neznámá
+// obrazovka pravidlo vypne, neznámá událost se čte jako půlnoc.
+void clockConfigNormalizeScreenSchedule(ClockScreenScheduleConfig &schedule);
 void clockConfigWriteScreenOrder(ClockConfig &config, const uint8_t *order);
 bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
                          uint32_t defaultMonochromeWeatherIconColor = 0xFFFFFF,

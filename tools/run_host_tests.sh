@@ -37,6 +37,7 @@ run_test wifi_provisioning "$FIRMWARE_DIR/WifiProvisioning.cpp" || failures=$((f
 run_test device_name "$FIRMWARE_DIR/DeviceName.cpp" || failures=$((failures + 1))
 run_test day_night_logic "$FIRMWARE_DIR/DayNightLogic.cpp" "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test astronomy "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
+run_test screen_schedule "$FIRMWARE_DIR/ScreenSchedule.cpp" "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test semver "$FIRMWARE_DIR/SemVer.cpp" || failures=$((failures + 1))
 run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1))
 run_test home_assistant_connection_policy || failures=$((failures + 1))

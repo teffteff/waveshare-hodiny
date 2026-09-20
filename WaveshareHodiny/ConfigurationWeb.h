@@ -88,6 +88,14 @@ void configurationWebSetBackgroundWork(BackgroundWorkCallback callback);
 // odpovědi, s už uloženým názvem.
 using DeviceNameChangedCallback = void (*)(const char *name);
 void configurationWebSetDeviceNameChanged(DeviceNameChangedCallback callback);
+// Přepnutí obrazovky z webu a z ovládacího API. show vrací false, když je
+// obrazovka vypnutá nebo se teď přepnout nedá (aktualizace firmwaru);
+// current vrací zobrazenou obrazovku, nebo CLOCK_SCREEN_ORDER_COUNT, když je
+// otevřené nastavení na displeji.
+using ScreenShowCallback = bool (*)(uint8_t screen);
+using CurrentScreenCallback = uint8_t (*)();
+void configurationWebSetScreenControl(ScreenShowCallback show,
+                                      CurrentScreenCallback current);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();

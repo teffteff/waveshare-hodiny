@@ -305,6 +305,204 @@ class NoticesTest(unittest.TestCase):
         self.assertEqual(wrong.requests, ["GET", "POST", "GET"])
 
 
+# iCanteen: jidelnicek na prihlasovaci strance, alergeny mezi lomitky, pred
+# hlavnim jidlem polevka a cislo jidla. Tvar podle jidelna.zsondrejov.cz
+# (zari 2026), jidla vymyslena.
+CANTEEN = """<div class="jidelnicekDen">
+ <div id="day-2026-09-17" class="jidelnicekTop semibold">Jídelníček na 17.09.2026 - Čtvrtek</div>
+ <article>
+  <div class="container">
+   <div class="shrinkedColumn smallBoldTitle jidelnicekItem"><span>Oběd1</span></div>
+   <div class="column jidelnicekItem">
+     polévka vývar s knedlíčky/1.1,
+     3,
+     9/1-	Bramborové špecle se špenátem,
+      parmezán/1.1,
+     7/,
+      mléko
+   </div>
+  </div>
+  <div class="container">
+   <div class="shrinkedColumn smallBoldTitle jidelnicekItem"><span>Oběd2</span></div>
+   <div class="column jidelnicekItem">polévka vývar/1.1/2-	Fazole, celozrnná houska/ 3, 6/, ovocný čaj</div>
+  </div>
+ </article>
+</div>
+<div class="jidelnicekDen">
+ <div id="day-2026-09-18" class="jidelnicekTop semibold">Jídelníček na 18.09.2026 - Pátek</div>
+ <article>
+  <div class="container">
+   <div class="shrinkedColumn smallBoldTitle jidelnicekItem"><span>Oběd1</span></div>
+   <div class="column jidelnicekItem">polévka rybí/4/1-	Kuře na paprice, těstoviny, ov.čaj</div>
+  </div>
+ </article>
+</div>
+<div class="jidelnicekDen">
+ <div id="day-2026-09-28" class="jidelnicekTop semibold">Jídelníček na 28.09.2026 - Pondělí</div>
+ <article><div class="container">
+   <div class="shrinkedColumn smallBoldTitle jidelnicekItem"><span>Oběd1</span></div>
+   <div class="column jidelnicekItem">Státní svátek</div>
+ </div></article>
+</div>"""
+
+
+def kinder_day(label, main, drinks=" ,ovocný čaj ,voda"):
+    return f"""<div class='podnadpis'>
+ <div class='left_side bold'>{label} </div><div class='right_side bold'></div>
+</div>
+<div class='container'><div class='section padding_informations'><table class='responsive'>
+<tr><td><span class='coloured bold'>Přesnídávka:</span></td><td><div class='bold'>Houska ,máslo ,kakao</div>
+<div class='alergeny '>alergeny: 1 - Obiloviny obsahující lepek</div></td></tr>
+<tr><td><span class='coloured bold'>Hlavní chod:</span></td><td><div class='bold'>{main}{drinks}</div>
+<div class='alergeny '>alergeny: 3 - vejce a výrobky z nich</div></td></tr>
+</table></div></div>
+"""
+
+
+# nasems.cz: tlacitka tydnu (zpet s ikonou pred popiskem), pak dny.
+KINDER_WEEK = ("<div class='button load_html' data-what='jidelnicek' "
+               "data-action='load_html_jidelnicek' data-polozka='1788732000'>"
+               "<div class='icon left_icon small_icon fill'></div>"
+               "<div class='button_description'>Předchozí týden</div></div>"
+               "<div class='button load_html' data-what='jidelnicek' "
+               "data-action='load_html_jidelnicek' data-polozka='1789941600'>"
+               "<div class='button_description'>Následující týden</div></div>"
+               + kinder_day("Čtvrtek - 17.9.2026", "Sekaná pečeně ,brambory")
+               + kinder_day("Pátek - 18.9.2026", "Rizoto , sýr"))
+KINDER_NEXT = kinder_day("Pondělí - 21.9.2026", "Kuřecí řízek ,kaše")
+
+
+class MealsTest(unittest.TestCase):
+    def test_canteen_first_meal_without_soup_allergens_and_drinks(self):
+        self.assertEqual(feed.normalize_canteen(CANTEEN, "Oběd1"), [
+            {"date": "2026-09-17", "text": "Bramborové špecle se špenátem, parmezán"},
+            {"date": "2026-09-18", "text": "Kuře na paprice, těstoviny"},
+            {"date": "2026-09-28", "text": "Státní svátek"},
+        ])
+        self.assertEqual(feed.normalize_canteen(CANTEEN, "Oběd 2")[0]["text"],
+                         "Fazole, celozrnná houska")
+        self.assertEqual(feed.normalize_canteen(LOGIN_PAGE), [])
+
+    def test_kindergarten_main_course_only(self):
+        self.assertEqual(feed.normalize_nasems_menu(KINDER_WEEK), [
+            {"date": "2026-09-17", "text": "Sekaná pečeně, brambory"},
+            {"date": "2026-09-18", "text": "Rizoto, sýr"},
+        ])
+        self.assertEqual(feed.nasems_next_week(KINDER_WEEK), "1789941600")
+        self.assertEqual(feed.nasems_next_week(KINDER_NEXT), "")
+
+    def test_drinks_go_food_stays(self):
+        self.assertEqual(feed.meal_text("Krupicová kaše s kakaem, ov.čaj, čaj s citr., voda"),
+                         "Krupicová kaše s kakaem")
+        self.assertEqual(feed.meal_text("rýže na mléce, kompot, bílá káva"), "rýže na mléce, kompot")
+
+    def test_render_today_and_tomorrow_per_kid(self):
+        snap = {**snapshot(), "canteen": feed.normalize_canteen(CANTEEN),
+                "kindermenu": feed.normalize_nasems_menu(KINDER_WEEK)}
+        body = feed.render(snap, at("2026-09-17T12:00"))
+        self.assertEqual(body["meals"], [
+            {"when": "DNES", "who": "ZŠ", "text": "Bramborové špecle se špenátem, parmezán"},
+            {"when": "DNES", "who": "MŠ", "text": "Sekaná pečeně, brambory"},
+            {"when": "ZÍTRA", "who": "ZŠ", "text": "Kuře na paprice, těstoviny"},
+            {"when": "ZÍTRA", "who": "MŠ", "text": "Rizoto, sýr"},
+        ])
+        # Patek: zitra je sobota, jidlo jen dnes. Vikend: prazdne pole.
+        self.assertEqual(len(feed.render(snap, at("2026-09-18T08:00"))["meals"]), 2)
+        self.assertEqual(feed.render(snap, at("2026-09-19T08:00"))["meals"], [])
+        self.assertNotIn("meals", feed.render(snapshot(), at("2026-09-17T12:00")))
+
+    def test_homework_switched_off_sends_no_key(self):
+        body = feed.render({**snapshot(), "homework": [], "homeworkEnabled": False},
+                           at("2026-09-15T12:00"))
+        self.assertNotIn("homework", body)
+        self.assertIn("homework", feed.render(snapshot(), at("2026-09-15T12:00")))
+
+    def test_kindergarten_next_week_only_when_tomorrow_needs_it(self):
+        class Fake(serve.NasemsClient):
+            def __init__(self):
+                super().__init__("rodic", "heslo", "https://nasems.test")
+                self.cookies.set_cookie(session_cookie())
+                self.posts = []
+
+            def _open(self, url, data=None):
+                if data:
+                    self.posts.append(data.decode())
+                    return json.dumps({"result": KINDER_NEXT})
+                return KINDER_WEEK
+
+        from datetime import date
+        client = Fake()
+        # Ctvrtek: dnes i zitra jsou na strance, pristi tyden se nenacita.
+        self.assertEqual(len(client.menu(date(2026, 9, 17))), 2)
+        # Sobota: dnes ani zitra se nevari.
+        client.menu(date(2026, 9, 19))
+        self.assertEqual(client.posts, [])
+        # Nedele: zitrejsi pondeli je az v pristim tydnu.
+        meals = client.menu(date(2026, 9, 20))
+        self.assertEqual(client.posts, ["ajax=ajax&what=jidelnicek&action=load_html_jidelnicek"
+                                        "&polozka=1789941600"])
+        self.assertEqual(meals[-1], {"date": "2026-09-21", "text": "Kuřecí řízek, kaše"})
+
+    def test_poller_fetches_menus_on_their_own_schedule(self):
+        class Client:
+            homework_calls = 0
+
+            def user(self):
+                return {"personID": "S1", "fullName": "Adam Novák"}
+
+            def timetable(self, *args):
+                return TIMETABLE
+
+            def homework(self, *args):
+                self.homework_calls += 1
+                return HOMEWORK
+
+            def messages(self):
+                return MESSAGES
+
+            def marks(self, *args):
+                return MARKS
+
+        class Canteen:
+            calls = 0
+
+            def menu(self):
+                self.calls += 1
+                return CANTEEN
+
+        class Nasems:
+            menu_calls = 0
+
+            def board(self):
+                return BOARD
+
+            def menu(self, today):
+                self.menu_calls += 1
+                return feed.normalize_nasems_menu(KINDER_WEEK)
+
+        day_hours = serve.DAY_HOURS
+        serve.DAY_HOURS = (0, 24)
+        self.addCleanup(setattr, serve, "DAY_HOURS", day_hours)
+        enabled = serve.HOMEWORK_ENABLED
+        serve.HOMEWORK_ENABLED = False
+        self.addCleanup(setattr, serve, "HOMEWORK_ENABLED", enabled)
+        client, canteen, nasems = Client(), Canteen(), Nasems()
+        poller = serve.Poller(client, nasems=nasems, canteen=canteen)
+        poller.poll_once()
+        poller.poll_once()
+        self.assertEqual((canteen.calls, nasems.menu_calls), (1, 1))
+        # Vypnute ukoly: do Skoly OnLine se na ne vubec nepta.
+        self.assertEqual(client.homework_calls, 0)
+        current = poller.current()
+        self.assertEqual(len(current["canteen"]), 3)
+        self.assertEqual(len(current["kindermenu"]), 2)
+        self.assertNotIn("homework", feed.render(current, at("2026-09-17T12:00")))
+        # Jidelnicek skolky jde vypnout zvlast od nastenky.
+        quiet = serve.Poller(client, nasems=Nasems(), nasems_menu=False)
+        quiet.poll_once()
+        self.assertNotIn("kindermenu", quiet.current())
+
+
 class StudentTest(unittest.TestCase):
     def test_parent_account_lists_children(self):
         user = {"userType": "parent", "personID": "P1", "children": [

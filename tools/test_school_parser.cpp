@@ -116,6 +116,29 @@ void testReparseReplacesLists() {
   assert(!feed.hasNotices && feed.noticeCount == 0 && feed.noticeTotal == 0);
 }
 
+void testMealsAndMissingHomework() {
+  const char *payload =
+      "{\"days\":[],\"meals\":["
+      "{\"when\":\"DNES\",\"who\":\"ZŠ\",\"text\":\"Kuře na paprice\"},"
+      "{\"when\":\"DNES\",\"who\":\"MŠ\",\"text\":\"\"},"
+      "{\"when\":\"ZÍTRA\",\"who\":\"MŠ\",\"text\":\"Rizoto, sýr\"}]}";
+  SchoolFeed feed;
+  for (int pass = 0; pass < 2; ++pass) {
+    assert(schoolParseFeed(payload, strlen(payload), feed) ==
+           SchoolParseStatus::Ok);
+    // Jídlo bez textu se přeskočí; druhé rozebrání nesmí řádky zdvojit.
+    assert(feed.hasMeals && feed.mealCount == 2);
+  }
+  assert(strcmp(feed.meals[0].who, "ZŠ") == 0);
+  assert(strcmp(feed.meals[1].when, "ZÍTRA") == 0);
+  assert(strcmp(feed.meals[1].text, "Rizoto, sýr") == 0);
+  // Server s vypnutými úkoly klíč neposílá.
+  assert(!feed.hasHomework);
+  assert(schoolParseFeed(RESPONSE, strlen(RESPONSE), feed) ==
+         SchoolParseStatus::Ok);
+  assert(feed.hasHomework && !feed.hasMeals && feed.mealCount == 0);
+}
+
 void testBrokenResponses() {
   SchoolFeed feed;
   feed.dayCount = 5;
@@ -232,6 +255,19 @@ void testLayout() {
   assert(!layout(6, 0, 174, 0, true).homeworkEmpty);
   assert(!layout(6, 0, 400).homeworkEmpty);
   assert(!layout(6, 2, 400, 2, true).homeworkEmpty);
+
+  // Obědy stojí mezi rozvrhem a úkoly: 151 + 7 + 19 + 4 * 22 = 265.
+  const SchoolLayoutMetrics metrics{LINE, HEADING, GAP, SECTION, 265};
+  SchoolLayoutResult meals = schoolLayout(6, 2, 2, true, metrics, 4);
+  assert(meals.lessons == 6 && meals.meals == 4 && meals.homework == 0);
+  assert(!meals.homeworkEmpty);
+  // Řádek chybí: obědy se useknou bez teček, úkoly nedostanou nic.
+  const SchoolLayoutMetrics shorter{LINE, HEADING, GAP, SECTION, 264};
+  assert(schoolLayout(6, 0, 0, false, shorter, 4).meals == 3);
+  // Na hlavičku bez řádku se nesahá a úkoly dostanou místo po ní.
+  const SchoolLayoutMetrics tight{LINE, HEADING, GAP, SECTION, 151 + 7 + 19 + 21};
+  SchoolLayoutResult noRoom = schoolLayout(6, 0, 0, true, tight, 4);
+  assert(noRoom.meals == 0 && noRoom.homeworkEmpty);
 }
 
 SchoolListsResult lists(bool firstOn, uint8_t first, uint8_t firstTotal,
@@ -316,6 +352,7 @@ int main() {
   testResponse();
   testReparseReplacesLists();
   testBrokenResponses();
+  testMealsAndMissingHomework();
   testHomeworkOverCapIsCounted();
   testCurrentLesson();
   testLayout();

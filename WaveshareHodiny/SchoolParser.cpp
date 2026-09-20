@@ -45,6 +45,7 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
                                   SchoolFeed &feed) {
   feed.student[0] = '\0';
   feed.dayCount = 0;
+  feed.hasHomework = false;
   feed.homeworkCount = 0;
   feed.homeworkTotal = 0;
   feed.hasMessages = false;
@@ -56,6 +57,8 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   feed.hasNotices = false;
   feed.noticeCount = 0;
   feed.noticeTotal = 0;
+  feed.hasMeals = false;
+  feed.mealCount = 0;
   if (payload == nullptr || length == 0) return SchoolParseStatus::NotJson;
   const char *end = payload + length;
   const char *begin = jsonSkipWhitespace(payload, end);
@@ -114,6 +117,7 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   // Chybějící úkoly nejsou chyba: server je s vypnutými úkoly posílat nemusí.
   const JsonValue homework = jsonFindMember(begin, end, "homework");
   if (homework.isArray()) {
+    feed.hasHomework = true;
     JsonArrayCursor items = jsonOpenArray(homework);
     while (jsonNextItem(items)) {
       if (feed.homeworkCount >= SCHOOL_MAX_HOMEWORK) {
@@ -212,6 +216,25 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
       ++feed.noticeCount;
     }
     feed.noticeTotal = readTotal("noticeCount", feed.noticeCount);
+  }
+
+  const JsonValue meals = jsonFindMember(begin, end, "meals");
+  if (meals.isArray()) {
+    feed.hasMeals = true;
+    JsonArrayCursor items = jsonOpenArray(meals);
+    while (feed.mealCount < SCHOOL_MAX_MEALS && jsonNextItem(items)) {
+      SchoolMeal &meal = feed.meals[feed.mealCount];
+      meal = SchoolMeal{};
+      if (copyMember(items.itemBegin, items.itemEnd, "text", meal.text,
+                     sizeof(meal.text)) == 0) {
+        continue;
+      }
+      copyMember(items.itemBegin, items.itemEnd, "when", meal.when,
+                 sizeof(meal.when));
+      copyMember(items.itemBegin, items.itemEnd, "who", meal.who,
+                 sizeof(meal.who));
+      ++feed.mealCount;
+    }
   }
   return SchoolParseStatus::Ok;
 }

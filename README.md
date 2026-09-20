@@ -68,7 +68,10 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - obrazovku se zprávami z libovolného kanálu RSS nebo Atom,
 - obrazovku s agendou z Google Kalendáře, sloučenou z několika kalendářů
   a obarvenou podle toho, ze kterého z nich událost je,
-- obrazovku s rozvrhem a domácími úkoly ze Školy OnLine přes vlastní server,
+- obrazovku s rozvrhem, obědy ze školní jídelny a školky a domácími úkoly ze
+  Školy OnLine přes vlastní server,
+- výchozí obrazovku po startu, přepnutí obrazovky z webu či Home Assistantu
+  a plán obrazovek podle času nebo Slunce (třeba družice od soumraku),
   se suplováním, odpadlými hodinami a zvýrazněnou právě probíhající hodinou,
 - obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
   ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
@@ -510,6 +513,21 @@ na stránku, která hlásí jen prázdno, nemá cenu — podržením prstu se na
 dostaneš pořád. Po neúspěchu firmware zkusí stažení znovu za dvě minuty a na
 displeji nechá poslední úspěšně načtené události.
 
+### Obrazovka na displeji a plán obrazovek
+
+V záložce **Obrazovky** jde displej přepnout hned (**Zobrazit teď**), bez
+ukládání; automatické střídání pak pokračuje po svém. **Výchozí obrazovka** se
+ukáže po zapnutí hodin a na konci okna z plánu.
+
+**Plán obrazovek** má čtyři řádky. Každý drží jednu obrazovku v okně „od–do“,
+kde hranice je pevný čas, nebo východ či západ Slunce, občanské svítání či
+soumrak s posunem v minutách. Okno může přes půlnoc, například družice od
+občanského soumraku do svítání a letadla od svítání do soumraku. Slunce se
+počítá přímo v hodinách pro polohu nastavenou u počasí. V okně automatické
+střídání stojí; přepnout jde dál prstem i z webu, a po pěti minutách bez
+dalšího přepnutí se hodiny k obrazovce z plánu vrátí. Když se okna překrývají,
+platí vyšší řádek. Pravidlo pro vypnutou obrazovku se přeskočí.
+
 ### Rozvrh a úkoly ze Školy OnLine
 
 Obrazovka **Škola** ukazuje rozvrh jednoho dítěte na dva školní dny vedle
@@ -526,7 +544,14 @@ zelené pořadí i předmět, suplování a školní akce mají předmět oranž
 odpadlá hodina je celá tlumená a za předmětem má `odpadá`. Pod rozvrhem jsou **úkoly**
 s termínem od dneška na dva týdny, kolik se jich vejde; když se všechny
 nevejdou, poslední řádek nahradí tři tečky. Když žádné nejsou, stojí pod
-rozvrhem `ŽÁDNÉ ÚKOLY`. Úkoly jdou v záložce vypnout.
+rozvrhem `ŽÁDNÉ ÚKOLY`. Úkoly jdou v záložce vypnout; server, který je
+nestahuje (`SCHOOL_HOMEWORK=0`), je hodinám vůbec nepošle a neukáže se ani
+hlavička.
+
+Mezi rozvrhem a úkoly jsou **obědy** na dnes a zítra: hlavní chod ze školní
+jídelny (`ZŠ`) a ze školky (`MŠ`), bez polévky, alergenů a nápojů. Den stojí
+jen u prvního jídla toho dne. Jídelníčky stahuje server, hodiny jen opisují
+hotové řádky; server bez nastavených jídelníčků sekci nepošle.
 
 Tažením prstu do strany se obrazovka přepne na druhou stránku (stejně jako
 druhá sada hodnot na ciferníku HODNOTY): **nepřečtené zprávy** a **známky**
@@ -900,6 +925,11 @@ Web zobrazuje URL ovládacího endpointu obsahující náhodný 128bitový secre
 Pomocí REST příkazů lze aktualizovat data, zapnout či vypnout podsvícení nebo
 vyvolat další podporované akce. URL považuj za přihlašovací údaj: nevkládej ji
 do screenshotů, veřejných logů ani Git repozitáře.
+
+Obrazovku přepne `POST …/api/control/<secret>/screen/<jméno>`, kde jméno je
+`clock`, `radar`, `rss`, `forecast`, `planes`, `agenda`, `sky`, `school` nebo
+`satellites`; vypnutá obrazovka vrátí 409. Hodí se do automatizací, třeba
+radar při dešti.
 
 Secret je uložený v zařízení, ověřuje se konstantním časem a není součástí
 zálohy – každé hodiny mají vlastní. Přesný tvar endpointů a příklady požadavků jsou zobrazené

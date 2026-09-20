@@ -248,7 +248,103 @@ void testSecondPageFormBoundaries() {
   }
 }
 
+// Stránka ze starší verze plán neposílá: uložený zůstane.
+void testScreenScheduleMissingKeepsStored() {
+  Fields fields{{"dayBrightness", "35"}};
+  ClockScreenScheduleConfig schedule;
+  schedule.startupScreen = CLOCK_SCREEN_RADAR;
+  String error;
+  const ConfigurationFormSource source = sourceFor(fields);
+  assert(readScreenScheduleFromSource(source, schedule, error) ==
+         ScreenScheduleFormResult::Missing);
+  assert(schedule.startupScreen == CLOCK_SCREEN_RADAR);
+}
+
+void testScreenScheduleIsRead() {
+  Fields fields{
+      {"startupScreen", "planes"},
+      // Družice od soumraku do svítání, posun prázdný = nula.
+      {"schedule0Screen", "satellites"},
+      {"schedule0StartEvent", "civil-dusk"},
+      {"schedule0StartOffset", "15"},
+      {"schedule0EndEvent", "civil-dawn"},
+      {"schedule0EndOffset", ""},
+      // Pevný čas; posun u něj nic neznamená.
+      {"schedule1Screen", "school"},
+      {"schedule1StartEvent", "time"},
+      {"schedule1StartTime", "06:30"},
+      {"schedule1EndEvent", "time"},
+      {"schedule1EndTime", "07:45"},
+      // Vypnutý řádek se zbytky se uloží prázdný.
+      {"schedule2Screen", "off"},
+      {"schedule2StartEvent", "sunset"},
+      {"schedule2StartOffset", "9999"},
+  };
+  ClockScreenScheduleConfig schedule;
+  String error;
+  const ConfigurationFormSource source = sourceFor(fields);
+  assert(readScreenScheduleFromSource(source, schedule, error) ==
+         ScreenScheduleFormResult::Applied);
+  assert(schedule.startupScreen == CLOCK_SCREEN_PLANES);
+  assert(schedule.rules[0].screen == CLOCK_SCREEN_SATELLITES);
+  assert(schedule.rules[0].startEvent == CLOCK_SCHEDULE_CIVIL_DUSK);
+  assert(schedule.rules[0].startValue == 15);
+  assert(schedule.rules[0].endEvent == CLOCK_SCHEDULE_CIVIL_DAWN);
+  assert(schedule.rules[0].endValue == 0);
+  assert(schedule.rules[1].screen == CLOCK_SCREEN_SCHOOL);
+  assert(schedule.rules[1].startValue == 6 * 60 + 30);
+  assert(schedule.rules[1].endValue == 7 * 60 + 45);
+  assert(schedule.rules[2].screen == CLOCK_SCREEN_ORDER_UNUSED);
+  assert(schedule.rules[2].startValue == 0);
+  assert(schedule.rules[3].screen == CLOCK_SCREEN_ORDER_UNUSED);
+  assert(strcmp(clockScheduleEventName(CLOCK_SCHEDULE_CIVIL_DUSK),
+                "civil-dusk") == 0);
+}
+
+void testInvalidScreenScheduleIsRejected() {
+  const Fields base{
+      {"startupScreen", "clock"},
+      {"schedule0Screen", "radar"},
+      {"schedule0StartEvent", "time"},
+      {"schedule0StartTime", "08:00"},
+      {"schedule0EndEvent", "time"},
+      {"schedule0EndTime", "09:00"},
+  };
+  const std::pair<const char *, const char *> broken[] = {
+      {"startupScreen", "nastaveni"},
+      {"schedule0Screen", "kino"},
+      {"schedule0StartEvent", "noon"},
+      {"schedule0StartTime", "8:00"},
+      {"schedule0StartTime", "24:00"},
+      {"schedule0EndTime", "08:00"},
+  };
+  for (const auto &change : broken) {
+    Fields fields = base;
+    fields[change.first] = change.second;
+    ClockScreenScheduleConfig schedule;
+    schedule.startupScreen = CLOCK_SCREEN_SKY;
+    String error;
+    const ConfigurationFormSource source = sourceFor(fields);
+    assert(readScreenScheduleFromSource(source, schedule, error) ==
+           ScreenScheduleFormResult::Invalid);
+    assert(!error.isEmpty());
+    // Chyba nechá uložený plán, jak byl.
+    assert(schedule.startupScreen == CLOCK_SCREEN_SKY);
+  }
+  Fields offset = base;
+  offset["schedule0StartEvent"] = "sunrise";
+  offset["schedule0StartOffset"] = "181";
+  ClockScreenScheduleConfig schedule;
+  String error;
+  const ConfigurationFormSource source = sourceFor(offset);
+  assert(readScreenScheduleFromSource(source, schedule, error) ==
+         ScreenScheduleFormResult::Invalid);
+}
+
 int main() {
+  testScreenScheduleMissingKeepsStored();
+  testScreenScheduleIsRead();
+  testInvalidScreenScheduleIsRejected();
   testSecondPageFormBoundaries();
   testMissingFieldsKeepStoredSlot();
   testCustomSlotIsRead();

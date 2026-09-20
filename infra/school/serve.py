@@ -20,6 +20,12 @@ hesle proto server ceka AUTH_BACKOFF_HOURS a starsi data dal vydava, nejdyl
 ale MAX_AGE_HOURS. Pak radsi 503 nez vcerejsi rozvrh bez suplovani, ktery by
 se po dvou tydnech tvaril jako prazdniny.
 
+Pod rozvrh patri obedy na dnes a zitra: skolni jidelna z iCanteenu
+(SCHOOL_CANTEEN_URL, verejna stranka bez prihlaseni) a skolka z jidelnicku
+nasems.cz (stejne prihlaseni jako nastenka). Oba se stahuji nejvys jednou
+za MEALS_POLL_MINUTES. SCHOOL_HOMEWORK=0 ukoly vypne uplne: do Skoly OnLine
+se na ne neptame a hodiny klic "homework" nedostanou.
+
 Skola OnLine je cizi server a neoficialni API, takze se pta co nejmene: kazdy
 zdroj nejvys jednou za tri hodiny, dite se hleda v /v1/user jednou denne, ne
 pri kazdem stazeni, o prazdninach se stahuje jeste zridkaveji a chyby se
@@ -121,6 +127,16 @@ NOTICES_POLL_MINUTES = int(os.environ.get("NASEMS_POLL_MINUTES", "180"))
 # Rozvrh na dva tydny dopredu: pres vikend a kratke volno se tak vzdycky najde
 # pristi skolni den. Delsi prazdniny hodiny poznaji podle prazdneho rozvrhu.
 TIMETABLE_DAYS = int(os.environ.get("SCHOOL_TIMETABLE_DAYS", "14"))
+# Domaci ukoly. 0 = do Skoly OnLine se na ne vubec nepta a hodiny je
+# nedostanou; kod zustava, kdyby je ucitele zacali zadavat.
+HOMEWORK_ENABLED = os.environ.get("SCHOOL_HOMEWORK", "1") != "0"
+# Obedy pod rozvrhem. Skolni jidelna bezi na iCanteenu, ktery jidelnicek
+# ukazuje i neprihlasenemu: staci adresa, zadne heslo. Skolka ma jidelnicek
+# na nasems.cz za stejnym prihlasenim jako nastenka. Jidelnicek se meni
+# jednou za tyden, proto staci par dotazu denne.
+CANTEEN_URL = os.environ.get("SCHOOL_CANTEEN_URL", "").strip()
+NASEMS_MENU_ENABLED = os.environ.get("NASEMS_MENU", "1") != "0"
+MEALS_POLL_MINUTES = int(os.environ.get("SCHOOL_MEALS_POLL_MINUTES", "360"))
 # Token vyprsi za hodinu; minuta rezervy, aby dotaz nespadl na hrane.
 TOKEN_MARGIN_SECONDS = 60
 
@@ -272,8 +288,8 @@ class NasemsClient:
         form = urllib.parse.urlencode({"login": self.login, "password": self.password}).encode()
         self._open(f"{self.base}/", form)
 
-    def board(self) -> str:
-        url = f"{self.base}/prihlaseno/nastenka"
+    def _page(self, path: str) -> str:
+        url = f"{self.base}{path}"
         if not any(True for _ in self.cookies):
             self._sign_in()
         page = self._open(url)
@@ -284,6 +300,53 @@ class NasemsClient:
                 self.cookies.clear()
                 raise AuthError("nasems.cz odmitl prihlaseni")
         return page
+
+    def board(self) -> str:
+        return self._page("/prihlaseno/nastenka")
+
+    def menu(self, today) -> list[dict]:
+        """Hlavni chody skolky. Stranka ukazuje aktualni tyden; v nedeli je
+        zitrek uz za nim, a jen tehdy se zvlast nacte pristi tyden - stejnym
+        AJAXem, jakym ho nacita tlacitko na webu."""
+        page = self._page("/prihlaseno/jidelnicek")
+        meals = feed.normalize_nasems_menu(page)
+        covered = {meal["date"] for meal in meals}
+        last = max(covered, default="")
+        wanted = [day for day in (today, today + timedelta(days=1))
+                  if day.weekday() < 5 and day.isoformat() > last]
+        week = feed.nasems_next_week(page)
+        if wanted and week:
+            form = urllib.parse.urlencode({"ajax": "ajax", "what": "jidelnicek",
+                                           "action": "load_html_jidelnicek",
+                                           "polozka": week}).encode()
+            answer = self._open(f"{self.base}/prihlaseno/jidelnicek", form)
+            try:
+                html = json.loads(answer).get("result", "")
+            except (ValueError, AttributeError):
+                raise SchoolError("nasems.cz nevratil pristi tyden jako JSON") from None
+            meals += [meal for meal in feed.normalize_nasems_menu(html)
+                      if meal["date"] not in covered]
+        return meals
+
+
+class CanteenClient:
+    """Skolni jidelna na iCanteenu. Jidelnicek je na prihlasovaci strance
+    i bez prihlaseni, takze klient nic nedrzi a nic neposila."""
+
+    def __init__(self, url: str = CANTEEN_URL):
+        self.url = url
+
+    def menu(self) -> str:
+        request = urllib.request.Request(self.url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(charset, errors="replace")
+        except urllib.error.HTTPError as error:
+            raise SchoolError(f"jidelna vratila HTTP {error.code}",
+                              _retry_after(error.code, error.headers)) from error
+        except (urllib.error.URLError, OSError) as error:
+            raise SchoolError(f"jidelna neodpovida: {error}") from error
 
 
 def find_student(client: Client) -> dict:
@@ -305,13 +368,15 @@ def collect(client: Client, now: datetime, student: dict | None = None) -> dict:
     today = now.date()
     lessons = feed.normalize_timetable(
         client.timetable(student["id"], today, today + timedelta(days=TIMETABLE_DAYS)))
-    homework = feed.normalize_homework(client.homework(student["id"]))
+    homework = (feed.normalize_homework(client.homework(student["id"]))
+                if HOMEWORK_ENABLED else [])
     return {
         "generated": now.isoformat(timespec="seconds"),
         # ID jen pro pristi stazeni; render() ho hodinam neposila.
         "student": {"id": student["id"], "name": student["name"]},
         "lessons": lessons,
         "homework": homework,
+        "homeworkEnabled": HOMEWORK_ENABLED,
     }
 
 
@@ -396,9 +461,14 @@ def jittered(seconds: float, percent: float | None = None, rng=random) -> float:
 
 class Poller:
     def __init__(self, client: Client, state_path: str | None = None,
-                 nasems: NasemsClient | None = None):
+                 nasems: NasemsClient | None = None, canteen: CanteenClient | None = None,
+                 nasems_menu: bool | None = None):
         self.client = client
         self.nasems = nasems
+        self.canteen = canteen
+        # Jidelnicek skolky jede pres stejne prihlaseni jako nastenka.
+        self.nasems_menu = nasems is not None and (
+            NASEMS_MENU_ENABLED if nasems_menu is None else nasems_menu)
         self.state_path = state_path
         self.lock = threading.Lock()
         self.snapshot: dict | None = None
@@ -508,10 +578,16 @@ class Poller:
                   if isinstance(items, list)}
         # Mezitim vypnute zpravy nebo znamky se nevydavaji ani z disku.
         for name, enabled in (("messages", MESSAGES_ENABLED), ("marks", MARKS_ENABLED),
-                              ("notices", self.nasems is not None)):
+                              ("notices", self.nasems is not None),
+                              ("canteen", self.canteen is not None),
+                              ("kindermenu", self.nasems_menu)):
             if not enabled:
                 snapshot.pop(name, None)
                 extras.pop(name, None)
+        # Ani vypnute ukoly: ulozeny snimek je mohl stahnout jeste zapnute.
+        if not HOMEWORK_ENABLED:
+            snapshot["homework"] = []
+        snapshot["homeworkEnabled"] = HOMEWORK_ENABLED
         try:
             feed.render(snapshot)
         except Exception as error:  # noqa: BLE001 - radsi zadna data nez pad obsluhy
@@ -556,6 +632,10 @@ class Poller:
              lambda: feed.normalize_marks(self.client.marks(student_id))),
             ("notices", self.nasems is not None, NOTICES_POLL_MINUTES,
              lambda: feed.normalize_notices(self.nasems.board())),
+            ("canteen", self.canteen is not None, MEALS_POLL_MINUTES,
+             lambda: feed.normalize_canteen(self.canteen.menu())),
+            ("kindermenu", self.nasems_menu, MEALS_POLL_MINUTES,
+             lambda: self.nasems.menu(now.astimezone(feed.TZ).date())),
         )
         for name, enabled, minutes, fetch in sources:
             if not enabled:
@@ -655,12 +735,13 @@ def probe() -> None:
     print("dnu v rozvrhu:", len(days))
     first = next((day["schedules"][0] for day in days if day.get("schedules")), None)
     print("prvni hodina:", json.dumps(first, ensure_ascii=False, indent=1) if first else "zadna")
-    homework = client.homework(student["id"])
-    items = homework.get("homeworks", []) if isinstance(homework, dict) else []
-    print("homework keys:", sorted(homework) if isinstance(homework, dict) else type(homework).__name__)
-    print("ukolu:", len(items))
-    if items:
-        print("prvni ukol:", json.dumps(items[0], ensure_ascii=False, indent=1))
+    if HOMEWORK_ENABLED:
+        homework = client.homework(student["id"])
+        items = homework.get("homeworks", []) if isinstance(homework, dict) else []
+        print("homework keys:", sorted(homework) if isinstance(homework, dict) else type(homework).__name__)
+        print("ukolu:", len(items))
+        if items:
+            print("prvni ukol:", json.dumps(items[0], ensure_ascii=False, indent=1))
     snapshot = collect(client, now)
     if MESSAGES_ENABLED:
         snapshot["messages"] = feed.normalize_messages(client.messages())
@@ -669,8 +750,15 @@ def probe() -> None:
         snapshot["marks"] = feed.normalize_marks(client.marks(student["id"]))
         print("znamek:", len(snapshot["marks"]))
     if NOTICES_ENABLED:
-        snapshot["notices"] = feed.normalize_notices(NasemsClient(NASEMS_LOGIN, NASEMS_PASSWORD).board())
+        nasems = NasemsClient(NASEMS_LOGIN, NASEMS_PASSWORD)
+        snapshot["notices"] = feed.normalize_notices(nasems.board())
         print("oznameni na nastence:", len(snapshot["notices"]))
+        if NASEMS_MENU_ENABLED:
+            snapshot["kindermenu"] = nasems.menu(now.date())
+            print("dnu v jidelnicku skolky:", len(snapshot["kindermenu"]))
+    if CANTEEN_URL:
+        snapshot["canteen"] = feed.normalize_canteen(CanteenClient(CANTEEN_URL).menu())
+        print("dnu v jidelnicku jidelny:", len(snapshot["canteen"]))
     print("odpoved pro hodiny:")
     print(json.dumps(feed.render(snapshot, now), ensure_ascii=False, indent=1))
 
@@ -678,7 +766,8 @@ def probe() -> None:
 def main() -> None:
     state_path = os.path.join(STATE_DIR, "state.json") if STATE_DIR else None
     nasems = NasemsClient(NASEMS_LOGIN, NASEMS_PASSWORD) if NOTICES_ENABLED else None
-    poller = Poller(Client(USERNAME, PASSWORD), state_path, nasems)
+    canteen = CanteenClient(CANTEEN_URL) if CANTEEN_URL else None
+    poller = Poller(Client(USERNAME, PASSWORD), state_path, nasems, canteen)
     poller.load_state()
     Handler.poller = poller
     # Port nejdriv: kdyby byl obsazeny, proces spadne driv, nez se zacne

@@ -202,6 +202,19 @@ def stub_config() -> dict:
         # Stejné pořadí jako ve firmwaru: (kvalita ovzduší ? 5 : 0) + dny.
         "forecastHourCounts": [12, 11, 10, 9, 8, 10, 8, 7, 6, 5],
         "screenOrder": ["clock", "radar", "rss", "forecast", "planes"],
+        "startupScreen": "clock",
+        # Družice od soumraku do svítání, letadla přes den, zbytek vypnutý.
+        "screenSchedule": [
+            {"screen": "satellites", "startEvent": "civil-dusk", "startValue": 0,
+             "endEvent": "civil-dawn", "endValue": 0},
+            {"screen": "planes", "startEvent": "civil-dawn", "startValue": 15,
+             "endEvent": "time", "endValue": 17 * 60},
+            {"screen": "", "startEvent": "time", "startValue": 0,
+             "endEvent": "time", "endValue": 0},
+            {"screen": "", "startEvent": "time", "startValue": 0,
+             "endEvent": "time", "endValue": 0},
+        ],
+        "currentScreen": preview_current_screen,
         "controlSecret": "nahled-bez-zarizeni",
         "webPasswordConfigured": preview_password_configured,
         "settingsShareConfigured": False,
@@ -247,6 +260,8 @@ PREVIEW_BACKUP = {
 PREVIEW_PASSWORD = "webove-heslo"
 PREVIEW_BACKUP_PASSWORD = "zalohove-heslo"
 preview_password_configured = True
+# Obrazovka, kterou náhled hlásí jako zobrazenou; mění ji "Zobrazit teď".
+preview_current_screen = "clock"
 
 
 STUB_RESPONSES = {
@@ -292,9 +307,21 @@ class PreviewHandler(BaseHTTPRequestHandler):
             self._json({"error": "Náhled tento endpoint nezná", "path": path}, 404)
 
     def do_POST(self) -> None:
+        global preview_current_screen
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        if path == "/api/screen/show":
+            screen = (parse_qs(body).get("screen") or [""])[0]
+            print(f"POST {path}: {screen}", flush=True)
+            # Náhled nemá radar ani zprávy zapnuté, jako typické hodiny bez nich.
+            if screen in ("radar", "rss"):
+                self._json({"ok": False, "message":
+                            "Obrazovka je vypnutá, nebo se teď přepnout nedá."}, 409)
+                return
+            preview_current_screen = screen
+            self._json({"ok": True, "screen": screen})
+            return
         if path == "/api/config":
             fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
             print(f"\n--- POST /api/config ({len(fields)} polí) ---", flush=True)

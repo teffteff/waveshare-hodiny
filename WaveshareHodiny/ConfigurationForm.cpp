@@ -43,6 +43,122 @@ const char *clockScreenName(uint8_t screen) {
   }
 }
 
+bool clockScreenFromName(const String &name, uint8_t &screen) {
+  for (uint8_t candidate = 0; candidate < CLOCK_SCREEN_ORDER_COUNT;
+       ++candidate) {
+    if (strcmp(name.c_str(), clockScreenName(candidate)) == 0) {
+      screen = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
+const char *clockScheduleEventName(uint8_t event) {
+  switch (event) {
+    case CLOCK_SCHEDULE_SUNRISE: return "sunrise";
+    case CLOCK_SCHEDULE_SUNSET: return "sunset";
+    case CLOCK_SCHEDULE_CIVIL_DAWN: return "civil-dawn";
+    case CLOCK_SCHEDULE_CIVIL_DUSK: return "civil-dusk";
+    default: return "time";
+  }
+}
+
+namespace {
+
+bool scheduleEventFromName(const String &name, uint8_t &event) {
+  for (uint8_t candidate = 0; candidate < CLOCK_SCHEDULE_EVENT_COUNT;
+       ++candidate) {
+    if (strcmp(name.c_str(), clockScheduleEventName(candidate)) == 0) {
+      event = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
+// "HH:MM" na minutu dne, jak ho posílá <input type="time">.
+bool parseDayMinute(const String &text, int16_t &minute) {
+  const char *value = text.c_str();
+  if (strlen(value) != 5 || value[2] != ':') return false;
+  for (int index : {0, 1, 3, 4})
+    if (value[index] < '0' || value[index] > '9') return false;
+  const int hours = (value[0] - '0') * 10 + (value[1] - '0');
+  const int minutes = (value[3] - '0') * 10 + (value[4] - '0');
+  if (hours > 23 || minutes > 59) return false;
+  minute = static_cast<int16_t>(hours * 60 + minutes);
+  return true;
+}
+
+bool parseOffset(const String &text, int16_t &offset) {
+  char *end = nullptr;
+  const long value = strtol(text.c_str(), &end, 10);
+  if (end == text.c_str() || *end != '\0' ||
+      value < -CLOCK_SCHEDULE_MAX_OFFSET_MINUTES ||
+      value > CLOCK_SCHEDULE_MAX_OFFSET_MINUTES)
+    return false;
+  offset = static_cast<int16_t>(value);
+  return true;
+}
+
+// Jedna hranice okna: událost a k ní čas, nebo posun.
+bool readScheduleEdge(const ConfigurationFormSource &source,
+                      const String &prefix, uint8_t &event, int16_t &value) {
+  if (!scheduleEventFromName(field(source, prefix + "Event"), event))
+    return false;
+  if (event == CLOCK_SCHEDULE_TIME)
+    return parseDayMinute(field(source, prefix + "Time"), value);
+  const String offset = field(source, prefix + "Offset");
+  if (offset.isEmpty()) {
+    value = 0;
+    return true;
+  }
+  return parseOffset(offset, value);
+}
+
+}  // namespace
+
+ScreenScheduleFormResult readScreenScheduleFromSource(
+    const ConfigurationFormSource &source, ClockScreenScheduleConfig &schedule,
+    String &error) {
+  if (!source.has(source.context, "startupScreen"))
+    return ScreenScheduleFormResult::Missing;
+  ClockScreenScheduleConfig parsed;
+  if (!clockScreenFromName(field(source, "startupScreen"),
+                           parsed.startupScreen)) {
+    error = "Neznámá výchozí obrazovka.";
+    return ScreenScheduleFormResult::Invalid;
+  }
+  for (size_t index = 0; index < CLOCK_SCREEN_SCHEDULE_COUNT; ++index) {
+    const String prefix = String("schedule") + String(index);
+    ClockScreenScheduleRule &rule = parsed.rules[index];
+    const String screen = field(source, prefix + "Screen");
+    // Vypnuté pravidlo se neukládá s tím, co v řádku zůstalo napsané.
+    if (screen.isEmpty() || screen == "off") continue;
+    const String number = String(index + 1);
+    if (!clockScreenFromName(screen, rule.screen)) {
+      error = String("Plán obrazovek, řádek ") + number +
+              ": neznámá obrazovka.";
+      return ScreenScheduleFormResult::Invalid;
+    }
+    if (!readScheduleEdge(source, prefix + "Start", rule.startEvent,
+                          rule.startValue) ||
+        !readScheduleEdge(source, prefix + "End", rule.endEvent,
+                          rule.endValue)) {
+      error = String("Plán obrazovek, řádek ") + number +
+              ": čas musí být HH:MM a posun nejvýš ±180 minut.";
+      return ScreenScheduleFormResult::Invalid;
+    }
+    if (rule.startEvent == rule.endEvent && rule.startValue == rule.endValue) {
+      error = String("Plán obrazovek, řádek ") + number +
+              ": začátek a konec jsou stejné.";
+      return ScreenScheduleFormResult::Invalid;
+    }
+  }
+  schedule = parsed;
+  return ScreenScheduleFormResult::Applied;
+}
+
 bool parseScreenOrder(const String &text, uint8_t *order) {
   bool seen[CLOCK_SCREEN_ORDER_COUNT] = {};
   size_t count = 0;

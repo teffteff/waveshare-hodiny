@@ -717,6 +717,23 @@ Co server posílá a proč tak:
   (`NASEMS_POLL_MINUTES`), tedy asi 3 stažení denně; jedno je jeden dotaz,
   dokud drží session, po jejím vypršení dva až tři. Na displeji je pod
   známkami.
+- **Obědy** (`meals`) pod rozvrhem místo úkolů: dnes a zítra, u každého dne
+  školní jídelna a školka, jeden řádek `{"when":"DNES","who":"ZŠ","text":…}`.
+  Jídelna běží na iCanteenu (`SCHOOL_CANTEEN_URL`, např.
+  `https://jidelna.zsondrejov.cz/`), který jídelníček na tři týdny ukazuje
+  i bez přihlášení — server nic neposílá a žádné heslo nepotřebuje. Bere se
+  jen hlavní chod `Oběd1` (`SCHOOL_CANTEEN_MEAL`) bez polévky. Školka má
+  jídelníček na [nasems.cz](https://nasems.cz/prihlaseno/jidelnicek) za
+  stejným přihlášením jako nástěnka (`NASEMS_MENU=0` ho vypne) a bere se jen
+  „Hlavní chod“. Stránka nese aktuální týden; pondělí se v neděli dotáhne
+  jedním AJAXovým dotazem jako tlačítkem „Následující týden“. Alergeny
+  a nápoje („ovocný čaj“, „voda“) se zahazují. Obojí se stahuje nejvýš
+  jednou za 6 hodin (`SCHOOL_MEALS_POLL_MINUTES`), v noci jen poprvé po
+  startu: kolem 3 dotazů denně na jídelnu a 3 až 4 na nasems.cz navíc.
+  Den bez jídla (víkend, svátek bez záznamu) se vynechá.
+- **Úkoly vypnuté** (`SCHOOL_HOMEWORK=0`): server se na ně Školy OnLine vůbec
+  neptá a klíč `homework` nepošle; hodiny pak nepíšou ani „ŽÁDNÉ ÚKOLY“.
+  Kód zůstává, zapnutí je jen smazání proměnné a restart služby.
 - Selže-li stažení zpráv nebo známek, rozvrh jede dál se staršími daty; po
   `SCHOOL_MAX_AGE_HOURS` se zahodí. `SCHOOL_MESSAGES=0` a `SCHOOL_MARKS=0`
   je vypnou úplně a hodiny druhou stránku nenabídnou.
