@@ -550,8 +550,10 @@ hlavička.
 
 Mezi rozvrhem a úkoly jsou **obědy** na dnes a zítra: hlavní chod ze školní
 jídelny (`ZŠ`) a ze školky (`MŠ`), bez polévky, alergenů a nápojů. Den stojí
-jen u prvního jídla toho dne. Jídelníčky stahuje server, hodiny jen opisují
-hotové řádky; server bez nastavených jídelníčků sekci nepošle.
+na vlastním řádku nad jídly, která pod něj patří, a název jídla má pak celý
+řádek od levého okraje rozvrhu; vedle dne se delší jídelníček nevešel a končil
+třemi tečkami. Jídelníčky stahuje server, hodiny jen opisují hotové řádky;
+server bez nastavených jídelníčků sekci nepošle.
 
 Tažením prstu do strany se obrazovka přepne na druhou stránku (stejně jako
 druhá sada hodnot na ciferníku HODNOTY): **nepřečtené zprávy** a **známky**

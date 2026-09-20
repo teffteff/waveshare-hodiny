@@ -3146,6 +3146,12 @@ bool schoolHasHomework = false;
 uint8_t schoolHomeworkCount = 0;
 uint8_t schoolHomeworkTotal = 0;
 uint8_t schoolMealCount = 0;
+// Které jídlo otevírá nový den, a nese tedy nad sebou řádek s dnem.
+bool schoolMealNewDay[SCHOOL_MAX_MEALS] = {};
+// Kolik řádků které jídlo zabere: den nad ním plus jeden či dva řádky názvu.
+uint8_t schoolMealRows[SCHOOL_MAX_MEALS] = {};
+// Na kolik řádků se název láme; 2 jen tam, kde se do jednoho nevejde.
+uint8_t schoolMealTextLines[SCHOOL_MAX_MEALS] = {};
 bool schoolHasMessages = false;
 uint8_t schoolMessageCount = 0;
 uint8_t schoolMessageTotal = 0;
@@ -3203,6 +3209,13 @@ int schoolSubjectWidth() {
 
 int schoolTextWidth(const char *text) {
   return lv_txt_get_width(text, strlen(text), &clock_czech_14, 0,
+                          LV_TEXT_FLAG_NONE);
+}
+
+// Řádky sekcí jsou o dva stupně větší než hlavičky, a název oběda se měří
+// proti nim: podle toho se láme do druhého řádku.
+int schoolRowTextWidth(const char *text) {
+  return lv_txt_get_width(text, strlen(text), &clock_czech_16, 0,
                           LV_TEXT_FLAG_NONE);
 }
 
@@ -3423,7 +3436,8 @@ void layoutSchoolPage() {
       SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
                           SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
                           SCHOOL_BLOCK_HEIGHT},
-      schoolReady ? schoolMealCount : 0);
+      schoolReady ? schoolMealCount : 0,
+      schoolReady ? schoolMealRows : nullptr);
   // Na druhé stránce se rozvrh schová celý, včetně hlášky uprostřed.
   if (newsPage) schoolVisible = SchoolLayoutResult{};
   const bool showMessage =
@@ -3513,38 +3527,50 @@ void layoutSchoolPage() {
   int cursorY = lessonsTop + schoolVisible.lessons * line;
   const bool mealsHeading = schoolVisible.meals > 0;
   setObjectVisible(schoolMealsHeading, mealsHeading);
+  // Obědy stojí na stejné svislici jako čísla hodin v rozvrhu nad nimi, tedy
+  // u levého okraje prvního sloupce - ve dvou dnech je ten o kus vlevo.
+  const int mealTarget = schoolColumnLeft(0);
   if (mealsHeading) {
     cursorY += SCHOOL_SECTION_GAP;
     lv_label_set_text(schoolMealsHeading, english ? "LUNCH" : "OBĚDY");
     placeSchoolLabel(schoolMealsHeading,
-                     schoolRowLeft(SCHOOL_RADIUS, SCHOOL_LEFT, cursorY,
+                     schoolRowLeft(SCHOOL_RADIUS, mealTarget, cursorY,
                                    schoolHeadingHeight()),
                      cursorY);
     cursorY += schoolHeadingHeight() + SCHOOL_ROW_GAP;
   }
   for (size_t index = 0; index < SCHOOL_MAX_MEALS; ++index) {
     const bool visible = index < schoolVisible.meals;
-    // Den stojí jen u prvního jídla toho dne; pod ním by jen opakoval.
-    const bool repeatedDay =
-        index > 0 &&
-        strcmp(lv_label_get_text(schoolMealWhenLabels[index]),
-               lv_label_get_text(schoolMealWhenLabels[index - 1])) == 0;
-    setObjectVisible(schoolMealWhenLabels[index], visible && !repeatedDay);
+    // Den stojí jen u prvního jídla toho dne, a na vlastním řádku nad ním.
+    const bool opensDay = visible && schoolMealNewDay[index];
+    setObjectVisible(schoolMealWhenLabels[index], opensDay);
     setObjectVisible(schoolMealTextLabels[index], visible);
     if (!visible) continue;
     // Obědy leží u spodního okraje, kde je kruh užší: řádek se vejde celý
     // a tečky LONG_DOT padnou ještě na displej, ne za jeho okraj.
     const int height = schoolLineHeight();
-    const int left = schoolRowLeft(SCHOOL_RADIUS, SCHOOL_LEFT, cursorY, height);
+    const int lines = schoolMealTextLines[index] > 0 ? schoolMealTextLines[index] : 1;
+    if (opensDay) {
+      lv_obj_set_width(schoolMealWhenLabels[index], SCHOOL_DUE_WIDTH);
+      placeSchoolLabel(schoolMealWhenLabels[index],
+                       schoolRowLeft(SCHOOL_RADIUS, mealTarget, cursorY, height),
+                       cursorY);
+      cursorY += line;
+    }
+    // Název jídla dostane celý řádek od levého okraje rozvrhu, a když se do
+    // něj nevejde, druhý pod ním. Oba se měří na nejužším místě bloku, aby
+    // se text nezalomil za okraj kruhu.
+    const int textHeight = lines * height;
+    const int left = schoolRowLeft(SCHOOL_RADIUS, mealTarget, cursorY, textHeight);
     const int limit =
-        -schoolRowLeft(SCHOOL_RADIUS, -SCHOOL_RADIUS, cursorY, height);
+        -schoolRowLeft(SCHOOL_RADIUS, -SCHOOL_RADIUS, cursorY, textHeight);
     const int right = limit < SCHOOL_RIGHT ? limit : SCHOOL_RIGHT;
-    const int textLeft = left + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP;
-    placeSchoolLabel(schoolMealWhenLabels[index], left, cursorY);
-    lv_obj_set_width(schoolMealTextLabels[index],
-                     right > textLeft ? right - textLeft : 1);
-    placeSchoolLabel(schoolMealTextLabels[index], textLeft, cursorY);
-    cursorY += line;
+    lv_obj_set_width(schoolMealTextLabels[index], right > left ? right - left : 1);
+    // Výška na přesný počet řádků: LONG_DOT pak zalomí, co se vejde, a teprve
+    // za druhým řádkem napíše tečky.
+    lv_obj_set_height(schoolMealTextLabels[index], textHeight);
+    placeSchoolLabel(schoolMealTextLabels[index], left, cursorY);
+    cursorY += lines * line;
   }
   const bool homeworkHeading =
       schoolVisible.homework > 0 || schoolVisible.homeworkEmpty;
@@ -7547,6 +7573,9 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
     schoolHomeworkCount = 0;
     schoolHomeworkTotal = 0;
     schoolMealCount = 0;
+    for (bool &newDay : schoolMealNewDay) newDay = false;
+    for (uint8_t &rows : schoolMealRows) rows = 0;
+    for (uint8_t &lines : schoolMealTextLines) lines = 0;
     schoolHasMessages = schoolHasMarks = schoolHasNotices = false;
     schoolMessageCount = schoolMessageTotal = 0;
     schoolMarkCount = schoolMarkTotal = 0;
@@ -7626,6 +7655,9 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   schoolMealCount = clampCount(feed->mealCount);
   for (size_t index = 0; index < feed->mealCount; ++index) {
     const SchoolMeal &meal = feed->meals[index];
+    // Den se píše jednou za den, nad jídla, která pod něj patří.
+    schoolMealNewDay[index] =
+        index == 0 || strcmp(meal.when, feed->meals[index - 1].when) != 0;
     lv_label_set_text(schoolMealWhenLabels[index], meal.when);
     char text[SCHOOL_MEAL_WHO_LENGTH + SCHOOL_TITLE_LENGTH + 4];
     if (meal.who[0] != '\0') {
@@ -7634,6 +7666,19 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
       strlcpy(text, meal.text, sizeof(text));
     }
     lv_label_set_text(schoolMealTextLabels[index], text);
+    // Na kolik řádků se název láme, se měří tady, z právě složeného textu.
+    // V popisku už ho měřit nejde: LONG_DOT přepíše to, co se nevešlo, třemi
+    // tečkami přímo v jeho textu, takže zkrácený název by se pak vždycky
+    // "vešel" na jeden řádek a na druhý by se nikdy nedostal.
+    const int rowWidth = SCHOOL_RIGHT - schoolColumnLeft(0);
+    const int lines = schoolRowTextWidth(text) > rowWidth ? 2 : 1;
+    schoolMealTextLines[index] = static_cast<uint8_t>(lines);
+    schoolMealRows[index] =
+        static_cast<uint8_t>(lines + (schoolMealNewDay[index] ? 1 : 0));
+    // Výška hned při vložení textu: LONG_DOT se jinak rozhodne podle staré
+    // jednořádkové výšky a zkrátí i to, co se na dva řádky vejde.
+    lv_obj_set_width(schoolMealTextLabels[index], rowWidth);
+    lv_obj_set_height(schoolMealTextLabels[index], lines * schoolLineHeight());
   }
   schoolHasMessages = feed->hasMessages;
   schoolMessageCount = clampCount(feed->messageCount);
