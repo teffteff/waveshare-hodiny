@@ -236,6 +236,9 @@ constexpr int RADAR_RANGE_LABEL_OFFSET_Y = 164;
 constexpr int RADAR_RANGE_DOTS_OFFSET_Y = 190;
 // Stavový řádek se dá vypnout; ostatní pásy jsou pevná výbava obrazovky.
 bool radarStatusLineEnabled = true;
+// Poznámka o blížícím se dešti. Ukazuje se jen na meteoradaru, protože jen
+// tam dává smysl: říká, proč se hodiny samy přepnuly.
+char rainAlertNote[24] = "";
 lv_obj_t *settingsPage = nullptr;
 lv_obj_t *dayBrightnessSlider = nullptr;
 lv_obj_t *nightBrightnessSlider = nullptr;
@@ -4806,9 +4809,17 @@ const char *radarEmptyStateText(bool busy) {
 
 void updateRadarClockLabel() {
   if (radarClockLabel == nullptr) return;
-  char text[48];
-  if (!radarStatusLineEnabled ||
-      !composeStatusLineText(text, sizeof(text))) {
+  char text[72];
+  const bool haveStatus =
+      radarStatusLineEnabled && composeStatusLineText(text, sizeof(text));
+  if (!haveStatus) text[0] = '\0';
+  // Poznámka o dešti se ukáže i s vypnutým stavovým řádkem: bez ní by se
+  // hodiny přepnuly bez vysvětlení.
+  if (rainAlertNote[0] != '\0') {
+    if (text[0] != '\0') strlcat(text, STATUS_LINE_GAP, sizeof(text));
+    strlcat(text, rainAlertNote, sizeof(text));
+  }
+  if (text[0] == '\0') {
     lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -7729,6 +7740,13 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
 }
 
 void clockDashboardSetRadarVisible(bool visible) { setRadarVisible(visible); }
+
+void clockDashboardSetRainAlertNote(const char *note) {
+  const char *text = note == nullptr ? "" : note;
+  if (strcmp(rainAlertNote, text) == 0) return;
+  strlcpy(rainAlertNote, text, sizeof(rainAlertNote));
+  updateRadarClockLabel();
+}
 
 bool clockDashboardAutomaticRotationAllowed() {
   return !settingsVisible && !firmwareUpdateActive;

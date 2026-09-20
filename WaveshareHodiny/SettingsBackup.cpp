@@ -238,6 +238,9 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     CONFIG_FIELD(screenOrderTail, PART_SCREENS),
     // Výchozí obrazovka a plán obrazovek patří k pořadí obrazovek.
     CONFIG_FIELD(screenSchedule, PART_SCREENS),
+    // Adresa serveru se srážkami nese heslo stejně jako adresa blesků a stejně
+    // jako ona patří k obrazovkám: upozornění přepíná právě je.
+    CONFIG_FIELD(rainAlert, PART_SCREENS),
 };
 #undef CONFIG_FIELD
 
@@ -254,8 +257,8 @@ constexpr bool configFieldsInOrder() {
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
 // Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
-static_assert((offsetof(ClockConfig, screenSchedule) +
-               sizeof(ClockScreenScheduleConfig) +
+static_assert((offsetof(ClockConfig, rainAlert) +
+               sizeof(ClockRainAlertConfig) +
                alignof(ClockConfig) - 1) /
                       alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),

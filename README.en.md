@@ -68,6 +68,10 @@ changes the system text and verbal date shown on the display.
   substitutions, cancelled lessons and the current lesson highlighted,
 - a startup screen, switching the screen from the web or Home Assistant, and a
   screen schedule by time or by the sun (for example satellites from dusk),
+- an optional switch to the radar when rain is due within a set time: the
+  hour-ahead forecast is computed by the Czech weather service and carried by
+  your own server, the clock decides on its own threshold and writes on the
+  radar how long until the rain arrives (Czechia only),
 - a forecast screen with hourly and daily Open-Meteo data, optionally with air
   quality, PM2.5 and grass pollen — and nine hours instead of six without it,
 - an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by

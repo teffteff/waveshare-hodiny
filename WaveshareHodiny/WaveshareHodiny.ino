@@ -14,6 +14,7 @@
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
+#include "RainAlertService.h"
 #include "SatelliteService.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
@@ -175,6 +176,13 @@ bool radarRotationWaitingForCycle = false;
 // stojí; ruční přepnutí platí, ale po SCHEDULE_RETURN_MS bez dalšího se
 // hodiny k obrazovce plánu vrátí.
 uint8_t scheduleHeldScreen = CLOCK_SCREEN_ORDER_UNUSED;
+// Upozornění na déšť. Do kdy drží radar, nebo 0 mimo upozornění. Drží se
+// stejně jako okno plánu, jen má přednost: je to výjimka na pár minut, kdežto
+// plán platí celé okno.
+unsigned long rainAlertHeldUntil = 0;
+unsigned long rainAlertRaisedAt = 0;
+unsigned long rainAlertCheckedAt = 0;
+bool rainAlertEverRaised = false;
 bool scheduleCheckPending = true;
 unsigned long scheduleCheckedAt = 0;
 unsigned long lastManualScreenChangeAt = 0;
@@ -487,6 +495,20 @@ void applySatellitesState(const ClockConfig &config) {
   applySatellitesState(config, clockDashboardSatellitesVisible());
 }
 
+// Upozornění na déšť se ptá serveru bez ohledu na to, která obrazovka je právě
+// vidět: jeho smysl je přepnout na radar ve chvíli, kdy se na hodiny nikdo
+// nedívá. Radar vypnutý v pořadí obrazovek ale nemá kam přepnout, takže se
+// v tom případě nestahuje nic.
+void applyRainAlertState(const ClockConfig &config) {
+  const bool available =
+      config.rainAlert.enabled && clockConfigRadarAvailable(config);
+  rainAlertServiceSetActive(available, config.rainAlert.url,
+                            config.openMeteoLatitude,
+                            config.openMeteoLongitude,
+                            config.rainAlert.radiusKm,
+                            config.rainAlert.refreshMinutes);
+}
+
 void applyPendingRuntimeConfiguration() {
   if (!runtimeConfigurationApplyPending ||
       static_cast<long>(millis() - runtimeConfigurationApplyAt) < 0) {
@@ -516,6 +538,7 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarSource);
   applyPlaneRadarState(dashboardConfigBuffer);
   applySatellitesState(dashboardConfigBuffer);
+  applyRainAlertState(dashboardConfigBuffer);
   // Nový plán nebo vypnutá obrazovka platí hned, ne až při další kontrole.
   scheduleCheckPending = true;
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
@@ -1121,6 +1144,19 @@ void showRotationScreen(uint8_t screen) {
 
 // Obrazovka je v cyklu ručního gesta, tedy nastavená a použitelná. Nastavení
 // vypnout nejde; jinak by hodiny bez radaru i zpráv neměly cestu k webu.
+// Drží upozornění na déšť právě teď radar?
+bool rainAlertHolding() {
+  return rainAlertHeldUntil != 0 &&
+         static_cast<long>(millis() - rainAlertHeldUntil) < 0;
+}
+
+// Obrazovka, kterou něco drží, nebo CLOCK_SCREEN_ORDER_UNUSED. Upozornění na
+// déšť přebíjí okno plánu: trvá jen pár minut a pak obrazovku zase pustí.
+uint8_t heldScreen() {
+  return rainAlertHolding() ? static_cast<uint8_t>(CLOCK_SCREEN_RADAR)
+                            : scheduleHeldScreen;
+}
+
 bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
   switch (screen) {
     case ROTATION_SCREEN_RADAR: return clockConfigRadarAvailable(config);
@@ -1268,11 +1304,12 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_SKY) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES);
-  // Okno plánu drží svou obrazovku; střídání se rozběhne až po něm.
+  // Okno plánu i upozornění na déšť drží svou obrazovku; střídání se rozběhne
+  // až po nich.
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed() &&
-                       scheduleHeldScreen == CLOCK_SCREEN_ORDER_UNUSED;
+                       heldScreen() == CLOCK_SCREEN_ORDER_UNUSED;
   if (!allowed) {
     automaticRotationPaused = true;
     radarRotationWaitingForCycle = false;
@@ -1442,12 +1479,83 @@ void maintainScreenSchedule() {
 
   // Ručně odbočené hodiny se k obrazovce plánu vrátí po pěti minutách.
   // Otevřené nastavení na displeji se nezavírá: kdo v něm je, něco dělá.
-  if (scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED &&
+  // Dokud drží upozornění na déšť, plán svou obrazovku nevynucuje - jinak by
+  // se ty dvě přetahovaly o displej každou půlminutu.
+  if (scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED && !rainAlertHolding() &&
       !clockDashboardSettingsVisible() &&
       activeRotationScreen() != scheduleHeldScreen &&
       now - lastManualScreenChangeAt >= SCHEDULE_RETURN_MS) {
     switchToScreen(config, scheduleHeldScreen);
   }
+}
+
+constexpr unsigned long RAIN_ALERT_CHECK_MS = 10UL * 1000UL;
+
+// Upozornění na déšť: když se do nastaveného horizontu blíží srážky, přepne se
+// na radar a chvíli se na něm podrží. Předpověď vozí vlastní server, rozhodnutí
+// padá tady - stejně jako u blesků, kde server vozí údery a poplach vyhlašuje
+// ciferník.
+void maintainRainAlert() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  const bool enabled =
+      config.rainAlert.enabled && clockConfigRadarAvailable(config);
+
+  if (!enabled) {
+    if (rainAlertHeldUntil != 0) {
+      rainAlertHeldUntil = 0;
+      clockDashboardSetRainAlertNote("");
+      scheduleCheckPending = true;
+    }
+    return;
+  }
+
+  // Konec držení vrací obrazovku střídání nebo plánu. Střídání začne počítat
+  // od nuly, aby radar nezmizel v tomtéž průchodu.
+  if (rainAlertHeldUntil != 0 &&
+      static_cast<long>(now - rainAlertHeldUntil) >= 0) {
+    rainAlertHeldUntil = 0;
+    clockDashboardSetRainAlertNote("");
+    displayModeStartedAt = now;
+    scheduleCheckPending = true;
+  }
+
+  if (now - rainAlertCheckedAt < RAIN_ALERT_CHECK_MS) return;
+  rainAlertCheckedAt = now;
+
+  RainAlertStatus status;
+  rainAlertServiceStatus(status);
+  // Bez čerstvé předpovědi se nevyhlašuje nic. Stará by přepnula na déšť,
+  // který už dávno přešel.
+  if (!status.ready) return;
+
+  RainAlertDecision decision;
+  if (!rainAlertEvaluate(status.forecast, config.rainAlert.minimumDbz,
+                         config.rainAlert.horizonMinutes, decision))
+    return;
+
+  // Prodleva mezi dvěma spuštěními, aby jedna fronta nepřepínala pořád dokola.
+  if (rainAlertEverRaised &&
+      now - rainAlertRaisedAt <
+          static_cast<unsigned long>(config.rainAlert.cooldownMinutes) * 60000UL)
+    return;
+  // V noci se nepřepíná, když si to majitel přeje. Noční režim je tu měřítkem:
+  // je to tentýž přepínač, podle kterého displej ztmavne.
+  if (config.rainAlert.quietAtNight && clockDashboardNightModeEnabled()) return;
+  // Otevřené nastavení na displeji se nezavírá: kdo v něm je, něco dělá.
+  if (clockDashboardSettingsVisible()) return;
+  if (!switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
+
+  rainAlertHeldUntil =
+      now + static_cast<unsigned long>(config.rainAlert.holdMinutes) * 60000UL;
+  rainAlertRaisedAt = now;
+  rainAlertEverRaised = true;
+  char note[24];
+  snprintf(note, sizeof(note),
+           config.language == CLOCK_LANGUAGE_ENGLISH ? "Rain in %u min"
+                                                     : "Déšť za %u min",
+           static_cast<unsigned>(decision.minutesAway));
+  clockDashboardSetRainAlertNote(note);
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
@@ -2316,6 +2424,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     planeRadarServicePrepareForFirmwareUpdate();
     satelliteServicePrepareForFirmwareUpdate();
     lightningServicePrepareForFirmwareUpdate();
+    rainAlertServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
     planeRadarServiceBegin();
@@ -2325,6 +2434,10 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     applyPlaneRadarState(loopConfigSnapshot());
     satelliteServiceBegin();
     applySatellitesState(loopConfigSnapshot());
+    // Ze stejného důvodu jako u letadel a družic: příprava na aktualizaci
+    // úlohu zastavila a po přerušené aktualizaci by mlčela až do restartu.
+    rainAlertServiceBegin();
+    applyRainAlertState(loopConfigSnapshot());
     firmwareUpdateCountdownStarted = false;
     firmwareUpdateBlackRequested = false;
     displayResyncAt = millis() + 500;
@@ -3486,6 +3599,8 @@ void setup() {
   planeRadarServiceBegin();
   satelliteServiceBegin();
   lightningServiceBegin();
+  rainAlertServiceBegin();
+  applyRainAlertState(runtimeConfig);
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
@@ -3613,6 +3728,7 @@ void loop() {
   maintainSchoolDisplay();
   maintainForecastDisplay();
   maintainScreenSchedule();
+  maintainRainAlert();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
   // pozastavení LVGL timerů zabrání tomu, aby GIF dekodér soupeřil s USB CDC;

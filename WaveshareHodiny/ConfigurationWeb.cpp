@@ -1590,6 +1590,24 @@ void handleGetConfig() {
   result += config.lightning.alarmRadiusKm;
   result += F(",\"lightningAlarmMinutes\":");
   result += config.lightning.alarmMinutes;
+  result += F(",\"rainAlertEnabled\":");
+  result += config.rainAlert.enabled ? F("true") : F("false");
+  result += F(",\"rainAlertUrl\":\"");
+  result += jsonEscape(config.rainAlert.url);
+  result += F("\",\"rainAlertHorizonMinutes\":");
+  result += config.rainAlert.horizonMinutes;
+  result += F(",\"rainAlertMinimumDbz\":");
+  result += config.rainAlert.minimumDbz;
+  result += F(",\"rainAlertRadiusKm\":");
+  result += config.rainAlert.radiusKm;
+  result += F(",\"rainAlertHoldMinutes\":");
+  result += config.rainAlert.holdMinutes;
+  result += F(",\"rainAlertCooldownMinutes\":");
+  result += config.rainAlert.cooldownMinutes;
+  result += F(",\"rainAlertRefreshMinutes\":");
+  result += config.rainAlert.refreshMinutes;
+  result += F(",\"rainAlertQuietAtNight\":");
+  result += config.rainAlert.quietAtNight ? F("true") : F("false");
   result += F(",\"skyEnabled\":");
   result += config.sky.enabled ? F("true") : F("false");
   result += F(",\"skyAutomaticRotation\":");
@@ -2216,6 +2234,70 @@ void handleSaveConfig() {
     config.lightning.clockAlert = server.arg("lightningClockAlert") == "1";
     config.lightning.alarmRadiusKm = static_cast<uint8_t>(alarmRadiusKm);
     config.lightning.alarmMinutes = static_cast<uint8_t>(alarmMinutes);
+  }
+
+  if (server.hasArg("rainAlertEnabled")) {
+    String rainUrl = server.arg("rainAlertUrl");
+    rainUrl.trim();
+    if (rainUrl.length() >= CLOCK_RAIN_URL_LENGTH) {
+      sendError(400, F("Adresa serveru srážek je příliš dlouhá."));
+      return;
+    }
+    if (!rainUrl.isEmpty() && !rainUrl.startsWith("http://") &&
+        !rainUrl.startsWith("https://")) {
+      sendError(400,
+                F("Adresa serveru srážek musí začínat http:// nebo https://."));
+      return;
+    }
+    const bool rainEnabled = server.arg("rainAlertEnabled") == "1";
+    if (rainEnabled && rainUrl.isEmpty()) {
+      sendError(400, F("Pro upozornění na déšť doplň adresu serveru."));
+      return;
+    }
+    const int horizon = server.arg("rainAlertHorizonMinutes").toInt();
+    if (horizon < CLOCK_RAIN_HORIZON_MIN_MINUTES ||
+        horizon > CLOCK_RAIN_HORIZON_MAX_MINUTES) {
+      sendError(400, F("Horizont upozornění na déšť musí být od 10 do 60 minut."));
+      return;
+    }
+    const int minimumDbz = server.arg("rainAlertMinimumDbz").toInt();
+    if (minimumDbz < CLOCK_RAIN_DBZ_MIN || minimumDbz > CLOCK_RAIN_DBZ_MAX) {
+      sendError(400, F("Intenzita deště musí být od 4 do 60 dBZ."));
+      return;
+    }
+    const int radiusKm = server.arg("rainAlertRadiusKm").toInt();
+    if (radiusKm < CLOCK_RAIN_RADIUS_MIN_KM ||
+        radiusKm > CLOCK_RAIN_RADIUS_MAX_KM) {
+      sendError(400, F("Okolí polohy pro déšť musí být od 1 do 30 km."));
+      return;
+    }
+    const int holdMinutes = server.arg("rainAlertHoldMinutes").toInt();
+    if (holdMinutes < CLOCK_RAIN_HOLD_MIN_MINUTES ||
+        holdMinutes > CLOCK_RAIN_HOLD_MAX_MINUTES) {
+      sendError(400, F("Držení radaru musí být od 1 do 120 minut."));
+      return;
+    }
+    const int cooldownMinutes = server.arg("rainAlertCooldownMinutes").toInt();
+    if (cooldownMinutes < 0 ||
+        cooldownMinutes > CLOCK_RAIN_COOLDOWN_MAX_MINUTES) {
+      sendError(400, F("Prodleva mezi upozorněními musí být od 0 do 240 minut."));
+      return;
+    }
+    const int refreshMinutes = server.arg("rainAlertRefreshMinutes").toInt();
+    if (refreshMinutes < CLOCK_RAIN_REFRESH_MIN_MINUTES ||
+        refreshMinutes > CLOCK_RAIN_REFRESH_MAX_MINUTES) {
+      sendError(400, F("Dotaz na server srážek musí být od 5 do 60 minut."));
+      return;
+    }
+    config.rainAlert.enabled = rainEnabled;
+    clockConfigCopy(config.rainAlert.url, sizeof(config.rainAlert.url), rainUrl);
+    config.rainAlert.horizonMinutes = static_cast<uint8_t>(horizon);
+    config.rainAlert.minimumDbz = static_cast<uint8_t>(minimumDbz);
+    config.rainAlert.radiusKm = static_cast<uint8_t>(radiusKm);
+    config.rainAlert.holdMinutes = static_cast<uint8_t>(holdMinutes);
+    config.rainAlert.cooldownMinutes = static_cast<uint8_t>(cooldownMinutes);
+    config.rainAlert.refreshMinutes = static_cast<uint8_t>(refreshMinutes);
+    config.rainAlert.quietAtNight = server.arg("rainAlertQuietAtNight") == "1";
   }
 
   if (server.hasArg("schoolEnabled")) {

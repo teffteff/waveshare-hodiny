@@ -73,6 +73,10 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - výchozí obrazovku po startu, přepnutí obrazovky z webu či Home Assistantu
   a plán obrazovek podle času nebo Slunce (třeba družice od soumraku),
   se suplováním, odpadlými hodinami a zvýrazněnou právě probíhající hodinou,
+- volitelné přepnutí na meteoradar, když se do nastaveného času blíží déšť:
+  předpověď na hodinu dopředu počítá ČHMÚ a vozí ji vlastní server, hodiny
+  z ní podle vlastního prahu rozhodnou samy a napíšou na radar, za jak dlouho
+  déšť dorazí (jen v Česku),
 - obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
   ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
 - radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
