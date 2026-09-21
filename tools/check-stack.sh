@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -45,6 +45,7 @@ LIGHTNING_URL="https://${HOST}/lightning.json"
 SETTINGS_URL="https://${HOST}/settings/"
 SCHOOL_URL="https://${HOST}/school.json"
 SATELLITES_URL="https://${HOST}/satellites.json"
+WARNINGS_URL="https://${HOST}/warnings.json"
 # Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
 # tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
 AGENDA_USER="${AGENDA_USER:-hodiny}"
@@ -371,6 +372,95 @@ print(f"OK {len(sats)} {age} {int(skew)} {problem}")
   fi
 fi
 
+# --- noční obloha ---------------------------------------------------------------
+# Obloha je druhá stránka družic a jde přes tutéž adresu s view=sky a tímtéž
+# heslem. 503 znamená, že si server teprve stahuje efemeridy (17 MB).
+if [ -n "${SATELLITES_PASSWORD:-}" ]; then
+  sky_curl_config="$(mktemp)"
+  chmod 600 "$sky_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$SATELLITES_PASSWORD" > "$sky_curl_config"
+  sky_body="$(curl -sS --max-time 25 -K "$sky_curl_config" -w '\n%{http_code}' "${SATELLITES_URL}?view=sky&lat=49.90&lon=14.78" 2>/dev/null)"
+  rm -f "$sky_curl_config"
+  sky_code="$(printf '%s' "$sky_body" | tail -n 1)"
+  sky_body="$(printf '%s' "$sky_body" | sed '$d')"
+  if [ "$sky_code" = "503" ]; then
+    warn "obloha odpovídá 503 — server teprve stahuje efemeridy DE421 (journalctl -u satellites-web)"
+  elif [ "$sky_code" != "200" ]; then
+    warn "obloha (view=sky) vrací '${sky_code:-nic}' — chybí sky.py nebo skyfield v .venv?"
+  else
+    sky_report="$(printf '%s' "$sky_body" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    bodies = data["bodies"]
+except Exception:
+    print("BAD 0 0 -"); raise SystemExit
+if data.get("v") != 1 or len(bodies) < 9:
+    print("BAD 0 0 -"); raise SystemExit
+kp = data.get("kp")
+events = len(data.get("events", []))
+print("OK", len(bodies), events, "-" if kp is None else kp)
+')"
+    read -r sky_status sky_bodies sky_events sky_kp <<< "$sky_report"
+    if [ "${sky_status:-BAD}" = "BAD" ]; then
+      bad "obloha odpovídá, ale není to JSON verze 1 se všemi tělesy — firmware by nenačetl nic"
+    elif [ "$sky_kp" = "-" ]; then
+      warn "obloha odpovídá (úkazů: $sky_events), ale bez indexu Kp — NOAA SWPC neodpovídá, nebo je to první dotaz po startu"
+    else
+      ok "obloha odpovídá, těles: $sky_bodies, úkazů: $sky_events, Kp $sky_kp"
+    fi
+  fi
+fi
+
+# --- výstrahy ČHMÚ ---------------------------------------------------------------
+# Data jsou veřejná, heslo chrání polohu v dotazu, takže bez něj 401. S heslem
+# z .env (WARNINGS_PASSWORD) se kontroluje tvar a to, že testovací poloha
+# (Ondřejov) padne do ORP Říčany; jinak by byl rozbitý orp.json.
+warnings_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "${WARNINGS_URL}?lat=49.90&lon=14.78")"
+if [ "$warnings_public_code" = "401" ]; then
+  ok "výstrahy jsou bez hesla nedostupné (401)"
+elif [ "$warnings_public_code" = "200" ]; then
+  bad "výstrahy bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth"
+else
+  warn "výstrahy bez hesla vrací '${warnings_public_code:-nic}' (nepovinná služba)"
+fi
+if [ -z "${WARNINGS_PASSWORD:-}" ]; then
+  warn "v .env chybí WARNINGS_PASSWORD, obsah výstrah se nekontroluje"
+else
+  warnings_curl_config="$(mktemp)"
+  chmod 600 "$warnings_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$WARNINGS_PASSWORD" > "$warnings_curl_config"
+  warnings_body="$(curl -sS --max-time 40 -K "$warnings_curl_config" -w '\n%{http_code}' "${WARNINGS_URL}?lat=49.90461&lon=14.7842" 2>/dev/null)"
+  rm -f "$warnings_curl_config"
+  warnings_code="$(printf '%s' "$warnings_body" | tail -n 1)"
+  warnings_body="$(printf '%s' "$warnings_body" | sed '$d')"
+  if [ "$warnings_code" != "200" ]; then
+    warn "výstrahy na $WARNINGS_URL s heslem z .env vrací '${warnings_code:-nic}' (502 = nedostal CAP z ČHMÚ; heslo, nebo warnings-web.service)"
+  else
+    warnings_report="$(printf '%s' "$warnings_body" | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    items = data["warnings"]
+except Exception:
+    print("BAD - 0 0"); raise SystemExit
+if data.get("v") != 1 or not isinstance(items, list):
+    print("BAD - 0 0"); raise SystemExit
+print("OK", data.get("orp") or "-", len(items), 1 if data.get("stale") else 0)
+')"
+    read -r warnings_status warnings_orp warnings_count warnings_stale <<< "$warnings_report"
+    if [ "${warnings_status:-BAD}" = "BAD" ]; then
+      bad "výstrahy odpovídají, ale není to JSON verze 1 se seznamem warnings — firmware by nenačetl nic"
+    elif [ "$warnings_orp" != "2122" ]; then
+      bad "výstrahy dávají Ondřejov do ORP '$warnings_orp' místo 2122 (Říčany) — orp.json na serveru nesedí"
+    elif [ "$warnings_stale" = "1" ]; then
+      warn "výstrahy odpovídají starším stavem — poslední stažení z opendata.chmi.cz selhalo (curl 127.0.0.1:8097/warnings/status na serveru)"
+    else
+      ok "výstrahy odpovídají, pro ORP Říčany: $warnings_count"
+    fi
+  fi
+fi
+
 # --- rozvrh a úkoly ---------------------------------------------------------
 # Škola nese jméno dítěte a jeho úkoly, takže bez hesla musí přijít 401. S heslem
 # z .env (SCHOOL_PASSWORD) se kontroluje čerstvost. Ve dne je práh 4 h (nejdelší
@@ -470,7 +560,7 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service caddy.service backup.timer; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service caddy.service backup.timer; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -506,7 +596,7 @@ if [ "$MODE" = "--deep" ]; then
     head_ "Shoda infra/ se serverem"
     # Přes sudo: /opt/agenda, /opt/settings a /opt/school jsou jen pro své služby (750/700),
     # opc do nich bez sudo nevidí.
-    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /opt/satellites/serve.py /opt/satellites/satellites-web.service /opt/satellites/requirements.txt /opt/rain/serve.py /opt/rain/rain-web.service /etc/caddy/Caddyfile /etc/systemd/system/caddy.service /opt/backup/backup.sh /etc/systemd/system/backup.service /etc/systemd/system/backup.timer')"
+    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /opt/satellites/serve.py /opt/satellites/satellites-web.service /opt/satellites/requirements.txt /opt/satellites/sky.py /opt/rain/serve.py /opt/rain/rain-web.service /opt/warnings/serve.py /opt/warnings/orp.json /opt/warnings/warnings-web.service /etc/caddy/Caddyfile /etc/systemd/system/caddy.service /opt/backup/backup.sh /etc/systemd/system/backup.service /etc/systemd/system/backup.timer')"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
@@ -522,6 +612,7 @@ if [ "$MODE" = "--deep" ]; then
           /opt/school/*)                  local_path="infra/school/$(basename "$path")" ;;
           /opt/satellites/*)              local_path="infra/satellites/$(basename "$path")" ;;
           /opt/rain/*)                    local_path="infra/rain/$(basename "$path")" ;;
+          /opt/warnings/*)                local_path="infra/warnings/$(basename "$path")" ;;
           /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
           /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
           /opt/backup/*)                  local_path="infra/backup/$(basename "$path")" ;;

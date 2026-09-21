@@ -12,10 +12,13 @@
 #include <cstring>
 #include <new>
 
+#include "Astronomy.h"
 #include "HttpDownload.h"
 #include "MapCanvas.h"
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
+#include "SkyCanvas.h"
+#include "SkyRender.h"
 
 // Adresu serveru zadává uživatel, takže se ověřuje proti svazku kořenů Mozilly,
 // stejně jako u blesků a agendy.
@@ -49,11 +52,24 @@ constexpr uint32_t RENDER_PERIOD_MS = 1000;
 // zavře. Mezitím se čísla přiznají jako poslední známá.
 constexpr uint8_t DETAIL_GRACE_FETCHES = 2;
 
-constexpr int SKY_CENTER_X = SATELLITE_SKY_WIDTH / 2;
-constexpr int SKY_CENTER_Y = SATELLITE_SKY_HEIGHT / 2;
-// Obzor. Kruh displeje má poloměr 240; světové strany stojí uvnitř obzoru.
-constexpr int SKY_RADIUS = 222;
-constexpr float DEGREES_TO_RADIANS = 0.0174532925f;
+// Noční obloha. Odpověď má kolem tří kilobajtů; osm je strop s rezervou.
+constexpr size_t SKY_RESPONSE_BYTES = 8 * 1024;
+// Polohy těles se z rektascenze a deklinace dopočítávají na místě, takže se
+// server nemusí ptát často: s ukázanou stránkou po deseti minutách (index Kp),
+// jinak po čtvrthodině - kvůli upozornění na polární záři.
+constexpr uint32_t SKY_VISIBLE_PERIOD_MS = 10UL * 60UL * 1000UL;
+constexpr uint32_t SKY_HIDDEN_PERIOD_MS = 15UL * 60UL * 1000UL;
+constexpr uint32_t SKY_RETRY_MS = 2UL * 60UL * 1000UL;
+constexpr uint32_t SKY_MAX_BACKOFF_MS = 30UL * 60UL * 1000UL;
+// 503 znamená, že server teprve stahuje efemeridy.
+constexpr uint32_t SKY_LOADING_RETRY_MS = 60UL * 1000UL;
+// Měsíc se za dvě hodiny posune o stupeň; starší data se nekreslí.
+constexpr uint32_t SKY_FRESH_MS = 2UL * 3600UL * 1000UL;
+// Index Kp pro upozornění na polární záři smí být nejvýš tři čtvrthodiny starý.
+constexpr uint32_t SKY_KP_FRESH_MS = 45UL * 60UL * 1000UL;
+// Planety se za pět vteřin posunou o necelou setinu stupně.
+constexpr uint32_t SKY_RENDER_PERIOD_MS = 5000;
+
 // Pozorovatel je ve tmě, když je Slunce aspoň šest stupňů pod obzorem.
 constexpr float DARK_SUN_ELEVATION = -6.0f;
 // Budoucí dráha: dvě minuty dopředu po deseti vteřinách.
@@ -63,11 +79,7 @@ constexpr int TRACK_STEP_SECONDS = 10;
 constexpr size_t PIXEL_COUNT =
     static_cast<size_t>(SATELLITE_SKY_WIDTH) * SATELLITE_SKY_HEIGHT;
 
-constexpr uint16_t COLOR_BLACK = 0x0000;
 constexpr uint16_t COLOR_WHITE = 0xffff;
-constexpr uint16_t COLOR_GRAY = 0x8410;
-constexpr uint16_t COLOR_DARK_GRAY = 0x4208;
-constexpr uint16_t COLOR_RING = 0x3186;
 // Barvy skupin v pořadí SatelliteGroup. Webová stránka ukazuje tytéž.
 constexpr uint16_t GROUP_COLORS[SATELLITE_GROUP_COUNT] = {
     0xffe0,  // stanice: žlutá
@@ -138,6 +150,38 @@ struct SkyPoint {
 // startu služby: v interní RAM by ubraly kilobajty, o které pak přijde TLS.
 SkyPoint *skyPoints = nullptr;
 uint8_t skyPointCount = 0;
+
+// Noční obloha. Obě kopie dat i buffer odpovědi leží v PSRAM a alokují se
+// jednou při startu služby; rozbor jde do pracovní kopie a živá se vymění
+// prohozením ukazatelů, stejně jako u drah.
+bool skyEnabled = false;
+bool skyShown = false;
+SkyFeed *skyLive = nullptr;
+SkyFeed *skyScratch = nullptr;
+uint8_t *skyResponse = nullptr;
+bool skyHaveData = false;
+bool skyFetchNow = true;
+bool skyLoading = false;
+bool skyRedrawRequested = false;
+unsigned long skyLastSuccessAt = 0;
+unsigned long skyNextFetchAt = 0;
+uint8_t skyFailures = 0;
+char skyMessage[64] = "";
+// Výsledek posledního kreslení oblohy.
+bool skyFrameReady = false;
+// Snímek v displayedBuffer je obloha. Po přepnutí stránky ještě chvíli leží
+// v bufferu ta druhá a obrazovka ji nesmí ukázat pod cizími popisky.
+bool displayedSky = false;
+bool skyDark = false;
+bool skySunUp = false;
+uint8_t skyPlanetsUp = 0;
+SkyLabel *skyLabels = nullptr;
+uint8_t skyLabelCount = 0;
+// Výběr tělesa klepnutím: drží se id, ne index, stejně jako u družic.
+char skySelectedId[10] = "";
+SkyDetail skySelectionDetail;
+SkyTapPoint skyTapPoints[SKY_MAX_BODIES];
+uint8_t skyTapCount = 0;
 
 // Zkouška adresy z webu.
 enum class ProbeState : uint8_t { Idle, Pending, Running, Done };
@@ -251,8 +295,9 @@ class BoundedBufferStream : public Stream {
   bool overflowed_ = false;
 };
 
-// Stáhne odpověď do responseBuffer. Vrací počet bajtů, nebo -1.
-long download(const char *url, int &httpStatus) {
+// Stáhne odpověď do bufferu. Vrací počet bajtů, nebo -1.
+long download(const char *url, int &httpStatus, uint8_t *buffer,
+              size_t capacity) {
   httpStatus = 0;
   long result = -1;
   const bool secure = strncmp(url, "https://", 8) == 0;
@@ -279,12 +324,12 @@ long download(const char *url, int &httpStatus) {
       http.addHeader("Accept", "application/json");
       httpStatus = http.GET();
       if (httpStatus == HTTP_CODE_OK) {
-        BoundedBufferStream response(responseBuffer, MAX_RESPONSE_BYTES - 1);
+        BoundedBufferStream response(buffer, capacity - 1);
         // Ne writeToStream(): u chunked odpovědi se nemusí nikdy vrátit.
         const int bytesRead =
             httpDownloadBody(http, response, RESPONSE_TIMEOUT_MS);
         if (!response.overflowed() && bytesRead >= 0) {
-          responseBuffer[response.length()] = '\0';
+          buffer[response.length()] = '\0';
           result = static_cast<long>(response.length());
         }
       }
@@ -327,7 +372,7 @@ long fetchInto(const ClockSatellitesConfig &config, float latitude,
   {
     NetworkOperationGuard guard(NETWORK_GUARD_MS);
     if (!guard) return -2;
-    length = download(url, httpStatus);
+    length = download(url, httpStatus, responseBuffer, MAX_RESPONSE_BYTES);
   }
   if (length < 0) return length;
   const char *text = reinterpret_cast<const char *>(responseBuffer);
@@ -410,102 +455,6 @@ bool fetchTracks(const ClockSatellitesConfig &config, float latitude,
 }
 
 // --- Kreslení ---------------------------------------------------------------
-bool nightPalette = false;
-
-uint16_t paletteColor(uint16_t color) {
-  if (!nightPalette) return color;
-  const uint16_t red = ((color >> 11) & 0x1f) << 3;
-  const uint16_t green = ((color >> 5) & 0x3f) << 2;
-  const uint16_t blue = (color & 0x1f) << 3;
-  const uint16_t luma = (77 * red + 150 * green + 29 * blue) >> 8;
-  return static_cast<uint16_t>((luma >> 3) << 11);
-}
-
-struct Rotation {
-  float sine = 0.0f;
-  float cosine = 1.0f;
-};
-
-// Bod kruhu (sever nahoře) na displej s azimutem `topBearing` nahoře. Hodnoty
-// jsou z interpolace čísel od serveru; nesmyslné se ořízne dřív, než se
-// převede na int.
-void toScreen(const Rotation &rotation, float x, float y, int &screenX,
-              int &screenY) {
-  const float rotatedX = x * rotation.cosine + y * rotation.sine;
-  const float rotatedY = y * rotation.cosine - x * rotation.sine;
-  const auto toPixel = [](float value) {
-    if (!std::isfinite(value)) return 0;
-    if (value > 4.0f) value = 4.0f;
-    if (value < -4.0f) value = -4.0f;
-    return static_cast<int>(std::lround(value * SKY_RADIUS));
-  };
-  screenX = SKY_CENTER_X + toPixel(rotatedX);
-  screenY = SKY_CENTER_Y + toPixel(rotatedY);
-}
-
-void drawDottedCircle(int radius, uint16_t color) {
-  // Tečka každé tři stupně; plná kružnice by se pletla s obzorem.
-  for (int degree = 0; degree < 360; degree += 3) {
-    const float angle = degree * DEGREES_TO_RADIANS;
-    setMapPixel(pixels,
-                SKY_CENTER_X + static_cast<int>(std::lround(radius * std::sin(angle))),
-                SKY_CENTER_Y - static_cast<int>(std::lround(radius * std::cos(angle))),
-                color, 100);
-  }
-}
-
-void drawSkyGrid(const Rotation &rotation, uint16_t topBearing,
-                 uint8_t minElevation, bool english) {
-  const uint16_t ring = paletteColor(COLOR_RING);
-  drawMapCircle(pixels, SKY_CENTER_X, SKY_CENTER_Y, SKY_RADIUS,
-                paletteColor(COLOR_DARK_GRAY), 100);
-  drawMapCircle(pixels, SKY_CENTER_X, SKY_CENTER_Y, SKY_RADIUS * 2 / 3, ring,
-                100);
-  drawMapCircle(pixels, SKY_CENTER_X, SKY_CENTER_Y, SKY_RADIUS / 3, ring, 100);
-  // Osy sever-jih a východ-západ, otočené s oblohou.
-  for (int bearing = 0; bearing < 180; bearing += 90) {
-    float x = 0.0f;
-    float y = 0.0f;
-    satelliteSkyProject(static_cast<float>(bearing), 0.0f, x, y);
-    int ax = 0;
-    int ay = 0;
-    int bx = 0;
-    int by = 0;
-    toScreen(rotation, x, y, ax, ay);
-    toScreen(rotation, -x, -y, bx, by);
-    drawMapLine(pixels, ax, ay, bx, by, ring, 100);
-  }
-  if (minElevation > 0) {
-    drawDottedCircle(SKY_RADIUS * (90 - minElevation) / 90,
-                     paletteColor(COLOR_GRAY));
-  }
-  for (int offset = -5; offset <= 5; ++offset) {
-    setMapPixel(pixels, SKY_CENTER_X + offset, SKY_CENTER_Y,
-                paletteColor(COLOR_GRAY), 100);
-    setMapPixel(pixels, SKY_CENTER_X, SKY_CENTER_Y + offset,
-                paletteColor(COLOR_GRAY), 100);
-  }
-  // Světové strany uvnitř obzoru.
-  static const char *const CZECH[4] = {"S", "V", "J", "Z"};
-  static const char *const ENGLISH[4] = {"N", "E", "S", "W"};
-  const char *const *labels = english ? ENGLISH : CZECH;
-  constexpr int MARK_RADIUS = SKY_RADIUS - 12;
-  for (int index = 0; index < 4; ++index) {
-    const float angle =
-        (index * 90 - static_cast<int>(topBearing)) * DEGREES_TO_RADIANS;
-    const int x = SKY_CENTER_X +
-                  static_cast<int>(std::lround(MARK_RADIUS * std::sin(angle))) - 2;
-    const int y = SKY_CENTER_Y -
-                  static_cast<int>(std::lround(MARK_RADIUS * std::cos(angle))) - 3;
-    drawMapText(pixels, x, y, labels[index], paletteColor(COLOR_GRAY), 100);
-  }
-  // Popisky výšek kruhů pod zenitem, u jižní poloviny osy.
-  drawMapText(pixels, SKY_CENTER_X + 4, SKY_CENTER_Y + SKY_RADIUS / 3 - 9, "60",
-              paletteColor(COLOR_DARK_GRAY), 100);
-  drawMapText(pixels, SKY_CENTER_X + 4, SKY_CENTER_Y + SKY_RADIUS * 2 / 3 - 9,
-              "30", paletteColor(COLOR_DARK_GRAY), 100);
-}
-
 // Pásma, která si drží LVGL popisky obrazovky; popisky družic musí prohrát.
 void reserveChromeBands(MapLabelPlacer &placer) {
   const MapLabelBox bands[] = {
@@ -549,16 +498,9 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
   portEXIT_CRITICAL(&stateMux);
   if (target < 0) return;
   pixels = displayBuffers[target];
-  nightPalette = night;
-
-  Rotation rotation;
-  const float topRadians = config.topBearingDeg * DEGREES_TO_RADIANS;
-  rotation.sine = std::sin(topRadians);
-  rotation.cosine = std::cos(topRadians);
-
-  const uint16_t background = paletteColor(COLOR_BLACK);
-  for (size_t index = 0; index < PIXEL_COUNT; ++index) pixels[index] = background;
-  drawSkyGrid(rotation, config.topBearingDeg, config.minElevationDeg, english);
+  const SkyCanvas canvas(pixels, config.topBearingDeg, night);
+  canvas.clear();
+  canvas.drawGrid(config.minElevationDeg, english);
 
   const bool dataCurrent =
       tracksKnown && haveEpoch && feedCoversEpoch(info, epoch);
@@ -596,7 +538,7 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
       if (point.elevationDeg < config.minElevationDeg) continue;
       int x = 0;
       int y = 0;
-      toScreen(rotation, point.x, point.y, x, y);
+      canvas.project(point.x, point.y, x, y);
       PlannedSatellite &entry = plan[planCount++];
       entry.index = static_cast<uint8_t>(index);
       entry.x = static_cast<int16_t>(x);
@@ -640,7 +582,7 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
         const SatelliteTrack &track = liveTracks[entry.index];
         const bool selected = static_cast<int>(planIndex) == selectedPlan;
         if (track.group == SATELLITE_GROUP_STARLINK && !selected) continue;
-        const uint16_t color = paletteColor(GROUP_COLORS[track.group]);
+        const uint16_t color = canvas.color(GROUP_COLORS[track.group]);
         int previousX = entry.x;
         int previousY = entry.y;
         for (int ahead = TRACK_STEP_SECONDS; ahead <= TRACK_AHEAD_SECONDS;
@@ -650,7 +592,7 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
           if (future.elevationDeg < 0.0f) break;
           int x = 0;
           int y = 0;
-          toScreen(rotation, future.x, future.y, x, y);
+          canvas.project(future.x, future.y, x, y);
           drawMapLine(pixels, previousX, previousY, x, y, color,
                       selected ? 70 : 35);
           previousX = x;
@@ -662,14 +604,14 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
     for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
       const PlannedSatellite &entry = plan[planIndex];
       const SatelliteTrack &track = liveTracks[entry.index];
-      const uint16_t color = paletteColor(GROUP_COLORS[track.group]);
+      const uint16_t color = canvas.color(GROUP_COLORS[track.group]);
       const bool selected = static_cast<int>(planIndex) == selectedPlan;
       const int radius = track.group == SATELLITE_GROUP_STATIONS ? 5
                          : track.group == SATELLITE_GROUP_STARLINK ? 1
                                                                    : 3;
       if (selected)
         drawMapCircle(pixels, entry.x, entry.y, radius + 8,
-                      paletteColor(COLOR_WHITE), 100);
+                      canvas.color(COLOR_WHITE), 100);
       if (entry.visibleNow) {
         // Jde vidět okem: plná tečka se svatozáří.
         drawMapCircle(pixels, entry.x, entry.y, radius + 3, color, 45);
@@ -687,7 +629,7 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
         char label[SATELLITE_NAME_LENGTH];
         satelliteShortName(track.name, label, sizeof(label));
         labelFont.draw(pixels, entry.labelX + 2, entry.labelY + 3, label,
-                       paletteColor(selected ? COLOR_WHITE : color),
+                       canvas.color(selected ? COLOR_WHITE : color),
                        entry.visibleNow || selected ? 100 : 75);
       }
     }
@@ -713,8 +655,142 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
     }
   }
   displayedBuffer = target;
+  displayedSky = false;
   ++generation;
   if (dataCurrent) dataFrameReady = true;
+  portEXIT_CRITICAL(&stateMux);
+}
+
+// --- Noční obloha -------------------------------------------------------------
+void setSkyMessage(const char *text) {
+  portENTER_CRITICAL(&stateMux);
+  strlcpy(skyMessage, text, sizeof(skyMessage));
+  portEXIT_CRITICAL(&stateMux);
+}
+
+bool skyDataFresh(unsigned long now) {
+  return skyHaveData && now - skyLastSuccessAt <= SKY_FRESH_MS;
+}
+
+// Stáhne oblohu, když je na řadě. Běží i se schovanou obrazovkou družic:
+// upozornění na polární záři potřebuje index Kp, i když se nikdo nedívá.
+void maintainSkyFetch(const ClockSatellitesConfig &config, float latitude,
+                      float longitude, bool english, bool shown) {
+  portENTER_CRITICAL(&stateMux);
+  const bool fetchNow = skyFetchNow;
+  const unsigned long dueAt = skyNextFetchAt;
+  portEXIT_CRITICAL(&stateMux);
+  if (!fetchNow && static_cast<long>(millis() - dueAt) < 0) return;
+
+  double epoch = 0.0;
+  if (WiFi.status() != WL_CONNECTED || !currentEpoch(epoch)) {
+    setSkyMessage("Čekám na síť");
+    portENTER_CRITICAL(&stateMux);
+    skyNextFetchAt = millis() + RETRY_INTERVAL_MS;
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
+
+  char url[CLOCK_SATELLITES_URL_LENGTH + 64];
+  uint32_t wait = shown ? SKY_VISIBLE_PERIOD_MS : SKY_HIDDEN_PERIOD_MS;
+  bool ok = false;
+  if (!skyFeedBuildUrl(config.url, latitude, longitude, english, url,
+                       sizeof(url))) {
+    setSkyMessage("Adresa serveru družic je příliš dlouhá");
+  } else {
+    portENTER_CRITICAL(&stateMux);
+    skyFetchNow = false;
+    skyLoading = true;
+    portEXIT_CRITICAL(&stateMux);
+    int httpStatus = 0;
+    long length = -2;
+    {
+      NetworkOperationGuard guard(NETWORK_GUARD_MS);
+      if (guard)
+        length = download(url, httpStatus, skyResponse, SKY_RESPONSE_BYTES);
+    }
+    if (length == -2) {
+      setSkyMessage("Síť je zaneprázdněná");
+      wait = RETRY_INTERVAL_MS;
+    } else if (length < 0) {
+      setSkyMessage(httpStatus == 503 ? "Server teprve načítá efemeridy"
+                                      : downloadFailureText(httpStatus, length));
+      if (httpStatus == 503) wait = SKY_LOADING_RETRY_MS;
+    } else {
+      const char *text = reinterpret_cast<const char *>(skyResponse);
+      if (!skyFeedParse(text, text + length, *skyScratch)) {
+        setSkyMessage("Server družic oblohu neposílá");
+      } else {
+        portENTER_CRITICAL(&stateMux);
+        SkyFeed *parsed = skyScratch;
+        skyScratch = skyLive;
+        skyLive = parsed;
+        skyHaveData = true;
+        skyLastSuccessAt = millis();
+        skyRedrawRequested = true;
+        portEXIT_CRITICAL(&stateMux);
+        setSkyMessage("");
+        ok = true;
+      }
+    }
+  }
+  if (ok) {
+    skyFailures = 0;
+  } else if (wait != RETRY_INTERVAL_MS && wait != SKY_LOADING_RETRY_MS) {
+    // Po chybě se čeká od dvou minut, s každou další dvakrát déle.
+    wait = SKY_RETRY_MS << (skyFailures < 4 ? skyFailures : 4);
+    if (wait > SKY_MAX_BACKOFF_MS) wait = SKY_MAX_BACKOFF_MS;
+    if (skyFailures < 255) ++skyFailures;
+  }
+  portENTER_CRITICAL(&stateMux);
+  skyLoading = false;
+  skyNextFetchAt = millis() + wait;
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
+                    float longitude, bool night, bool english, double epoch,
+                    bool haveEpoch) {
+  if (displayBuffers[0] == nullptr || displayBuffers[1] == nullptr ||
+      skyLive == nullptr || skyLabels == nullptr)
+    return;
+  portENTER_CRITICAL(&stateMux);
+  int target = -1;
+  for (int index = 0; index < static_cast<int>(DISPLAY_BUFFER_COUNT); ++index) {
+    if (index == displayedBuffer || index == handedOutBuffer) continue;
+    target = index;
+    break;
+  }
+  if (target < 0) skyRedrawRequested = true;
+  char selection[sizeof(skySelectedId)];
+  strlcpy(selection, skySelectedId, sizeof(selection));
+  const bool dataCurrent = skyDataFresh(millis()) && haveEpoch;
+  portEXIT_CRITICAL(&stateMux);
+  if (target < 0) return;
+  pixels = displayBuffers[target];
+
+  // Data mění jen tahle úloha, takže se čtou bez zámku. Výsledek (kolem půl
+  // kilobajtu) leží na zásobníku úlohy, tedy v PSRAM.
+  SkyRenderResult result;
+  skyRender(pixels, dataCurrent ? skyLive : nullptr, latitude, longitude,
+            epoch, config.topBearingDeg, night, english, selection, result);
+
+  portENTER_CRITICAL(&stateMux);
+  for (uint8_t index = 0; index < result.labelCount; ++index)
+    skyLabels[index] = result.labels[index];
+  skyLabelCount = result.labelCount;
+  for (uint8_t index = 0; index < result.tapCount; ++index)
+    skyTapPoints[index] = result.taps[index];
+  skyTapCount = result.tapCount;
+  skyDark = result.dark;
+  skySunUp = result.sunUp;
+  skyPlanetsUp = result.planetsUp;
+  if (selection[0] != '\0' && strcmp(selection, skySelectedId) == 0)
+    skySelectionDetail = result.detail;
+  displayedBuffer = target;
+  displayedSky = true;
+  ++generation;
+  skyFrameReady = dataCurrent;
   portEXIT_CRITICAL(&stateMux);
 }
 
@@ -824,9 +900,16 @@ void satelliteTask(void *) {
   unsigned long lastRenderAt = 0;
   unsigned long lastForcedFetchAt = 0;
   bool renderedSinceVisible = false;
+  bool wantSky = false;
+  bool skyVisible = false;
+  bool lastSkyNight = false;
+  uint32_t lastSkyRevision = 0xffffffff;
+  unsigned long lastSkyRenderAt = 0;
+  bool renderedSkySinceVisible = false;
 
   for (;;) {
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wantVisible ? 200 : 1000));
+    ulTaskNotifyTake(pdTRUE,
+                     pdMS_TO_TICKS(wantVisible || skyVisible ? 200 : 1000));
 
     portENTER_CRITICAL(&stateMux);
     const bool probePending = probeState == ProbeState::Pending;
@@ -842,10 +925,42 @@ void satelliteTask(void *) {
     const bool wasVisible = wantVisible;
     wantVisible = visible;
     wantActive = active;
+    const bool wasSkyVisible = skyVisible;
+    wantSky = skyEnabled;
+    skyVisible = skyEnabled && skyShown;
     const uint32_t revision = requestRevision;
     bool redraw = redrawRequested;
     redrawRequested = false;
+    bool redrawSky = skyRedrawRequested;
+    skyRedrawRequested = false;
     portEXIT_CRITICAL(&stateMux);
+
+    // Obloha se stahuje nezávisle na družicích: upozornění na polární záři
+    // potřebuje index Kp, i když obrazovka družic není vidět.
+    if (wantSky && skyLive != nullptr)
+      maintainSkyFetch(config, latitude, longitude, english, skyVisible);
+    if (skyVisible) {
+      if (!wasSkyVisible) renderedSkySinceVisible = false;
+      if (!ensureStorage()) {
+        setSkyMessage("Pro oblohu není dostatek PSRAM");
+      } else {
+        double skyEpoch = 0.0;
+        const bool haveSkyEpoch = currentEpoch(skyEpoch);
+        if (revision != lastSkyRevision || night != lastSkyNight) {
+          lastSkyRevision = revision;
+          lastSkyNight = night;
+          redrawSky = true;
+        }
+        const unsigned long now = millis();
+        if (redrawSky || !renderedSkySinceVisible ||
+            now - lastSkyRenderAt >= SKY_RENDER_PERIOD_MS) {
+          renderSkyFrame(config, latitude, longitude, night, english, skyEpoch,
+                         haveSkyEpoch);
+          lastSkyRenderAt = now;
+          renderedSkySinceVisible = true;
+        }
+      }
+    }
     if (!wantActive) continue;
     if (wantVisible && !wasVisible) renderedSinceVisible = false;
 
@@ -937,6 +1052,31 @@ void satelliteServiceBegin() {
         1, sizeof(SatelliteProbeResult), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (probeResult != nullptr) new (probeResult) SatelliteProbeResult();
   }
+  // Noční obloha: dvě kopie dat, buffer odpovědi a popisky, vše v PSRAM.
+  // Bez nich stránka oblohy zůstane prázdná, družice poběží dál.
+  for (SkyFeed **feed : {&skyLive, &skyScratch}) {
+    if (*feed != nullptr) continue;
+    void *memory = heap_caps_calloc(1, sizeof(SkyFeed),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) *feed = new (memory) SkyFeed();
+  }
+  if (skyResponse == nullptr) {
+    skyResponse = static_cast<uint8_t *>(heap_caps_malloc(
+        SKY_RESPONSE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (skyLabels == nullptr) {
+    void *memory = heap_caps_calloc(SKY_MAX_BODIES, sizeof(SkyLabel),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) {
+      skyLabels = static_cast<SkyLabel *>(memory);
+      for (size_t index = 0; index < SKY_MAX_BODIES; ++index)
+        new (&skyLabels[index]) SkyLabel();
+    }
+  }
+  if (skyLive == nullptr || skyScratch == nullptr || skyResponse == nullptr ||
+      skyLabels == nullptr) {
+    skyLive = nullptr;
+  }
   // Bez těchto dvou polí by klepnutí i zkouška sahaly do prázdna; obrazovka
   // pak zůstane vypnutá, hodiny poběží dál.
   if (skyPoints == nullptr || probeResult == nullptr) return;
@@ -965,6 +1105,15 @@ void satelliteServicePrepareForFirmwareUpdate() {
   loading = false;
   liveCount = 0;
   skyPointCount = 0;
+  skyEnabled = false;
+  skyShown = false;
+  skyHaveData = false;
+  skyFrameReady = false;
+  skyLoading = false;
+  skyFetchNow = true;
+  skyLabelCount = 0;
+  skyTapCount = 0;
+  skySelectedId[0] = '\0';
   // Web, který čeká na zkoušku, dostane odpověď místo visení do timeoutu.
   if (probeState == ProbeState::Pending || probeState == ProbeState::Running) {
     *probeResult = SatelliteProbeResult{};
@@ -1050,8 +1199,10 @@ void satelliteServiceSnapshot(SatelliteSnapshot &snapshot) {
   double epoch = 0.0;
   const bool haveEpoch = currentEpoch(epoch);
   portENTER_CRITICAL(&stateMux);
-  snapshot.pixels =
-      displayedBuffer >= 0 ? displayBuffers[displayedBuffer] : nullptr;
+  snapshot.skyPage = skyEnabled && skyShown;
+  snapshot.pixels = displayedBuffer >= 0 && displayedSky == snapshot.skyPage
+                        ? displayBuffers[displayedBuffer]
+                        : nullptr;
   handedOutBuffer = displayedBuffer;
   snapshot.generation = generation;
   snapshot.loading = loading || fetchNowRequested;
@@ -1118,7 +1269,31 @@ bool satelliteServiceHandleTap(int16_t x, int16_t y) {
   if (skyPoints == nullptr) return false;
   bool changed = false;
   portENTER_CRITICAL(&stateMux);
-  if (selectedId != 0) {
+  if (skyEnabled && skyShown) {
+    // Na obloze se vybírá těleso: klepnutí s otevřeným detailem ho zavře.
+    if (skySelectedId[0] != '\0') {
+      skySelectedId[0] = '\0';
+      changed = true;
+    } else {
+      int best = -1;
+      long bestDistance = 30L * 30L;
+      for (uint8_t index = 0; index < skyTapCount; ++index) {
+        const long deltaX = skyTapPoints[index].x - x;
+        const long deltaY = skyTapPoints[index].y - y;
+        const long distance = deltaX * deltaX + deltaY * deltaY;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+      if (best >= 0) {
+        strlcpy(skySelectedId, skyTapPoints[best].id, sizeof(skySelectedId));
+        skySelectionDetail = SkyDetail{};
+        changed = true;
+      }
+    }
+    if (changed) skyRedrawRequested = true;
+  } else if (selectedId != 0) {
     selectedId = 0;
     selectionMissCount = 0;
     changed = true;
@@ -1150,7 +1325,7 @@ bool satelliteServiceHandleTap(int16_t x, int16_t y) {
 
 bool satelliteServiceDetailOpen() {
   portENTER_CRITICAL(&stateMux);
-  const bool open = selectedId != 0;
+  const bool open = selectedId != 0 || skySelectedId[0] != '\0';
   portEXIT_CRITICAL(&stateMux);
   return open;
 }
@@ -1163,6 +1338,11 @@ void satelliteServiceCloseDetail() {
     selectionMissCount = 0;
     redrawRequested = true;
     notify = visible;
+  }
+  if (skySelectedId[0] != '\0') {
+    skySelectedId[0] = '\0';
+    skyRedrawRequested = true;
+    notify = notify || skyShown;
   }
   portEXIT_CRITICAL(&stateMux);
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
@@ -1208,4 +1388,75 @@ void satelliteServiceAbandonProbe() {
     probeAbandoned = true;
   }
   portEXIT_CRITICAL(&stateMux);
+}
+
+void satelliteServiceSetNightSky(bool enabled, bool shown) {
+  bool notify = false;
+  portENTER_CRITICAL(&stateMux);
+  if (skyLive == nullptr) enabled = false;
+  if (enabled != skyEnabled) {
+    skyEnabled = enabled;
+    // Zapnutí stahuje hned; vypnutí zahodí stará data, ať se po dalším
+    // zapnutí na chvíli neukáže obloha z jiné polohy.
+    skyFetchNow = true;
+    if (!enabled) {
+      skyHaveData = false;
+      skyFrameReady = false;
+    }
+    notify = true;
+  }
+  const bool nowShown = enabled && shown;
+  if (nowShown != skyShown) {
+    skyShown = nowShown;
+    skyRedrawRequested = true;
+    if (!nowShown) skySelectedId[0] = '\0';
+    // Stránka se otvírá: stará data (skoro čtvrt hodiny) se obnoví, aby
+    // index Kp nebyl pozadu.
+    if (nowShown && (!skyHaveData || millis() - skyLastSuccessAt >
+                                         SKY_VISIBLE_PERIOD_MS))
+      skyFetchNow = true;
+    notify = true;
+  }
+  portEXIT_CRITICAL(&stateMux);
+  if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+}
+
+void satelliteServiceSkySnapshot(SkySnapshot &snapshot) {
+  snapshot = SkySnapshot{};
+  portENTER_CRITICAL(&stateMux);
+  const unsigned long now = millis();
+  snapshot.generation = generation;
+  snapshot.loading = skyLoading || (skyFetchNow && !skyHaveData);
+  snapshot.haveData = skyFrameReady && skyDataFresh(now);
+  snapshot.dark = skyDark;
+  snapshot.sunUp = skySunUp;
+  snapshot.planetsUp = skyPlanetsUp;
+  if (skyLive != nullptr && skyDataFresh(now)) {
+    const SkyFeed &feed = *skyLive;
+    snapshot.hasKp = feed.hasKp;
+    snapshot.kp = feed.kp;
+    snapshot.hasKpMax = feed.hasKpMax;
+    snapshot.kpMax = feed.kpMax;
+    snapshot.kpMaxAt = feed.kpMaxAt;
+    for (size_t index = 0; index < feed.eventCount; ++index)
+      snapshot.events[snapshot.eventCount++] = feed.events[index];
+  }
+  if (skyLabels != nullptr) {
+    for (uint8_t index = 0; index < skyLabelCount; ++index)
+      snapshot.labels[snapshot.labelCount++] = skyLabels[index];
+  }
+  if (skySelectedId[0] != '\0' && skySelectionDetail.open)
+    snapshot.detail = skySelectionDetail;
+  strlcpy(snapshot.message, skyMessage, sizeof(snapshot.message));
+  portEXIT_CRITICAL(&stateMux);
+}
+
+bool satelliteServiceAuroraKp(float &kp) {
+  portENTER_CRITICAL(&stateMux);
+  const bool fresh = skyEnabled && skyLive != nullptr && skyHaveData &&
+                     skyLive->hasKp &&
+                     millis() - skyLastSuccessAt <= SKY_KP_FRESH_MS;
+  if (fresh) kp = skyLive->kp;
+  portEXIT_CRITICAL(&stateMux);
+  return fresh;
 }

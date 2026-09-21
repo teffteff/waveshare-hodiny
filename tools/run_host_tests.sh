@@ -73,6 +73,9 @@ run_test school_parser "$FIRMWARE_DIR/SchoolParser.cpp" "$FIRMWARE_DIR/AgendaPar
 run_test lightning_feed "$FIRMWARE_DIR/LightningFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test satellite_feed "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test rain_alert "$FIRMWARE_DIR/RainAlert.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+run_test weather_warnings "$FIRMWARE_DIR/WeatherWarnings.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+run_test sky_feed "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+run_test sky_render "$FIRMWARE_DIR/SkyRender.cpp" "$FIRMWARE_DIR/SkyCanvas.cpp" "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 
 echo
 if [[ $failures -gt 0 ]]; then

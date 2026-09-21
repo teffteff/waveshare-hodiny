@@ -701,6 +701,41 @@ class ResponseCache:
 
 catalog = Catalog()
 responses = ResponseCache()
+# Nocni obloha (sky.py) se nacita az za behu: bez skyfieldu nebo efemerid maji
+# druzice fungovat dal, jen obloha odpovi 503.
+night_sky = None
+
+
+def start_night_sky() -> None:
+    global night_sky
+    try:
+        import sky
+    except ImportError:
+        return
+    night_sky = sky.Sky(CACHE_DIR, USER_AGENT)
+    night_sky.start()
+
+
+def answer_sky(query: str, now: float | None = None) -> tuple[int, bytes, dict]:
+    """Nocni obloha pro stranku vedle druzic: /satellites.json?view=sky."""
+    if len(query) > 256:
+        return 400, b"query too long\n", {}
+    fields = parse_qs(query)
+    try:
+        latitude = float(fields.get("lat", [""])[0])
+        longitude = float(fields.get("lon", [""])[0])
+    except ValueError:
+        return 400, b"expected lat and lon\n", {}
+    if not (math.isfinite(latitude) and math.isfinite(longitude)
+            and -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+        return 400, b"latitude or longitude out of range\n", {}
+    if night_sky is None or not night_sky.ready():
+        return 503, b"ephemeris loading\n", {"Retry-After": "60"}
+    english = fields.get("lang", ["cs"])[0].lower().startswith("en")
+    now = time.time() if now is None else now
+    with COMPUTE_SLOTS:
+        payload = night_sky.answer(latitude, longitude, english, now)
+    return 200, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(), {}
 
 
 def answer(query: str, now: float | None = None) -> tuple[int, bytes, dict]:
@@ -750,14 +785,19 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/satellites/status":
             # Caddy tuhle cestu ven nepousti; je pro check-stack pres SSH.
-            body = json.dumps(catalog.status(), separators=(",", ":")).encode()
+            status = catalog.status()
+            status["sky"] = night_sky.status() if night_sky is not None else None
+            body = json.dumps(status, separators=(",", ":")).encode()
             self._send(200, body, "application/json; charset=utf-8")
             return
         if parsed.path not in ("/satellites.json", "/"):
             self._send(404, b"not found\n", "text/plain; charset=utf-8")
             return
         try:
-            status, body, headers = answer(parsed.query)
+            if "sky" in parse_qs(parsed.query).get("view", []):
+                status, body, headers = answer_sky(parsed.query)
+            else:
+                status, body, headers = answer(parsed.query)
         except Exception:  # noqa: BLE001 - jedna rozbita skupina nesmi shodit sluzbu
             self._send(500, b"internal error\n", "text/plain; charset=utf-8")
             return
@@ -772,5 +812,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     catalog.load_cached()
+    start_night_sky()
     threading.Thread(target=catalog.run_forever, name="celestrak", daemon=True).start()
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
