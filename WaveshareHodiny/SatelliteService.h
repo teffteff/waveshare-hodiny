@@ -111,7 +111,8 @@ struct SkySnapshot {
 // Stránka zapnutá v nastavení (enabled) a právě ukázaná (shown). Se zapnutou
 // stránkou se obloha stahuje i se schovanou obrazovkou, aby hodiny mohly
 // upozornit na polární záři.
-void satelliteServiceSetNightSky(bool enabled, bool shown);
+// hideEvents: bez řádků úkazů, jejich pás dostanou popisky oblohy.
+void satelliteServiceSetNightSky(bool enabled, bool shown, bool hideEvents);
 void satelliteServiceSkySnapshot(SkySnapshot &snapshot);
 // Poslední čerstvý index Kp (odhad NOAA po minutě); false, když není.
 bool satelliteServiceAuroraKp(float &kp);

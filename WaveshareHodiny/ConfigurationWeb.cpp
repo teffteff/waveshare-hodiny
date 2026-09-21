@@ -1653,6 +1653,8 @@ void handleGetConfig() {
   result += config.nightSky.auroraAlert ? F("true") : F("false");
   result += F(",\"nightSkyAuroraKp\":");
   result += config.nightSky.auroraKp;
+  result += F(",\"nightSkyHideEvents\":");
+  result += config.nightSky.hideEvents ? F("true") : F("false");
   result += F(",\"nightSkyHoldMinutes\":");
   result += config.nightSky.holdMinutes;
   result += F(",\"nightSkyCooldownMinutes\":");
@@ -2433,6 +2435,7 @@ void handleSaveConfig() {
     }
     config.nightSky.enabled = server.arg("nightSkyEnabled") == "1";
     config.nightSky.auroraAlert = server.arg("nightSkyAuroraAlert") == "1";
+    config.nightSky.hideEvents = server.arg("nightSkyHideEvents") == "1";
     config.nightSky.auroraKp = static_cast<uint8_t>(auroraKp);
     config.nightSky.holdMinutes = static_cast<uint8_t>(holdMinutes);
     config.nightSky.cooldownMinutes = static_cast<uint8_t>(cooldownMinutes);

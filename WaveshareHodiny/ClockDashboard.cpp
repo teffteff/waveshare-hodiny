@@ -7713,7 +7713,8 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
   for (uint8_t row = 0; row < SKY_MAX_EVENTS; ++row) {
     lv_obj_t *label = skyEventLabels[row];
     if (label == nullptr) continue;
-    if (!sky.haveData || row >= sky.eventCount || now < 1700000000) {
+    if (!sky.haveData || row >= sky.eventCount || now < 1700000000 ||
+        dashboardRuntimeConfig.nightSky.hideEvents) {
       lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
       continue;
     }

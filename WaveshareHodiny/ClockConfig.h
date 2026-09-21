@@ -685,7 +685,10 @@ struct alignas(4) ClockNightSkyConfig {
   // Nejkratší odstup dvou přepnutí. Geomagnetická bouře trvá hodiny, takže
   // bez prodlevy by hodiny na oblohu skákaly celou noc.
   uint8_t cooldownMinutes = 120;
-  uint8_t reserved[3] = {};
+  // Bez řádků úkazů pod oblohou. Nula znamená ukázat, takže záznamy uložené
+  // před touhle volbou (rezerva byla nulová) je ukazují dál.
+  bool hideEvents = false;
+  uint8_t reserved[2] = {};
 };
 
 static_assert(sizeof(ClockNightSkyConfig) == 8,

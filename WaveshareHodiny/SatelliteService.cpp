@@ -160,6 +160,7 @@ uint8_t skyPointCount = 0;
 // prohozením ukazatelů, stejně jako u drah.
 bool skyEnabled = false;
 bool skyShown = false;
+bool skyHideEvents = false;
 SkyFeed *skyLive = nullptr;
 SkyFeed *skyScratch = nullptr;
 uint8_t *skyResponse = nullptr;
@@ -768,6 +769,7 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   if (target < 0) skyRedrawRequested = true;
   char selection[sizeof(skySelectedId)];
   strlcpy(selection, skySelectedId, sizeof(selection));
+  const bool hideEvents = skyHideEvents;
   const bool dataCurrent = skyDataFresh(millis()) && haveEpoch;
   portEXIT_CRITICAL(&stateMux);
   if (target < 0) return;
@@ -777,7 +779,8 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   // kilobajtů) leží na zásobníku úlohy, tedy v PSRAM.
   SkyRenderResult result;
   skyRender(pixels, dataCurrent ? skyLive : nullptr, latitude, longitude,
-            epoch, config.topBearingDeg, night, english, selection, result);
+            epoch, config.topBearingDeg, night, english, !hideEvents,
+            selection, result);
   for (uint8_t index = 0; index < result.paintedCount; ++index) {
     const SkyPaintedLabel &label = result.painted[index];
     skyNameFont.draw(pixels, label.x, label.y + 3, label.name, label.color);
@@ -1398,9 +1401,14 @@ void satelliteServiceAbandonProbe() {
   portEXIT_CRITICAL(&stateMux);
 }
 
-void satelliteServiceSetNightSky(bool enabled, bool shown) {
+void satelliteServiceSetNightSky(bool enabled, bool shown, bool hideEvents) {
   bool notify = false;
   portENTER_CRITICAL(&stateMux);
+  if (hideEvents != skyHideEvents) {
+    skyHideEvents = hideEvents;
+    skyRedrawRequested = true;
+    notify = true;
+  }
   if (skyLive == nullptr) enabled = false;
   if (enabled != skyEnabled) {
     skyEnabled = enabled;

@@ -103,7 +103,8 @@ inline int skyEventRowOffsetY(bool atTop, int row) {
 
 // Nakreslí oblohu do bufferu 480 x 480 RGB565. Bez dat (feed == nullptr)
 // jen prázdný kruh. selectedId je id vybraného tělesa nebo prázdný řetězec.
+// Bez řádků úkazů (showEvents false) mohou popisky i do jejich pásu.
 void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
                float longitude, double epoch, uint16_t topBearingDeg,
-               bool night, bool english, const char *selectedId,
-               SkyRenderResult &result);
+               bool night, bool english, bool showEvents,
+               const char *selectedId, SkyRenderResult &result);

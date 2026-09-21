@@ -296,7 +296,8 @@ void drawRadiant(const SkyCanvas &canvas, int x, int y) {
   }
 }
 
-void reserveChromeBands(MapLabelPlacer &placer, bool eventsAtTop) {
+void reserveChromeBands(MapLabelPlacer &placer, bool showEvents,
+                        bool eventsAtTop) {
   const int eventsTop =
       SKY_CANVAS_CENTER_Y + skyEventRowOffsetY(eventsAtTop, 0) - 12;
   const int eventsBottom = SKY_CANVAS_CENTER_Y +
@@ -308,15 +309,20 @@ void reserveChromeBands(MapLabelPlacer &placer, bool eventsAtTop) {
       {0, 69, SKY_CANVAS_SIZE, 26},  // index Kp
       {0, eventsTop, SKY_CANVAS_SIZE, eventsBottom - eventsTop},  // úkazy
   };
-  for (const MapLabelBox &band : bands) placer.claim(band);
+  // Pásy se navzájem překrývají (Kp a úkazy), takže claim by druhý odmítl;
+  // zapisují se napřímo.
+  const size_t count = showEvents ? 4 : 3;
+  for (size_t index = 0; index < count && placer.count < MAP_LABEL_CAPACITY;
+       ++index)
+    placer.occupied[placer.count++] = bands[index];
 }
 
 }  // namespace
 
 void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
                float longitude, double epoch, uint16_t topBearingDeg,
-               bool night, bool english, const char *selectedId,
-               SkyRenderResult &result) {
+               bool night, bool english, bool showEvents,
+               const char *selectedId, SkyRenderResult &result) {
   result = SkyRenderResult{};
   if (pixels == nullptr) return;
   const SkyCanvas canvas(pixels, topBearingDeg, night);
@@ -457,7 +463,8 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
   }
 
   MapLabelPlacer placer;
-  reserveChromeBands(placer, skyEventsAtTop(topBearingDeg, latitude));
+  reserveChromeBands(placer, showEvents,
+                     skyEventsAtTop(topBearingDeg, latitude));
   for (size_t position = 0; position < orderCount; ++position) {
     const SkyBody &body = feed->bodies[order[position]];
     int x = 0;

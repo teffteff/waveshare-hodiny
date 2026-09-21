@@ -1560,6 +1560,7 @@ void testWarningsAndNightSkyPersistenceAndMigration() {
   assert(defaults.warnings.switchLevel == 3);
   assert(!defaults.nightSky.enabled);
   assert(defaults.nightSky.auroraAlert);
+  assert(!defaults.nightSky.hideEvents);
   assert(defaults.nightSky.auroraKp == 6);
 
   // Schéma 49 je předponou 50: upozornění na déšť i bit SATGUS zůstanou, jak

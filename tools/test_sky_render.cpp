@@ -59,6 +59,13 @@ const char EXTRA[] =
     "\"dark\":[1790014600,1790050000],"
     "\"radiant\":{\"n\":\"Perseidy\",\"ra\":3.2,\"dec\":58}}";
 
+// Velký vůz nízko nad severem (21. 9. ve 22:00), tedy v pásu řádků úkazů.
+const char NORTH[] =
+    "{\"v\":1,\"time\":1790020800,"
+    "\"bodies\":[{\"id\":\"sun\",\"n\":\"Slunce\",\"k\":0,\"ra\":11.9299,"
+    "\"dec\":0.453}],"
+    "\"cons\":[{\"n\":\"Velk\\u00fd v\\u016fz\",\"ra\":12.272,\"dec\":56.91}]}";
+
 std::vector<uint16_t> canvas() {
   return std::vector<uint16_t>(SKY_CANVAS_SIZE * SKY_CANVAS_SIZE, 0x1234);
 }
@@ -80,7 +87,7 @@ int dump(const char *jsonPath, double epoch, const char *outPath, bool night) {
   std::vector<uint16_t> pixels = canvas();
   SkyRenderResult result;
   skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, epoch, 0, night, false,
-            "", result);
+            true, "", result);
   FILE *output = fopen(outPath, "wb");
   if (output == nullptr) return 4;
   fwrite(pixels.data(), sizeof(uint16_t), pixels.size(), output);
@@ -114,7 +121,7 @@ int main(int argc, char **argv) {
   // Bez dat: jen kruh s mřížkou, pozadí je černé.
   std::vector<uint16_t> pixels = canvas();
   SkyRenderResult result;
-  skyRender(pixels.data(), nullptr, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
+  skyRender(pixels.data(), nullptr, LATITUDE, LONGITUDE, EPOCH, 0, false, false, true,
             "", result);
   assert(pixels[0] == 0x0000);
   assert(result.labelCount == 0 && result.tapCount == 0);
@@ -125,7 +132,7 @@ int main(int argc, char **argv) {
   static SkyFeed feed;
   assert(parse(RESPONSE, feed));
   pixels = canvas();
-  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
+  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 0, false, false, true,
             "saturn", result);
   // Slunce 27° pod obzorem: tma, Saturn je jediná planeta nahoře.
   assert(result.dark && !result.sunUp);
@@ -165,13 +172,13 @@ int main(int argc, char **argv) {
   }
 
   // Nevybrané těleso detail nemá; neznámé id taky ne.
-  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
+  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 0, false, false, true,
             "pluto", result);
   assert(!result.detail.open);
 
   // Červený noční režim: v obrázku jen červený kanál, popisky červené.
   pixels = canvas();
-  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 0, true, false,
+  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 0, true, false, true,
             "", result);
   for (uint16_t pixel : pixels) assert((pixel & 0x07FF) == 0);
   for (uint8_t index = 0; index < result.labelCount; ++index)
@@ -183,7 +190,7 @@ int main(int argc, char **argv) {
   assert(!skyEventsAtTop(0, -33.9f) && skyEventsAtTop(180, -33.9f));
 
   // Otočení: s jihem nahoře je Saturn vlevo nahoře.
-  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 180, false, false,
+  skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH, 180, false, false, true,
             "", result);
   for (uint8_t index = 0; index < result.tapCount; ++index) {
     if (strcmp(result.taps[index].id, "saturn") != 0) continue;
@@ -193,7 +200,7 @@ int main(int argc, char **argv) {
 
   // Ve dne: Slunce nad obzorem, nic není "za tmy".
   skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH + 12 * 3600.0, 0,
-            false, false, "", result);
+            false, false, true, "", result);
   assert(result.sunUp && !result.dark);
 
   // Hvězdy se jménem jdou vybrat, těleso má ale přednost.
@@ -215,8 +222,10 @@ int main(int argc, char **argv) {
   assert(extra.figureCount == 2 && extra.moonTrackCount == 29);
   assert(extra.hasRadiant && extra.darkFrom == 1790014600);
   pixels = canvas();
+  // Radiant Perseid leží nízko na severovýchodě, v pásu řádků úkazů; tady
+  // se proto kreslí bez nich.
   skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
-            "*0", result);
+            false, "*0", result);
   // Vega je vysoko a pojmenovaná, takže jde vybrat a má detail.
   assert(result.detail.open && result.detail.kind == SKY_BODY_STAR);
   assert(strcmp(result.detail.name, "Vega") == 0);
@@ -240,15 +249,37 @@ int main(int argc, char **argv) {
   assert(sawSwan && !sawOrion && sawRadiant);
   assert(result.labelCount == 1);  // jen Měsíc
   // V červeném nočním režimu jsou červená i ona.
-  skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH, 0, true, false,
+  skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH, 0, true, false, true,
             "", result);
   for (uint8_t index = 0; index < result.paintedCount; ++index)
     assert((result.painted[index].color & 0x07FF) == 0);
   // Ve dne jména obrazců nejsou, radiant ano.
   skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH + 12 * 3600.0, 0,
-            false, false, "", result);
+            false, false, true, "", result);
   for (uint8_t index = 0; index < result.paintedCount; ++index)
     assert(strcmp(result.painted[index].name, "Labuť") != 0);
+
+  // Bez řádků úkazů smí popisky i do jejich pásu nad severní oblohou.
+  {
+    const int bandTop = SKY_CANVAS_CENTER_Y + skyEventRowOffsetY(true, 0) - 12;
+    const int bandBottom = SKY_CANVAS_CENTER_Y + skyEventRowOffsetY(true, 2) + 14;
+    auto inBand = [&](const SkyRenderResult &frame) {
+      int count = 0;
+      for (uint8_t index = 0; index < frame.paintedCount; ++index)
+        if (frame.painted[index].y + 17 > bandTop &&
+            frame.painted[index].y < bandBottom)
+          ++count;
+      return count;
+    };
+    static SkyFeed north;
+    assert(parse(NORTH, north));
+    skyRender(pixels.data(), &north, LATITUDE, LONGITUDE, EPOCH, 0, false,
+              false, true, "", result);
+    assert(inBand(result) == 0);
+    skyRender(pixels.data(), &north, LATITUDE, LONGITUDE, EPOCH, 0, false,
+              false, false, "", result);
+    assert(inBand(result) == 1);
+  }
 
   puts("sky render OK");
   return 0;

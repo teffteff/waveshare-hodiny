@@ -510,7 +510,7 @@ void applySatellitesState(const ClockConfig &config, bool visible) {
       available && (config.satellites.automaticRotation || skyPage),
       config.openMeteoLatitude, config.openMeteoLongitude, config.satellites,
       config.language == CLOCK_LANGUAGE_ENGLISH);
-  satelliteServiceSetNightSky(skyAvailable, skyPage);
+  satelliteServiceSetNightSky(skyAvailable, skyPage, config.nightSky.hideEvents);
 }
 
 void applySatellitesState(const ClockConfig &config) {
