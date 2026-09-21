@@ -94,10 +94,14 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   s dráhou na dvě minuty dopředu, vyznačením, co jde právě vidět okem,
   a časem příštího přeletu ISS nebo domácí družice SATGUS; dráhy počítá
   vlastní server z dat CelesTrak,
-- noční oblohu na druhé stránce družic (tažením prstu): planety, Měsíc s fází,
-  jasné hvězdy a obrazce souhvězdí ve stejném kruhu, index Kp s upozorněním
-  na polární záři a nejbližší úkazy — roje, přiblížení Měsíce a planet,
-  opozice a zatmění viditelná z místa hodin; počítá je týž server jako dráhy,
+- noční oblohu na druhé stránce družic (tažením prstu): planety, Měsíc s fází
+  a jeho dráhou do rána, jasné hvězdy, obrazce souhvězdí se jmény, ekliptiku
+  a kolem maxima roje jeho radiant ve stejném kruhu; klepnutím na planetu nebo
+  hvězdu se ukáže detail. Nahoře kdy je astronomická tma a kdy je nahoře
+  Měsíc, index Kp jen když se blíží prahu upozornění na polární záři, dole
+  nejbližší úkazy — roje, přiblížení Měsíce a planet, opozice a zatmění
+  viditelná z místa hodin (zatmění měsíc předem, velké tři měsíce); počítá je
+  týž server jako dráhy,
 - obrazovku se Sluncem a Měsícem: východ a západ obou, občanské svítání
   a soumrak, délka dne, fáze a osvětlení Měsíce a data příštího úplňku a novu,
   počítané přímo na zařízení,

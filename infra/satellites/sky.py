@@ -15,6 +15,11 @@ protoze na ni zalezi: zatmeni Slunce se hleda podle vzdalenosti kotoucu videne
 primo z mista hodin, ne z tabulky pasu totality. Pocitaji se jednou za
 EVENTS_SECONDS pro kazdou polohu zaokrouhlenou na desetinu stupne.
 
+K poloham patri i draha Mesice na pristich 14 hodin (hodiny z ni kresli,
+kudy pujde), astronomicka tma, ktera prave je nebo prijde, a par dni kolem
+maxima roje jeho radiant. Obrazce souhvezdi maji jmeno v jejich stredu
+a hvezdy sva jmena a souhvezdi pro detail po klepnuti.
+
 Index Kp je z NOAA SWPC (odhad po minute a predpoved po tri hodiny) a obnovuje
 se nejvys jednou za KP_SECONDS. Poplach "polarni zare" vyhlasuji hodiny samy
 podle vlastniho prahu.
@@ -37,6 +42,7 @@ from datetime import datetime, timezone
 import numpy as np
 from skyfield import almanac, eclipselib
 from skyfield.api import Loader, Star, load_constellation_map, load_constellation_names, wgs84
+from skyfield.positionlib import position_of_radec
 from skyfield.framelib import ecliptic_J2000_frame
 from skyfield.magnitudelib import planetary_magnitude
 
@@ -60,7 +66,19 @@ MAX_EVENTS = 3
 MOON_CONJUNCTION_DAYS = 14
 PLANET_EVENT_DAYS = 60
 SHOWER_DAYS = 60
-ECLIPSE_DAYS = 800
+# Zatmeni se hlasi mesic dopredu, velke (uplne, prstencove nebo aspon z poloviny)
+# tri mesice. Driv by radek jen rok strasil datem, ke kteremu se nic nedeje.
+ECLIPSE_DAYS = 30
+MAJOR_ECLIPSE_DAYS = 90
+MAJOR_ECLIPSE_PERCENT = 50
+# Radiant roje se kresli na obloze tolik dni pred maximem a po nem.
+RADIANT_DAYS_BEFORE = 3.0
+RADIANT_DAYS_AFTER = 2.0
+# Draha Mesice: vzorky po pul hodine na tolik hodin dopredu.
+MOON_TRACK_STEP_SECONDS = 1800
+MOON_TRACK_HOURS = 14
+# Astronomicka tma: Slunce aspon 18° pod obzorem.
+DARK_SUN_DEGREES = -18.0
 # Tesne prilozeni: Mesic k planete nebo hvezde, planeta k planete.
 MOON_CONJUNCTION_DEGREES = 4.0
 MOON_STAR_DEGREES = 2.0
@@ -195,37 +213,45 @@ STARS = (
     ("Gomeisa", (7, 27, 9.0), (8, 17, 21), 2.89),
 )
 STAR_INDEX = {star[0]: index for index, star in enumerate(STARS)}
-# Obrazce souhvezdi jako dvojice hvezd. Jen ty nejznamejsi: plna mapa by
-# se na kruh o polomeru 222 px nevesla.
-LINES = (
-    # Velky vuz
-    ("Dubhe", "Merak"), ("Merak", "Phecda"), ("Phecda", "Megrez"), ("Megrez", "Dubhe"),
-    ("Megrez", "Alioth"), ("Alioth", "Mizar"), ("Mizar", "Alkaid"),
-    # Kasiopeja
-    ("Caph", "Schedar"), ("Schedar", "Navi"), ("Navi", "Ruchbah"), ("Ruchbah", "Segin"),
-    # Orion
-    ("Betelgeuse", "Bellatrix"), ("Bellatrix", "Mintaka"), ("Mintaka", "Alnilam"),
-    ("Alnilam", "Alnitak"), ("Alnitak", "Saiph"), ("Saiph", "Rigel"), ("Rigel", "Mintaka"),
-    ("Betelgeuse", "Alnitak"),
-    # Labut
-    ("Deneb", "Sadr"), ("Sadr", "Albireo"), ("Aljanah", "Sadr"), ("Sadr", "Fawaris"),
-    # Lyra
-    ("Vega", "Sheliak"), ("Sheliak", "Sulafat"), ("Sulafat", "Vega"),
-    # Lev
-    ("Regulus", "Algieba"), ("Algieba", "Zosma"), ("Zosma", "Denebola"), ("Denebola", "Regulus"),
-    # Stir
-    ("Dschubba", "Antares"), ("Antares", "Shaula"),
-    # Pegasuv ctverec a Andromeda
-    ("Alpheratz", "Scheat"), ("Scheat", "Markab"), ("Markab", "Algenib"), ("Algenib", "Alpheratz"),
-    ("Alpheratz", "Mirach"), ("Mirach", "Almach"),
-    # Blizenci, Byk, Vozka
-    ("Castor", "Pollux"), ("Pollux", "Alhena"), ("Castor", "Mebsuta"), ("Mebsuta", "Tejat"),
-    ("Aldebaran", "Elnath"),
-    ("Capella", "Menkalinan"), ("Menkalinan", "Elnath"), ("Elnath", "Hassaleh"), ("Hassaleh", "Capella"),
-    # Pastyr, Orel, Perseus, Velky pes
-    ("Arcturus", "Izar"), ("Arcturus", "Muphrid"), ("Altair", "Tarazed"), ("Mirfak", "Algol"),
-    ("Sirius", "Mirzam"), ("Sirius", "Wezen"), ("Wezen", "Adhara"), ("Wezen", "Aludra"),
+# Obrazce souhvezdi jako dvojice hvezd, po souhvezdich: kazdy obrazec dostane
+# na obloze sve jmeno. Jen ty nejznamejsi: plna mapa by se na kruh o polomeru
+# 222 px nevesla. Jmeno obrazce (cesky, anglicky) je tam, kde se obrazec rika
+# jinak nez souhvezdi: Velky vuz je jen cast Velke medvedice.
+FIGURES = (
+    ("UMa", ("Velký vůz", "Big Dipper"), (
+        ("Dubhe", "Merak"), ("Merak", "Phecda"), ("Phecda", "Megrez"), ("Megrez", "Dubhe"),
+        ("Megrez", "Alioth"), ("Alioth", "Mizar"), ("Mizar", "Alkaid"))),
+    ("Cas", None, (
+        ("Caph", "Schedar"), ("Schedar", "Navi"), ("Navi", "Ruchbah"), ("Ruchbah", "Segin"))),
+    ("Ori", None, (
+        ("Betelgeuse", "Bellatrix"), ("Bellatrix", "Mintaka"), ("Mintaka", "Alnilam"),
+        ("Alnilam", "Alnitak"), ("Alnitak", "Saiph"), ("Saiph", "Rigel"), ("Rigel", "Mintaka"),
+        ("Betelgeuse", "Alnitak"))),
+    ("Cyg", None, (
+        ("Deneb", "Sadr"), ("Sadr", "Albireo"), ("Aljanah", "Sadr"), ("Sadr", "Fawaris"))),
+    ("Lyr", None, (("Vega", "Sheliak"), ("Sheliak", "Sulafat"), ("Sulafat", "Vega"))),
+    ("Leo", None, (
+        ("Regulus", "Algieba"), ("Algieba", "Zosma"), ("Zosma", "Denebola"),
+        ("Denebola", "Regulus"))),
+    ("Sco", None, (("Dschubba", "Antares"), ("Antares", "Shaula"))),
+    # Alpheratz patri Andromede, ale ctverec bez ni neni ctverec.
+    ("Peg", None, (
+        ("Alpheratz", "Scheat"), ("Scheat", "Markab"), ("Markab", "Algenib"),
+        ("Algenib", "Alpheratz"))),
+    ("And", None, (("Alpheratz", "Mirach"), ("Mirach", "Almach"))),
+    ("Gem", None, (
+        ("Castor", "Pollux"), ("Pollux", "Alhena"), ("Castor", "Mebsuta"), ("Mebsuta", "Tejat"))),
+    ("Tau", None, (("Aldebaran", "Elnath"),)),
+    ("Aur", None, (
+        ("Capella", "Menkalinan"), ("Menkalinan", "Elnath"), ("Elnath", "Hassaleh"),
+        ("Hassaleh", "Capella"))),
+    ("Boo", None, (("Arcturus", "Izar"), ("Arcturus", "Muphrid"))),
+    ("Aql", None, (("Altair", "Tarazed"),)),
+    ("Per", None, (("Mirfak", "Algol"),)),
+    ("CMa", None, (
+        ("Sirius", "Mirzam"), ("Sirius", "Wezen"), ("Wezen", "Adhara"), ("Wezen", "Aludra"))),
 )
+LINES = tuple(pair for _, _, pairs in FIGURES for pair in pairs)
 # Hvezdy, ke kterym se hlida prilozeni Mesice. Plejady zastupuje Alcyone.
 MOON_STARS = {
     "Alcyone": ("Plejád", "the Pleiades"),
@@ -235,19 +261,20 @@ MOON_STARS = {
     "Antares": ("Antara", "Antares"),
 }
 
-# Meteoricke roje IMO: jmeno, delka Slunce v maximu (J2000) a ZHR. Datum
-# maxima se z delky Slunce dopocita pro kazdy rok zvlast. Eta Akvaridy
+# Meteoricke roje IMO: jmeno, delka Slunce v maximu (J2000), ZHR a radiant
+# v maximu (rektascenze a deklinace ve stupnich). Datum maxima se z delky
+# Slunce dopocita pro kazdy rok zvlast. Eta Akvaridy
 # a jizni delta Akvaridy tu nejsou: z padesati stupnu severni sirky maji
 # radiant tak nizko, ze z ohlasovaneho ZHR zbyde malokdy nekolik meteoru.
 SHOWERS = (
-    ("Kvadrantidy", "Quadrantids", 283.15, 80),
-    ("Lyridy", "Lyrids", 32.32, 18),
-    ("Perseidy", "Perseids", 140.0, 100),
-    ("Drakonidy", "Draconids", 195.4, 10),
-    ("Orionidy", "Orionids", 208.0, 20),
-    ("Leonidy", "Leonids", 235.27, 15),
-    ("Geminidy", "Geminids", 262.2, 150),
-    ("Ursidy", "Ursids", 270.7, 10),
+    ("Kvadrantidy", "Quadrantids", 283.15, 80, 230.0, 49.0),
+    ("Lyridy", "Lyrids", 32.32, 18, 271.0, 34.0),
+    ("Perseidy", "Perseids", 140.0, 100, 48.0, 58.0),
+    ("Drakonidy", "Draconids", 195.4, 10, 262.0, 54.0),
+    ("Orionidy", "Orionids", 208.0, 20, 95.0, 16.0),
+    ("Leonidy", "Leonids", 235.27, 15, 152.0, 22.0),
+    ("Geminidy", "Geminids", 262.2, 150, 112.0, 33.0),
+    ("Ursidy", "Ursids", 270.7, 10, 217.0, 76.0),
 )
 
 CONSTELLATIONS_CS = {
@@ -400,12 +427,22 @@ class Sky:
             self.moon_stars = {name: self.stars[STAR_INDEX[name]] for name in MOON_STARS}
             self.constellation_at = load_constellation_map()
             self.constellation_en = dict(load_constellation_names())
+            self.star_constellations = [
+                self.constellation_at(position_of_radec(star.ra.hours, star.dec.degrees))
+                for star in self.stars]
+            self.figures = [(abbreviation, names, _figure_center(
+                [self.stars[STAR_INDEX[name]] for pair in pairs for name in pair]))
+                for abbreviation, names, pairs in FIGURES]
             self._ready.set()
         except Exception as error:  # noqa: BLE001 - chyba se hlasi v odpovedi
             self._error = f"{type(error).__name__}: {error}"[:120]
 
     def ready(self) -> bool:
         return self._ready.is_set()
+
+    def _constellation_name(self, abbreviation: str, english: bool) -> str:
+        return (self.constellation_en.get(abbreviation, abbreviation) if english
+                else CONSTELLATIONS_CS.get(abbreviation, abbreviation))
 
     def status(self) -> dict:
         return {"ready": self.ready(), "error": self._error,
@@ -417,24 +454,93 @@ class Sky:
         key = (round(latitude, 1), round(longitude, 1), english)
         with self._lock:
             cached = self._positions.get(key)
-            if cached is None or now - cached[0] >= POSITIONS_SECONDS:
-                cached = (now, self._bodies(latitude, longitude, english, now))
+            if cached is None or not 0 <= now - cached[0] < POSITIONS_SECONDS:
+                cached = (now, {
+                    "bodies": self._bodies(latitude, longitude, english, now),
+                    "moonTrack": self._moon_track(latitude, longitude, now),
+                    **self._dark_window(latitude, longitude, now),
+                })
+                radiant = self._active_radiant(now, english)
+                if radiant is not None:
+                    cached[1]["radiant"] = radiant
                 self._store(self._positions, key, cached)
             events = self._events.get(key)
-            if events is None or now - events[0] >= EVENTS_SECONDS:
+            if events is None or not 0 <= now - events[0] < EVENTS_SECONDS:
                 events = (now, self._compute_events(latitude, longitude, english, now))
                 self._store(self._events, key, events)
         answer = {
             "v": 1,
             "time": round(now),
-            "bodies": cached[1],
+            **cached[1],
             "stars": self._star_payload(),
+            "starNames": [entry[0] for entry in STARS],
+            "starCons": [self._constellation_name(abbreviation, english)
+                         for abbreviation in self.star_constellations],
             "lines": [STAR_INDEX[name] for pair in LINES for name in pair],
+            "cons": self._figure_payload(english),
             # Udalosti, ktere uz probehly, se z mezipameti neposilaji.
             "events": [event for event in events[1] if event["t"] + 6 * 3600 > now][:MAX_EVENTS],
         }
         answer.update(self.kp.values(now))
         return answer
+
+    def _figure_payload(self, english: bool) -> list[dict]:
+        out = []
+        for abbreviation, names, (ra_hours, dec_degrees) in self.figures:
+            if names is not None:
+                name = names[1] if english else names[0]
+            else:
+                name = self._constellation_name(abbreviation, english)
+            out.append({"n": name, "ra": round(ra_hours, 3), "dec": round(dec_degrees, 2)})
+        return out
+
+    def _moon_track(self, latitude: float, longitude: float, now: float) -> dict:
+        """Poloha Mesice po pul hodine od zacatku tehle pulhodiny.
+
+        Hodiny z ni kresli, kudy Mesic pujde; vysku a azimut kazdeho vzorku
+        si dopocitaji pro jeho cas. Topocentricky, stejne jako Mesic sam.
+        """
+        start = int(now // MOON_TRACK_STEP_SECONDS) * MOON_TRACK_STEP_SECONDS
+        count = MOON_TRACK_HOURS * 3600 // MOON_TRACK_STEP_SECONDS + 1
+        seconds = start + np.arange(count) * MOON_TRACK_STEP_SECONDS
+        times = self.ts.tt_jd(self.ts.from_datetime(_utc(start)).tt + (seconds - start) / 86400.0)
+        ra, dec, _ = self._observer(latitude, longitude).at(times).observe(
+            self.moon).apparent().radec(epoch="date")
+        points: list[int] = []
+        for hours, degrees in zip(ra.hours, dec.degrees):
+            points.extend((round(float(hours) * 1000) % 24000, round(float(degrees) * 100)))
+        return {"t": start, "s": MOON_TRACK_STEP_SECONDS, "p": points}
+
+    def _dark_window(self, latitude: float, longitude: float, now: float) -> dict:
+        """Astronomicka tma, ktera prave je nebo prijde jako prvni.
+
+        V lete ji na padesate rovnobezce Slunce vubec nepusti; pak se nic
+        neposila a hodiny radek vynechaji.
+        """
+        t0 = self.ts.from_datetime(_utc(now - 16 * 3600))
+        t1 = self.ts.from_datetime(_utc(now + 32 * 3600))
+        state_at = almanac.dark_twilight_day(self.eph, wgs84.latlon(latitude, longitude))
+        times, states = almanac.find_discrete(t0, t1, state_at)
+        # Useky tmy (stav 0) jako dvojice (od, do); okraje hledani se berou jako
+        # hranice, useky na nich ale nejsou cele, tak se nepouziji.
+        edges = [(_unix(moment), int(state)) for moment, state in zip(times, states)]
+        for index, (start, state) in enumerate(edges):
+            if state != 0 or index + 1 >= len(edges):
+                continue
+            end = edges[index + 1][0]
+            if end > now:
+                return {"dark": [start, end]}
+        return {}
+
+    def _active_radiant(self, now: float, english: bool) -> dict | None:
+        """Radiant roje, ktery je pobliz maxima; jinak nic."""
+        t0 = self.ts.from_datetime(_utc(now - RADIANT_DAYS_AFTER * 86400))
+        best = self._shower_peak(t0, RADIANT_DAYS_BEFORE + RADIANT_DAYS_AFTER)
+        if best is None:
+            return None
+        czech, english_name, _, _, ra_degrees, dec_degrees = best[1]
+        return {"n": english_name if english else czech,
+                "ra": round(ra_degrees / 15.0, 3), "dec": dec_degrees}
 
     @staticmethod
     def _store(table: dict, key, value) -> None:
@@ -483,9 +589,7 @@ class Sky:
                         body["mag"] = round(magnitude, 1)
                 except (ValueError, TypeError):
                     pass
-            abbreviation = self.constellation_at(apparent)
-            body["con"] = (self.constellation_en.get(abbreviation, abbreviation) if english
-                           else CONSTELLATIONS_CS.get(abbreviation, abbreviation))
+            body["con"] = self._constellation_name(self.constellation_at(apparent), english)
             rise, set_ = self._rise_set(observer, target, t, key)
             if rise:
                 body["rise"] = rise
@@ -524,10 +628,14 @@ class Sky:
             self._next_planet_event(observer, t0, english),
         ) if event is not None]
         common.sort(key=lambda event: event["t"])
-        # Zatmeni je vzacne, takze ma radek jisty, i kdyz je za rok: jinak by
-        # ho vytlacily tri bezne udalosti, ktere jsou na rade driv.
+        # Zatmeni je vzacne, takze ma radek jisty: jinak by ho vytlacily tri
+        # bezne udalosti, ktere jsou na rade driv. Jen ne rok dopredu: male
+        # zatmeni se hlasi mesic predem, velke tri mesice.
         if eclipse is not None:
-            common = common[:MAX_EVENTS - 1] + [eclipse]
+            major = eclipse.pop("major")
+            days = (eclipse["t"] - now) / 86400.0
+            if days <= (MAJOR_ECLIPSE_DAYS if major else ECLIPSE_DAYS):
+                common = common[:MAX_EVENTS - 1] + [eclipse]
         return sorted(common, key=lambda event: event["t"])[:MAX_EVENTS]
 
     def _sample(self, t0, days: float, step_hours: float):
@@ -663,30 +771,35 @@ class Sky:
         return difference < 180.0
 
     def _next_shower(self, t0, english: bool) -> dict | None:
-        times = self._sample(t0, SHOWER_DAYS + 1, 24.0)
-        sun = self.earth.at(times).observe(self.sun).apparent()
-        _, longitude, _ = sun.frame_latlon(ecliptic_J2000_frame)
-        degrees = longitude.degrees
-        best = None
-        for czech, english_name, peak, zhr in SHOWERS:
-            offset = (degrees - peak + 180.0) % 360.0 - 180.0
-            for index in range(len(offset) - 1):
-                if offset[index] < 0.0 <= offset[index + 1]:
-                    fraction = -offset[index] / (offset[index + 1] - offset[index])
-                    moment = self.ts.tt_jd(times[index].tt + fraction)
-                    if best is None or moment.tt < best[0].tt:
-                        best = (moment, czech, english_name, zhr)
-                    break
+        best = self._shower_peak(t0, SHOWER_DAYS)
         if best is None:
             return None
-        moment, czech, english_name, zhr = best
+        moment, (czech, english_name, _, zhr, _, _) = best
         moon = round(float(almanac.fraction_illuminated(self.eph, "moon", moment)) * 100)
         text = (f"{english_name}, up to {zhr}/h, Moon {moon} %" if english
                 else f"{czech} až {zhr}/h, Měsíc {moon} %")
         return {"t": _unix(moment), "tm": 0, "k": "meteor", "x": text}
 
+    def _shower_peak(self, t0, days: float):
+        """Nejblizsi maximum roje od t0 do t0 + days: (okamzik, radek SHOWERS)."""
+        times = self._sample(t0, days + 1, 24.0)
+        sun = self.earth.at(times).observe(self.sun).apparent()
+        _, longitude, _ = sun.frame_latlon(ecliptic_J2000_frame)
+        degrees = longitude.degrees
+        best = None
+        for shower in SHOWERS:
+            offset = (degrees - shower[2] + 180.0) % 360.0 - 180.0
+            for index in range(len(offset) - 1):
+                if offset[index] < 0.0 <= offset[index + 1]:
+                    fraction = -offset[index] / (offset[index + 1] - offset[index])
+                    moment = self.ts.tt_jd(times[index].tt + fraction)
+                    if moment.tt <= t0.tt + days and (best is None or moment.tt < best[0].tt):
+                        best = (moment, shower)
+                    break
+        return best
+
     def _next_eclipse(self, observer, t0, english: bool) -> dict | None:
-        t1 = self.ts.tt_jd(t0.tt + ECLIPSE_DAYS)
+        t1 = self.ts.tt_jd(t0.tt + MAJOR_ECLIPSE_DAYS)
         found = []
         lunar = self._next_lunar_eclipse(observer, t0, t1, english)
         if lunar is not None:
@@ -708,11 +821,13 @@ class Sky:
                 continue
             if kind == 2:
                 text = "Total lunar eclipse" if english else "Úplné zatmění Měsíce"
+                major = True
             else:
                 magnitude = round(float(details["umbral_magnitude"][index]) * 100)
                 text = (f"Partial lunar eclipse {magnitude} %" if english
                         else f"Částečné zatmění Měsíce {magnitude} %")
-            return {"t": _unix(moment), "tm": 1, "k": "eclipse", "x": text}
+                major = magnitude >= MAJOR_ECLIPSE_PERCENT
+            return {"t": _unix(moment), "tm": 1, "k": "eclipse", "x": text, "major": major}
         return None
 
     def _next_solar_eclipse(self, observer, t0, t1, english: bool) -> dict | None:
@@ -744,12 +859,26 @@ class Sky:
                 total = moon_radius[best] >= sun_radius[best]
                 text = ((("Total" if total else "Annular") + " solar eclipse") if english
                         else ("Úplné" if total else "Prstencové") + " zatmění Slunce")
+                major = True
             else:
                 percent = max(1, round(float(obscuration[best]) * 100))
                 text = (f"Partial solar eclipse {percent} %" if english
                         else f"Částečné zatmění Slunce {percent} %")
-            return {"t": _unix(times[best]), "tm": 1, "k": "eclipse", "x": text}
+                major = percent >= MAJOR_ECLIPSE_PERCENT
+            return {"t": _unix(times[best]), "tm": 1, "k": "eclipse", "x": text, "major": major}
         return None
+
+
+def _figure_center(stars) -> tuple[float, float]:
+    """Stred obrazce: prumer jednotkovych vektoru jeho hvezd, jako (h, °)."""
+    vectors = []
+    for star in stars:
+        ra = math.radians(star.ra.hours * 15.0)
+        dec = math.radians(star.dec.degrees)
+        vectors.append((math.cos(dec) * math.cos(ra), math.cos(dec) * math.sin(ra), math.sin(dec)))
+    x, y, z = (sum(axis) / len(vectors) for axis in zip(*vectors))
+    ra_hours = (math.degrees(math.atan2(y, x)) / 15.0) % 24.0
+    return ra_hours, math.degrees(math.atan2(z, math.hypot(x, y)))
 
 
 def _obscuration(distance: np.ndarray, sun: np.ndarray, moon: np.ndarray) -> np.ndarray:

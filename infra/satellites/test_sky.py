@@ -48,6 +48,18 @@ class TableTest(unittest.TestCase):
             self.assertIn(first, sky.STAR_INDEX)
             self.assertIn(second, sky.STAR_INDEX)
 
+    def test_figures_cover_all_lines(self):
+        self.assertEqual(len(sky.LINES), sum(len(pairs) for _, _, pairs in sky.FIGURES))
+        for abbreviation, _, _ in sky.FIGURES:
+            self.assertIn(abbreviation, sky.CONSTELLATIONS_CS)
+
+    def test_figure_center_wraps_around_zero_hours(self):
+        # Hvezdy na 23,9 h a 0,1 h: stred na nule, ne na dvanacti hodinach.
+        ra, dec = sky._figure_center([sky.Star(ra_hours=23.9, dec_degrees=10.0),
+                                      sky.Star(ra_hours=0.1, dec_degrees=10.0)])
+        self.assertAlmostEqual(min(ra, 24.0 - ra), 0.0, places=6)
+        self.assertAlmostEqual(dec, 10.0, delta=0.01)
+
     def test_star_names_unique(self):
         self.assertEqual(len(sky.STAR_INDEX), len(sky.STARS))
 
@@ -121,10 +133,14 @@ class EphemerisTest(unittest.TestCase):
         self.assertEqual(len(answer["lines"]), 2 * len(sky.LINES))
 
     def test_partial_solar_eclipse_2027_from_czechia(self):
-        # 2. 8. 2027 je v Cesku castecne zatmeni Slunce kolem 11 h SELC.
+        # 2. 8. 2027 je v Cesku castecne zatmeni Slunce kolem 11 h SELC. Rok
+        # predem se jeste nehlasi, dva tydny predem uz ano.
         events = self.sky._compute_events(*ONDREJOV, False, 1790000000)
+        self.assertEqual([event for event in events if event["k"] == "eclipse"], [])
+        events = self.sky._compute_events(*ONDREJOV, False, 1816041600)  # 20. 7. 2027
         eclipse = [event for event in events if event["k"] == "eclipse"]
         self.assertEqual(len(eclipse), 1)
+        self.assertNotIn("major", eclipse[0])
         self.assertTrue(eclipse[0]["x"].startswith("Částečné zatmění Slunce"))
         moment = time.gmtime(eclipse[0]["t"])
         self.assertEqual((moment.tm_year, moment.tm_mon, moment.tm_mday), (2027, 8, 2))
@@ -138,6 +154,63 @@ class EphemerisTest(unittest.TestCase):
         moment = time.gmtime(shower["t"])
         self.assertEqual((moment.tm_mon, moment.tm_mday in (12, 13)), (8, True))
         del observer
+
+    def test_star_names_and_constellations(self):
+        answer = self.answer(1790000000)
+        self.assertEqual(len(answer["starNames"]), len(sky.STARS))
+        self.assertEqual(len(answer["starCons"]), len(sky.STARS))
+        index = sky.STAR_INDEX["Vega"]
+        self.assertEqual((answer["starNames"][index], answer["starCons"][index]), ("Vega", "Lyra"))
+        self.assertEqual(answer["starCons"][sky.STAR_INDEX["Dubhe"]], "Velká medvědice")
+
+    def test_figure_labels(self):
+        figures = {entry["n"]: entry for entry in self.answer(1790000000)["cons"]}
+        self.assertEqual(len(figures), len(sky.FIGURES))
+        orion = figures["Orion"]
+        self.assertAlmostEqual(orion["ra"], 5.55, delta=0.2)
+        self.assertAlmostEqual(orion["dec"], 0.0, delta=4.0)
+        self.assertIn("Velký vůz", figures)
+        english = {entry["n"] for entry in self.answer(1790000000, english=True)["cons"]}
+        self.assertIn("Big Dipper", english)
+        self.assertIn("Swan" if "Swan" in english else "Cygnus", english)
+
+    def test_moon_track_starts_at_current_moon(self):
+        answer = self.answer(1790000000)
+        track = answer["moonTrack"]
+        self.assertEqual(track["t"], 1790000000 // 1800 * 1800)
+        self.assertEqual(len(track["p"]), 2 * (sky.MOON_TRACK_HOURS * 2 + 1))
+        moon = answer["bodies"][1]
+        # Za 800 s od zacatku pulhodiny ujde Mesic zlomek stupne.
+        self.assertAlmostEqual(track["p"][0] / 1000.0, moon["ra"], delta=0.02)
+        self.assertAlmostEqual(track["p"][1] / 100.0, moon["dec"], delta=0.3)
+        # Za 14 hodin se posune na vychod asi o 7 stupnu, tedy o pul hodiny.
+        shift = (track["p"][-2] - track["p"][0]) / 1000.0 % 24.0
+        self.assertGreater(shift, 0.3)
+        self.assertLess(shift, 0.7)
+
+    def test_dark_window_in_autumn(self):
+        # 21. 9. 2026 14:00 UTC: tma prijde vecer a skonci rano.
+        dark = self.answer(1789999200)["dark"]
+        start, end = (time.gmtime(value) for value in dark)
+        self.assertEqual((start.tm_mday, start.tm_hour), (21, 18))
+        self.assertEqual((end.tm_mday, end.tm_hour), (22, 2))
+
+    def test_dark_window_while_dark(self):
+        now = 1790040000  # 22. 9. 2026 01:20 UTC
+        start, end = self.answer(now)["dark"]
+        self.assertLess(start, now)
+        self.assertGreater(end, now)
+
+    def test_no_astronomical_dark_at_midsummer(self):
+        self.assertNotIn("dark", self.answer(1781870400))  # 19. 6. 2026 12:00 UTC
+
+    def test_radiant_only_near_peak(self):
+        self.assertNotIn("radiant", self.answer(1790000000))
+        # Perseidy vrcholi 12.-13. 8.; 11. 8. 2026 je radiant na obloze.
+        radiant = self.answer(1786449600)["radiant"]  # 11. 8. 2026 12:00 UTC
+        self.assertEqual(radiant["n"], "Perseidy")
+        self.assertAlmostEqual(radiant["ra"], 3.2, delta=0.01)
+        self.assertEqual(radiant["dec"], 58.0)
 
     def test_english(self):
         answer = self.answer(1790000000, english=True)

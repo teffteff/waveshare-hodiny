@@ -15,6 +15,7 @@
 #include "Astronomy.h"
 #include "HttpDownload.h"
 #include "MapCanvas.h"
+#include "ClockFonts.h"
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
 #include "SkyCanvas.h"
@@ -53,7 +54,8 @@ constexpr uint32_t RENDER_PERIOD_MS = 1000;
 constexpr uint8_t DETAIL_GRACE_FETCHES = 2;
 
 // Noční obloha. Odpověď má kolem tří kilobajtů; osm je strop s rezervou.
-constexpr size_t SKY_RESPONSE_BYTES = 8 * 1024;
+// Odpověď má kolem šesti kilobajtů (hvězdy se jmény, dráha Měsíce).
+constexpr size_t SKY_RESPONSE_BYTES = 16 * 1024;
 // Polohy těles se z rektascenze a deklinace dopočítávají na místě, takže se
 // server nemusí ptát často: s ukázanou stránkou po deseti minutách (index Kp),
 // jinak po čtvrthodině - kvůli upozornění na polární záři.
@@ -104,6 +106,8 @@ SatelliteTrack *liveTracks = nullptr;
 SatelliteTrack *scratchTracks = nullptr;
 uint8_t *responseBuffer = nullptr;
 MapLabelFont labelFont;
+// Jména obrazců souhvězdí a roje na noční obloze: české písmo s diakritikou.
+MapLabelFont skyNameFont(&clock_czech_14, false);
 
 // Požadavek z obrazovky.
 bool active = false;
@@ -174,13 +178,13 @@ bool skyFrameReady = false;
 bool displayedSky = false;
 bool skyDark = false;
 bool skySunUp = false;
-uint8_t skyPlanetsUp = 0;
 SkyLabel *skyLabels = nullptr;
 uint8_t skyLabelCount = 0;
 // Výběr tělesa klepnutím: drží se id, ne index, stejně jako u družic.
 char skySelectedId[10] = "";
 SkyDetail skySelectionDetail;
-SkyTapPoint skyTapPoints[SKY_MAX_BODIES];
+// Tělesa i hvězdy, přes dva kilobajty: v PSRAM, ne v interní RAM.
+SkyTapPoint *skyTapPoints = nullptr;
 uint8_t skyTapCount = 0;
 
 // Zkouška adresy z webu.
@@ -752,7 +756,7 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
                     float longitude, bool night, bool english, double epoch,
                     bool haveEpoch) {
   if (displayBuffers[0] == nullptr || displayBuffers[1] == nullptr ||
-      skyLive == nullptr || skyLabels == nullptr)
+      skyLive == nullptr || skyLabels == nullptr || skyTapPoints == nullptr)
     return;
   portENTER_CRITICAL(&stateMux);
   int target = -1;
@@ -769,11 +773,15 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   if (target < 0) return;
   pixels = displayBuffers[target];
 
-  // Data mění jen tahle úloha, takže se čtou bez zámku. Výsledek (kolem půl
-  // kilobajtu) leží na zásobníku úlohy, tedy v PSRAM.
+  // Data mění jen tahle úloha, takže se čtou bez zámku. Výsledek (kolem tří
+  // kilobajtů) leží na zásobníku úlohy, tedy v PSRAM.
   SkyRenderResult result;
   skyRender(pixels, dataCurrent ? skyLive : nullptr, latitude, longitude,
             epoch, config.topBearingDeg, night, english, selection, result);
+  for (uint8_t index = 0; index < result.paintedCount; ++index) {
+    const SkyPaintedLabel &label = result.painted[index];
+    skyNameFont.draw(pixels, label.x, label.y + 3, label.name, label.color);
+  }
 
   portENTER_CRITICAL(&stateMux);
   for (uint8_t index = 0; index < result.labelCount; ++index)
@@ -784,7 +792,6 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   skyTapCount = result.tapCount;
   skyDark = result.dark;
   skySunUp = result.sunUp;
-  skyPlanetsUp = result.planetsUp;
   if (selection[0] != '\0' && strcmp(selection, skySelectedId) == 0)
     skySelectionDetail = result.detail;
   displayedBuffer = target;
@@ -1073,8 +1080,17 @@ void satelliteServiceBegin() {
         new (&skyLabels[index]) SkyLabel();
     }
   }
+  if (skyTapPoints == nullptr) {
+    void *memory = heap_caps_calloc(SKY_MAX_TAPS, sizeof(SkyTapPoint),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) {
+      skyTapPoints = static_cast<SkyTapPoint *>(memory);
+      for (size_t index = 0; index < SKY_MAX_TAPS; ++index)
+        new (&skyTapPoints[index]) SkyTapPoint();
+    }
+  }
   if (skyLive == nullptr || skyScratch == nullptr || skyResponse == nullptr ||
-      skyLabels == nullptr) {
+      skyLabels == nullptr || skyTapPoints == nullptr) {
     skyLive = nullptr;
   }
   // Bez těchto dvou polí by klepnutí i zkouška sahaly do prázdna; obrazovka
@@ -1275,17 +1291,9 @@ bool satelliteServiceHandleTap(int16_t x, int16_t y) {
       skySelectedId[0] = '\0';
       changed = true;
     } else {
-      int best = -1;
-      long bestDistance = 30L * 30L;
-      for (uint8_t index = 0; index < skyTapCount; ++index) {
-        const long deltaX = skyTapPoints[index].x - x;
-        const long deltaY = skyTapPoints[index].y - y;
-        const long distance = deltaX * deltaX + deltaY * deltaY;
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          best = index;
-        }
-      }
+      const int best = skyTapPoints != nullptr
+                           ? skyPickTap(skyTapPoints, skyTapCount, x, y)
+                           : -1;
       if (best >= 0) {
         strlcpy(skySelectedId, skyTapPoints[best].id, sizeof(skySelectedId));
         skySelectionDetail = SkyDetail{};
@@ -1430,9 +1438,18 @@ void satelliteServiceSkySnapshot(SkySnapshot &snapshot) {
   snapshot.haveData = skyFrameReady && skyDataFresh(now);
   snapshot.dark = skyDark;
   snapshot.sunUp = skySunUp;
-  snapshot.planetsUp = skyPlanetsUp;
   if (skyLive != nullptr && skyDataFresh(now)) {
     const SkyFeed &feed = *skyLive;
+    snapshot.darkFrom = feed.darkFrom;
+    snapshot.darkTo = feed.darkTo;
+    for (size_t index = 0; index < feed.bodyCount; ++index) {
+      const SkyBody &body = feed.bodies[index];
+      if (body.kind != SKY_BODY_MOON) continue;
+      snapshot.hasMoon = true;
+      snapshot.moonRise = body.rise;
+      snapshot.moonSet = body.set;
+      snapshot.moonIllumination = body.illumination;
+    }
     snapshot.hasKp = feed.hasKp;
     snapshot.kp = feed.kp;
     snapshot.hasKpMax = feed.hasKpMax;

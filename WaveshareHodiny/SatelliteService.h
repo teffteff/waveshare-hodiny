@@ -88,8 +88,13 @@ struct SkySnapshot {
   // Slunce aspoň šest stupňů pod obzorem, nebo nad ním.
   bool dark = false;
   bool sunUp = false;
-  // Planet nad obzorem, které jde vidět okem (Merkur až Saturn).
-  uint8_t planetsUp = 0;
+  // Astronomická tma (0, když není) a nejbližší východ a západ Měsíce.
+  int64_t darkFrom = 0;
+  int64_t darkTo = 0;
+  bool hasMoon = false;
+  int64_t moonRise = 0;
+  int64_t moonSet = 0;
+  float moonIllumination = 0.0f;
   bool hasKp = false;
   float kp = 0.0f;
   bool hasKpMax = false;

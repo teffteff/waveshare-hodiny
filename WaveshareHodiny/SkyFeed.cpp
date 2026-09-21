@@ -53,6 +53,51 @@ bool readItemInteger(const JsonArrayCursor &cursor, long minimum, long maximum,
   return true;
 }
 
+JsonValue itemValue(const JsonArrayCursor &cursor) {
+  JsonValue item;
+  item.begin = cursor.itemBegin;
+  item.end = cursor.itemEnd;
+  item.isString = cursor.itemBegin < cursor.itemEnd && *cursor.itemBegin == '"';
+  return item;
+}
+
+// Poloha na obloze z objektu {"ra":..,"dec":..}; mimo rozsah false.
+bool readRaDec(const char *begin, const char *end, float &raHours,
+               float &decDeg) {
+  return readFinite(begin, end, "ra", raHours) &&
+         readFinite(begin, end, "dec", decDeg) && raHours >= 0.0f &&
+         raHours < 24.0f && decDeg >= -90.0f && decDeg <= 90.0f;
+}
+
+void parseMoonTrack(const JsonValue &value, SkyFeed &feed) {
+  if (!value.isObject()) return;
+  const char *begin = value.begin;
+  const char *end = value.end;
+  int64_t start = 0;
+  float step = 0.0f;
+  if (!readEpoch(jsonFindMember(begin, end, "t"), start) ||
+      !jsonReadNumberMember(begin, end, "s", step) || step < 60.0f ||
+      step > 86400.0f)
+    return;
+  JsonArrayCursor cursor = jsonOpenArray(jsonFindMember(begin, end, "p"));
+  long pair[2] = {};
+  int filled = 0;
+  while (jsonNextItem(cursor) && feed.moonTrackCount < SKY_MOON_TRACK_POINTS) {
+    static const long MINIMUM[2] = {0, -9000};
+    static const long MAXIMUM[2] = {23999, 9000};
+    if (!readItemInteger(cursor, MINIMUM[filled], MAXIMUM[filled],
+                         pair[filled]))
+      break;
+    if (++filled < 2) continue;
+    filled = 0;
+    SkyTrackPoint &point = feed.moonTrack[feed.moonTrackCount++];
+    point.raMilliHours = static_cast<int16_t>(pair[0]);
+    point.decCentiDeg = static_cast<int16_t>(pair[1]);
+  }
+  feed.moonTrackStart = start;
+  feed.moonTrackStep = static_cast<uint32_t>(lroundf(step));
+}
+
 void parseBody(const char *begin, const char *end, SkyFeed &feed) {
   SkyBody body;
   if (!readFinite(begin, end, "ra", body.raHours) ||
@@ -169,6 +214,51 @@ bool skyFeedParse(const char *begin, const char *end, SkyFeed &feed) {
     if (event.text[0] == '\0') continue;
     feed.events[feed.eventCount++] = event;
   }
+
+  // Jména hvězd a souhvězdí ve stejném pořadí jako hvězdy.
+  cursor = jsonOpenArray(jsonFindMember(objectBegin, objectEnd, "starNames"));
+  for (size_t index = 0; index < feed.starCount && jsonNextItem(cursor); ++index)
+    jsonCopyText(itemValue(cursor), feed.stars[index].name,
+                 sizeof(feed.stars[index].name));
+  cursor = jsonOpenArray(jsonFindMember(objectBegin, objectEnd, "starCons"));
+  for (size_t index = 0; index < feed.starCount && jsonNextItem(cursor); ++index)
+    jsonCopyText(itemValue(cursor), feed.stars[index].constellation,
+                 sizeof(feed.stars[index].constellation));
+
+  cursor = jsonOpenArray(jsonFindMember(objectBegin, objectEnd, "cons"));
+  while (jsonNextItem(cursor) && feed.figureCount < SKY_MAX_FIGURES) {
+    if (cursor.itemBegin >= cursor.itemEnd || *cursor.itemBegin != '{') continue;
+    SkyFigure figure;
+    if (!readRaDec(cursor.itemBegin, cursor.itemEnd, figure.raHours,
+                   figure.decDeg))
+      continue;
+    jsonCopyTextMember(cursor.itemBegin, cursor.itemEnd, "n", figure.name,
+                       sizeof(figure.name));
+    if (figure.name[0] == '\0') continue;
+    feed.figures[feed.figureCount++] = figure;
+  }
+
+  parseMoonTrack(jsonFindMember(objectBegin, objectEnd, "moonTrack"), feed);
+
+  cursor = jsonOpenArray(jsonFindMember(objectBegin, objectEnd, "dark"));
+  int64_t dark[2] = {};
+  bool darkValid = true;
+  for (int64_t &edge : dark)
+    darkValid = darkValid && jsonNextItem(cursor) &&
+                readEpoch(itemValue(cursor), edge);
+  if (darkValid && dark[0] < dark[1]) {
+    feed.darkFrom = dark[0];
+    feed.darkTo = dark[1];
+  }
+
+  const JsonValue radiant = jsonFindMember(objectBegin, objectEnd, "radiant");
+  if (radiant.isObject() &&
+      readRaDec(radiant.begin, radiant.end, feed.radiantRaHours,
+                feed.radiantDecDeg)) {
+    jsonCopyTextMember(radiant.begin, radiant.end, "n", feed.radiantName,
+                       sizeof(feed.radiantName));
+    feed.hasRadiant = feed.radiantName[0] != '\0';
+  }
   return true;
 }
 
@@ -219,6 +309,18 @@ void skyHorizontal(double raHours, double decDeg, double latitudeDeg,
   }
   azimuthDeg = static_cast<float>(azimuth);
   altitudeDeg = static_cast<float>(altitude);
+}
+
+void skyEclipticPoint(float longitudeDeg, float &raHours, float &decDeg) {
+  constexpr double OBLIQUITY = 23.4393 * DEGREES_TO_RADIANS;
+  const double longitude = longitudeDeg * DEGREES_TO_RADIANS;
+  double ra = std::atan2(std::sin(longitude) * std::cos(OBLIQUITY),
+                         std::cos(longitude)) /
+              DEGREES_TO_RADIANS / 15.0;
+  if (ra < 0.0) ra += 24.0;
+  raHours = static_cast<float>(ra);
+  decDeg = static_cast<float>(
+      std::asin(std::sin(OBLIQUITY) * std::sin(longitude)) / DEGREES_TO_RADIANS);
 }
 
 void skyEventWhen(const SkyEvent &event, int64_t now, bool english,

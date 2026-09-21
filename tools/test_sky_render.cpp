@@ -37,6 +37,28 @@ const char RESPONSE[] =
     "\"stars\":[18616,3878,0,20690,4528,12],"
     "\"lines\":[0,1]}";
 
+// Tatáž noc s jmény hvězd, obrazci, dráhou Měsíce, tmou a radiantem.
+const char EXTRA[] =
+    "{\"v\":1,\"time\":1790020800,"
+    "\"bodies\":["
+    "{\"id\":\"sun\",\"n\":\"Slunce\",\"k\":0,\"ra\":11.9299,\"dec\":0.453},"
+    "{\"id\":\"moon\",\"n\":\"M\\u011bs\\u00edc\",\"k\":1,\"ra\":20.2727,"
+    "\"dec\":-23.127,\"ill\":0.763}],"
+    "\"stars\":[18616,3878,0,20690,4528,12],"
+    "\"starNames\":[\"Vega\",\"Deneb\"],"
+    "\"starCons\":[\"Lyra\",\"Labu\\u0165\"],"
+    "\"lines\":[0,1],"
+    "\"cons\":[{\"n\":\"Labu\\u0165\",\"ra\":20.267,\"dec\":39.34},"
+    "{\"n\":\"Orion\",\"ra\":5.6,\"dec\":-1.09}],"
+    "\"moonTrack\":{\"t\":1790019000,\"s\":1800,\"p\":["
+    "20266,-2318,20282,-2314,20298,-2310,20314,-2305,20330,-2300,20346,-2295,"
+    "20362,-2290,20378,-2285,20394,-2280,20410,-2275,20426,-2270,20442,-2265,"
+    "20458,-2260,20474,-2255,20490,-2250,20506,-2245,20522,-2240,20538,-2235,"
+    "20554,-2230,20570,-2225,20586,-2220,20602,-2215,20618,-2210,20634,-2205,"
+    "20650,-2200,20666,-2195,20682,-2190,20698,-2185,20714,-2180]},"
+    "\"dark\":[1790014600,1790050000],"
+    "\"radiant\":{\"n\":\"Perseidy\",\"ra\":3.2,\"dec\":58}}";
+
 std::vector<uint16_t> canvas() {
   return std::vector<uint16_t>(SKY_CANVAS_SIZE * SKY_CANVAS_SIZE, 0x1234);
 }
@@ -63,12 +85,22 @@ int dump(const char *jsonPath, double epoch, const char *outPath, bool night) {
   if (output == nullptr) return 4;
   fwrite(pixels.data(), sizeof(uint16_t), pixels.size(), output);
   fclose(output);
-  printf("dark %d sunUp %d planetsUp %u\n", result.dark, result.sunUp,
-         result.planetsUp);
+  printf("dark %d sunUp %d taps %u\n", result.dark, result.sunUp,
+         static_cast<unsigned>(result.tapCount));
   for (uint8_t index = 0; index < result.labelCount; ++index)
     printf("label %d %d %06X %s\n", result.labels[index].x,
            result.labels[index].y, static_cast<unsigned>(result.labels[index].color),
            result.labels[index].name);
+  // Jména obrazců a roje kreslí na hodinách služba; tady se jen vypíšou.
+  for (uint8_t index = 0; index < result.paintedCount; ++index) {
+    const uint16_t color = result.painted[index].color;
+    printf("label %d %d %06X %s\n", result.painted[index].x,
+           result.painted[index].y,
+           static_cast<unsigned>(((color >> 11) & 31) * 255 / 31 << 16 |
+                                 ((color >> 5) & 63) * 255 / 63 << 8 |
+                                 (color & 31) * 255 / 31),
+           result.painted[index].name);
+  }
   return 0;
 }
 
@@ -97,7 +129,6 @@ int main(int argc, char **argv) {
             "saturn", result);
   // Slunce 27° pod obzorem: tma, Saturn je jediná planeta nahoře.
   assert(result.dark && !result.sunUp);
-  assert(result.planetsUp == 1);
   // Měsíc a Saturn jdou vybrat, Jupiter pod obzorem ne.
   assert(result.tapCount == 2);
   bool sawMoon = false;
@@ -164,6 +195,60 @@ int main(int argc, char **argv) {
   skyRender(pixels.data(), &feed, LATITUDE, LONGITUDE, EPOCH + 12 * 3600.0, 0,
             false, false, "", result);
   assert(result.sunUp && !result.dark);
+
+  // Hvězdy se jménem jdou vybrat, těleso má ale přednost.
+  {
+    SkyTapPoint taps[3];
+    taps[0] = {100, 100, "*4"};
+    taps[1] = {120, 100, "moon"};
+    taps[2] = {300, 300, "*7"};
+    // Hvězda blíž, Měsíc do 30 px: Měsíc.
+    assert(skyPickTap(taps, 3, 102, 100) == 1);
+    // Jen hvězda do 18 px.
+    assert(skyPickTap(taps, 3, 310, 305) == 2);
+    // Hvězda dál než 18 px nic.
+    assert(skyPickTap(taps, 3, 320, 300) == -1);
+  }
+  static SkyFeed extra;
+  assert(parse(EXTRA, extra));
+  assert(extra.stars[0].name[0] == 'V');
+  assert(extra.figureCount == 2 && extra.moonTrackCount == 29);
+  assert(extra.hasRadiant && extra.darkFrom == 1790014600);
+  pixels = canvas();
+  skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
+            "*0", result);
+  // Vega je vysoko a pojmenovaná, takže jde vybrat a má detail.
+  assert(result.detail.open && result.detail.kind == SKY_BODY_STAR);
+  assert(strcmp(result.detail.name, "Vega") == 0);
+  assert(strcmp(result.detail.constellation, "Lyra") == 0);
+  assert(result.detail.altitudeDeg > 50.0f);
+  bool sawVega = false;
+  for (uint8_t index = 0; index < result.tapCount; ++index)
+    sawVega = sawVega || strcmp(result.taps[index].id, "*0") == 0;
+  assert(sawVega);
+  // Labuť je za tmy vysoko: jméno dostane, Orion pod obzorem ne. Radiant
+  // Perseid na severovýchodě taky.
+  // Tahle jména kreslí do bufferu služba, mezi popisky LVGL nejsou.
+  bool sawSwan = false;
+  bool sawOrion = false;
+  bool sawRadiant = false;
+  for (uint8_t index = 0; index < result.paintedCount; ++index) {
+    sawSwan = sawSwan || strcmp(result.painted[index].name, "Labuť") == 0;
+    sawOrion = sawOrion || strcmp(result.painted[index].name, "Orion") == 0;
+    sawRadiant = sawRadiant || strcmp(result.painted[index].name, "Perseidy") == 0;
+  }
+  assert(sawSwan && !sawOrion && sawRadiant);
+  assert(result.labelCount == 1);  // jen Měsíc
+  // V červeném nočním režimu jsou červená i ona.
+  skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH, 0, true, false,
+            "", result);
+  for (uint8_t index = 0; index < result.paintedCount; ++index)
+    assert((result.painted[index].color & 0x07FF) == 0);
+  // Ve dne jména obrazců nejsou, radiant ano.
+  skyRender(pixels.data(), &extra, LATITUDE, LONGITUDE, EPOCH + 12 * 3600.0, 0,
+            false, false, "", result);
+  for (uint8_t index = 0; index < result.paintedCount; ++index)
+    assert(strcmp(result.painted[index].name, "Labuť") != 0);
 
   puts("sky render OK");
   return 0;

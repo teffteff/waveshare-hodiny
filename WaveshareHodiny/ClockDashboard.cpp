@@ -7455,7 +7455,12 @@ void updateSkyDetail(const SkyDetail &detail) {
            static_cast<int>(std::lround(detail.azimuthDeg)) % 360,
            compassDirection(detail.azimuthDeg, english));
   lv_label_set_text(satellitesDetailRows[row++], line);
-  if (detail.kind == SKY_BODY_MOON) {
+  if (detail.kind == SKY_BODY_STAR) {
+    formatDecimal(number, sizeof(number), detail.magnitude, 1, english);
+    snprintf(line, sizeof(line), "%s: %s mag", english ? "BRIGHTNESS" : "JASNOST",
+             number);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  } else if (detail.kind == SKY_BODY_MOON) {
     snprintf(line, sizeof(line), "%s: %d %%", english ? "ILLUMINATED" : "OSVĚTLENO",
              static_cast<int>(std::lround(detail.illumination * 100.0f)));
     lv_label_set_text(satellitesDetailRows[row++], line);
@@ -7478,13 +7483,16 @@ void updateSkyDetail(const SkyDetail &detail) {
              number);
     lv_label_set_text(satellitesDetailRows[row++], line);
   }
-  char rise[8];
-  char set[8];
-  formatLocalClock(detail.rise, rise, sizeof(rise));
-  formatLocalClock(detail.set, set, sizeof(set));
-  snprintf(line, sizeof(line), "%s %s  |  %s %s", english ? "RISE" : "VÝCHOD",
-           rise, english ? "SET" : "ZÁPAD", set);
-  lv_label_set_text(satellitesDetailRows[row++], line);
+  // Hvězda východ a západ z dat nemá; mnohé u nás navíc nezapadají.
+  if (detail.kind != SKY_BODY_STAR) {
+    char rise[8];
+    char set[8];
+    formatLocalClock(detail.rise, rise, sizeof(rise));
+    formatLocalClock(detail.set, set, sizeof(set));
+    snprintf(line, sizeof(line), "%s %s  |  %s %s", english ? "RISE" : "VÝCHOD",
+             rise, english ? "SET" : "ZÁPAD", set);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  }
   if (detail.constellation[0] != '\0') {
     snprintf(line, sizeof(line), "%s: %s",
              english ? "CONSTELLATION" : "SOUHVĚZDÍ", detail.constellation);
@@ -7580,6 +7588,8 @@ void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
   setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesStatusLabel, text);
   alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
+  // Obloha ho může schovat, když nemá co říct.
+  lv_obj_clear_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
   updateSatellitesPassLabel(snapshot);
   updateSatellitesClockLabel();
@@ -7592,9 +7602,9 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
   const bool redNight = redNightVisualEnabled();
   lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
 
-  // Horní řádek: planety nad obzorem a index Kp. Od prahu upozornění se místo
-  // počtu planet píše, že může být vidět polární záře.
-  char text[96];
+  // Horní řádek: kdy je tma a kdy je nahoře Měsíc. Index Kp jen tehdy, když
+  // se blíží prahu upozornění, a od prahu místo všeho ostatního polární záře.
+  char text[128];
   char kp[12];
   if (!sky.haveData) {
     if (sky.message[0] != '\0')
@@ -7605,32 +7615,79 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
                            : (english ? "Waiting for data" : "Čekám na data"));
   } else {
     const uint8_t threshold = dashboardRuntimeConfig.nightSky.auroraKp;
-    char planets[32];
-    snprintf(planets, sizeof(planets), "%s: %u", english ? "PLANETS" : "PLANETY",
-             static_cast<unsigned>(sky.planetsUp));
-    if (!sky.hasKp) {
-      strlcpy(text, planets, sizeof(text));
-    } else if (sky.kp >= threshold) {
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (sky.hasKp && sky.kp >= threshold) {
       formatDecimal(kp, sizeof(kp), sky.kp, 1, english);
       snprintf(text, sizeof(text), "#%s %s  Kp %s#", kpColor(sky.kp, redNight),
                english ? "AURORA POSSIBLE" : "MOŽNÁ POLÁRNÍ ZÁŘE", kp);
     } else {
-      formatDecimal(kp, sizeof(kp), sky.kp, 1, english);
-      char forecast[24] = "";
-      // Předpověď na den se připíše, jen když slibuje víc než teď.
-      if (sky.hasKpMax && sky.kpMax >= sky.kp + 1.0f) {
-        char maximum[12];
-        formatDecimal(maximum, sizeof(maximum), sky.kpMax, 0, english);
-        snprintf(forecast, sizeof(forecast), " #%s (max %s)#",
-                 kpColor(sky.kpMax, redNight), maximum);
+      text[0] = '\0';
+      auto append = [&](const char *part) {
+        if (part[0] == '\0') return;
+        if (text[0] != '\0') strlcat(text, "   ", sizeof(text));
+        strlcat(text, part, sizeof(text));
+      };
+      // Kp stojí za řeč o stupeň pod prahem, nebo když ho předpověď na den
+      // přesahuje; klidné "Kp 0,7" nic neříká.
+      const bool kpNear = sky.hasKp && sky.kp + 1.0f >= threshold;
+      const bool forecastHigh = sky.hasKpMax && sky.kpMax >= threshold;
+      char part[48];
+      if (kpNear || forecastHigh) {
+        char maximum[24] = "";
+        if (forecastHigh && (!sky.hasKp || sky.kpMax >= sky.kp + 1.0f)) {
+          char value[12];
+          formatDecimal(value, sizeof(value), sky.kpMax, 0, english);
+          snprintf(maximum, sizeof(maximum), " (max %s)", value);
+        }
+        if (sky.hasKp)
+          formatDecimal(kp, sizeof(kp), sky.kp, 1, english);
+        else
+          strlcpy(kp, "-", sizeof(kp));
+        snprintf(part, sizeof(part), "#%s Kp %s%s#",
+                 kpColor(forecastHigh ? sky.kpMax : sky.kp, redNight), kp,
+                 maximum);
+        append(part);
       }
-      snprintf(text, sizeof(text), "%s   #%s Kp %s#%s", planets,
-               kpColor(sky.kp, redNight), kp, forecast);
+      // Tma: dokdy, když už je, jinak od kdy do kdy.
+      if (sky.darkTo > now && now > 1700000000) {
+        char from[8];
+        char to[8];
+        formatLocalClock(sky.darkFrom, from, sizeof(from));
+        formatLocalClock(sky.darkTo, to, sizeof(to));
+        if (sky.darkFrom <= now)
+          snprintf(part, sizeof(part), "%s %s", english ? "DARK UNTIL" : "TMA DO",
+                   to);
+        else
+          snprintf(part, sizeof(part), "%s %s-%s", english ? "DARK" : "TMA", from,
+                   to);
+        append(part);
+      }
+      // Měsíc: nahoře je, když dřív zapadne, než vyjde.
+      if (sky.hasMoon && (sky.moonRise > 0 || sky.moonSet > 0)) {
+        const bool up = sky.moonSet > 0 &&
+                        (sky.moonRise == 0 || sky.moonSet < sky.moonRise);
+        char clock[8];
+        formatLocalClock(up ? sky.moonSet : sky.moonRise, clock, sizeof(clock));
+        const char *label =
+            up ? (english ? "MOON UNTIL" : "MĚSÍC DO")
+               : (english ? "MOON FROM" : "MĚSÍC OD");
+        snprintf(part, sizeof(part), "%s %s (%d %%)", label, clock,
+                 static_cast<int>(std::lround(sky.moonIllumination * 100.0f)));
+        append(part);
+      }
     }
   }
+  // Na 158 px nad středem má kruh displeje asi 350 px.
+  fitLabelText(text, sizeof(text), &clock_czech_14, 320, true);
   setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesStatusLabel, text);
   alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
+  // Letní noc bez tmy, bez Měsíce a s klidným Kp: prázdný řádek by byl jen
+  // podklad bez textu.
+  if (text[0] == '\0')
+    lv_obj_add_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  else
+    lv_obj_clear_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
   // Jména těles vedle teček.
   for (uint8_t index = 0; index < SKY_MAX_BODIES; ++index) {
