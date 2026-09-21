@@ -182,6 +182,7 @@ lv_obj_t *radarCanvas = nullptr;
 // stejném místě jako na ostatních obrazovkách, aby se radar nemusel opouštět
 // jen kvůli pohledu na hodiny.
 lv_obj_t *radarClockLabel = nullptr;
+lv_obj_t *radarRainLabel = nullptr;
 // Řádek o snímku animace - "NYNÍ 14:35" nebo "-25 min 14:10".
 lv_obj_t *radarTitleLabel = nullptr;
 // Rozsah patří dolů pod mapu, hned nad svoje tečky.
@@ -232,6 +233,9 @@ constexpr char STATUS_LINE_GAP[] = "      ";
 constexpr int STATUS_LINE_Y = -188;
 constexpr int RADAR_FRAME_DOTS_OFFSET_Y = -162;
 constexpr int RADAR_FRAME_LABEL_OFFSET_Y = -140;
+// Poznámka o dešti má vlastní řádek pod popiskem snímku: ve stavovém řádku
+// vedle data, času a teploty se nevešla.
+constexpr int RADAR_RAIN_LABEL_OFFSET_Y = -112;
 constexpr int RADAR_RANGE_LABEL_OFFSET_Y = 164;
 constexpr int RADAR_RANGE_DOTS_OFFSET_Y = 190;
 // Stavový řádek se dá vypnout; ostatní pásy jsou pevná výbava obrazovky.
@@ -2456,6 +2460,7 @@ void applyDashboardColors() {
     for (lv_obj_t *label : coloredLabels) setTextColor(label, COLOR_ERROR);
     setTextColor(radarClockLabel, statusLineColor());
     setTextColor(radarTitleLabel, COLOR_ERROR);
+    setTextColor(radarRainLabel, COLOR_ERROR);
     setTextColor(radarRangeLabel, COLOR_ERROR);
     setTextColor(radarStatusLabel, COLOR_ERROR);
     lv_obj_set_style_img_recolor(weatherImage, COLOR_ERROR, 0);
@@ -2477,6 +2482,7 @@ void applyDashboardColors() {
     setTextColor(radarClockLabel, statusLineColor());
     setTextColor(radarTitleLabel, COLOR_OUTSIDE);
     setTextColor(radarRangeLabel, COLOR_OUTSIDE);
+    setTextColor(radarRainLabel, COLOR_ROOM);
     setTextColor(radarStatusLabel, COLOR_OUTSIDE);
     setTextColor(dateLabel,
                  configuredColor(analogLayoutEnabled() ? analogDateColor
@@ -4845,18 +4851,28 @@ const char *radarEmptyStateText(bool busy) {
   return englishLanguage() ? "No radar frame yet" : "Radar zatím nemá snímek";
 }
 
+// Poznámka o dešti se ukáže i s vypnutým stavovým řádkem: bez ní by se
+// hodiny přepnuly bez vysvětlení.
+void updateRadarRainLabel() {
+  if (radarRainLabel == nullptr) return;
+  if (rainAlertNote[0] == '\0') {
+    lv_obj_add_flag(radarRainLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  setTextColor(radarRainLabel,
+               redNightVisualEnabled() ? COLOR_ERROR : COLOR_ROOM);
+  lv_label_set_text(radarRainLabel, rainAlertNote);
+  alignCenter(radarRainLabel, 0, RADAR_RAIN_LABEL_OFFSET_Y);
+  lv_obj_clear_flag(radarRainLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
 void updateRadarClockLabel() {
   if (radarClockLabel == nullptr) return;
   char text[72];
   const bool haveStatus =
       radarStatusLineEnabled && composeStatusLineText(text, sizeof(text));
   if (!haveStatus) text[0] = '\0';
-  // Poznámka o dešti se ukáže i s vypnutým stavovým řádkem: bez ní by se
-  // hodiny přepnuly bez vysvětlení.
-  if (rainAlertNote[0] != '\0') {
-    if (text[0] != '\0') strlcat(text, STATUS_LINE_GAP, sizeof(text));
-    strlcat(text, rainAlertNote, sizeof(text));
-  }
+  updateRadarRainLabel();
   if (text[0] == '\0') {
     lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -4993,6 +5009,15 @@ void createRadarPage(lv_obj_t *screen) {
   lv_obj_set_style_pad_ver(radarClockLabel, 2, 0);
   alignCenter(radarClockLabel, 0, STATUS_LINE_Y);
   lv_obj_add_flag(radarClockLabel, LV_OBJ_FLAG_HIDDEN);
+
+  radarRainLabel = makeLabel(radarPage, &clock_czech_20, COLOR_ROOM);
+  lv_label_set_text(radarRainLabel, "");
+  lv_obj_set_style_bg_color(radarRainLabel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(radarRainLabel, LV_OPA_80, 0);
+  lv_obj_set_style_pad_hor(radarRainLabel, 8, 0);
+  lv_obj_set_style_pad_ver(radarRainLabel, 2, 0);
+  alignCenter(radarRainLabel, 0, RADAR_RAIN_LABEL_OFFSET_Y);
+  lv_obj_add_flag(radarRainLabel, LV_OBJ_FLAG_HIDDEN);
 
   radarTitleLabel = makeLabel(radarPage, &clock_czech_16, COLOR_OUTSIDE);
   lv_label_set_recolor(radarTitleLabel, true);
