@@ -582,6 +582,31 @@ void normalizeConfig(ClockConfig &config) {
   config.rainAlert.radiusKm =
       constrain(config.rainAlert.radiusKm, CLOCK_RAIN_RADIUS_MIN_KM,
                 CLOCK_RAIN_RADIUS_MAX_KM);
+  // Výstrahy bez adresy serveru nemají odkud přijít, stejně jako déšť.
+  if (config.warnings.url[0] == '\0') config.warnings.enabled = false;
+  config.warnings.minimumLevel =
+      constrain(config.warnings.minimumLevel, CLOCK_WARNINGS_LEVEL_MIN,
+                CLOCK_WARNINGS_LEVEL_MAX);
+  // Nula znamená "nepřepínat"; jinak stupeň od žluté po červenou.
+  if (config.warnings.switchLevel != 0)
+    config.warnings.switchLevel =
+        constrain(config.warnings.switchLevel, CLOCK_WARNINGS_LEVEL_MIN,
+                  CLOCK_WARNINGS_LEVEL_MAX);
+  config.warnings.holdMinutes =
+      constrain(config.warnings.holdMinutes, CLOCK_WARNINGS_HOLD_MIN_MINUTES,
+                CLOCK_WARNINGS_HOLD_MAX_MINUTES);
+  config.warnings.refreshMinutes =
+      constrain(config.warnings.refreshMinutes,
+                CLOCK_WARNINGS_REFRESH_MIN_MINUTES,
+                CLOCK_WARNINGS_REFRESH_MAX_MINUTES);
+  config.nightSky.auroraKp = constrain(config.nightSky.auroraKp,
+                                       CLOCK_AURORA_KP_MIN, CLOCK_AURORA_KP_MAX);
+  config.nightSky.holdMinutes =
+      constrain(config.nightSky.holdMinutes, CLOCK_AURORA_HOLD_MIN_MINUTES,
+                CLOCK_AURORA_HOLD_MAX_MINUTES);
+  config.nightSky.cooldownMinutes =
+      constrain(config.nightSky.cooldownMinutes, static_cast<uint8_t>(0),
+                CLOCK_AURORA_COOLDOWN_MAX_MINUTES);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -702,6 +727,15 @@ bool clockConfigSchoolAvailable(const ClockConfig &config) {
 bool clockConfigSatellitesAvailable(const ClockConfig &config) {
   return config.satellites.enabled && config.satellites.url[0] != '\0' &&
          (config.satellites.groups & CLOCK_SATELLITE_GROUP_ALL) != 0;
+}
+
+bool clockConfigNightSkyAvailable(const ClockConfig &config) {
+  return config.nightSky.enabled && clockConfigSatellitesAvailable(config);
+}
+
+bool clockConfigWarningsAvailable(const ClockConfig &config) {
+  return config.warnings.enabled && config.warnings.url[0] != '\0' &&
+         clockConfigRadarAvailable(config);
 }
 
 bool clockConfigUrlHasCredentials(const char *url) {
@@ -1000,6 +1034,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV49 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_49_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV46 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1042,6 +1083,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV49) ||
          storedSize == sizeof(ConfigRecordV46) ||
          storedSize == sizeof(ConfigRecordV45) ||
          storedSize == sizeof(ConfigRecordV44) ||
@@ -1084,20 +1126,30 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     return ConfigRecordDecode::Current;
   }
 
+  // Schéma 49 je přesnou předponou schématu 50; výstrahy i noční obloha si po
+  // zkopírování bajtů podrží výchozí hodnoty, tedy vypnuté a bez adresy.
   // Schémata 47 a 48 mají stejnou velikost jako 49 a liší se jen tím, co bylo
   // ve dvou bajtech: u 47 leží hodina přepnutí obědů v koncové výplni školy,
   // jejíž obsah je nejistý, takže se nastaví natvrdo na výchozí hodnotu
   // (stejně jako kdysi vypínač srážek u schématu 42). Bit SATGUS byl do
   // schématu 48 vždycky nula, takže se domácí družice při migraci zapne.
-  if (readComplete && storedSize == sizeof(record) &&
-      record.magic == CONFIG_MAGIC &&
-      (record.schemaVersion == 47 || record.schemaVersion == 48) &&
-      record.config.schemaVersion == record.schemaVersion &&
-      record.checksum == configChecksum(record.config)) {
-    config = record.config;
-    if (record.schemaVersion == 47)
+  const ConfigRecordV49 &legacyV49 =
+      *reinterpret_cast<const ConfigRecordV49 *>(&record);
+  uint32_t embeddedSchemaV49 = 0;
+  if (readComplete && storedSize == sizeof(legacyV49))
+    memcpy(&embeddedSchemaV49, legacyV49.config, sizeof(embeddedSchemaV49));
+  if (readComplete && storedSize == sizeof(legacyV49) &&
+      legacyV49.magic == CONFIG_MAGIC &&
+      (legacyV49.schemaVersion == 47 || legacyV49.schemaVersion == 48 ||
+       legacyV49.schemaVersion == 49) &&
+      embeddedSchemaV49 == legacyV49.schemaVersion &&
+      legacyV49.checksum ==
+          bytesChecksum(legacyV49.config, sizeof(legacyV49.config))) {
+    memcpy(&config, legacyV49.config, sizeof(legacyV49.config));
+    if (legacyV49.schemaVersion == 47)
       config.school.mealNextDayHour = ClockSchoolConfig{}.mealNextDayHour;
-    config.satellites.groups |= CLOCK_SATELLITE_GROUP_SATGUS;
+    if (legacyV49.schemaVersion < 49)
+      config.satellites.groups |= CLOCK_SATELLITE_GROUP_SATGUS;
     config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
     normalizeConfig(config);
     return ConfigRecordDecode::Migrated;

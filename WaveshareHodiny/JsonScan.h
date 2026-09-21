@@ -50,6 +50,8 @@ bool jsonReadBoolMember(const char *objectBegin, const char *objectEnd,
 // Textová hodnota bez okolních mezer, zkrácená na kapacitu cíle.
 void jsonCopyTextMember(const char *objectBegin, const char *objectEnd,
                         const char *key, char *destination, size_t capacity);
+// Totéž pro hodnotu, třeba prvek pole; co není řetězec, dá prázdný text.
+void jsonCopyText(const JsonValue &value, char *destination, size_t capacity);
 
 bool jsonTextMemberEquals(const char *objectBegin, const char *objectEnd,
                           const char *key, const char *expected);

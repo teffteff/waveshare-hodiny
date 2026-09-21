@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <new>
 #include <time.h>
 
 #include "CompressedPages.h"
@@ -42,6 +43,7 @@
 #include "SettingsBackup.h"
 #include "SettingsBackupCrypto.h"
 #include "TmepService.h"
+#include "WeatherWarningService.h"
 
 namespace {
 // Nastavení se dvěma sadami po devíti hodnotách, s plnými barevnými škálami a
@@ -1608,6 +1610,55 @@ void handleGetConfig() {
   result += config.rainAlert.refreshMinutes;
   result += F(",\"rainAlertQuietAtNight\":");
   result += config.rainAlert.quietAtNight ? F("true") : F("false");
+  result += F(",\"warningsEnabled\":");
+  result += config.warnings.enabled ? F("true") : F("false");
+  result += F(",\"warningsUrl\":\"");
+  result += jsonEscape(config.warnings.url);
+  result += F("\",\"warningsMinimumLevel\":");
+  result += config.warnings.minimumLevel;
+  result += F(",\"warningsSwitchLevel\":");
+  result += config.warnings.switchLevel;
+  result += F(",\"warningsHoldMinutes\":");
+  result += config.warnings.holdMinutes;
+  result += F(",\"warningsRefreshMinutes\":");
+  result += config.warnings.refreshMinutes;
+  result += F(",\"warningsQuietAtNight\":");
+  result += config.warnings.quietAtNight ? F("true") : F("false");
+  {
+    // Co hodiny naposledy slyšely od serveru výstrah: web podle toho ukáže
+    // ORP a počet výstrah, takže je vidět, že adresa i poloha sedí. Stav nese
+    // seznam výstrah (kolem 700 bajtů), proto na haldě v PSRAM.
+    void *memory = heap_caps_calloc(1, sizeof(WeatherWarningStatus),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) {
+      WeatherWarningStatus *status = new (memory) WeatherWarningStatus();
+      weatherWarningServiceStatus(*status);
+      result += F(",\"warningsMessage\":\"");
+      result += jsonEscape(status->message);
+      result += F("\",\"warningsArea\":\"");
+      if (status->ready) result += jsonEscape(status->feed.area);
+      result += F("\",\"warningsCount\":");
+      uint8_t count = 0;
+      const time_t now = time(nullptr);
+      for (size_t index = 0; status->ready && index < status->feed.count; ++index)
+        if (weatherWarningRelevant(status->feed.items[index], now)) ++count;
+      result += count;
+      status->~WeatherWarningStatus();
+      heap_caps_free(memory);
+    }
+  }
+  result += F(",\"nightSkyEnabled\":");
+  result += config.nightSky.enabled ? F("true") : F("false");
+  result += F(",\"nightSkyAuroraAlert\":");
+  result += config.nightSky.auroraAlert ? F("true") : F("false");
+  result += F(",\"nightSkyAuroraKp\":");
+  result += config.nightSky.auroraKp;
+  result += F(",\"nightSkyHideEvents\":");
+  result += config.nightSky.hideEvents ? F("true") : F("false");
+  result += F(",\"nightSkyHoldMinutes\":");
+  result += config.nightSky.holdMinutes;
+  result += F(",\"nightSkyCooldownMinutes\":");
+  result += config.nightSky.cooldownMinutes;
   result += F(",\"skyEnabled\":");
   result += config.sky.enabled ? F("true") : F("false");
   result += F(",\"skyAutomaticRotation\":");
@@ -2306,6 +2357,88 @@ void handleSaveConfig() {
     config.rainAlert.cooldownMinutes = static_cast<uint8_t>(cooldownMinutes);
     config.rainAlert.refreshMinutes = static_cast<uint8_t>(refreshMinutes);
     config.rainAlert.quietAtNight = server.arg("rainAlertQuietAtNight") == "1";
+  }
+
+  if (server.hasArg("warningsEnabled")) {
+    String warningsUrl = server.arg("warningsUrl");
+    warningsUrl.trim();
+    if (warningsUrl.length() >= CLOCK_WARNINGS_URL_LENGTH) {
+      sendError(400, F("Adresa serveru výstrah je příliš dlouhá."));
+      return;
+    }
+    if (!warningsUrl.isEmpty() && !warningsUrl.startsWith("http://") &&
+        !warningsUrl.startsWith("https://")) {
+      sendError(400,
+                F("Adresa serveru výstrah musí začínat http:// nebo https://."));
+      return;
+    }
+    // Heslo v adrese po http:// by šlo sítí čitelně, stejně jako poloha.
+    if (warningsUrl.startsWith("http://") &&
+        clockConfigUrlHasCredentials(warningsUrl.c_str())) {
+      sendError(400, F("Adresa serveru výstrah s heslem musí začínat https://."));
+      return;
+    }
+    const bool warningsEnabled = server.arg("warningsEnabled") == "1";
+    if (warningsEnabled && warningsUrl.isEmpty()) {
+      sendError(400, F("Pro výstrahy doplň adresu serveru."));
+      return;
+    }
+    const int minimumLevel = server.arg("warningsMinimumLevel").toInt();
+    if (minimumLevel < CLOCK_WARNINGS_LEVEL_MIN ||
+        minimumLevel > CLOCK_WARNINGS_LEVEL_MAX) {
+      sendError(400, F("Stupeň výstrah na radaru musí být žlutá až červená."));
+      return;
+    }
+    const int switchLevel = server.arg("warningsSwitchLevel").toInt();
+    if (switchLevel != 0 && (switchLevel < CLOCK_WARNINGS_LEVEL_MIN ||
+                             switchLevel > CLOCK_WARNINGS_LEVEL_MAX)) {
+      sendError(400, F("Stupeň výstrahy pro přepnutí na radar není v nabídce."));
+      return;
+    }
+    const int holdMinutes = server.arg("warningsHoldMinutes").toInt();
+    if (holdMinutes < CLOCK_WARNINGS_HOLD_MIN_MINUTES ||
+        holdMinutes > CLOCK_WARNINGS_HOLD_MAX_MINUTES) {
+      sendError(400, F("Držení radaru u výstrahy musí být od 1 do 120 minut."));
+      return;
+    }
+    const int refreshMinutes = server.arg("warningsRefreshMinutes").toInt();
+    if (refreshMinutes < CLOCK_WARNINGS_REFRESH_MIN_MINUTES ||
+        refreshMinutes > CLOCK_WARNINGS_REFRESH_MAX_MINUTES) {
+      sendError(400, F("Dotaz na server výstrah musí být od 5 do 60 minut."));
+      return;
+    }
+    config.warnings.enabled = warningsEnabled;
+    clockConfigCopy(config.warnings.url, sizeof(config.warnings.url), warningsUrl);
+    config.warnings.minimumLevel = static_cast<uint8_t>(minimumLevel);
+    config.warnings.switchLevel = static_cast<uint8_t>(switchLevel);
+    config.warnings.holdMinutes = static_cast<uint8_t>(holdMinutes);
+    config.warnings.refreshMinutes = static_cast<uint8_t>(refreshMinutes);
+    config.warnings.quietAtNight = server.arg("warningsQuietAtNight") == "1";
+  }
+
+  if (server.hasArg("nightSkyEnabled")) {
+    const int auroraKp = server.arg("nightSkyAuroraKp").toInt();
+    if (auroraKp < CLOCK_AURORA_KP_MIN || auroraKp > CLOCK_AURORA_KP_MAX) {
+      sendError(400, F("Práh polární záře musí být Kp 5 až 9."));
+      return;
+    }
+    const int holdMinutes = server.arg("nightSkyHoldMinutes").toInt();
+    if (holdMinutes < CLOCK_AURORA_HOLD_MIN_MINUTES ||
+        holdMinutes > CLOCK_AURORA_HOLD_MAX_MINUTES) {
+      sendError(400, F("Držení noční oblohy musí být od 1 do 120 minut."));
+      return;
+    }
+    const int cooldownMinutes = server.arg("nightSkyCooldownMinutes").toInt();
+    if (cooldownMinutes < 0 || cooldownMinutes > CLOCK_AURORA_COOLDOWN_MAX_MINUTES) {
+      sendError(400, F("Prodleva mezi upozorněními na polární záři musí být od 0 do 240 minut."));
+      return;
+    }
+    config.nightSky.enabled = server.arg("nightSkyEnabled") == "1";
+    config.nightSky.auroraAlert = server.arg("nightSkyAuroraAlert") == "1";
+    config.nightSky.hideEvents = server.arg("nightSkyHideEvents") == "1";
+    config.nightSky.auroraKp = static_cast<uint8_t>(auroraKp);
+    config.nightSky.holdMinutes = static_cast<uint8_t>(holdMinutes);
+    config.nightSky.cooldownMinutes = static_cast<uint8_t>(cooldownMinutes);
   }
 
   if (server.hasArg("schoolEnabled")) {

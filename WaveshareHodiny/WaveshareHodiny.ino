@@ -9,12 +9,15 @@
 #include <freertos/idf_additions.h>
 #include <time.h>
 
+#include <new>
+
 #include "ClockDashboard.h"
 #include "ClockConfig.h"
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
 #include "RainAlertService.h"
+#include "WeatherWarningService.h"
 #include "SatelliteService.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
@@ -183,6 +186,19 @@ unsigned long rainAlertHeldUntil = 0;
 unsigned long rainAlertRaisedAt = 0;
 unsigned long rainAlertCheckedAt = 0;
 bool rainAlertEverRaised = false;
+// Výstraha ČHMÚ drží radar stejně jako déšť. Hodiny se přepnou jen jednou pro
+// každou výstrahu; id těch, na které už upozornily, si pamatují, dokud je
+// server posílá. Zmizí-li a později se vrátí, upozorní se znovu.
+constexpr size_t WARNING_ALERTED_CAPACITY = 8;
+unsigned long warningHeldUntil = 0;
+unsigned long warningCheckedAt = 0;
+char warningAlerted[WARNING_ALERTED_CAPACITY][WEATHER_WARNING_ID_LENGTH] = {};
+size_t warningAlertedCount = 0;
+// Polární záře drží noční oblohu na obrazovce družic.
+unsigned long auroraHeldUntil = 0;
+unsigned long auroraRaisedAt = 0;
+unsigned long auroraCheckedAt = 0;
+bool auroraEverRaised = false;
 bool scheduleCheckPending = true;
 unsigned long scheduleCheckedAt = 0;
 unsigned long lastManualScreenChangeAt = 0;
@@ -484,11 +500,17 @@ void applyPlaneRadarState(const ClockConfig &config) {
 // s čím obrazovku otevřít.
 void applySatellitesState(const ClockConfig &config, bool visible) {
   const bool available = clockConfigSatellitesAvailable(config);
-  satelliteServiceSetActive(available && visible,
-                            available && config.satellites.automaticRotation,
-                            config.openMeteoLatitude, config.openMeteoLongitude,
-                            config.satellites,
-                            config.language == CLOCK_LANGUAGE_ENGLISH);
+  const bool skyAvailable = clockConfigNightSkyAvailable(config);
+  clockDashboardSetNightSkyAvailable(skyAvailable);
+  // Na stránce oblohy se dráhy družic dál stahují řídce na pozadí, aby byly
+  // po přetažení zpátky hned po ruce.
+  const bool skyPage = visible && clockDashboardSatellitesSkyPage();
+  satelliteServiceSetActive(
+      available && visible && !skyPage,
+      available && (config.satellites.automaticRotation || skyPage),
+      config.openMeteoLatitude, config.openMeteoLongitude, config.satellites,
+      config.language == CLOCK_LANGUAGE_ENGLISH);
+  satelliteServiceSetNightSky(skyAvailable, skyPage, config.nightSky.hideEvents);
 }
 
 void applySatellitesState(const ClockConfig &config) {
@@ -507,6 +529,17 @@ void applyRainAlertState(const ClockConfig &config) {
                             config.openMeteoLongitude,
                             config.rainAlert.radiusKm,
                             config.rainAlert.refreshMinutes);
+}
+
+// Výstrahy se stahují bez ohledu na to, co je vidět: řádek na radaru má být
+// hotový, když se na radar přepne, a přepnutí je celý smysl. Bez radaru
+// v pořadí obrazovek se nestahuje nic.
+void applyWarningState(const ClockConfig &config) {
+  weatherWarningServiceSetActive(clockConfigWarningsAvailable(config),
+                                 config.warnings.url, config.openMeteoLatitude,
+                                 config.openMeteoLongitude,
+                                 config.language == CLOCK_LANGUAGE_ENGLISH,
+                                 config.warnings.refreshMinutes);
 }
 
 void applyPendingRuntimeConfiguration() {
@@ -539,6 +572,7 @@ void applyPendingRuntimeConfiguration() {
   applyPlaneRadarState(dashboardConfigBuffer);
   applySatellitesState(dashboardConfigBuffer);
   applyRainAlertState(dashboardConfigBuffer);
+  applyWarningState(dashboardConfigBuffer);
   // Nový plán nebo vypnutá obrazovka platí hned, ne až při další kontrole.
   scheduleCheckPending = true;
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
@@ -1154,11 +1188,28 @@ bool rainAlertHolding() {
          static_cast<long>(millis() - rainAlertHeldUntil) < 0;
 }
 
+bool warningHolding() {
+  return warningHeldUntil != 0 &&
+         static_cast<long>(millis() - warningHeldUntil) < 0;
+}
+
+bool auroraHolding() {
+  return auroraHeldUntil != 0 &&
+         static_cast<long>(millis() - auroraHeldUntil) < 0;
+}
+
+// Drží teď obrazovku některé upozornění (déšť, výstraha, polární záře)?
+bool alertHolding() {
+  return rainAlertHolding() || warningHolding() || auroraHolding();
+}
+
 // Obrazovka, kterou něco drží, nebo CLOCK_SCREEN_ORDER_UNUSED. Upozornění na
 // déšť přebíjí okno plánu: trvá jen pár minut a pak obrazovku zase pustí.
 uint8_t heldScreen() {
-  return rainAlertHolding() ? static_cast<uint8_t>(CLOCK_SCREEN_RADAR)
-                            : scheduleHeldScreen;
+  if (rainAlertHolding() || warningHolding())
+    return static_cast<uint8_t>(CLOCK_SCREEN_RADAR);
+  if (auroraHolding()) return static_cast<uint8_t>(CLOCK_SCREEN_SATELLITES);
+  return scheduleHeldScreen;
 }
 
 bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
@@ -1392,6 +1443,11 @@ void maintainDisplayGestures() {
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
     if (clockDashboardSwipeValues() || clockDashboardSwipeSchool()) {
       displayModeStartedAt = millis();
+    } else if (clockDashboardSwipeSatellites()) {
+      // Služba musí vědět, kterou stránku kreslit.
+      applySatellitesState(config);
+      displayedSatellitesGeneration = UINT32_MAX;
+      displayModeStartedAt = millis();
     } else if (radarAvailable && clockDashboardRadarVisible()) {
       handleRadarRangeChange(rangeSwipeDirection);
     } else if (clockDashboardPlanesVisible()) {
@@ -1485,7 +1541,7 @@ void maintainScreenSchedule() {
   // Otevřené nastavení na displeji se nezavírá: kdo v něm je, něco dělá.
   // Dokud drží upozornění na déšť, plán svou obrazovku nevynucuje - jinak by
   // se ty dvě přetahovaly o displej každou půlminutu.
-  if (scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED && !rainAlertHolding() &&
+  if (scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED && !alertHolding() &&
       !clockDashboardSettingsVisible() &&
       activeRotationScreen() != scheduleHeldScreen &&
       now - lastManualScreenChangeAt >= SCHEDULE_RETURN_MS) {
@@ -1560,6 +1616,158 @@ void maintainRainAlert() {
                                                      : "Déšť za %u min",
            static_cast<unsigned>(decision.minutesAway));
   clockDashboardSetRainAlertNote(note);
+}
+
+constexpr unsigned long WARNING_CHECK_MS = 10UL * 1000UL;
+
+// Výstrahy ČHMÚ: řádek na meteoradaru s tou nejvážnější a u vážných jednou
+// přepnutí na radar. Výstrahy vozí vlastní server, rozhodnutí padá tady -
+// stejně jako u deště.
+void maintainWeatherWarnings() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  const bool enabled = clockConfigWarningsAvailable(config);
+  if (!enabled) {
+    clockDashboardSetRadarWarning("", "", 0);
+    warningAlertedCount = 0;
+    if (warningHeldUntil != 0) {
+      warningHeldUntil = 0;
+      scheduleCheckPending = true;
+    }
+    return;
+  }
+
+  // Konec držení vrací obrazovku střídání nebo plánu, stejně jako u deště.
+  if (warningHeldUntil != 0 &&
+      static_cast<long>(now - warningHeldUntil) >= 0) {
+    warningHeldUntil = 0;
+    displayModeStartedAt = now;
+    scheduleCheckPending = true;
+  }
+
+  if (now - warningCheckedAt < WARNING_CHECK_MS) return;
+  warningCheckedAt = now;
+
+  // Stav služby nese seznam výstrah (kolem 700 bajtů); leží v PSRAM.
+  static WeatherWarningStatus *status = nullptr;
+  if (status == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(WeatherWarningStatus),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr) return;
+    status = new (memory) WeatherWarningStatus();
+  }
+  weatherWarningServiceStatus(*status);
+  const time_t wallClock = time(nullptr);
+  // Bez čerstvých dat nebo přesného času se neukazuje nic: stará výstraha
+  // by mohla hlásit něco, co už skončilo.
+  if (!status->ready || wallClock < 1700000000) {
+    clockDashboardSetRadarWarning("", "", 0);
+    return;
+  }
+  const WeatherWarningFeed &feed = status->feed;
+  const int64_t epoch = static_cast<int64_t>(wallClock);
+  const bool english = config.language == CLOCK_LANGUAGE_ENGLISH;
+
+  uint8_t others = 0;
+  const WeatherWarning *top =
+      weatherWarningsTop(feed, config.warnings.minimumLevel, epoch, others);
+  if (top == nullptr) {
+    clockDashboardSetRadarWarning("", "", 0);
+  } else {
+    char tail[48];
+    weatherWarningBannerTail(*top, others, epoch, english, tail, sizeof(tail));
+    clockDashboardSetRadarWarning(top->event, tail, top->level);
+  }
+
+  // Výstrahy, které server už neposílá, se zapomenou: kdyby se vrátily,
+  // hodiny na ně upozorní znovu.
+  size_t kept = 0;
+  for (size_t index = 0; index < warningAlertedCount; ++index) {
+    bool present = false;
+    for (size_t item = 0; item < feed.count && !present; ++item)
+      present = strcmp(feed.items[item].id, warningAlerted[index]) == 0;
+    if (!present) continue;
+    if (kept != index)
+      strlcpy(warningAlerted[kept], warningAlerted[index],
+              sizeof(warningAlerted[kept]));
+    ++kept;
+  }
+  warningAlertedCount = kept;
+
+  const WeatherWarning *announce = weatherWarningsToAnnounce(
+      feed, config.warnings.switchLevel, epoch, warningAlerted,
+      warningAlertedCount);
+  if (announce == nullptr) return;
+  // V noci se nepřepíná, když si to majitel přeje; výstraha počká na ráno,
+  // pokud ještě bude platit. Otevřené nastavení se nezavírá.
+  if (config.warnings.quietAtNight && clockDashboardNightModeEnabled()) return;
+  if (clockDashboardSettingsVisible()) return;
+  if (!switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
+
+  if (warningAlertedCount < WARNING_ALERTED_CAPACITY) {
+    strlcpy(warningAlerted[warningAlertedCount], announce->id,
+            sizeof(warningAlerted[warningAlertedCount]));
+    ++warningAlertedCount;
+  }
+  // Výstraha přebíjí oblohu: polární záře počká.
+  auroraHeldUntil = 0;
+  warningHeldUntil =
+      now + static_cast<unsigned long>(config.warnings.holdMinutes) * 60000UL;
+}
+
+constexpr unsigned long AURORA_CHECK_MS = 30UL * 1000UL;
+
+// Polární záře: když index Kp dosáhne prahu a je tma, otevře se noční obloha
+// a chvíli se na ní podrží. Kp vozí server družic, rozhodnutí padá tady.
+void maintainAuroraAlert() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  const bool enabled =
+      clockConfigNightSkyAvailable(config) && config.nightSky.auroraAlert;
+  if (!enabled) {
+    if (auroraHeldUntil != 0) {
+      auroraHeldUntil = 0;
+      scheduleCheckPending = true;
+    }
+    return;
+  }
+  if (auroraHeldUntil != 0 && static_cast<long>(now - auroraHeldUntil) >= 0) {
+    auroraHeldUntil = 0;
+    displayModeStartedAt = now;
+    scheduleCheckPending = true;
+  }
+
+  if (now - auroraCheckedAt < AURORA_CHECK_MS) return;
+  auroraCheckedAt = now;
+
+  float kp = 0.0f;
+  if (!satelliteServiceAuroraKp(kp)) return;
+  if (kp < config.nightSky.auroraKp) return;
+  // Za světla polární záři nikdo neuvidí. Slunce se počítá přímo v hodinách.
+  const time_t wallClock = time(nullptr);
+  if (wallClock < 1700000000) return;
+  if (astronomyAltitudeDeg(AstronomyBody::Sun, static_cast<int64_t>(wallClock),
+                           config.openMeteoLatitude,
+                           config.openMeteoLongitude) >
+      ASTRONOMY_CIVIL_TWILIGHT_DEG)
+    return;
+  // Bouře trvá hodiny; prodleva brání tomu, aby obloha skákala celou noc.
+  if (auroraEverRaised &&
+      now - auroraRaisedAt <
+          static_cast<unsigned long>(config.nightSky.cooldownMinutes) * 60000UL)
+    return;
+  // Déšť a výstraha mají přednost; obloha počká, až radar pustí.
+  if (rainAlertHolding() || warningHolding()) return;
+  if (clockDashboardSettingsVisible()) return;
+  if (!switchToScreen(config, CLOCK_SCREEN_SATELLITES)) return;
+  clockDashboardSetSatellitesSkyPage(true);
+  applySatellitesState(config);
+  displayedSatellitesGeneration = UINT32_MAX;
+
+  auroraHeldUntil =
+      now + static_cast<unsigned long>(config.nightSky.holdMinutes) * 60000UL;
+  auroraRaisedAt = now;
+  auroraEverRaised = true;
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
@@ -1689,18 +1897,32 @@ void maintainPlanesDisplay() {
 void maintainSatellitesDisplay() {
   if (!clockDashboardSatellitesVisible()) return;
   static SatelliteSnapshot snapshot;
+  // Obloha má kolem 700 bajtů popisků a úkazů; leží v PSRAM, interní RAM
+  // patří TLS.
+  static SkySnapshot *sky = nullptr;
+  if (sky == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(SkySnapshot),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) sky = new (memory) SkySnapshot();
+  }
   satelliteServiceSnapshot(snapshot);
+  const bool skyPage = snapshot.skyPage && sky != nullptr;
+  if (skyPage) satelliteServiceSkySnapshot(*sky);
+  const bool loading = skyPage ? sky->loading : snapshot.loading;
+  const bool detailOpen = skyPage ? sky->detail.open : snapshot.detail.open;
+  const char *message = skyPage ? sky->message : snapshot.message;
   if (snapshot.generation == displayedSatellitesGeneration &&
-      snapshot.loading == displayedSatellitesLoading &&
-      snapshot.detail.open == displayedSatellitesDetailOpen &&
-      strcmp(snapshot.message, displayedSatellitesMessage) == 0) {
+      loading == displayedSatellitesLoading &&
+      detailOpen == displayedSatellitesDetailOpen &&
+      strcmp(message, displayedSatellitesMessage) == 0) {
     return;
   }
   clockDashboardSetSatellitesSnapshot(snapshot);
+  if (skyPage) clockDashboardSetSkySnapshot(*sky);
   displayedSatellitesGeneration = snapshot.generation;
-  displayedSatellitesLoading = snapshot.loading;
-  displayedSatellitesDetailOpen = snapshot.detail.open;
-  strlcpy(displayedSatellitesMessage, snapshot.message,
+  displayedSatellitesLoading = loading;
+  displayedSatellitesDetailOpen = detailOpen;
+  strlcpy(displayedSatellitesMessage, message,
           sizeof(displayedSatellitesMessage));
 }
 
@@ -2142,6 +2364,14 @@ void handleUsbCommands() {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje.
         clockDashboardSetSatellitesVisible(true);
         Serial.println("SATELLITES_SHOWN");
+      } else if (usbCommand == "NIGHTSKYSHOW" && !screenshotTransferActive) {
+        // Druhá stránka družic pro screenshot, jako SCHOOLNEWS u školy.
+        clockDashboardSetSatellitesVisible(true);
+        clockDashboardSetSatellitesSkyPage(true);
+        applySatellitesState(loopConfigSnapshot());
+        displayedSatellitesGeneration = UINT32_MAX;
+        Serial.println(clockDashboardSatellitesSkyPage() ? "NIGHT_SKY_SHOWN"
+                                                         : "NIGHT_SKY_UNAVAILABLE");
       } else if (usbCommand.startsWith("RADARSOURCE") &&
                  !screenshotTransferActive) {
         // Přepnutí zdroje srážek bez webu, aby šly obě varianty porovnat.
@@ -2429,6 +2659,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     satelliteServicePrepareForFirmwareUpdate();
     lightningServicePrepareForFirmwareUpdate();
     rainAlertServicePrepareForFirmwareUpdate();
+    weatherWarningServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
     planeRadarServiceBegin();
@@ -2442,6 +2673,8 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     // úlohu zastavila a po přerušené aktualizaci by mlčela až do restartu.
     rainAlertServiceBegin();
     applyRainAlertState(loopConfigSnapshot());
+    weatherWarningServiceBegin();
+    applyWarningState(loopConfigSnapshot());
     firmwareUpdateCountdownStarted = false;
     firmwareUpdateBlackRequested = false;
     displayResyncAt = millis() + 500;
@@ -3605,6 +3838,8 @@ void setup() {
   lightningServiceBegin();
   rainAlertServiceBegin();
   applyRainAlertState(runtimeConfig);
+  weatherWarningServiceBegin();
+  applyWarningState(runtimeConfig);
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
@@ -3733,6 +3968,8 @@ void loop() {
   maintainForecastDisplay();
   maintainScreenSchedule();
   maintainRainAlert();
+  maintainWeatherWarnings();
+  maintainAuroraAlert();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
   // pozastavení LVGL timerů zabrání tomu, aby GIF dekodér soupeřil s USB CDC;

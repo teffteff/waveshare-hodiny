@@ -51,6 +51,8 @@ constexpr size_t CLOCK_SCHOOL_URL_LENGTH = 192;
 constexpr size_t CLOCK_SATELLITES_URL_LENGTH = 192;
 // Adresa serveru se srážkovou předpovědí i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_RAIN_URL_LENGTH = 192;
+// Adresa serveru s výstrahami ČHMÚ i se jménem a heslem pro basic_auth.
+constexpr size_t CLOCK_WARNINGS_URL_LENGTH = 192;
 // Skupiny družic jako bity. Pořadí bitů je pořadí skupin na serveru
 // (SatelliteFeed.h), takže se nesmí měnit.
 constexpr uint8_t CLOCK_SATELLITE_GROUP_STATIONS = 0x01;
@@ -163,7 +165,12 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // tells the two apart; the bit was always zero there, so migrating switches the
 // satellite on outright - it is the household's own satellite, and a clock that
 // shows the sky should announce its passes without anyone ticking a box.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 49;
+// Schema 50 appends the ČHMÚ weather warnings (a banner on the radar, and the
+// radar takes over the display for severe ones) and the night sky page next to
+// the satellites, with its aurora alert. The schema 49 record stays an exact
+// prefix; both start off and warnings have no address, so an upgrade neither
+// contacts a new server nor switches a screen on its own.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 50;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -625,6 +632,74 @@ constexpr uint8_t CLOCK_RAIN_REFRESH_MAX_MINUTES = 60;
 constexpr uint8_t CLOCK_RAIN_RADIUS_MIN_KM = 1;
 constexpr uint8_t CLOCK_RAIN_RADIUS_MAX_KM = 30;
 
+// Výstrahy ČHMÚ pro ORP, ve které hodiny stojí. CAP soubor s výstrahami má dva
+// megabajty, takže ho stahuje vlastní server (infra/warnings), převede polohu
+// hodin na ORP a pošle jen výstrahy, které se jí týkají. Na meteoradaru se
+// ukáže barevný řádek s tou nejvážnější; hodiny se na radar přepnou samy
+// jen jednou pro každou novou výstrahu nastaveného stupně.
+//
+// Upozornění na déšť má 200 bajtů a zarovnání čtyři, takže výstrahy začínají
+// přesně na konci záznamu schématu 49.
+struct alignas(4) ClockWarningsConfig {
+  bool enabled = false;
+  // Od jakého stupně se výstraha na radaru ukáže: 2 žlutá, 3 oranžová,
+  // 4 červená. Stejné číslo jako awareness_level v CAP.
+  uint8_t minimumLevel = 2;
+  // Od jakého stupně se hodiny samy přepnou na radar; 0 nepřepínat.
+  uint8_t switchLevel = 3;
+  // Jak dlouho radar po přepnutí drží obrazovku.
+  uint8_t holdMinutes = 10;
+  // Jak často se server ptá. ČHMÚ vydává výstrahy nejvýš po desítkách minut.
+  uint8_t refreshMinutes = 10;
+  // V noci nepřepínat; řádek na radaru se ukáže i tak.
+  bool quietAtNight = false;
+  uint8_t reserved[2] = {};
+  char url[CLOCK_WARNINGS_URL_LENGTH] = "";
+};
+
+static_assert(sizeof(ClockWarningsConfig) == 200,
+              "The weather warnings are part of the stored record.");
+
+constexpr uint8_t CLOCK_WARNINGS_LEVEL_MIN = 2;
+constexpr uint8_t CLOCK_WARNINGS_LEVEL_MAX = 4;
+constexpr uint8_t CLOCK_WARNINGS_HOLD_MIN_MINUTES = 1;
+constexpr uint8_t CLOCK_WARNINGS_HOLD_MAX_MINUTES = 120;
+constexpr uint8_t CLOCK_WARNINGS_REFRESH_MIN_MINUTES = 5;
+constexpr uint8_t CLOCK_WARNINGS_REFRESH_MAX_MINUTES = 60;
+
+// Noční obloha: druhá stránka obrazovky družic, na kterou se přejde tažením
+// prstu. Planety, Měsíc a hvězdy ve stejném kruhu jako družice, pod nimi
+// nejbližší úkazy a nahoře index Kp. Data vozí týž server jako družice
+// (infra/satellites, parametr view=sky), takže stránka potřebuje zapnuté
+// družice a vlastní adresu nemá.
+//
+// Výstrahy mají 200 bajtů, takže obloha začíná na násobku čtyř.
+struct alignas(4) ClockNightSkyConfig {
+  bool enabled = false;
+  // Přepnout na oblohu, když index Kp dosáhne prahu a je tma: polární záře
+  // bývá od Kp 6 vidět nízko nad severním obzorem i ze střední Evropy.
+  bool auroraAlert = true;
+  uint8_t auroraKp = 6;
+  // Jak dlouho obloha po přepnutí drží obrazovku.
+  uint8_t holdMinutes = 10;
+  // Nejkratší odstup dvou přepnutí. Geomagnetická bouře trvá hodiny, takže
+  // bez prodlevy by hodiny na oblohu skákaly celou noc.
+  uint8_t cooldownMinutes = 120;
+  // Bez řádků úkazů pod oblohou. Nula znamená ukázat, takže záznamy uložené
+  // před touhle volbou (rezerva byla nulová) je ukazují dál.
+  bool hideEvents = false;
+  uint8_t reserved[2] = {};
+};
+
+static_assert(sizeof(ClockNightSkyConfig) == 8,
+              "The night sky is part of the stored record.");
+
+constexpr uint8_t CLOCK_AURORA_KP_MIN = 5;
+constexpr uint8_t CLOCK_AURORA_KP_MAX = 9;
+constexpr uint8_t CLOCK_AURORA_HOLD_MIN_MINUTES = 1;
+constexpr uint8_t CLOCK_AURORA_HOLD_MAX_MINUTES = 120;
+constexpr uint8_t CLOCK_AURORA_COOLDOWN_MAX_MINUTES = 240;
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -771,6 +846,10 @@ struct ClockConfig {
   // Pole schématu 47. Plán obrazovek má 36 bajtů, tedy násobek čtyř, takže
   // upozornění na déšť začíná přesně na konci záznamu schématu 46.
   ClockRainAlertConfig rainAlert;
+  // Pole schématu 50. Obě struktury mají velikost i zarovnání po čtyřech, takže
+  // leží přesně za koncem záznamu schématu 49 a za nimi žádná výplň není.
+  ClockWarningsConfig warnings;
+  ClockNightSkyConfig nightSky;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -914,8 +993,18 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_46_SIZE = offsetof(ClockConfig, rainAlert);
 static_assert(CLOCK_CONFIG_SCHEMA_46_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_46_SIZE +
                           sizeof(ClockRainAlertConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, warnings),
               "Schema 47 must preserve the complete schema 46 prefix.");
+
+// Schémata 47 až 49 končila upozorněním na déšť; mají stejnou velikost a liší
+// se jen obsahem dvou bajtů (viz CLOCK_CONFIG_SCHEMA_VERSION).
+constexpr size_t CLOCK_CONFIG_SCHEMA_49_SIZE = offsetof(ClockConfig, warnings);
+
+static_assert(CLOCK_CONFIG_SCHEMA_49_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_49_SIZE + sizeof(ClockWarningsConfig) +
+                          sizeof(ClockNightSkyConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 50 must preserve the complete schema 49 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
@@ -1004,6 +1093,10 @@ bool clockConfigSkyAvailable(const ClockConfig &config);
 bool clockConfigSchoolAvailable(const ClockConfig &config);
 // Družice potřebují zapnutou obrazovku, adresu serveru a aspoň jednu skupinu.
 bool clockConfigSatellitesAvailable(const ClockConfig &config);
+// Noční obloha je druhá stránka družic a ptá se téhož serveru.
+bool clockConfigNightSkyAvailable(const ClockConfig &config);
+// Výstrahy potřebují zapnutí, adresu serveru a meteoradar, na kterém se ukážou.
+bool clockConfigWarningsAvailable(const ClockConfig &config);
 // Adresa nese jméno a heslo ("https://user:heslo@server/..."). Po http:// by
 // heslo i data za ním šla sítí čitelně, proto je volající s http:// odmítá.
 bool clockConfigUrlHasCredentials(const char *url);

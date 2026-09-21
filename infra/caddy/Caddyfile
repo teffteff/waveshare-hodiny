@@ -98,6 +98,17 @@
 		}
 		reverse_proxy 127.0.0.1:8096
 	}
+	# Vystrahy CHMU pro polohu hodin (infra/warnings). Data jsou verejna a CAP se
+	# stahuje nejvys jednou za pet minut pro vsechny, takze heslo nechrani obsah
+	# ani CHMU, ale polohu hodin v dotazu a stroj pred cizim provozem. Vlastni
+	# hash (WARNINGS_HASH), aby adresa vystrah opsana do hodin nestacila na nic
+	# jineho. /warnings/status ven nevede.
+	handle /warnings.json {
+		basic_auth {
+			hodiny {env.WARNINGS_HASH}
+		}
+		reverse_proxy 127.0.0.1:8097
+	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

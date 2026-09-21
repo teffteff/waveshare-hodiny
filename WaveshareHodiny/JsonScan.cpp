@@ -164,9 +164,13 @@ size_t appendUtf8(char *destination, size_t capacity, size_t written,
 
 void jsonCopyTextMember(const char *objectBegin, const char *objectEnd,
                         const char *key, char *destination, size_t capacity) {
+  jsonCopyText(jsonFindMember(objectBegin, objectEnd, key), destination,
+               capacity);
+}
+
+void jsonCopyText(const JsonValue &value, char *destination, size_t capacity) {
   if (destination == nullptr || capacity == 0) return;
   destination[0] = '\0';
-  const JsonValue value = jsonFindMember(objectBegin, objectEnd, key);
   if (!value.valid() || !value.isString) return;
   const char *begin = value.contentBegin();
   const char *end = value.contentEnd();

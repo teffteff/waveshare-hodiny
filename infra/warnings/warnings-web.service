@@ -1,0 +1,31 @@
+[Unit]
+Description=Vystrahy CHMU pro hodiny
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Sluzba nic nezapisuje,
+# kod i orp.json patri rootovi.
+User=warnings
+Group=warnings
+Environment=WARNINGS_PORT=8097
+# Jen pro Caddy na stejnem stroji. Sluzba chodi ven na opendata.chmi.cz, takze
+# na verejne IP by z ni byl otevreny prevypravec pro kohokoli.
+Environment=WARNINGS_BIND=127.0.0.1
+# Zadny venv: CAP se cte xml.etree ze standardni knihovny a ORP se hleda
+# vlastnim paprskovym testem nad orp.json - stejne jako srazky.
+#
+# Interpret je vyslovne 3.11. Na Oracle Linuxu 8 je /usr/bin/python3 porad
+# jeste 3.6, ktera neumi ani "from __future__ import annotations"; sluzba by
+# se rozbila az za behu, ne pri nasazeni.
+ExecStart=/usr/bin/python3.11 /opt/warnings/serve.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

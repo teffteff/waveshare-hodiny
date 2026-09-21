@@ -4,6 +4,8 @@
 
 #include "ClockConfig.h"
 #include "SatelliteFeed.h"
+#include "SkyFeed.h"
+#include "SkyRender.h"
 
 // Obrazovka družic: obloha nad hodinami jako kruh, zenit uprostřed, obzor na
 // okraji. Dráhy počítá vlastní server (infra/satellites) z dat CelesTraku;
@@ -38,6 +40,8 @@ struct SatelliteDetail {
 struct SatelliteSnapshot {
   const uint16_t *pixels = nullptr;
   uint32_t generation = 0;
+  // Snímek je noční obloha, ne družice (druhá stránka obrazovky).
+  bool skyPage = false;
   bool loading = false;
   // Snímek je kreslený z dat, která pokrývají tuhle chvíli.
   bool haveData = false;
@@ -69,6 +73,49 @@ struct SatelliteDiagnostics {
   char message[64] = "";
   char serverProblem[64] = "";
 };
+
+// --- Noční obloha -------------------------------------------------------------
+// Druhá stránka obrazovky družic: planety, Měsíc a jasné hvězdy ve stejném
+// kruhu, nahoře index Kp a dole nejbližší úkazy. Obloha i planety se kreslí do
+// téhož bufferu jako družice; jména těles píše ClockDashboard, protože umí
+// diakritiku, a služba mu jen řekne, kam.
+
+struct SkySnapshot {
+  uint32_t generation = 0;
+  bool loading = false;
+  // Data jsou čerstvá a snímek z nich nakreslený.
+  bool haveData = false;
+  // Slunce aspoň šest stupňů pod obzorem, nebo nad ním.
+  bool dark = false;
+  bool sunUp = false;
+  // Astronomická tma (0, když není) a nejbližší východ a západ Měsíce.
+  int64_t darkFrom = 0;
+  int64_t darkTo = 0;
+  bool hasMoon = false;
+  int64_t moonRise = 0;
+  int64_t moonSet = 0;
+  float moonIllumination = 0.0f;
+  bool hasKp = false;
+  float kp = 0.0f;
+  bool hasKpMax = false;
+  float kpMax = 0.0f;
+  int64_t kpMaxAt = 0;
+  SkyEvent events[SKY_MAX_EVENTS];
+  uint8_t eventCount = 0;
+  SkyLabel labels[SKY_MAX_BODIES];
+  uint8_t labelCount = 0;
+  SkyDetail detail;
+  char message[64] = "";
+};
+
+// Stránka zapnutá v nastavení (enabled) a právě ukázaná (shown). Se zapnutou
+// stránkou se obloha stahuje i se schovanou obrazovkou, aby hodiny mohly
+// upozornit na polární záři.
+// hideEvents: bez řádků úkazů, jejich pás dostanou popisky oblohy.
+void satelliteServiceSetNightSky(bool enabled, bool shown, bool hideEvents);
+void satelliteServiceSkySnapshot(SkySnapshot &snapshot);
+// Poslední čerstvý index Kp (odhad NOAA po minutě); false, když není.
+bool satelliteServiceAuroraKp(float &kp);
 
 // Zkouška adresy z webu: stáhne odpověď a vybere družice nejvýš nad obzorem.
 constexpr size_t SATELLITE_PROBE_ENTRIES = 12;

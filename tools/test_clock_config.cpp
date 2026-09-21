@@ -1216,7 +1216,7 @@ void testSchoolPersistenceAndMigration() {
   clockConfigCopy(legacy.school.url, sizeof(legacy.school.url),
                   "https://example.test/school.json");
   legacy.school.mealNextDayHour = 9;
-  seed(legacyRecord(legacy, 47, sizeof(ClockConfig)));
+  seed(legacyRecord(legacy, 47, CLOCK_CONFIG_SCHEMA_49_SIZE));
   ClockConfig fromSchema47;
   assert(clockConfigLoad(fromSchema47));
   assert(fromSchema47.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
@@ -1315,7 +1315,7 @@ void testSatellitesPersistenceAndMigration() {
                   "https://example.test/satellites.json");
   schema48.satellites.groups =
       CLOCK_SATELLITE_GROUP_STATIONS | CLOCK_SATELLITE_GROUP_STARLINK;
-  seed(legacyRecord(schema48, 48, sizeof(ClockConfig)));
+  seed(legacyRecord(schema48, 48, CLOCK_CONFIG_SCHEMA_49_SIZE));
   ClockConfig fromSchema48;
   assert(clockConfigLoad(fromSchema48));
   assert(fromSchema48.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
@@ -1550,7 +1550,100 @@ void testWholeCountryRangeOnlyAtHome() {
   assert(homeLoaded.radarRadiusKm == 0);
 }
 
+void testWarningsAndNightSkyPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.warnings.enabled);
+  assert(defaults.warnings.url[0] == '\0');
+  assert(defaults.warnings.minimumLevel == 2);
+  assert(defaults.warnings.switchLevel == 3);
+  assert(!defaults.nightSky.enabled);
+  assert(defaults.nightSky.auroraAlert);
+  assert(!defaults.nightSky.hideEvents);
+  assert(defaults.nightSky.auroraKp == 6);
+
+  // Schéma 49 je předponou 50: upozornění na déšť i bit SATGUS zůstanou, jak
+  // byly, výstrahy i obloha mají výchozí hodnoty, ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.rainAlert.enabled = true;
+  strcpy(source.rainAlert.url, "https://hodiny:heslo@example.net/rain.json");
+  source.satellites.groups = CLOCK_SATELLITE_GROUP_STATIONS;
+  memset(&source.warnings, 0xA5, sizeof(source.warnings));
+  memset(&source.nightSky, 0xA5, sizeof(source.nightSky));
+  seed(legacyRecord(source, 49, CLOCK_CONFIG_SCHEMA_49_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.rainAlert.enabled);
+  // Ve schématu 49 už byl SATGUS volitelný; vypnutý se nezapíná.
+  assert(migrated.satellites.groups == CLOCK_SATELLITE_GROUP_STATIONS);
+  assert(!migrated.warnings.enabled);
+  assert(migrated.warnings.url[0] == '\0');
+  assert(migrated.warnings.switchLevel == 3);
+  assert(!migrated.nightSky.enabled);
+  assert(migrated.nightSky.auroraKp == 6);
+
+  // Uloží se a načte beze změny.
+  migrated.warnings.enabled = true;
+  strcpy(migrated.warnings.url, "https://hodiny:heslo@example.net/warnings.json");
+  migrated.warnings.minimumLevel = 3;
+  migrated.warnings.switchLevel = 4;
+  migrated.warnings.holdMinutes = 30;
+  migrated.warnings.refreshMinutes = 15;
+  migrated.warnings.quietAtNight = true;
+  migrated.nightSky.enabled = true;
+  migrated.nightSky.auroraAlert = false;
+  migrated.nightSky.auroraKp = 7;
+  migrated.nightSky.holdMinutes = 5;
+  migrated.nightSky.cooldownMinutes = 200;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.warnings.enabled);
+  assert(strcmp(loaded.warnings.url,
+                "https://hodiny:heslo@example.net/warnings.json") == 0);
+  assert(loaded.warnings.minimumLevel == 3);
+  assert(loaded.warnings.switchLevel == 4);
+  assert(loaded.warnings.holdMinutes == 30);
+  assert(loaded.warnings.refreshMinutes == 15);
+  assert(loaded.warnings.quietAtNight);
+  assert(loaded.nightSky.enabled);
+  assert(!loaded.nightSky.auroraAlert);
+  assert(loaded.nightSky.auroraKp == 7);
+  assert(loaded.nightSky.holdMinutes == 5);
+  assert(loaded.nightSky.cooldownMinutes == 200);
+
+  // Obloha stojí na serveru družic: bez nich není odkud ji vzít.
+  loaded.satellites.enabled = false;
+  assert(!clockConfigNightSkyAvailable(loaded));
+  loaded.satellites.enabled = true;
+  strcpy(loaded.satellites.url, "https://hodiny:heslo@example.net/satellites.json");
+  assert(clockConfigNightSkyAvailable(loaded));
+
+  // Bez adresy se výstrahy nedají zapnout, "nepřepínat" zůstane nulou
+  // a hodnoty mimo rozsah se srovnají.
+  loaded.warnings.url[0] = '\0';
+  loaded.warnings.minimumLevel = 9;
+  loaded.warnings.switchLevel = 0;
+  loaded.warnings.refreshMinutes = 1;
+  loaded.nightSky.auroraKp = 2;
+  loaded.nightSky.cooldownMinutes = 250;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(!clamped.warnings.enabled);
+  assert(!clockConfigWarningsAvailable(clamped));
+  assert(clamped.warnings.minimumLevel == CLOCK_WARNINGS_LEVEL_MAX);
+  assert(clamped.warnings.switchLevel == 0);
+  assert(clamped.warnings.refreshMinutes == CLOCK_WARNINGS_REFRESH_MIN_MINUTES);
+  assert(clamped.nightSky.auroraKp == CLOCK_AURORA_KP_MIN);
+  assert(clamped.nightSky.cooldownMinutes == CLOCK_AURORA_COOLDOWN_MAX_MINUTES);
+}
+
 int main() {
+  testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();
   testSatellitesPersistenceAndMigration();

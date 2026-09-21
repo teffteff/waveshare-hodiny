@@ -3,3 +3,8 @@
 # vsechny druzice skupiny naraz. Obe maji hotova kola pro aarch64.
 sgp4==2.27
 numpy==2.3.3
+# Nocni obloha (sky.py): planety, Mesic a zatmeni z efemerid JPL DE421.
+# skyfield i jplephem jsou ciste Python nad numpy; efemeridy (17 MB) si
+# skyfield stahne sam do cache sluzby pri prvnim startu.
+skyfield==1.55
+jplephem==2.24

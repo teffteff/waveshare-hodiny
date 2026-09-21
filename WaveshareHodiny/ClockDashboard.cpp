@@ -148,6 +148,14 @@ constexpr uint8_t SATELLITES_DETAIL_ROW_COUNT = 6;
 lv_obj_t *satellitesDetailRows[SATELLITES_DETAIL_ROW_COUNT] = {};
 lv_obj_t *satellitesDetailLost = nullptr;
 bool satellitesFeatureAvailable = false;
+// Druhá stránka obrazovky družic: noční obloha. Přepíná se tažením prstu,
+// stejně jako stránky hodnot nebo školy; tečka obrazovky se nemění.
+bool nightSkyAvailable = false;
+bool satellitesSkyPage = false;
+// Jména těles píše LVGL, protože pixelové písmo mapy diakritiku neumí;
+// služba jen řekne, kam.
+lv_obj_t *skyBodyLabels[SKY_MAX_BODIES] = {};
+lv_obj_t *skyEventLabels[SKY_MAX_EVENTS] = {};
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *agendaPage = nullptr;
 lv_obj_t *agendaHeaderLabel = nullptr;
@@ -183,6 +191,8 @@ lv_obj_t *radarCanvas = nullptr;
 // jen kvůli pohledu na hodiny.
 lv_obj_t *radarClockLabel = nullptr;
 lv_obj_t *radarRainLabel = nullptr;
+// Výstraha ČHMÚ nad rozsahem radaru, obarvená podle stupně.
+lv_obj_t *radarWarningLabel = nullptr;
 // Řádek o snímku animace - "NYNÍ 14:35" nebo "-25 min 14:10".
 lv_obj_t *radarTitleLabel = nullptr;
 // Rozsah patří dolů pod mapu, hned nad svoje tečky.
@@ -236,6 +246,12 @@ constexpr int RADAR_FRAME_LABEL_OFFSET_Y = -140;
 // Poznámka o dešti má vlastní řádek pod popiskem snímku: ve stavovém řádku
 // vedle data, času a teploty se nevešla.
 constexpr int RADAR_RAIN_LABEL_OFFSET_Y = -112;
+// Výstraha ČHMÚ stojí nad rozsahem ve stejném stylu jako popisek snímku,
+// jen s rámečkem v barvě stupně. Rozsah (písmo 20) začíná na +150.
+constexpr int RADAR_WARNING_LABEL_OFFSET_Y = 134;
+// Na 134 px pod středem je kruh displeje široký 395 px; bez okrajů, rámečku
+// a rezervy zbude na text 350.
+constexpr lv_coord_t RADAR_WARNING_MAX_TEXT_WIDTH = 350;
 constexpr int RADAR_RANGE_LABEL_OFFSET_Y = 164;
 constexpr int RADAR_RANGE_DOTS_OFFSET_Y = 190;
 // Stavový řádek se dá vypnout; ostatní pásy jsou pevná výbava obrazovky.
@@ -243,6 +259,11 @@ bool radarStatusLineEnabled = true;
 // Poznámka o blížícím se dešti. Ukazuje se jen na meteoradaru, protože jen
 // tam dává smysl: říká, proč se hodiny samy přepnuly.
 char rainAlertNote[24] = "";
+// Řádek výstrahy ČHMÚ: název jevu, zbytek s časem a stupeň (2 žlutá,
+// 3 oranžová, 4 červená).
+char radarWarningEvent[64] = "";
+char radarWarningTail[48] = "";
+uint8_t radarWarningLevel = 0;
 lv_obj_t *settingsPage = nullptr;
 lv_obj_t *dayBrightnessSlider = nullptr;
 lv_obj_t *nightBrightnessSlider = nullptr;
@@ -485,6 +506,30 @@ WebPasswordResetResult webPasswordResetResult = WebPasswordResetResult::None;
 
 bool redNightVisualEnabled() {
   return nightModeEnabled && nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
+}
+
+void updateRadarWarningLabel();
+
+// Zkrátí text po celých znacích UTF-8 a připojí tři tečky, aby se vešel do
+// maxWidth. Popisky mají šířku podle obsahu a LVGL 8 u nich tečky na konec
+// samo nedá - text by jen přetekl přes okraj kulatého displeje.
+void fitLabelText(char *text, size_t capacity, const lv_font_t *font,
+                  lv_coord_t maxWidth, bool recolor) {
+  const lv_text_flag_t flags = recolor ? LV_TEXT_FLAG_RECOLOR : LV_TEXT_FLAG_NONE;
+  lv_point_t size;
+  lv_txt_get_size(&size, text, font, 0, 0, LV_COORD_MAX, flags);
+  if (size.x <= maxWidth || capacity < 4) return;
+  size_t length = strlen(text);
+  while (length > 0) {
+    do {
+      --length;
+    } while (length > 0 && (static_cast<uint8_t>(text[length]) & 0xC0) == 0x80);
+    while (length > 0 && text[length - 1] == ' ') --length;
+    if (length + 4 > capacity) continue;
+    memcpy(text + length, "...", 4);
+    lv_txt_get_size(&size, text, font, 0, 0, LV_COORD_MAX, flags);
+    if (size.x <= maxWidth) return;
+  }
 }
 
 const lv_font_t *configuredTimeFont() {
@@ -791,6 +836,8 @@ void setActiveScreen(uint8_t screen) {
     if (!isSatellites) {
       // Detail by po návratu visel nad družicí, která mezitím zapadla.
       satelliteServiceCloseDetail();
+      // Po návratu na obrazovku jsou první zase družice.
+      satellitesSkyPage = false;
       if (satellitesCanvas != nullptr)
         lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
       if (satellitesDetailPanel != nullptr)
@@ -2461,6 +2508,7 @@ void applyDashboardColors() {
     setTextColor(radarClockLabel, statusLineColor());
     setTextColor(radarTitleLabel, COLOR_ERROR);
     setTextColor(radarRainLabel, COLOR_ERROR);
+    updateRadarWarningLabel();
     setTextColor(radarRangeLabel, COLOR_ERROR);
     setTextColor(radarStatusLabel, COLOR_ERROR);
     lv_obj_set_style_img_recolor(weatherImage, COLOR_ERROR, 0);
@@ -2483,6 +2531,7 @@ void applyDashboardColors() {
     setTextColor(radarTitleLabel, COLOR_OUTSIDE);
     setTextColor(radarRangeLabel, COLOR_OUTSIDE);
     setTextColor(radarRainLabel, COLOR_ROOM);
+    updateRadarWarningLabel();
     setTextColor(radarStatusLabel, COLOR_OUTSIDE);
     setTextColor(dateLabel,
                  configuredColor(analogLayoutEnabled() ? analogDateColor
@@ -4851,6 +4900,41 @@ const char *radarEmptyStateText(bool busy) {
   return englishLanguage() ? "No radar frame yet" : "Radar zatím nemá snímek";
 }
 
+// Barvy stupňů výstrah, jak je používá ČHMÚ na mapě.
+lv_color_t warningLevelColor(uint8_t level) {
+  if (level >= 4) return LV_COLOR_MAKE(255, 59, 48);
+  if (level == 3) return LV_COLOR_MAKE(255, 138, 31);
+  return LV_COLOR_MAKE(255, 210, 31);
+}
+
+// Výstraha se ukazuje bez ohledu na stavový řádek: je to informace sama
+// o sobě, ne ozdoba.
+void updateRadarWarningLabel() {
+  if (radarWarningLabel == nullptr) return;
+  if (radarWarningEvent[0] == '\0') {
+    lv_obj_add_flag(radarWarningLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  // Zkracuje se jen název jevu; čas a počet dalších výstrah zůstanou celé.
+  char event[sizeof(radarWarningEvent)];
+  strlcpy(event, radarWarningEvent, sizeof(event));
+  lv_point_t tailSize;
+  lv_txt_get_size(&tailSize, radarWarningTail, &clock_czech_16, 0, 0,
+                  LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  fitLabelText(event, sizeof(event), &clock_czech_16,
+               RADAR_WARNING_MAX_TEXT_WIDTH - tailSize.x, false);
+  char text[sizeof(radarWarningEvent) + sizeof(radarWarningTail)];
+  snprintf(text, sizeof(text), "%s%s", event, radarWarningTail);
+  const lv_color_t color = redNightVisualEnabled()
+                               ? COLOR_ERROR
+                               : warningLevelColor(radarWarningLevel);
+  setTextColor(radarWarningLabel, color);
+  lv_obj_set_style_border_color(radarWarningLabel, color, 0);
+  lv_label_set_text(radarWarningLabel, text);
+  alignCenter(radarWarningLabel, 0, RADAR_WARNING_LABEL_OFFSET_Y);
+  lv_obj_clear_flag(radarWarningLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Poznámka o dešti se ukáže i s vypnutým stavovým řádkem: bez ní by se
 // hodiny přepnuly bez vysvětlení.
 void updateRadarRainLabel() {
@@ -5018,6 +5102,17 @@ void createRadarPage(lv_obj_t *screen) {
   lv_obj_set_style_pad_ver(radarRainLabel, 2, 0);
   alignCenter(radarRainLabel, 0, RADAR_RAIN_LABEL_OFFSET_Y);
   lv_obj_add_flag(radarRainLabel, LV_OBJ_FLAG_HIDDEN);
+
+  radarWarningLabel = makeLabel(radarPage, &clock_czech_16, COLOR_ROOM);
+  lv_label_set_text(radarWarningLabel, "");
+  lv_obj_set_style_bg_color(radarWarningLabel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(radarWarningLabel, LV_OPA_80, 0);
+  lv_obj_set_style_pad_hor(radarWarningLabel, 8, 0);
+  lv_obj_set_style_pad_ver(radarWarningLabel, 2, 0);
+  lv_obj_set_style_border_width(radarWarningLabel, 2, 0);
+  lv_obj_set_style_radius(radarWarningLabel, 6, 0);
+  alignCenter(radarWarningLabel, 0, RADAR_WARNING_LABEL_OFFSET_Y);
+  lv_obj_add_flag(radarWarningLabel, LV_OBJ_FLAG_HIDDEN);
 
   radarTitleLabel = makeLabel(radarPage, &clock_czech_16, COLOR_OUTSIDE);
   lv_label_set_recolor(radarTitleLabel, true);
@@ -7071,6 +7166,7 @@ constexpr int SATELLITES_DETAIL_ROWS_TOP = 50;
 constexpr int SATELLITES_DETAIL_ROW_STEP = 28;
 const lv_color_t COLOR_SATELLITE_VISIBLE = LV_COLOR_MAKE(101, 199, 68);
 
+
 void createSatellitesPage(lv_obj_t *screen) {
   PlanesPsramAllocations psramAllocations;
 
@@ -7137,6 +7233,23 @@ void createSatellitesPage(lv_obj_t *screen) {
   lv_label_set_text(satellitesDetailLost, "");
   lv_obj_align(satellitesDetailLost, LV_ALIGN_BOTTOM_RIGHT, -14, -8);
   lv_obj_add_flag(satellitesDetailLost, LV_OBJ_FLAG_HIDDEN);
+
+  // Noční obloha: jména těles bez podkladu (leží na tmavé obloze vedle
+  // tečky) a řádky úkazů se stejným podkladem jako ostatní řádky.
+  for (lv_obj_t *&label : skyBodyLabels) {
+    label = makeLabel(satellitesPage, &clock_czech_14, COLOR_TEXT);
+    lv_label_set_text(label, "");
+    lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+  }
+  for (uint8_t row = 0; row < SKY_MAX_EVENTS; ++row) {
+    skyEventLabels[row] = makePlanesOverlayLabel(
+        satellitesPage, &clock_czech_14, COLOR_TEXT,
+        skyEventRowOffsetY(true, row));
+    lv_label_set_recolor(skyEventLabels[row], true);
+    lv_obj_add_flag(skyEventLabels[row], LV_OBJ_FLAG_HIDDEN);
+  }
+  // Detail zůstává nad jmény těles.
+  lv_obj_move_foreground(satellitesDetailPanel);
 
   makeChildrenTapThrough(satellitesPage);
   lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_CLICKABLE);
@@ -7282,6 +7395,121 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
   lv_obj_clear_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
+// --- Noční obloha -------------------------------------------------------------
+void hideSkyLabels() {
+  for (lv_obj_t *label : skyBodyLabels)
+    if (label != nullptr) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+  for (lv_obj_t *label : skyEventLabels)
+    if (label != nullptr) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Číslo s desetinnou čárkou (česky) nebo tečkou.
+void formatDecimal(char *output, size_t capacity, float value, int digits,
+                   bool english) {
+  snprintf(output, capacity, "%.*f", digits, static_cast<double>(value));
+  if (english) return;
+  for (char *cursor = output; *cursor != '\0'; ++cursor)
+    if (*cursor == '.') *cursor = ',';
+}
+
+// Barva indexu Kp podle stupnice NOAA: do 4 klid, 5 slabá bouře (G1),
+// 6 střední (G2), od 7 silná.
+const char *kpColor(float kp, bool redNight) {
+  if (redNight) return "FF4848";
+  if (kp >= 7.0f) return "FF4848";
+  if (kp >= 6.0f) return "FF8A1F";
+  if (kp >= 5.0f) return "FFD21F";
+  return "65C744";
+}
+
+void formatLocalClock(int64_t moment, char *output, size_t capacity) {
+  if (moment <= 0) {
+    strlcpy(output, "--:--", capacity);
+    return;
+  }
+  const time_t when = static_cast<time_t>(moment);
+  struct tm local;
+  localtime_r(&when, &local);
+  snprintf(output, capacity, "%02d:%02d", local.tm_hour, local.tm_min);
+}
+
+void updateSkyDetail(const SkyDetail &detail) {
+  if (satellitesDetailPanel == nullptr) return;
+  if (!detail.open) {
+    lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const bool english = englishLanguage();
+  const bool redNight = redNightVisualEnabled();
+  lv_label_set_text(satellitesDetailTitle, detail.name);
+  char line[72];
+  char number[16];
+  uint8_t row = 0;
+  const int altitude = static_cast<int>(std::lround(detail.altitudeDeg));
+  snprintf(line, sizeof(line), "%s: %d°",
+           altitude >= 0 ? (english ? "ELEVATION" : "NAD OBZOREM")
+                         : (english ? "BELOW HORIZON" : "POD OBZOREM"),
+           altitude);
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  snprintf(line, sizeof(line), "%s: %d° %s", english ? "AZIMUTH" : "AZIMUT",
+           static_cast<int>(std::lround(detail.azimuthDeg)) % 360,
+           compassDirection(detail.azimuthDeg, english));
+  lv_label_set_text(satellitesDetailRows[row++], line);
+  if (detail.kind == SKY_BODY_STAR) {
+    formatDecimal(number, sizeof(number), detail.magnitude, 1, english);
+    snprintf(line, sizeof(line), "%s: %s mag", english ? "BRIGHTNESS" : "JASNOST",
+             number);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  } else if (detail.kind == SKY_BODY_MOON) {
+    snprintf(line, sizeof(line), "%s: %d %%", english ? "ILLUMINATED" : "OSVĚTLENO",
+             static_cast<int>(std::lround(detail.illumination * 100.0f)));
+    lv_label_set_text(satellitesDetailRows[row++], line);
+    // Tisíce oddělené mezerou: 389 012 km.
+    const unsigned long kilometres = detail.distanceKm;
+    snprintf(line, sizeof(line), "%s: %lu %03lu km",
+             english ? "DISTANCE" : "VZDÁLENOST", kilometres / 1000,
+             kilometres % 1000);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  } else {
+    if (detail.hasMagnitude) {
+      formatDecimal(number, sizeof(number), detail.magnitude, 1, english);
+      snprintf(line, sizeof(line), "%s: %s mag", english ? "BRIGHTNESS" : "JASNOST",
+               number);
+      lv_label_set_text(satellitesDetailRows[row++], line);
+    }
+    formatDecimal(number, sizeof(number), detail.distanceAu,
+                  detail.distanceAu < 10.0f ? 2 : 1, english);
+    snprintf(line, sizeof(line), "%s: %s AU", english ? "DISTANCE" : "VZDÁLENOST",
+             number);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  }
+  // Hvězda východ a západ z dat nemá; mnohé u nás navíc nezapadají.
+  if (detail.kind != SKY_BODY_STAR) {
+    char rise[8];
+    char set[8];
+    formatLocalClock(detail.rise, rise, sizeof(rise));
+    formatLocalClock(detail.set, set, sizeof(set));
+    snprintf(line, sizeof(line), "%s %s  |  %s %s", english ? "RISE" : "VÝCHOD",
+             rise, english ? "SET" : "ZÁPAD", set);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  }
+  if (detail.constellation[0] != '\0') {
+    snprintf(line, sizeof(line), "%s: %s",
+             english ? "CONSTELLATION" : "SOUHVĚZDÍ", detail.constellation);
+    lv_label_set_text(satellitesDetailRows[row++], line);
+  }
+  while (row < SATELLITES_DETAIL_ROW_COUNT)
+    lv_label_set_text(satellitesDetailRows[row++], "");
+  lv_obj_add_flag(satellitesDetailLost, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_style_border_color(satellitesDetailPanel,
+                                redNight ? COLOR_ERROR : COLOR_OUTSIDE, 0);
+  setTextColor(satellitesDetailTitle, redNight ? COLOR_ERROR : COLOR_ROOM);
+  for (lv_obj_t *label : satellitesDetailRows)
+    setTextColor(label, redNight ? COLOR_ERROR : COLOR_TEXT);
+  lv_obj_clear_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(satellitesDetailPanel);
+}
+
 }  // namespace
 
 bool clockDashboardSatellitesVisible() {
@@ -7331,6 +7559,9 @@ void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
   } else {
     lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
   }
+  // Obloha má vlastní popisky; nakreslí je clockDashboardSetSkySnapshot.
+  if (snapshot.skyPage) return;
+  hideSkyLabels();
 
   char text[80];
   if (!snapshot.haveData) {
@@ -7357,10 +7588,191 @@ void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
   setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesStatusLabel, text);
   alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
+  // Obloha ho může schovat, když nemá co říct.
+  lv_obj_clear_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
   updateSatellitesPassLabel(snapshot);
   updateSatellitesClockLabel();
   updateSatellitesDetail(snapshot.detail);
+}
+
+void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
+  if (satellitesStatusLabel == nullptr || !satellitesSkyPage) return;
+  const bool english = englishLanguage();
+  const bool redNight = redNightVisualEnabled();
+  lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Horní řádek: kdy je tma a kdy je nahoře Měsíc. Index Kp jen tehdy, když
+  // se blíží prahu upozornění, a od prahu místo všeho ostatního polární záře.
+  char text[128];
+  char kp[12];
+  if (!sky.haveData) {
+    if (sky.message[0] != '\0')
+      snprintf(text, sizeof(text), "#FFB843 %s#", sky.message);
+    else
+      snprintf(text, sizeof(text), "#B5B5B5 %s#",
+               sky.loading ? (english ? "Loading the sky..." : "Načítám oblohu...")
+                           : (english ? "Waiting for data" : "Čekám na data"));
+  } else {
+    const uint8_t threshold = dashboardRuntimeConfig.nightSky.auroraKp;
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (sky.hasKp && sky.kp >= threshold) {
+      formatDecimal(kp, sizeof(kp), sky.kp, 1, english);
+      snprintf(text, sizeof(text), "#%s %s  Kp %s#", kpColor(sky.kp, redNight),
+               english ? "AURORA POSSIBLE" : "MOŽNÁ POLÁRNÍ ZÁŘE", kp);
+    } else {
+      text[0] = '\0';
+      auto append = [&](const char *part) {
+        if (part[0] == '\0') return;
+        if (text[0] != '\0') strlcat(text, "   ", sizeof(text));
+        strlcat(text, part, sizeof(text));
+      };
+      // Kp stojí za řeč o stupeň pod prahem, nebo když ho předpověď na den
+      // přesahuje; klidné "Kp 0,7" nic neříká.
+      const bool kpNear = sky.hasKp && sky.kp + 1.0f >= threshold;
+      const bool forecastHigh = sky.hasKpMax && sky.kpMax >= threshold;
+      char part[48];
+      if (kpNear || forecastHigh) {
+        char maximum[24] = "";
+        if (forecastHigh && (!sky.hasKp || sky.kpMax >= sky.kp + 1.0f)) {
+          char value[12];
+          formatDecimal(value, sizeof(value), sky.kpMax, 0, english);
+          snprintf(maximum, sizeof(maximum), " (max %s)", value);
+        }
+        if (sky.hasKp)
+          formatDecimal(kp, sizeof(kp), sky.kp, 1, english);
+        else
+          strlcpy(kp, "-", sizeof(kp));
+        snprintf(part, sizeof(part), "#%s Kp %s%s#",
+                 kpColor(forecastHigh ? sky.kpMax : sky.kp, redNight), kp,
+                 maximum);
+        append(part);
+      }
+      // Tma: dokdy, když už je, jinak od kdy do kdy.
+      if (sky.darkTo > now && now > 1700000000) {
+        char from[8];
+        char to[8];
+        formatLocalClock(sky.darkFrom, from, sizeof(from));
+        formatLocalClock(sky.darkTo, to, sizeof(to));
+        if (sky.darkFrom <= now)
+          snprintf(part, sizeof(part), "%s %s", english ? "DARK UNTIL" : "TMA DO",
+                   to);
+        else
+          snprintf(part, sizeof(part), "%s %s-%s", english ? "DARK" : "TMA", from,
+                   to);
+        append(part);
+      }
+      // Měsíc: nahoře je, když dřív zapadne, než vyjde.
+      if (sky.hasMoon && (sky.moonRise > 0 || sky.moonSet > 0)) {
+        const bool up = sky.moonSet > 0 &&
+                        (sky.moonRise == 0 || sky.moonSet < sky.moonRise);
+        char clock[8];
+        formatLocalClock(up ? sky.moonSet : sky.moonRise, clock, sizeof(clock));
+        const char *label =
+            up ? (english ? "MOON UNTIL" : "MĚSÍC DO")
+               : (english ? "MOON FROM" : "MĚSÍC OD");
+        snprintf(part, sizeof(part), "%s %s (%d %%)", label, clock,
+                 static_cast<int>(std::lround(sky.moonIllumination * 100.0f)));
+        append(part);
+      }
+    }
+  }
+  // Na 158 px nad středem má kruh displeje asi 350 px.
+  fitLabelText(text, sizeof(text), &clock_czech_14, 320, true);
+  setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
+  lv_label_set_text(satellitesStatusLabel, text);
+  alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
+  // Letní noc bez tmy, bez Měsíce a s klidným Kp: prázdný řádek by byl jen
+  // podklad bez textu.
+  if (text[0] == '\0')
+    lv_obj_add_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  else
+    lv_obj_clear_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Jména těles vedle teček.
+  for (uint8_t index = 0; index < SKY_MAX_BODIES; ++index) {
+    lv_obj_t *label = skyBodyLabels[index];
+    if (label == nullptr) continue;
+    if (!sky.haveData || index >= sky.labelCount) {
+      lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    const SkyLabel &entry = sky.labels[index];
+    lv_label_set_text(label, entry.name);
+    setTextColor(label, redNight ? COLOR_ERROR : lv_color_hex(entry.color));
+    lv_obj_set_pos(label, entry.x, entry.y);
+    lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Úkazy: datum tlumeně, text normálně. Leží nad severní oblohou, kde je
+  // SkyRender nechal volné.
+  const bool eventsAtTop =
+      skyEventsAtTop(dashboardRuntimeConfig.satellites.topBearingDeg,
+                     dashboardRuntimeConfig.openMeteoLatitude);
+  const time_t now = time(nullptr);
+  for (uint8_t row = 0; row < SKY_MAX_EVENTS; ++row) {
+    lv_obj_t *label = skyEventLabels[row];
+    if (label == nullptr) continue;
+    if (!sky.haveData || row >= sky.eventCount || now < 1700000000 ||
+        dashboardRuntimeConfig.nightSky.hideEvents) {
+      lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    char when[24];
+    skyEventWhen(sky.events[row], static_cast<int64_t>(now), english, when,
+                 sizeof(when));
+    char line[SKY_EVENT_TEXT_LENGTH + 40];
+    snprintf(line, sizeof(line), "#%s %s#  %s", redNight ? "FF4848" : "B5B5B5",
+             when, sky.events[row].text);
+    // Řádek nejdál od středu je nejužší: na 164 px od středu má kruh 350 px.
+    const int offsetY = skyEventRowOffsetY(eventsAtTop, row);
+    const int halfChord = static_cast<int>(
+        std::sqrt(static_cast<float>(236 * 236 - offsetY * offsetY)));
+    fitLabelText(line, sizeof(line), &clock_czech_14, 2 * halfChord - 30, true);
+    setTextColor(label, redNight ? COLOR_ERROR : COLOR_TEXT);
+    lv_label_set_text(label, line);
+    alignCenter(label, 0, offsetY);
+    lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  updateSatellitesClockLabel();
+  updateSkyDetail(sky.detail);
+}
+
+bool clockDashboardSwipeSatellites() {
+  if (activeScreen != DASHBOARD_SCREEN_SATELLITES || satellitesPage == nullptr ||
+      settingsVisible || firmwareUpdateActive || !nightSkyAvailable)
+    return false;
+  clockDashboardSetSatellitesSkyPage(!satellitesSkyPage);
+  return true;
+}
+
+bool clockDashboardSatellitesSkyPage() {
+  return nightSkyAvailable && satellitesSkyPage;
+}
+
+void clockDashboardSetSatellitesSkyPage(bool sky) {
+  sky = sky && nightSkyAvailable;
+  if (sky == satellitesSkyPage) return;
+  // Detail patří té stránce, na které se otevřel.
+  satelliteServiceCloseDetail();
+  if (satellitesDetailPanel != nullptr)
+    lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  satellitesSkyPage = sky;
+  hideSkyLabels();
+  // Do příchodu prvního snímku druhé stránky zůstane vidět ta první;
+  // plátno se proto schová a vrátí se s dalším snímkem.
+  if (satellitesCanvas != nullptr)
+    lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
+}
+
+void clockDashboardSetNightSkyAvailable(bool available) {
+  if (nightSkyAvailable == available) return;
+  nightSkyAvailable = available;
+  if (!available && satellitesSkyPage) {
+    satellitesSkyPage = false;
+    hideSkyLabels();
+  }
 }
 
 void clockDashboardSetForecastVisible(bool visible) {
@@ -7807,6 +8219,19 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
 }
 
 void clockDashboardSetRadarVisible(bool visible) { setRadarVisible(visible); }
+
+void clockDashboardSetRadarWarning(const char *event, const char *tail,
+                                   uint8_t level) {
+  const char *name = event == nullptr ? "" : event;
+  const char *rest = tail == nullptr ? "" : tail;
+  if (strcmp(radarWarningEvent, name) == 0 &&
+      strcmp(radarWarningTail, rest) == 0 && radarWarningLevel == level)
+    return;
+  strlcpy(radarWarningEvent, name, sizeof(radarWarningEvent));
+  strlcpy(radarWarningTail, rest, sizeof(radarWarningTail));
+  radarWarningLevel = level;
+  updateRadarWarningLabel();
+}
 
 void clockDashboardSetRainAlertNote(const char *note) {
   const char *text = note == nullptr ? "" : note;

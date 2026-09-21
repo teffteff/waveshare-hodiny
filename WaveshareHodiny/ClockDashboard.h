@@ -80,6 +80,11 @@ void clockDashboardSetRadarVisible(bool visible);
 // Patří jen na radar, ne na ostatní obrazovky se stejným řádkem: vysvětluje,
 // proč se hodiny samy přepnuly. Prázdný řetězec ji zase schová.
 void clockDashboardSetRainAlertNote(const char *note);
+// Řádek výstrahy ČHMÚ nad rozsahem meteoradaru, obarvený podle stupně
+// (2 žlutá, 3 oranžová, 4 červená): název jevu a za ním čas ("do 24:00").
+// Nevejde-li se, zkrátí se jen název. Prázdný název řádek schová.
+void clockDashboardSetRadarWarning(const char *event, const char *tail,
+                                   uint8_t level);
 bool clockDashboardRssVisible();
 void clockDashboardSetRssVisible(bool visible);
 // Kanál bez adresy nebo vypnutý se do rotace ani pod gesto nepustí.
@@ -201,6 +206,15 @@ void clockDashboardSetSatellitesVisibilityCallback(
     RssVisibilityCallback visibility);
 struct SatelliteSnapshot;
 void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot);
+// Noční obloha, druhá stránka obrazovky družic. Tažení prstu přepíná mezi
+// družicemi a oblohou, když je obloha zapnutá; upozornění na polární záři ji
+// otevře samo. Po odchodu z obrazovky jsou první zase družice.
+struct SkySnapshot;
+void clockDashboardSetSkySnapshot(const SkySnapshot &sky);
+bool clockDashboardSwipeSatellites();
+bool clockDashboardSatellitesSkyPage();
+void clockDashboardSetSatellitesSkyPage(bool sky);
+void clockDashboardSetNightSkyAvailable(bool available);
 
 bool clockDashboardAutomaticRotationAllowed();
 // Switch the bank inside the values clock without changing the screen/dot.

@@ -52,8 +52,9 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Přepravčí blesků | 8093, jen loopback | `/opt/lightning/serve.py`, `lightning-web.service` | `lightning/` |
 | Zálohy nastavení | 8092, jen loopback | `/opt/settings/serve.py`, `settings-web.service`, data v `/opt/settings/data/` | `settings/` |
 | Rozvrh a úkoly | 8094, jen loopback | `/opt/school/serve.py`, `feed.py`, `school-web.service`, přihlášení v `/opt/school/school.env` | `school/` |
-| Družice | 8095, jen loopback | `/opt/satellites/serve.py`, `requirements.txt`, `.venv`, `satellites-web.service`, dráhy v `/var/cache/satellites/` | `satellites/` |
+| Družice a noční obloha | 8095, jen loopback | `/opt/satellites/serve.py`, `sky.py`, `requirements.txt`, `.venv`, `satellites-web.service`, dráhy a efemeridy DE421 v `/var/cache/satellites/` | `satellites/` |
 | Srážková předpověď | 8096, jen loopback | `/opt/rain/serve.py`, `rain-web.service` | `rain/` |
+| Výstrahy ČHMÚ | 8097, jen loopback | `/opt/warnings/serve.py`, `orp.json`, `warnings-web.service` | `warnings/` |
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/` | `backup/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
@@ -101,6 +102,7 @@ https://hodiny:$LIGHTNING_PASSWORD@$CLOCK_HOST/lightning.json  blesky (nepovinn�
 https://hodiny:$SCHOOL_PASSWORD@$CLOCK_HOST/school.json  rozvrh a úkoly (nepovinné)
 https://hodiny:$SATELLITES_PASSWORD@$CLOCK_HOST/satellites.json  družice (nepovinné)
 https://hodiny:$RAIN_PASSWORD@$CLOCK_HOST/rain.json  srážková předpověď (nepovinné)
+https://hodiny:$WARNINGS_PASSWORD@$CLOCK_HOST/warnings.json  výstrahy ČHMÚ (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -135,8 +137,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090, 8092, 8093, 8094, 8095 a 8096 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami, rozvrhem, družicemi a srážkami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093, 8094, 8095, 8096 a 8097 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami, rozvrhem, družicemi, srážkami a výstrahami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -563,6 +565,66 @@ změn z repozitáře“), **až po** zapsání `SATELLITES_HASH`. Do hodin se pa
 `sgp4` a `numpy` (stejné verze jako `requirements.txt`):
 `python -m unittest infra/satellites/test_serve.py`.
 
+### Noční obloha
+
+Druhá stránka obrazovky družic (tažení prstu) ukazuje planety, Měsíc a jasné
+hvězdy v tomtéž kruhu. Počítá ji `satellites/sky.py` ve stejné službě: hodiny
+se ptají **téže adresy se stejným heslem**, jen s `view=sky`, takže v hodinách
+žádná další adresa není a Caddyfile se nemění.
+
+```sh
+curl -s '127.0.0.1:8095/satellites.json?view=sky&lat=49.90461&lon=14.7842&lang=cs'
+{"v":1,"time":1790020800,
+ "bodies":[{"id":"moon","n":"Měsíc","k":1,"ra":20.2727,"dec":-23.127,
+            "dist":389012,"ill":0.763,"con":"Kozoroh","set":1790033220},...],
+ "stars":[6752,-1672,-15,...],"lines":[25,26,...],
+ "events":[{"t":1790789608,"tm":1,"k":"conj","x":"Měsíc 0,2° od Plejád"},...],
+ "kp":2.33,"kpMax":4.0,"kpMaxAt":1790046000}
+```
+
+**Polohy jdou jako rektascenze a deklinace**, ne jako azimut a výška: hodiny si
+z nich polohu na obloze dopočítají každou vteřinu z hvězdného času (proti
+Skyfieldu na desetiny stupně), takže se ptají jen po 10 až 15 minutách. Měsíc
+je topocentrický — jeho paralaxa je až stupeň. Planety, Slunce a Měsíc počítá
+[Skyfield](https://rhodesmill.org/skyfield/) z efemerid JPL **DE421** (17 MB,
+platí do roku 2053); ty si při prvním startu stáhne sám do
+`/var/cache/satellites/` a do té doby obloha odpovídá 503. Hvězdy (96 nejjasnějších
+a 55 čar obrazců souhvězdí) jsou tabulka v `sky.py`.
+
+**Úkazy** (`events`) se počítají pro polohu hodin a drží se 6 h. Vybírají se
+tři: nejbližší přiblížení Měsíce k planetě nebo jasné hvězdě (do 4°, resp. 2°,
+na 14 dní), nejbližší roj (maximum z délky Slunce podle IMO — Kvadrantidy,
+Lyridy, Perseidy, Drakonidy, Orionidy, Leonidy, Geminidy, Ursidy — i s tím, jak
+moc bude svítit Měsíc), nejbližší opozice Marsu, Jupiteru či Saturnu, největší
+elongace Merkuru či Venuše nebo přiblížení dvou planet (na 60 dní) a nejbližší
+**zatmění viditelné z místa hodin** (na 800 dní). Zatmění Slunce se nehledá
+v tabulce: kolem každého novu se po minutě porovná vzdálenost středů kotoučů se
+součtem jejich poloměrů tak, jak je vidí pozorovatel, jen když je Slunce nad
+obzorem, a z toho vyjde zakrytí v procentech. Zatmění má v seznamu jisté místo,
+i když je daleko.
+
+**Index Kp** je z NOAA SWPC: odhad po minutě (`kp`, jen když je mladší než
+hodina) a nejvyšší předpověď na 24 h (`kpMax`). Stahuje se nejvýš po 10
+minutách a **na pozadí** — NOAA odpovídá i čtyři sekundy a hodiny čekají osm,
+takže dotaz dostane poslední známou hodnotu a nová přijde s dalším. Poplach na
+polární záři vyhlašují hodiny podle vlastního prahu (výchozí Kp 6) a jen za tmy.
+
+Stav oblohy je v `curl -s 127.0.0.1:8095/satellites/status` pod klíčem `sky`.
+Zavedení na běžící server je aktualizace družic:
+
+```sh
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/satellites/serve.py infra/satellites/sky.py infra/satellites/requirements.txt "$CLOCK_SSH:"
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py sky.py requirements.txt /opt/satellites/ \
+    && rm serve.py sky.py requirements.txt \
+    && sudo /opt/satellites/.venv/bin/pip install --quiet -r /opt/satellites/requirements.txt \
+    && sudo systemctl restart satellites-web.service'
+```
+
+Testy: `python -m unittest infra/satellites/test_sky.py`; výpočty nad efemeridami
+běží jen s `SKY_EPHEMERIS_DIR` ukazujícím na adresář s `de421.bsp`, ostatní bez
+sítě i bez souboru.
+
 ## Srážky
 
 Volba **přepnout na radar, když se blíží déšť** potřebuje vědět, jestli bude
@@ -646,6 +708,88 @@ SSH "$CLOCK_SSH" 'sudo cp /opt/rain/rain-web.service /etc/systemd/system/ && sud
 Caddyfile s blokem `/rain.json` se nasazuje jako obvykle (viz „Nasazení změn
 z repozitáře“), **až po** zapsání `RAIN_HASH`. Testy bez sítě:
 `python3 -m unittest infra/rain/test_serve.py`.
+
+## Výstrahy ČHMÚ
+
+Na meteoradaru se nad rozsahem ukáže barevný řádek s nejvážnější výstrahou
+pro obec s rozšířenou působností (ORP), ve které hodiny stojí, a u vážných
+výstrah se hodiny na radar samy přepnou. ČHMÚ výstrahy publikuje jako CAP XML:
+
+```
+https://opendata.chmi.cz/meteorology/weather/alerts/cap/alert_cap_50_DDHHMM.xml
+```
+
+Každý soubor je **úplný stav**, ne změna — nese všechny jevy včetně „žádná
+výstraha“ a k nim seznam ORP jako kódy CISORP. Nový vychází při každé
+aktualizaci (za klidného počasí jednou denně) a má 1,5 až 2,5 MB; jméno nese
+jen den v měsíci a čas v UTC, takže nejnovější se pozná podle data změny ve
+výpisu adresáře, ne podle jména. Soubory `_70_` jsou týdenní přehled a výstrahy
+nenesou.
+
+`warnings/serve.py` soubor stáhne jednou za všechny hodiny (nejvýš po pěti
+minutách, a jen když se někdo ptá), polohu převede na ORP a pošle jen to, co se
+jí týká, seřazené od nejvážnější:
+
+```sh
+curl -s '127.0.0.1:8097/warnings.json?lat=49.90461&lon=14.7842&lang=cs'
+{"v":1,"time":1782680082,"sent":1782680022,"covered":true,"orp":"2122",
+ "area":"Říčany","stale":false,
+ "warnings":[{"id":"SIVS I.3","lvl":4,"type":5,"ev":"Extrémně vysoké teploty",
+              "on":1782679895,"ex":1782684000},...]}
+```
+
+`lvl` je `awareness_level` z CAP (2 žlutá, 3 oranžová, 4 červená), `type`
+`awareness_type` (1 vítr, 3 bouřky, 5 horko, 6 mráz …), `id` kód jevu ve
+výstražném systému — stejný při každé aktualizaci téže výstrahy, takže podle
+něj hodiny poznají novou výstrahu od prodloužené. `ex = 0` je „do odvolání“
+(smogové situace). Vynechá se „žádná výstraha“ (`Minor`) i výhled (`OUTLOOK`).
+Anglický text (`lang=en`) je z dvojčete bloku v `en-GB`, které CAP nese pro
+Meteoalarm. Text je očištěný na znaky, které písmo hodin umí.
+
+**Poloha → ORP.** CAP polygony nenese (dokumentace ČHMÚ to říká výslovně), jen
+kódy CISORP. Hranice leží v `warnings/orp.json` (206 ORP, zjednodušené na
+zhruba 200 m, 450 kB) a server v nich hledá paprskovým testem; bod do 3 km za
+hranicí dostane nejbližší ORP, dál je to cizina (`covered: false`, prázdný
+seznam tam neznamená klid). Soubor vyrábí `tools/build_warning_areas.py`
+z hranic ORP v RÚIAN (ČÚZK) — RÚIAN má ale vlastní kódy ORP (Praha 19, ne
+1100), takže se páruje podle jména: kódy CISORP ke jménům skript vyčte z archivu
+CAP souborů, kde oblast „Kraj (ORP, ORP, …)“ uvádí jména ve stejném pořadí jako
+kódy. Ověřeno 21. 9. 2026 pro všech 206 ORP; znovu ho stačí pustit, až se
+hranice ORP změní.
+
+**Rozhodnutí o přepnutí padá v hodinách**, stejně jako u srážek: řádek od
+zvoleného stupně, přepnutí jednou pro každou novou výstrahu od zvoleného stupně
+(výchozí oranžová), nejdřív hodinu před jejím začátkem.
+
+**Stav** ukáže `curl -s 127.0.0.1:8097/warnings/status` (soubor, čas vydání,
+počet výstrah, chyby). Po chybě stažení se posílá poslední stav s
+`"stale":true` až 12 hodin; bez jakýchkoli dat server odpoví 502. **Žádný venv**
+— XML čte `xml.etree` ze standardní knihovny.
+
+Zavedení (jednou):
+
+```sh
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/warnings --shell /sbin/nologin warnings \
+    && sudo install -d -o root -g warnings -m 750 /opt/warnings'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/warnings/serve.py infra/warnings/orp.json infra/warnings/warnings-web.service "$CLOCK_SSH:"
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py orp.json warnings-web.service /opt/warnings/ \
+    && rm serve.py orp.json warnings-web.service'
+NEW="$(openssl rand -hex 24)"   # do .env jako WARNINGS_PASSWORD
+SSH "$CLOCK_SSH" "echo WARNINGS_HASH=\$(caddy hash-password --plaintext '$NEW') | sudo tee -a /etc/caddy/caddy.env >/dev/null"
+SSH "$CLOCK_SSH" 'sudo cp /opt/warnings/warnings-web.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now warnings-web.service && sudo systemctl restart caddy'
+```
+
+Caddyfile s blokem `/warnings.json` se nasazuje, **až po** zapsání
+`WARNINGS_HASH`, a Caddy se kvůli novému hashi musí restartovat, ne jen
+reloadnout. Do hodin se pak opíše
+`https://hodiny:$WARNINGS_PASSWORD@$CLOCK_HOST/warnings.json` v záložce
+**Obrazovky → Výstrahy ČHMÚ**. Testy bez sítě (z kořene repozitáře — spuštěné
+z `infra/` by adresář `warnings` zastínil stejnojmenný modul Pythonu):
+`python3 -m unittest infra/warnings/test_serve.py`.
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 
