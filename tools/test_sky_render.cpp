@@ -50,6 +50,7 @@ const char EXTRA[] =
     "\"lines\":[0,1],"
     "\"cons\":[{\"n\":\"Labu\\u0165\",\"ra\":20.267,\"dec\":39.34},"
     "{\"n\":\"Orion\",\"ra\":5.6,\"dec\":-1.09}],"
+    "\"moonPast\":{\"t\":1790015400,\"s\":1800,\"p\":[20234,-2326,20250,-2322]},"
     "\"moonTrack\":{\"t\":1790019000,\"s\":1800,\"p\":["
     "20266,-2318,20282,-2314,20298,-2310,20314,-2305,20330,-2300,20346,-2295,"
     "20362,-2290,20378,-2285,20394,-2280,20410,-2275,20426,-2270,20442,-2265,"
@@ -220,7 +221,20 @@ int main(int argc, char **argv) {
   static SkyFeed extra;
   assert(parse(EXTRA, extra));
   assert(extra.stars[0].name[0] == 'V');
-  assert(extra.figureCount == 2 && extra.moonTrackCount == 29);
+  // Minulost dráhy a dráha se spojí do jedné řady.
+  assert(extra.figureCount == 2 && extra.moonTrackCount == 31);
+  assert(extra.moonTrackStart == 1790015400 && extra.moonTrackStep == 1800);
+  assert(extra.moonTrack[2].raMilliHours == 20266);
+  {
+    // Minulost, která na dráhu nenavazuje, se zahodí.
+    static SkyFeed gap;
+    assert(parse("{\"v\":1,\"time\":1790020800,\"bodies\":[],"
+                 "\"moonPast\":{\"t\":1790000000,\"s\":1800,\"p\":[1,2]},"
+                 "\"moonTrack\":{\"t\":1790019000,\"s\":1800,"
+                 "\"p\":[20266,-2318,20282,-2314]}}",
+                 gap));
+    assert(gap.moonTrackCount == 2 && gap.moonTrackStart == 1790019000);
+  }
   assert(extra.hasRadiant && extra.darkFrom == 1790014600);
   assert(extra.dayFrom == 1789966000 && extra.dayTo == 1790009900);
   pixels = canvas();
@@ -310,6 +324,19 @@ int main(int argc, char **argv) {
     skyRender(withoutPath.data(), &day, LATITUDE, LONGITUDE, noon, 0, false,
               false, true, "", result);
     assert(differing(withPath, withoutPath) > 100);
+    // Odpoledne zůstane i dopolední kus dráhy na východě (vpravo).
+    day.bodies[0].set = static_cast<int64_t>(noon) + 7 * 3600;
+    const double afternoon = noon + 3 * 3600.0;
+    skyRender(withPath.data(), &day, LATITUDE, LONGITUDE, afternoon, 0, false,
+              false, true, "", result);
+    day.bodies[0].set = 0;
+    skyRender(withoutPath.data(), &day, LATITUDE, LONGITUDE, afternoon, 0,
+              false, false, true, "", result);
+    int east = 0;
+    for (size_t index = 0; index < withPath.size(); ++index)
+      if (static_cast<int>(index % SKY_CANVAS_SIZE) > SKY_CANVAS_CENTER_X + 60)
+        east += withPath[index] != withoutPath[index];
+    assert(east > 50);
 
     // Měsíc, který vyjde až za 13 hodin, dráhu nemá: snímek je stejný jako
     // bez dráhy v datech. Když je nahoře, kreslí se až k západu.

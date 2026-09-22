@@ -79,6 +79,9 @@ RADIANT_DAYS_AFTER = 2.0
 # trva nejvys kolem 16 hodin.
 MOON_TRACK_STEP_SECONDS = 1800
 MOON_TRACK_HOURS = 28
+# A tolik hodin zpet ("moonPast"), aby hodiny kreslily i cast prechodu, kterou
+# uz Mesic urazil. Zvlast, protoze starsi hodiny cekaji "moonTrack" od ted.
+MOON_PAST_HOURS = 16
 # Astronomicka tma: Slunce aspon 18° pod obzorem.
 DARK_SUN_DEGREES = -18.0
 # Tesne prilozeni: Mesic k planete nebo hvezde, planeta k planete.
@@ -459,7 +462,7 @@ class Sky:
             if cached is None or not 0 <= now - cached[0] < POSITIONS_SECONDS:
                 cached = (now, {
                     "bodies": self._bodies(latitude, longitude, english, now),
-                    "moonTrack": self._moon_track(latitude, longitude, now),
+                    **self._moon_track(latitude, longitude, now),
                     **self._dark_window(latitude, longitude, now),
                     **self._day_window(latitude, longitude, now),
                 })
@@ -498,21 +501,27 @@ class Sky:
         return out
 
     def _moon_track(self, latitude: float, longitude: float, now: float) -> dict:
-        """Poloha Mesice po pul hodine od zacatku tehle pulhodiny.
+        """Poloha Mesice po pul hodine kolem zacatku tehle pulhodiny.
 
-        Hodiny z ni kresli, kudy Mesic pujde; vysku a azimut kazdeho vzorku
-        si dopocitaji pro jeho cas. Topocentricky, stejne jako Mesic sam.
+        "moonTrack" jde od zacatku pulhodiny dopredu, "moonPast" tesne pred
+        nej zpet; dohromady je to jedna rada. Hodiny z ni kresli cely prechod
+        Mesice oblohou; vysku a azimut kazdeho vzorku si dopocitaji pro jeho
+        cas. Topocentricky, stejne jako Mesic sam.
         """
-        start = int(now // MOON_TRACK_STEP_SECONDS) * MOON_TRACK_STEP_SECONDS
-        count = MOON_TRACK_HOURS * 3600 // MOON_TRACK_STEP_SECONDS + 1
-        seconds = start + np.arange(count) * MOON_TRACK_STEP_SECONDS
-        times = self.ts.tt_jd(self.ts.from_datetime(_utc(start)).tt + (seconds - start) / 86400.0)
+        step = MOON_TRACK_STEP_SECONDS
+        start = int(now // step) * step
+        past = MOON_PAST_HOURS * 3600 // step
+        count = past + MOON_TRACK_HOURS * 3600 // step + 1
+        first = start - past * step
+        seconds = first + np.arange(count) * step
+        times = self.ts.tt_jd(self.ts.from_datetime(_utc(first)).tt + (seconds - first) / 86400.0)
         ra, dec, _ = self._observer(latitude, longitude).at(times).observe(
             self.moon).apparent().radec(epoch="date")
         points: list[int] = []
         for hours, degrees in zip(ra.hours, dec.degrees):
             points.extend((round(float(hours) * 1000) % 24000, round(float(degrees) * 100)))
-        return {"t": start, "s": MOON_TRACK_STEP_SECONDS, "p": points}
+        return {"moonTrack": {"t": start, "s": step, "p": points[2 * past:]},
+                "moonPast": {"t": first, "s": step, "p": points[:2 * past]}}
 
     def _dark_window(self, latitude: float, longitude: float, now: float) -> dict:
         """Astronomicka tma, ktera prave je nebo prijde jako prvni.

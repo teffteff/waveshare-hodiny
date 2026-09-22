@@ -69,6 +69,8 @@ bool readRaDec(const char *begin, const char *end, float &raHours,
          raHours < 24.0f && decDeg >= -90.0f && decDeg <= 90.0f;
 }
 
+// Připojí body dráhy za ty, co už v feed jsou. Když na ně časem nenavazují
+// (jiný krok, mezera), staré se zahodí a dráha začne těmito.
 void parseMoonTrack(const JsonValue &value, SkyFeed &feed) {
   if (!value.isObject()) return;
   const char *begin = value.begin;
@@ -79,6 +81,17 @@ void parseMoonTrack(const JsonValue &value, SkyFeed &feed) {
       !jsonReadNumberMember(begin, end, "s", step) || step < 60.0f ||
       step > 86400.0f)
     return;
+  const uint32_t stepSeconds = static_cast<uint32_t>(lroundf(step));
+  if (feed.moonTrackCount > 0 &&
+      (feed.moonTrackStep != stepSeconds ||
+       feed.moonTrackStart +
+               static_cast<int64_t>(feed.moonTrackCount) * stepSeconds !=
+           start))
+    feed.moonTrackCount = 0;
+  if (feed.moonTrackCount == 0) {
+    feed.moonTrackStart = start;
+    feed.moonTrackStep = stepSeconds;
+  }
   JsonArrayCursor cursor = jsonOpenArray(jsonFindMember(begin, end, "p"));
   long pair[2] = {};
   int filled = 0;
@@ -94,8 +107,6 @@ void parseMoonTrack(const JsonValue &value, SkyFeed &feed) {
     point.raMilliHours = static_cast<int16_t>(pair[0]);
     point.decCentiDeg = static_cast<int16_t>(pair[1]);
   }
-  feed.moonTrackStart = start;
-  feed.moonTrackStep = static_cast<uint32_t>(lroundf(step));
 }
 
 // Úsek [od, do] v unixových sekundách; vadný nechá obě hodnoty nulové.
@@ -250,6 +261,7 @@ bool skyFeedParse(const char *begin, const char *end, SkyFeed &feed) {
     feed.figures[feed.figureCount++] = figure;
   }
 
+  parseMoonTrack(jsonFindMember(objectBegin, objectEnd, "moonPast"), feed);
   parseMoonTrack(jsonFindMember(objectBegin, objectEnd, "moonTrack"), feed);
 
   parseWindow(jsonFindMember(objectBegin, objectEnd, "dark"), feed.darkFrom,

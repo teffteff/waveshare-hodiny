@@ -187,6 +187,13 @@ class EphemerisTest(unittest.TestCase):
         shift = (track["p"][-2] - track["p"][0]) / 1000.0 % 24.0
         self.assertGreater(shift, 0.7)
         self.assertLess(shift, 1.3)
+        # Minulost konci tesne pred zacatkem drahy, se stejnym krokem.
+        past = answer["moonPast"]
+        self.assertEqual(past["s"], track["s"])
+        self.assertEqual(len(past["p"]), 2 * sky.MOON_PAST_HOURS * 2)
+        self.assertEqual(past["t"] + len(past["p"]) // 2 * past["s"], track["t"])
+        # Za pul hodiny ujde Mesic asi ctvrt stupne, tedy setinu hodiny.
+        self.assertAlmostEqual((track["p"][0] - past["p"][-2]) / 1000.0, 0.018, delta=0.012)
 
     def test_dark_window_in_autumn(self):
         # 21. 9. 2026 14:00 UTC: tma prijde vecer a skonci rano.

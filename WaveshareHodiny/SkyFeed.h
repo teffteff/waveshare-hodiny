@@ -25,6 +25,9 @@
 //    "moonTrack":{"t":1790019000,"s":1800,"p":[20265,-2318, ...]},
 //                                     Měsíc po půl hodině od t: rektascenze
 //                                     v tisícinách hodiny, deklinace v setinách
+//    "moonPast":{"t":1789961400,"s":1800,"p":[...]},
+//                                     totéž 16 hodin zpět, končí těsně před t
+//                                     dráhy; hodiny obojí spojí do jedné řady
 //    "dark":[1790013000,1790050000],  astronomická tma, která je nebo přijde
 //    "day":[1789966000,1790010000],   den od východu do západu Slunce,
 //                                     který je nebo přijde
@@ -43,8 +46,8 @@ constexpr size_t SKY_STAR_NAME_LENGTH = 16;
 // Jména obrazců a roje: "Velká medvědice" má v UTF-8 sedmnáct bajtů.
 constexpr size_t SKY_LABEL_LENGTH = 24;
 constexpr size_t SKY_MAX_FIGURES = 16;
-// Server posílá 28 hodin po půl hodině, tedy 57 bodů.
-constexpr size_t SKY_MOON_TRACK_POINTS = 64;
+// Server posílá 16 hodin zpět a 28 dopředu po půl hodině, tedy 89 bodů.
+constexpr size_t SKY_MOON_TRACK_POINTS = 96;
 
 enum SkyBodyKind : uint8_t {
   SKY_BODY_SUN = 0,
