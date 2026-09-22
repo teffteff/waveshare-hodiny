@@ -1130,7 +1130,7 @@ Pokud je připojeno více zařízení, předej `--port`. Nástroj používá pys
 WaveshareHodiny/        Arduino sketch a firmware
 assets/                 Zdrojové assety použité generátory
 docs/assets/            Jen veřejně používané animované GIFy a manifesty
-infra/                  Kopie serverové části (proxy a generátor zpráv)
+infra/                  Kopie serverové části (proxy, zdroje pro obrazovky, hlášení poruch)
 screenshots/            Veřejné obrázky dokumentace
 tools/                  Build, test a asset utility
 WaveshareHodiny/partitions.csv
@@ -1138,13 +1138,18 @@ WaveshareHodiny/partitions.csv
 build.sh                Vývojový build
 build-release.sh        Oddělený release build
 upload.sh               USB upload vývojového buildu
-tools/check-stack.sh    Kontrola serverové části (kanál, HA, certifikát)
+tools/check-stack.sh    Kontrola serverové části (všechny zdroje, HA, certifikát, shoda)
+tools/deploy.sh         Nasazení serverové části podle infra/manifest.txt
+tools/update-ha.sh      Aktualizace Home Assistanta se zálohou a návratem
+tools/pull-backup.sh    Stažení noční zálohy serveru na Mac
+tools/decrypt-backup.sh Rozšifrování kopie zálohy z OCI Object Storage
 ```
 
-Obrazovka se zprávami a hodnoty z Home Assistanta chodí přes vlastní server.
-Co na něm běží, jak se obnovuje a na co si dát pozor popisuje
-[infra/README.md](infra/README.md); stav se ověří příkazem
-`tools/check-stack.sh`.
+Zprávy, agenda, letadla, blesky, srážky, výstrahy, družice, škola, zálohy
+nastavení, upozornění na telefon i hodnoty z Home Assistanta chodí přes vlastní
+server. Co na něm běží, jak se nasazuje (`tools/deploy.sh`), jak se obnovuje
+a na co si dát pozor popisuje [infra/README.md](infra/README.md). Stav se ověří
+příkazem `tools/check-stack.sh`; poruchy server hlásí sám pushem na telefon.
 
 ## Řešení problémů
 
