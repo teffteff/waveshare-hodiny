@@ -607,6 +607,32 @@ void normalizeConfig(ClockConfig &config) {
   config.nightSky.cooldownMinutes =
       constrain(config.nightSky.cooldownMinutes, static_cast<uint8_t>(0),
                 CLOCK_AURORA_COOLDOWN_MAX_MINUTES);
+  // Bez adresy serveru nemá upozornění kdo hlídat, stejně jako déšť.
+  if (config.pushAlerts.url[0] == '\0') config.pushAlerts.enabled = false;
+  config.pushAlerts.rainLeadMinutes =
+      constrain(config.pushAlerts.rainLeadMinutes,
+                CLOCK_PUSH_RAIN_LEAD_MIN_MINUTES,
+                CLOCK_PUSH_RAIN_LEAD_MAX_MINUTES);
+  config.pushAlerts.rainMinimumDbz = constrain(
+      config.pushAlerts.rainMinimumDbz, CLOCK_RAIN_DBZ_MIN, CLOCK_RAIN_DBZ_MAX);
+  config.pushAlerts.rainRadiusKm =
+      constrain(config.pushAlerts.rainRadiusKm, CLOCK_RAIN_RADIUS_MIN_KM,
+                CLOCK_RAIN_RADIUS_MAX_KM);
+  config.pushAlerts.watchRadiusKm =
+      constrain(config.pushAlerts.watchRadiusKm, CLOCK_PUSH_WATCH_RADIUS_MIN_KM,
+                CLOCK_PUSH_WATCH_RADIUS_MAX_KM);
+  config.pushAlerts.lowRadiusM =
+      constrain(config.pushAlerts.lowRadiusM, CLOCK_PUSH_LOW_RADIUS_MIN_M,
+                CLOCK_PUSH_LOW_RADIUS_MAX_M);
+  config.pushAlerts.lowHeightM =
+      constrain(config.pushAlerts.lowHeightM, CLOCK_PUSH_LOW_HEIGHT_MIN_M,
+                CLOCK_PUSH_LOW_HEIGHT_MAX_M);
+  config.pushAlerts.quietFromHour =
+      constrain(config.pushAlerts.quietFromHour, static_cast<uint8_t>(0),
+                static_cast<uint8_t>(23));
+  config.pushAlerts.quietToHour =
+      constrain(config.pushAlerts.quietToHour, static_cast<uint8_t>(0),
+                static_cast<uint8_t>(23));
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -1034,6 +1060,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV50 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_50_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV49 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1083,6 +1116,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV50) ||
          storedSize == sizeof(ConfigRecordV49) ||
          storedSize == sizeof(ConfigRecordV46) ||
          storedSize == sizeof(ConfigRecordV45) ||
@@ -1124,6 +1158,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 50 je přesnou předponou schématu 51; upozornění na telefon si po
+  // zkopírování bajtů podrží výchozí hodnoty, tedy vypnutá a bez adresy.
+  const ConfigRecordV50 &legacyV50 =
+      *reinterpret_cast<const ConfigRecordV50 *>(&record);
+  uint32_t embeddedSchemaV50 = 0;
+  if (readComplete && storedSize == sizeof(legacyV50))
+    memcpy(&embeddedSchemaV50, legacyV50.config, sizeof(embeddedSchemaV50));
+  if (readComplete && storedSize == sizeof(legacyV50) &&
+      legacyV50.magic == CONFIG_MAGIC && legacyV50.schemaVersion == 50 &&
+      embeddedSchemaV50 == 50 &&
+      legacyV50.checksum ==
+          bytesChecksum(legacyV50.config, sizeof(legacyV50.config))) {
+    memcpy(&config, legacyV50.config, sizeof(legacyV50.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 49 je přesnou předponou schématu 50; výstrahy i noční obloha si po

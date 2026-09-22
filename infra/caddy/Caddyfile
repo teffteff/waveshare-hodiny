@@ -109,6 +109,19 @@
 		}
 		reverse_proxy 127.0.0.1:8097
 	}
+	# Nastaveni upozorneni na telefon (infra/alerts). Hodiny sem po ulozeni
+	# posilaji polohu a co se ma hlidat; server pak posila push i bez nich.
+	# Vlastni hash (ALERTS_HASH): kdo ho zna, muze prepsat polohu a zaplavit
+	# telefon upozornenimi. /alerts/status ven nevede.
+	handle /alerts/config/* {
+		basic_auth {
+			hodiny {env.ALERTS_HASH}
+		}
+		request_body {
+			max_size 4KB
+		}
+		reverse_proxy 127.0.0.1:8098
+	}
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

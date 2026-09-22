@@ -77,6 +77,10 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   předpověď na hodinu dopředu počítá ČHMÚ a vozí ji vlastní server, hodiny
   z ní podle vlastního prahu rozhodnou samy a napíšou na radar, za jak dlouho
   déšť dorazí (jen v Česku),
+- upozornění na telefon přes ntfy: déšť nejpozději za nastavený čas
+  a neobvyklá letadla — vojenská, vzácné typy a nízké přelety předpovězené
+  z polohy, kurzu a rychlosti; hlídá vlastní server, takže chodí i s vypnutými
+  hodinami, a nastavení mu hodiny pošlou po uložení,
 - výstrahy ČHMÚ pro obec s rozšířenou působností, ve které hodiny stojí:
   barevný řádek s nejvážnější výstrahou nad rozsahem meteoradaru a u oranžové
   či červené jednou přepnutí na radar; dvoumegabajtový CAP soubor ČHMÚ čte

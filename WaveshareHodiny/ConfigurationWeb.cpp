@@ -44,6 +44,7 @@
 #include "SettingsBackupCrypto.h"
 #include "TmepService.h"
 #include "WeatherWarningService.h"
+#include "PushAlertsService.h"
 
 namespace {
 // Nastavení se dvěma sadami po devíti hodnotách, s plnými barevnými škálami a
@@ -1659,6 +1660,43 @@ void handleGetConfig() {
   result += config.nightSky.holdMinutes;
   result += F(",\"nightSkyCooldownMinutes\":");
   result += config.nightSky.cooldownMinutes;
+  result += F(",\"pushAlertsEnabled\":");
+  result += config.pushAlerts.enabled ? F("true") : F("false");
+  result += F(",\"pushAlertsUrl\":\"");
+  result += jsonEscape(config.pushAlerts.url);
+  result += F("\",\"pushAlertsRain\":");
+  result += config.pushAlerts.rain ? F("true") : F("false");
+  result += F(",\"pushAlertsRainLeadMinutes\":");
+  result += config.pushAlerts.rainLeadMinutes;
+  result += F(",\"pushAlertsRainMinimumDbz\":");
+  result += config.pushAlerts.rainMinimumDbz;
+  result += F(",\"pushAlertsRainRadiusKm\":");
+  result += config.pushAlerts.rainRadiusKm;
+  result += F(",\"pushAlertsMilitary\":");
+  result += config.pushAlerts.military ? F("true") : F("false");
+  result += F(",\"pushAlertsRare\":");
+  result += config.pushAlerts.rare ? F("true") : F("false");
+  result += F(",\"pushAlertsWatchRadiusKm\":");
+  result += config.pushAlerts.watchRadiusKm;
+  result += F(",\"pushAlertsLow\":");
+  result += config.pushAlerts.low ? F("true") : F("false");
+  result += F(",\"pushAlertsLowRadiusM\":");
+  result += config.pushAlerts.lowRadiusM;
+  result += F(",\"pushAlertsLowHeightM\":");
+  result += config.pushAlerts.lowHeightM;
+  result += F(",\"pushAlertsQuietFromHour\":");
+  result += config.pushAlerts.quietFromHour;
+  result += F(",\"pushAlertsQuietToHour\":");
+  result += config.pushAlerts.quietToHour;
+  {
+    // Jestli server poslední nastavení přijal; odesílá se na pozadí, takže
+    // hned po uložení tu může být ještě stav předchozího pokusu.
+    char message[80];
+    pushAlertsServiceMessage(message, sizeof(message));
+    result += F(",\"pushAlertsMessage\":\"");
+    result += jsonEscape(message);
+    result += '"';
+  }
   result += F(",\"skyEnabled\":");
   result += config.sky.enabled ? F("true") : F("false");
   result += F(",\"skyAutomaticRotation\":");
@@ -2439,6 +2477,87 @@ void handleSaveConfig() {
     config.nightSky.auroraKp = static_cast<uint8_t>(auroraKp);
     config.nightSky.holdMinutes = static_cast<uint8_t>(holdMinutes);
     config.nightSky.cooldownMinutes = static_cast<uint8_t>(cooldownMinutes);
+  }
+
+  if (server.hasArg("pushAlertsEnabled")) {
+    String pushUrl = server.arg("pushAlertsUrl");
+    pushUrl.trim();
+    if (pushUrl.length() >= CLOCK_PUSH_URL_LENGTH) {
+      sendError(400, F("Adresa serveru upozornění je příliš dlouhá."));
+      return;
+    }
+    if (!pushUrl.isEmpty() && !pushUrl.startsWith("http://") &&
+        !pushUrl.startsWith("https://")) {
+      sendError(400, F("Adresa serveru upozornění musí začínat http:// nebo https://."));
+      return;
+    }
+    // Heslo v adrese po http:// by šlo sítí čitelně, stejně jako poloha.
+    if (pushUrl.startsWith("http://") &&
+        clockConfigUrlHasCredentials(pushUrl.c_str())) {
+      sendError(400, F("Adresa serveru upozornění s heslem musí začínat https://."));
+      return;
+    }
+    const bool pushEnabled = server.arg("pushAlertsEnabled") == "1";
+    if (pushEnabled && pushUrl.isEmpty()) {
+      sendError(400, F("Pro upozornění na telefon doplň adresu serveru."));
+      return;
+    }
+    const int lead = server.arg("pushAlertsRainLeadMinutes").toInt();
+    if (lead < CLOCK_PUSH_RAIN_LEAD_MIN_MINUTES ||
+        lead > CLOCK_PUSH_RAIN_LEAD_MAX_MINUTES) {
+      sendError(400, F("Předstih upozornění na déšť musí být od 10 do 60 minut."));
+      return;
+    }
+    const int minimumDbz = server.arg("pushAlertsRainMinimumDbz").toInt();
+    if (minimumDbz < CLOCK_RAIN_DBZ_MIN || minimumDbz > CLOCK_RAIN_DBZ_MAX) {
+      sendError(400, F("Intenzita deště musí být od 4 do 60 dBZ."));
+      return;
+    }
+    const int rainRadiusKm = server.arg("pushAlertsRainRadiusKm").toInt();
+    if (rainRadiusKm < CLOCK_RAIN_RADIUS_MIN_KM ||
+        rainRadiusKm > CLOCK_RAIN_RADIUS_MAX_KM) {
+      sendError(400, F("Okolí polohy pro déšť musí být od 1 do 30 km."));
+      return;
+    }
+    const int watchRadiusKm = server.arg("pushAlertsWatchRadiusKm").toInt();
+    if (watchRadiusKm < CLOCK_PUSH_WATCH_RADIUS_MIN_KM ||
+        watchRadiusKm > CLOCK_PUSH_WATCH_RADIUS_MAX_KM) {
+      sendError(400, F("Okruh hlídání letadel musí být od 5 do 100 km."));
+      return;
+    }
+    const int lowRadiusM = server.arg("pushAlertsLowRadiusM").toInt();
+    if (lowRadiusM < CLOCK_PUSH_LOW_RADIUS_MIN_M ||
+        lowRadiusM > CLOCK_PUSH_LOW_RADIUS_MAX_M) {
+      sendError(400, F("Vzdálenost nízkého přeletu musí být od 300 do 10000 m."));
+      return;
+    }
+    const int lowHeightM = server.arg("pushAlertsLowHeightM").toInt();
+    if (lowHeightM < CLOCK_PUSH_LOW_HEIGHT_MIN_M ||
+        lowHeightM > CLOCK_PUSH_LOW_HEIGHT_MAX_M) {
+      sendError(400, F("Výška nízkého přeletu musí být od 100 do 3000 m."));
+      return;
+    }
+    const int quietFrom = server.arg("pushAlertsQuietFromHour").toInt();
+    const int quietTo = server.arg("pushAlertsQuietToHour").toInt();
+    if (quietFrom < 0 || quietFrom > 23 || quietTo < 0 || quietTo > 23) {
+      sendError(400, F("Hodiny nerušení musí být od 0 do 23."));
+      return;
+    }
+    config.pushAlerts.enabled = pushEnabled;
+    clockConfigCopy(config.pushAlerts.url, sizeof(config.pushAlerts.url),
+                    pushUrl);
+    config.pushAlerts.rain = server.arg("pushAlertsRain") == "1";
+    config.pushAlerts.rainLeadMinutes = static_cast<uint8_t>(lead);
+    config.pushAlerts.rainMinimumDbz = static_cast<uint8_t>(minimumDbz);
+    config.pushAlerts.rainRadiusKm = static_cast<uint8_t>(rainRadiusKm);
+    config.pushAlerts.military = server.arg("pushAlertsMilitary") == "1";
+    config.pushAlerts.rare = server.arg("pushAlertsRare") == "1";
+    config.pushAlerts.watchRadiusKm = static_cast<uint8_t>(watchRadiusKm);
+    config.pushAlerts.low = server.arg("pushAlertsLow") == "1";
+    config.pushAlerts.lowRadiusM = static_cast<uint16_t>(lowRadiusM);
+    config.pushAlerts.lowHeightM = static_cast<uint16_t>(lowHeightM);
+    config.pushAlerts.quietFromHour = static_cast<uint8_t>(quietFrom);
+    config.pushAlerts.quietToHour = static_cast<uint8_t>(quietTo);
   }
 
   if (server.hasArg("schoolEnabled")) {

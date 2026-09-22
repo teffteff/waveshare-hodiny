@@ -82,6 +82,11 @@ KEPT_KEYS = (
     "track",
     "true_heading",
     "baro_rate",
+    # Pro infra/alerts, firmware je necte: bit 1 = vojenske, bit 2 = zajimave
+    # (databaze tar1090), a geometricka vyska pro odhad vysky nad zemi.
+    # dbFlags adsb.fi posila jen nenulove, takze na drate skoro nepribude.
+    "dbFlags",
+    "alt_geom",
 )
 
 _cache: dict[tuple[float, float, float], tuple[float, bytes]] = {}

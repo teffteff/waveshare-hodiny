@@ -16,6 +16,7 @@
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
+#include "PushAlertsService.h"
 #include "RainAlertService.h"
 #include "WeatherWarningService.h"
 #include "SatelliteService.h"
@@ -517,6 +518,13 @@ void applySatellitesState(const ClockConfig &config) {
   applySatellitesState(config, clockDashboardSatellitesVisible());
 }
 
+// Upozornění na telefon hlídá server; hodiny mu jen předají nastavení, a to
+// i vypnuté, aby hlídat přestal. Nezáleží na obrazovkách ani na radaru.
+void applyPushAlertsState(const ClockConfig &config) {
+  pushAlertsServiceSetConfig(config.pushAlerts, config.openMeteoLatitude,
+                             config.openMeteoLongitude, networkDeviceName);
+}
+
 // Upozornění na déšť se ptá serveru bez ohledu na to, která obrazovka je právě
 // vidět: jeho smysl je přepnout na radar ve chvíli, kdy se na hodiny nikdo
 // nedívá. Radar vypnutý v pořadí obrazovek ale nemá kam přepnout, takže se
@@ -573,6 +581,7 @@ void applyPendingRuntimeConfiguration() {
   applySatellitesState(dashboardConfigBuffer);
   applyRainAlertState(dashboardConfigBuffer);
   applyWarningState(dashboardConfigBuffer);
+  applyPushAlertsState(dashboardConfigBuffer);
   // Nový plán nebo vypnutá obrazovka platí hned, ne až při další kontrole.
   scheduleCheckPending = true;
   // Zápis do flash může na ESP32-S3 rozhodit vertikální synchronizaci RGB
@@ -2660,6 +2669,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     lightningServicePrepareForFirmwareUpdate();
     rainAlertServicePrepareForFirmwareUpdate();
     weatherWarningServicePrepareForFirmwareUpdate();
+    pushAlertsServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
     planeRadarServiceBegin();
@@ -2675,6 +2685,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     applyRainAlertState(loopConfigSnapshot());
     weatherWarningServiceBegin();
     applyWarningState(loopConfigSnapshot());
+    pushAlertsServiceBegin();
     firmwareUpdateCountdownStarted = false;
     firmwareUpdateBlackRequested = false;
     displayResyncAt = millis() + 500;
@@ -3840,6 +3851,8 @@ void setup() {
   applyRainAlertState(runtimeConfig);
   weatherWarningServiceBegin();
   applyWarningState(runtimeConfig);
+  pushAlertsServiceBegin();
+  applyPushAlertsState(runtimeConfig);
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
