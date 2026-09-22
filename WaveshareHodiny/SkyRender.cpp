@@ -53,7 +53,7 @@ SkyColor bodyColor(const SkyBody &body) {
     const char *id;
     SkyColor color;
   } COLORS[] = {
-      {"sun", {0xFEE7, 0xFFDC3C}},     {"moon", {0xE73B, 0xE6E6DC}},
+      {"sun", {0xFEE7, SKY_SUN_RGB}},  {"moon", {0xE73B, SKY_MOON_RGB}},
       {"mercury", {0xC618, 0xC0C0C0}}, {"venus", {0xFFDB, 0xFFFADC}},
       {"mars", {0xFB68, 0xFF6E46}},    {"jupiter", {0xF694, 0xF0D2A0}},
       {"saturn", {0xE64D, 0xE6C86E}},  {"uranus", {0x973C, 0x96E6E6}},
