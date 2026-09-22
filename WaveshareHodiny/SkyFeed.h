@@ -26,6 +26,8 @@
 //                                     Měsíc po půl hodině od t: rektascenze
 //                                     v tisícinách hodiny, deklinace v setinách
 //    "dark":[1790013000,1790050000],  astronomická tma, která je nebo přijde
+//    "day":[1789966000,1790010000],   den od východu do západu Slunce,
+//                                     který je nebo přijde
 //    "radiant":{"n":"Perseidy","ra":3.2,"dec":58},  jen pár dní kolem maxima
 //    "events":[{"t":1790789608,"tm":1,"k":"conj","x":"Měsíc 0,2° od Plejád"}],
 //    "kp":2.33,"kpMax":4.0,"kpMaxAt":1790046000}
@@ -41,7 +43,8 @@ constexpr size_t SKY_STAR_NAME_LENGTH = 16;
 // Jména obrazců a roje: "Velká medvědice" má v UTF-8 sedmnáct bajtů.
 constexpr size_t SKY_LABEL_LENGTH = 24;
 constexpr size_t SKY_MAX_FIGURES = 16;
-constexpr size_t SKY_MOON_TRACK_POINTS = 32;
+// Server posílá 28 hodin po půl hodině, tedy 57 bodů.
+constexpr size_t SKY_MOON_TRACK_POINTS = 64;
 
 enum SkyBodyKind : uint8_t {
   SKY_BODY_SUN = 0,
@@ -128,6 +131,9 @@ struct SkyFeed {
   // Astronomická tma; 0, když v letní noci nenastane.
   int64_t darkFrom = 0;
   int64_t darkTo = 0;
+  // Den od východu do západu Slunce; 0 u staršího serveru.
+  int64_t dayFrom = 0;
+  int64_t dayTo = 0;
   // Radiant meteorického roje pár dní kolem maxima.
   bool hasRadiant = false;
   char radiantName[SKY_LABEL_LENGTH] = "";

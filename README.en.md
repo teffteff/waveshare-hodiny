@@ -96,10 +96,12 @@ changes the system text and verbal date shown on the display.
   SATGUS, the household's own satellite; the orbits are computed by your own
   server from CelesTrak data,
 - a night sky on the second page of the satellite screen (swipe): planets, the
-  Moon with its phase and its path until morning, bright stars, named
+  Moon with its phase and the path of its whole pass across the sky (at night
+  until morning), by day the Sun's path until sunset, bright stars, named
   constellation figures, the ecliptic and, around a shower's peak, its radiant
   in the same circle; tapping a planet or a star opens its details. The top
-  line shows when it is astronomically dark and when the Moon is up, and the
+  line shows when it is astronomically dark (by day sunrise and sunset
+  instead) and when the Moon is up, and the
   Kp index only when it nears the aurora alert threshold; below are the
   nearest events — meteor showers, close approaches of the Moon and planets,
   oppositions and eclipses visible from the clock's location (eclipses a month

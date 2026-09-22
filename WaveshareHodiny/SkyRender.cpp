@@ -22,8 +22,9 @@ constexpr uint16_t COLOR_FAINT_STAR = 0xB5B6;
 constexpr uint16_t COLOR_MOON_DARK = 0x31A6;
 // Ekliptika: tečky ještě tlumenější než obrazce, jen vodítko pro oko.
 constexpr uint16_t COLOR_ECLIPTIC = 0x8C51;
-// Dráha Měsíce v barvě Měsíce, přerušovaně a průsvitně.
+// Dráhy Měsíce a Slunce v jejich barvách, přerušovaně a průsvitně.
 constexpr uint16_t COLOR_MOON_TRACK = 0xE73B;
+constexpr uint16_t COLOR_SUN_TRACK = 0xFEE7;
 // Radiant roje: světle zelená, jiná než všechno ostatní na obloze.
 constexpr uint16_t COLOR_RADIANT = 0x8FB4;
 // Jména obrazců: tlumená modrošedá, o stupeň světlejší než jejich čáry.
@@ -31,11 +32,14 @@ constexpr uint16_t COLOR_FIGURE_LABEL = 0x7435;
 // Obrazec se pojmenuje, jen když jeho střed stojí aspoň tak vysoko: u obzoru
 // by jména lezla do světových stran a popisků těles.
 constexpr float FIGURE_LABEL_MIN_ALTITUDE = 12.0f;
-// Dráha Měsíce se kreslí na tolik hodin dopředu, po pětiminutových krocích;
-// každý druhý krok se vynechá, takže je čára přerušovaná.
-constexpr int MOON_TRACK_HOURS = 12;
-constexpr int MOON_TRACK_SUBSTEP_SECONDS = 300;
-constexpr int MOON_TRACK_MAX_TICKS = 12;
+// Dráha Měsíce se kreslí celá pro přechod oblohou, který právě je nebo
+// začne do MOON_TRACK_LOOKAHEAD_HOURS; přechod trvá nejvýš kolem 16 hodin.
+// Dráhy jdou po pětiminutových krocích a každý druhý se vynechá, takže je
+// čára přerušovaná.
+constexpr int MOON_TRACK_LOOKAHEAD_HOURS = 12;
+constexpr int TRACK_MAX_HOURS = 28;
+constexpr int TRACK_SUBSTEP_SECONDS = 300;
+constexpr int TRACK_MAX_TICKS = 16;
 
 struct SkyColor {
   uint16_t rgb565;
@@ -231,31 +235,47 @@ bool moonTrackAt(const SkyFeed &feed, double moment, double &ra, double &dec) {
   return true;
 }
 
-// Kudy Měsíc půjde do času end: přerušovaná čára nad obzorem a na každé
+// Odkud se bere poloha na dráze: Měsíc z bodů serveru, Slunce stojí za půl
+// dne mezi hvězdami na místě (ujde čtvrt stupně), takže stačí jeho poloha teď.
+struct TrackSource {
+  const SkyFeed *moon = nullptr;
+  double ra = 0.0;
+  double dec = 0.0;
+};
+
+bool trackAt(const TrackSource &source, double moment, double &ra,
+             double &dec) {
+  if (source.moon != nullptr) return moonTrackAt(*source.moon, moment, ra, dec);
+  ra = source.ra;
+  dec = source.dec;
+  return true;
+}
+
+// Kudy těleso půjde do času end: přerušovaná čára nad obzorem a na každé
 // celé hodině tečka. Hodiny, kde se tečka dá popsat, vrací v ticks.
-size_t drawMoonTrack(const SkyCanvas &canvas, const SkyFeed &feed,
-                     float latitude, float longitude, double epoch, double end,
-                     TrackTick *ticks) {
+size_t drawTrack(const SkyCanvas &canvas, const TrackSource &source,
+                 uint16_t trackColor, float latitude, float longitude,
+                 double epoch, double end, TrackTick *ticks) {
   size_t tickCount = 0;
-  const uint16_t color = canvas.color(COLOR_MOON_TRACK);
-  const int steps = MOON_TRACK_HOURS * 3600 / MOON_TRACK_SUBSTEP_SECONDS;
+  const uint16_t color = canvas.color(trackColor);
+  const int steps = TRACK_MAX_HOURS * 3600 / TRACK_SUBSTEP_SECONDS;
   int previousX = 0;
   int previousY = 0;
   bool previousUp = false;
   // Kroky jdou od celých pěti minut, aby hodinové tečky padly přesně.
   const double first =
-      std::floor(epoch / MOON_TRACK_SUBSTEP_SECONDS) * MOON_TRACK_SUBSTEP_SECONDS;
+      std::floor(epoch / TRACK_SUBSTEP_SECONDS) * TRACK_SUBSTEP_SECONDS;
   for (int step = 0; step <= steps; ++step) {
     const double moment =
-        step == 0 ? epoch : first + step * MOON_TRACK_SUBSTEP_SECONDS;
+        step == 0 ? epoch : first + step * TRACK_SUBSTEP_SECONDS;
     if (moment > end) break;
     double ra = 0.0;
     double dec = 0.0;
-    if (!moonTrackAt(feed, moment, ra, dec)) {
+    if (!trackAt(source, moment, ra, dec)) {
       previousUp = false;
       continue;
     }
-    // Hvězdný čas se bere v čase bodu dráhy, ne teď: Měsíc se posune po
+    // Hvězdný čas se bere v čase bodu dráhy, ne teď: těleso se posune po
     // obloze hlavně tím, jak se Země otočí.
     int x = 0;
     int y = 0;
@@ -268,7 +288,7 @@ size_t drawMoonTrack(const SkyCanvas &canvas, const SkyFeed &feed,
     const long long seconds = static_cast<long long>(moment);
     if (up && step > 0 && seconds % 3600 == 0) {
       fillMapCircle(canvas.pixels(), x, y, 1, color, 90);
-      if (tickCount < MOON_TRACK_MAX_TICKS) {
+      if (tickCount < TRACK_MAX_TICKS) {
         const time_t when = static_cast<time_t>(seconds);
         struct tm local;
         localtime_r(&when, &local);
@@ -280,6 +300,33 @@ size_t drawMoonTrack(const SkyCanvas &canvas, const SkyFeed &feed,
     previousUp = up;
   }
   return tickCount;
+}
+
+// Konec dráhy Měsíce: jeho západ, když je nahoře nebo vyjde do dvanácti
+// hodin; jinak se nekreslí (vrací 0). Server posílá nejbližší východ
+// a západ do 24 hodin.
+double moonTrackEnd(const SkyBody &moon, double epoch) {
+  const double limit = epoch + TRACK_MAX_HOURS * 3600.0;
+  const bool up = moon.set > 0 && (moon.rise == 0 || moon.set < moon.rise);
+  if (!up && (moon.rise == 0 ||
+              moon.rise > epoch + MOON_TRACK_LOOKAHEAD_HOURS * 3600.0))
+    return 0.0;
+  if (moon.set > 0 && (up || moon.set > moon.rise))
+    return std::fmin(static_cast<double>(moon.set), limit);
+  return limit;
+}
+
+// Hodiny u teček dráhy pixelovým písmem, kde se vejdou.
+void labelTicks(MapLabelPlacer &placer, uint16_t *pixels, const TrackTick *ticks,
+                size_t count, uint16_t color) {
+  for (size_t index = 0; index < count; ++index) {
+    char hour[4];
+    snprintf(hour, sizeof(hour), "%d", ticks[index].hour);
+    MapLabelBox box;
+    if (placeLabel(placer, ticks[index].x, ticks[index].y, 0,
+                   mapTextWidth(hour) + 2, 9, box))
+      drawMapText(pixels, box.x + 1, box.y + 1, hour, color, 70);
+  }
 }
 
 // Radiant roje: čtyři paprsky ze společného bodu, uprostřed prázdno.
@@ -333,12 +380,17 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
   // Slunce rozhoduje o tom, jak moc jsou hvězdy vidět, a svítí na Měsíc.
   float sunAltitude = -90.0f;
   int64_t sunRise = 0;
+  int64_t sunSet = 0;
+  TrackSource sunTrack;
   int sunX = SKY_CANVAS_CENTER_X;
   int sunY = SKY_CANVAS_CENTER_Y + SKY_CANVAS_RADIUS * 2;
   for (size_t index = 0; index < feed->bodyCount; ++index) {
     const SkyBody &body = feed->bodies[index];
     if (body.kind != SKY_BODY_SUN) continue;
     sunRise = body.rise;
+    sunSet = body.set;
+    sunTrack.ra = body.raHours;
+    sunTrack.dec = body.decDeg;
     float azimuth = 0.0f;
     toScreen(canvas, body.raHours, body.decDeg, latitude, longitude, epoch,
              sunX, sunY, azimuth, sunAltitude);
@@ -441,14 +493,30 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
     }
   }
 
-  TrackTick ticks[MOON_TRACK_MAX_TICKS];
-  // V noci jde dráha jen do východu Slunce: kudy Měsíc půjde za dne, nikoho
-  // při pohledu na noční oblohu nezajímá.
-  double trackEnd = epoch + MOON_TRACK_HOURS * 3600.0;
-  if (!result.sunUp && sunRise > epoch && sunRise < trackEnd)
-    trackEnd = static_cast<double>(sunRise);
-  const size_t tickCount = drawMoonTrack(canvas, *feed, latitude, longitude,
-                                         epoch, trackEnd, ticks);
+  // Měsíc: celý přechod oblohou, který právě je nebo brzy začne. V noci
+  // jen do východu Slunce: kudy Měsíc půjde za dne, nikoho při pohledu na
+  // noční oblohu nezajímá.
+  TrackTick moonTicks[TRACK_MAX_TICKS];
+  size_t moonTickCount = 0;
+  for (size_t index = 0; index < feed->bodyCount; ++index) {
+    const SkyBody &body = feed->bodies[index];
+    if (body.kind != SKY_BODY_MOON) continue;
+    double trackEnd = moonTrackEnd(body, epoch);
+    if (!result.sunUp && sunRise > epoch && sunRise < trackEnd)
+      trackEnd = static_cast<double>(sunRise);
+    TrackSource moonTrack;
+    moonTrack.moon = feed;
+    if (trackEnd > epoch)
+      moonTickCount = drawTrack(canvas, moonTrack, COLOR_MOON_TRACK, latitude,
+                                longitude, epoch, trackEnd, moonTicks);
+  }
+  // Slunce: ve dne zbytek jeho cesty až k západu.
+  TrackTick sunTicks[TRACK_MAX_TICKS];
+  size_t sunTickCount = 0;
+  if (result.sunUp && sunSet > epoch)
+    sunTickCount = drawTrack(canvas, sunTrack, COLOR_SUN_TRACK, latitude,
+                             longitude, epoch, static_cast<double>(sunSet),
+                             sunTicks);
 
   int radiantX = 0;
   int radiantY = 0;
@@ -532,7 +600,7 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
   }
 
   // Popisky až po tělesech, aby jim nezabraly místo: nejdřív radiant, pak
-  // hodiny na dráze Měsíce a nakonec jména obrazců.
+  // hodiny na dráhách Měsíce a Slunce a nakonec jména obrazců.
   MapLabelBox box;
   if (radiantUp &&
       placeLabel(placer, radiantX, radiantY, 6, labelWidth(feed->radiantName),
@@ -543,15 +611,10 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
     strncpy(label.name, feed->radiantName, sizeof(label.name) - 1);
     label.color = canvas.color(COLOR_RADIANT);
   }
-  const uint16_t tickColor = canvas.color(COLOR_MOON_TRACK);
-  for (size_t index = 0; index < tickCount; ++index) {
-    char hour[4];
-    snprintf(hour, sizeof(hour), "%d", ticks[index].hour);
-    MapLabelBox tickBox;
-    if (placeLabel(placer, ticks[index].x, ticks[index].y, 0,
-                   mapTextWidth(hour) + 2, 9, tickBox))
-      drawMapText(pixels, tickBox.x + 1, tickBox.y + 1, hour, tickColor, 70);
-  }
+  labelTicks(placer, pixels, moonTicks, moonTickCount,
+             canvas.color(COLOR_MOON_TRACK));
+  labelTicks(placer, pixels, sunTicks, sunTickCount,
+             canvas.color(COLOR_SUN_TRACK));
   // Za dne nejsou hvězdy vidět, tak ani jména obrazců.
   if (result.sunUp) return;
   for (size_t index = 0; index < feed->figureCount; ++index) {

@@ -57,6 +57,7 @@ const char EXTRA[] =
     "20554,-2230,20570,-2225,20586,-2220,20602,-2215,20618,-2210,20634,-2205,"
     "20650,-2200,20666,-2195,20682,-2190,20698,-2185,20714,-2180]},"
     "\"dark\":[1790014600,1790050000],"
+    "\"day\":[1789966000,1790009900],"
     "\"radiant\":{\"n\":\"Perseidy\",\"ra\":3.2,\"dec\":58}}";
 
 // Velký vůz nízko nad severem (21. 9. ve 22:00), tedy v pásu řádků úkazů.
@@ -221,6 +222,7 @@ int main(int argc, char **argv) {
   assert(extra.stars[0].name[0] == 'V');
   assert(extra.figureCount == 2 && extra.moonTrackCount == 29);
   assert(extra.hasRadiant && extra.darkFrom == 1790014600);
+  assert(extra.dayFrom == 1789966000 && extra.dayTo == 1790009900);
   pixels = canvas();
   // Radiant Perseid leží nízko na severovýchodě, v pásu řádků úkazů; tady
   // se proto kreslí bez nich.
@@ -279,6 +281,60 @@ int main(int argc, char **argv) {
     skyRender(pixels.data(), &north, LATITUDE, LONGITUDE, EPOCH, 0, false,
               false, false, "", result);
     assert(inBand(result) == 1);
+  }
+
+  // Dráhy: ve dne Slunce do západu, Měsíc celý svůj přechod. Čáry jsou
+  // průsvitné, tak se porovnávají dva snímky, s dráhou a bez ní.
+  {
+    auto differing = [](const std::vector<uint16_t> &a,
+                        const std::vector<uint16_t> &b) {
+      int count = 0;
+      for (size_t index = 0; index < a.size(); ++index)
+        count += a[index] != b[index];
+      return count;
+    };
+    // Poledne 22. 9. SELČ: Slunce na jihu, zapadá v 19:00.
+    const double noon = EPOCH + 14 * 3600.0;
+    static SkyFeed day;
+    assert(parse(EXTRA, day));
+    day.bodies[0].rise = static_cast<int64_t>(noon) + 18 * 3600;
+    day.bodies[0].set = static_cast<int64_t>(noon) + 7 * 3600;
+    day.bodyCount = 1;  // bez Měsíce
+    std::vector<uint16_t> withPath = canvas();
+    skyRender(withPath.data(), &day, LATITUDE, LONGITUDE, noon, 0, false, false,
+              true, "", result);
+    assert(result.sunUp);
+    // Bez západu se dráha Slunce nekreslí.
+    day.bodies[0].set = 0;
+    std::vector<uint16_t> withoutPath = canvas();
+    skyRender(withoutPath.data(), &day, LATITUDE, LONGITUDE, noon, 0, false,
+              false, true, "", result);
+    assert(differing(withPath, withoutPath) > 100);
+
+    // Měsíc, který vyjde až za 13 hodin, dráhu nemá: snímek je stejný jako
+    // bez dráhy v datech. Když je nahoře, kreslí se až k západu.
+    static SkyFeed night;
+    assert(parse(EXTRA, night));
+    SkyBody &moon = night.bodies[1];
+    assert(moon.kind == SKY_BODY_MOON);
+    moon.rise = static_cast<int64_t>(EPOCH) + 13 * 3600;
+    moon.set = moon.rise + 10 * 3600;
+    std::vector<uint16_t> late = canvas();
+    skyRender(late.data(), &night, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
+              true, "", result);
+    const size_t points = night.moonTrackCount;
+    night.moonTrackCount = 0;
+    std::vector<uint16_t> noTrack = canvas();
+    skyRender(noTrack.data(), &night, LATITUDE, LONGITUDE, EPOCH, 0, false,
+              false, true, "", result);
+    assert(differing(late, noTrack) == 0);
+    night.moonTrackCount = points;
+    moon.set = static_cast<int64_t>(EPOCH) + 3 * 3600;
+    moon.rise = moon.set + 12 * 3600;
+    std::vector<uint16_t> up = canvas();
+    skyRender(up.data(), &night, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
+              true, "", result);
+    assert(differing(up, noTrack) > 50);
   }
 
   puts("sky render OK");
