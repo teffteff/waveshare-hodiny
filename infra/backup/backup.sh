@@ -23,11 +23,11 @@ set -eu
 : "${BACKUP_HA_HISTORY:=1}"
 # Soubory s hesly a klici. Chybejici se preskoci - stroj nemusi mit vsechno.
 # Vyslovne prazdna hodnota znamena "zadne"; proto "=" a ne ":=" niz.
-: "${BACKUP_SECRETS=/etc/caddy/caddy.env /opt/news/news.env /opt/agenda/agenda.env /opt/agenda/key.json /opt/school/school.env /opt/watch/watch.env /opt/ou-watch/watch.env}"
+: "${BACKUP_SECRETS=/etc/caddy/caddy.env /opt/news/news.env /opt/agenda/agenda.env /opt/agenda/key.json /opt/school/school.env /opt/alerts/alerts.env /opt/health/health.env /opt/watch/watch.env /opt/ou-watch/watch.env}"
 # Databaze, ktere se za behu zapisuji. Kopiruji se pres sqlite3 .backup, ne
 # cp: prosty cp za behu utrhne stranku uprostred transakce a vysledek je
 # nepouzitelny. Hlidaci si v nich drzi, co uz videli.
-: "${BACKUP_SQLITE=/opt/watch/state.db /opt/ou-watch/state.db}"
+: "${BACKUP_SQLITE=/var/lib/watch/state.db /var/lib/ou-watch/state.db}"
 # Cokoli navic, oddelene mezerami. Svety Minecraftu sem patri jen tehdy, kdyz
 # je na ne dost mista - jsou radove GB a meni se porad.
 : "${BACKUP_EXTRA:=}"
