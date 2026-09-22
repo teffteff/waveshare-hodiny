@@ -1,0 +1,58 @@
+name: Tests
+
+# Testy na počítači: firmwarové moduly přes tools/run_host_tests.sh a služby
+# z infra/. Běží při každém pushi a PR a public-release.yml je volá před
+# sestavením, aby nevyšel firmware s rozbitým parserem.
+#
+# macOS kvůli mbedTLS 3 z Homebrew, proti kterému se překládá test šifrování
+# zálohy (stejně jako na vývojovém Macu); Ubuntu má v balíčcích jen 2.28.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install mbedTLS 3
+        run: brew install mbedtls@3
+
+      - name: Host tests
+        run: bash tools/run_host_tests.sh
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Stejná verze jako /usr/bin/python3.11 na serveru.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      # Družice potřebují sgp4/numpy/skyfield ve verzích ze serveru; agenda
+      # v testu nahrazuje Google knihovny, ale requests importuje.
+      - name: Install service dependencies
+        run: python -m pip install -r infra/satellites/requirements.txt requests
+
+      - name: Service tests
+        run: |
+          failed=0
+          for dir in infra/*/; do
+            compgen -G "$dir/test_*.py" > /dev/null || continue
+            echo "::group::$dir"
+            (cd "$dir" && python -m unittest discover -p 'test_*.py') || failed=1
+            echo "::endgroup::"
+          done
+          exit $failed

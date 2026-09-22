@@ -22,7 +22,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact source
@@ -103,6 +107,7 @@ jobs:
             build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.boot-app0.bin \
             build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.app.bin \
             build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.ota.bin \
+            build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.elf \
             --repo "$GITHUB_REPOSITORY" \
             --title "Waveshare Hodiny $VERSION" \
             --generate-notes \
