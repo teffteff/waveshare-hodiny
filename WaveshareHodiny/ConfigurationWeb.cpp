@@ -30,6 +30,7 @@
 #include "LightningService.h"
 #include "TlsMemory.h"
 #include "ClockDashboard.h"
+#include "CrashLog.h"
 #include "Display_ST7701.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
@@ -4114,7 +4115,9 @@ void handleDiagnostics() {
                                   lightOn, nightMode);
   }
   String result;
-  result.reserve(2700);
+  // Odpověď má kolem 7 kB. Rezerva nad 4 kB jde rovnou do PSRAM, kdežto
+  // postupné zvětšování by prošlo menšími kusy vnitřní RAM.
+  result.reserve(8192);
   result = F("{\"ok\":true,\"configurationAvailable\":");
   result += webActive ? F("true") : F("false");
   result += F(",\"webMode\":\"");
@@ -4138,6 +4141,8 @@ void handleDiagnostics() {
   result += LCD_GetPixelClock();
   result += F(",\"resetReason\":");
   result += static_cast<int>(esp_reset_reason());
+  result += F(",\"crashes\":");
+  result += crashLogJson();
   result += F(",\"flashSize\":");
   result += ESP.getFlashChipSize();
   result += F(",\"psramSize\":");
@@ -4212,10 +4217,12 @@ void handleDiagnostics() {
   result += clockConfigRadarAvailable(config) ? F("true") : F("false");
   result += F(",\"location\":\"");
   result += jsonEscape(config.openMeteoCity);
+  // Diagnostika je dostupná bez hesla, takže poloha jen na obec (~1 km):
+  // na kontrolu středu radaru to stačí, adresu domu to neprozradí.
   result += F("\",\"latitude\":");
-  result += String(config.openMeteoLatitude, 5);
+  result += String(config.openMeteoLatitude, 2);
   result += F(",\"longitude\":");
-  result += String(config.openMeteoLongitude, 5);
+  result += String(config.openMeteoLongitude, 2);
   result += F(",\"radiusKm\":");
   result += radar.radiusKm;
   result += F(",\"requestedFrameCount\":");

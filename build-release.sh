@@ -68,6 +68,9 @@ if [[ "$RELEASE_CHANNEL" == "public" ]]; then
   PACKAGE_COMMAND+=(/waveshare-hodiny/firmware)
 fi
 "${PACKAGE_COMMAND[@]}"
+# Symboly k sestavení: hodiny po pádu hlásí jen adresy a tools/decode-crash.sh
+# je převádí na řádky zdrojáku proti přesně tomuhle ELF (ověří ho podle SHA).
+cp "$BUILD_PATH/WaveshareHodiny.ino.elf" "$OUTPUT_DIR/package/waveshare-hodiny.elf"
 
 printf 'RELEASE_VERSION=%s\n' "$VERSION"
 printf 'RELEASE_CHANNEL=%s\n' "$RELEASE_CHANNEL"
