@@ -1,0 +1,30 @@
+[Unit]
+Description=Upozorneni na telefon (dest, neobvykla letadla) pro hodiny
+After=network-online.target rain-web.service planes-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Zapisuje jen do
+# /opt/alerts/state: nastaveni od hodin, historii typu letadel a vysky poloh.
+User=alerts
+Group=alerts
+Environment=ALERTS_PORT=8098
+# Jen pro Caddy na stejnem stroji; heslo k PUT resi basic_auth tam.
+Environment=ALERTS_BIND=127.0.0.1
+Environment=ALERTS_STATE=/opt/alerts/state
+# NTFY_URL, NTFY_TOPIC a NTFY_TOKEN. Tema je heslo, proto soubor s pravy 600.
+EnvironmentFile=/opt/alerts/alerts.env
+# Zadny venv, jen standardni knihovna. Interpret vyslovne 3.11, protoze
+# /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6 (viz rain-web.service).
+ExecStart=/usr/bin/python3.11 /opt/alerts/serve.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/alerts/state
+
+[Install]
+WantedBy=multi-user.target

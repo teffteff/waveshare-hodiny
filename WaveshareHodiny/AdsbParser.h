@@ -59,7 +59,17 @@ struct AdsbAircraft {
   char description[40] = "";
   char squawk[6] = "";
   bool hasTrack = false;
+  // Geometrická (GNSS) výška nad elipsoidem WGS84 ve stopách. Na rozdíl od
+  // barometrické nezávisí na tlaku, takže z ní jde výška nad zemí.
+  float geometricAltitudeFt = 0.0f;
+  bool hasGeometricAltitude = false;
+  // Příznaky z databáze tar1090, kterou adsb.fi připojuje: bit 1 vojenské,
+  // bit 2 zajímavé. Server je posílá jen nenulové.
+  uint8_t dbFlags = 0;
 };
+
+constexpr uint8_t ADSB_DB_FLAG_MILITARY = 0x01;
+constexpr uint8_t ADSB_DB_FLAG_INTERESTING = 0x02;
 
 enum class AdsbParseStatus : uint8_t {
   // Rozebráno, ať už letadla přišla nebo je obloha prázdná.
@@ -113,4 +123,17 @@ uint8_t adsbEmergencySeverity(const char *code);
 // Najde letadlo podle ICAO adresy. Vrací index v aktuálním poli, nebo -1, když
 // v posledních datech není. Používá se místo držení indexu přes stahování -
 // pole se pokaždé staví znovu a jeho pořadí není zaručené.
+// Nejbližší průlet kolem bodu po přímce v příštích lookaheadSeconds, stejně
+// jako predict_pass() v infra/alerts/serve.py. Výška nad zemí je geometrická
+// výška minus geoid (45 m) minus nadmořská výška bodu; bez geometrické se bere
+// barometrická. False, když letadlo výšku nehlásí vůbec.
+struct AdsbPassPrediction {
+  float seconds = 0.0f;
+  float distanceM = 0.0f;
+  float heightM = 0.0f;
+};
+bool adsbPredictPass(const AdsbAircraft &aircraft, float homeLatitude,
+                     float homeLongitude, float groundElevationM,
+                     float lookaheadSeconds, AdsbPassPrediction &prediction);
+
 int adsbFindByHex(const AdsbAircraft *aircraft, size_t count, const char *hex);

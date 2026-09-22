@@ -72,6 +72,10 @@ changes the system text and verbal date shown on the display.
   hour-ahead forecast is computed by the Czech weather service and carried by
   your own server, the clock decides on its own threshold and writes on the
   radar how long until the rain arrives (Czechia only),
+- phone alerts through ntfy: rain due within a set time and unusual
+  aircraft — military, rare types and low overflights predicted from
+  position, track and speed; your own server does the watching, so alerts
+  arrive even with every clock off, and the clock sends it the settings on save,
 - Czech weather service warnings for the municipality district the clock is
   in: a coloured line with the most severe warning above the radar range, and
   for an orange or red one a single switch to the radar; your own server reads

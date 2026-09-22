@@ -1642,7 +1642,83 @@ void testWarningsAndNightSkyPersistenceAndMigration() {
   assert(clamped.nightSky.cooldownMinutes == CLOCK_AURORA_COOLDOWN_MAX_MINUTES);
 }
 
+void testPushAlertsPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.pushAlerts.enabled);
+  assert(defaults.pushAlerts.url[0] == '\0');
+  assert(defaults.pushAlerts.rain && defaults.pushAlerts.rainLeadMinutes == 20);
+  assert(defaults.pushAlerts.military && defaults.pushAlerts.rare &&
+         defaults.pushAlerts.low);
+  assert(defaults.pushAlerts.quietFromHour == 22 &&
+         defaults.pushAlerts.quietToHour == 7);
+
+  // Schéma 50 je předponou 51: výstrahy zůstanou, upozornění na telefon mají
+  // výchozí hodnoty, ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.warnings.enabled = true;
+  strcpy(source.warnings.url, "https://hodiny:heslo@example.net/warnings.json");
+  memset(&source.pushAlerts, 0xA5, sizeof(source.pushAlerts));
+  seed(legacyRecord(source, 50, CLOCK_CONFIG_SCHEMA_50_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.warnings.enabled);
+  assert(!migrated.pushAlerts.enabled);
+  assert(migrated.pushAlerts.url[0] == '\0');
+  assert(migrated.pushAlerts.lowHeightM == 500);
+
+  // Uloží se a načte beze změny.
+  migrated.pushAlerts.enabled = true;
+  strcpy(migrated.pushAlerts.url, "https://hodiny:heslo@example.net/alerts");
+  migrated.pushAlerts.rain = false;
+  migrated.pushAlerts.rainLeadMinutes = 40;
+  migrated.pushAlerts.rainMinimumDbz = 36;
+  migrated.pushAlerts.rainRadiusKm = 10;
+  migrated.pushAlerts.military = false;
+  migrated.pushAlerts.watchRadiusKm = 50;
+  migrated.pushAlerts.lowRadiusM = 2500;
+  migrated.pushAlerts.lowHeightM = 800;
+  migrated.pushAlerts.quietFromHour = 0;
+  migrated.pushAlerts.quietToHour = 0;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.pushAlerts.enabled);
+  assert(strcmp(loaded.pushAlerts.url,
+                "https://hodiny:heslo@example.net/alerts") == 0);
+  assert(!loaded.pushAlerts.rain && loaded.pushAlerts.rainLeadMinutes == 40);
+  assert(loaded.pushAlerts.rainMinimumDbz == 36);
+  assert(loaded.pushAlerts.rainRadiusKm == 10);
+  assert(!loaded.pushAlerts.military && loaded.pushAlerts.rare);
+  assert(loaded.pushAlerts.watchRadiusKm == 50);
+  assert(loaded.pushAlerts.lowRadiusM == 2500);
+  assert(loaded.pushAlerts.lowHeightM == 800);
+  assert(loaded.pushAlerts.quietFromHour == 0 &&
+         loaded.pushAlerts.quietToHour == 0);
+
+  // Bez adresy se nedají zapnout a hodnoty mimo rozsah se srovnají.
+  loaded.pushAlerts.url[0] = '\0';
+  loaded.pushAlerts.rainLeadMinutes = 5;
+  loaded.pushAlerts.watchRadiusKm = 200;
+  loaded.pushAlerts.lowRadiusM = 50;
+  loaded.pushAlerts.lowHeightM = 9000;
+  loaded.pushAlerts.quietFromHour = 30;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(!clamped.pushAlerts.enabled);
+  assert(clamped.pushAlerts.rainLeadMinutes == CLOCK_PUSH_RAIN_LEAD_MIN_MINUTES);
+  assert(clamped.pushAlerts.watchRadiusKm == CLOCK_PUSH_WATCH_RADIUS_MAX_KM);
+  assert(clamped.pushAlerts.lowRadiusM == CLOCK_PUSH_LOW_RADIUS_MIN_M);
+  assert(clamped.pushAlerts.lowHeightM == CLOCK_PUSH_LOW_HEIGHT_MAX_M);
+  assert(clamped.pushAlerts.quietFromHour == 23);
+}
+
 int main() {
+  testPushAlertsPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();

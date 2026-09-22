@@ -53,6 +53,8 @@ constexpr size_t CLOCK_SATELLITES_URL_LENGTH = 192;
 constexpr size_t CLOCK_RAIN_URL_LENGTH = 192;
 // Adresa serveru s výstrahami ČHMÚ i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_WARNINGS_URL_LENGTH = 192;
+// Adresa serveru upozornění na telefon i se jménem a heslem pro basic_auth.
+constexpr size_t CLOCK_PUSH_URL_LENGTH = 192;
 // Skupiny družic jako bity. Pořadí bitů je pořadí skupin na serveru
 // (SatelliteFeed.h), takže se nesmí měnit.
 constexpr uint8_t CLOCK_SATELLITE_GROUP_STATIONS = 0x01;
@@ -170,7 +172,12 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // the satellites, with its aurora alert. The schema 49 record stays an exact
 // prefix; both start off and warnings have no address, so an upgrade neither
 // contacts a new server nor switches a screen on its own.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 50;
+// Schema 51 appends the phone alerts (rain on its way, military, rare and low
+// aircraft), which the clock only hands to its own server (infra/alerts); the
+// server watches and pushes through ntfy even while every clock is off. The
+// schema 50 record stays an exact prefix and the alerts start off without an
+// address.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 51;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -700,6 +707,48 @@ constexpr uint8_t CLOCK_AURORA_HOLD_MIN_MINUTES = 1;
 constexpr uint8_t CLOCK_AURORA_HOLD_MAX_MINUTES = 120;
 constexpr uint8_t CLOCK_AURORA_COOLDOWN_MAX_MINUTES = 240;
 
+// Upozornění na telefon. Hodiny samy nic nehlídají ani neposílají: nastavení
+// jen po uložení předají vlastnímu serveru (infra/alerts) a ten hlídá déšť
+// i letadla dál, i když jsou všechny hodiny vypnuté, a posílá push přes ntfy.
+// Téma ntfy zná jen server; hodiny znají jen jeho adresu.
+//
+// Noční obloha má osm bajtů, takže upozornění začínají na násobku čtyř.
+struct alignas(4) ClockPushAlertsConfig {
+  bool enabled = false;
+  // Déšť do nastavené doby, z předpovědi ČHMÚ po deseti minutách.
+  bool rain = true;
+  uint8_t rainLeadMinutes = 20;
+  uint8_t rainMinimumDbz = 28;
+  uint8_t rainRadiusKm = 5;
+  // Letadla v okruhu watchRadiusKm: vojenská a vzácné typy.
+  bool military = true;
+  bool rare = true;
+  uint8_t watchRadiusKm = 30;
+  // Nízký přelet: projde blíž než lowRadiusM a níž než lowHeightM nad zemí.
+  bool low = true;
+  // Nerušit od-do, celé hodiny místního času; stejné číslo znamená nikdy.
+  uint8_t quietFromHour = 22;
+  uint8_t quietToHour = 7;
+  uint8_t reserved = 0;
+  uint16_t lowRadiusM = 1500;
+  uint16_t lowHeightM = 500;
+  char url[CLOCK_PUSH_URL_LENGTH] = "";
+};
+
+static_assert(sizeof(ClockPushAlertsConfig) == 208,
+              "The phone alerts are part of the stored record.");
+
+// Meze, ve kterých smí nastavení ležet. Stejné hodnoty hlídá web, normalizace
+// i server (infra/alerts/serve.py, parse_config).
+constexpr uint8_t CLOCK_PUSH_RAIN_LEAD_MIN_MINUTES = 10;
+constexpr uint8_t CLOCK_PUSH_RAIN_LEAD_MAX_MINUTES = 60;
+constexpr uint8_t CLOCK_PUSH_WATCH_RADIUS_MIN_KM = 5;
+constexpr uint8_t CLOCK_PUSH_WATCH_RADIUS_MAX_KM = 100;
+constexpr uint16_t CLOCK_PUSH_LOW_RADIUS_MIN_M = 300;
+constexpr uint16_t CLOCK_PUSH_LOW_RADIUS_MAX_M = 10000;
+constexpr uint16_t CLOCK_PUSH_LOW_HEIGHT_MIN_M = 100;
+constexpr uint16_t CLOCK_PUSH_LOW_HEIGHT_MAX_M = 3000;
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -850,6 +899,9 @@ struct ClockConfig {
   // leží přesně za koncem záznamu schématu 49 a za nimi žádná výplň není.
   ClockWarningsConfig warnings;
   ClockNightSkyConfig nightSky;
+  // Pole schématu 51. Noční obloha končí na násobku čtyř, takže upozornění na
+  // telefon začínají přesně na konci záznamu schématu 50.
+  ClockPushAlertsConfig pushAlerts;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1003,8 +1055,16 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_49_SIZE = offsetof(ClockConfig, warnings);
 static_assert(CLOCK_CONFIG_SCHEMA_49_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_49_SIZE + sizeof(ClockWarningsConfig) +
                           sizeof(ClockNightSkyConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, pushAlerts),
               "Schema 50 must preserve the complete schema 49 prefix.");
+
+// Schéma 50 končilo noční oblohou: osm bajtů, zarovnání čtyři, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_50_SIZE = offsetof(ClockConfig, pushAlerts);
+
+static_assert(CLOCK_CONFIG_SCHEMA_50_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_50_SIZE + sizeof(ClockPushAlertsConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 51 must preserve the complete schema 50 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.

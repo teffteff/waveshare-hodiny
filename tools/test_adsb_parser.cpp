@@ -462,9 +462,75 @@ void testMapLabelShortensOnWords() {
   assert(strcmp(label, "SUPERLONGMANUFACTU") == 0);
 }
 
+void testDbFlagsAndGeometricAltitude() {
+  const char *payload =
+      "{\"ac\":[{\"hex\":\"ae1234\",\"lat\":50,\"lon\":14,"
+      "\"alt_baro\":2000,\"alt_geom\":2150,\"dbFlags\":3},"
+      "{\"hex\":\"49d0d1\",\"lat\":50,\"lon\":14,\"alt_baro\":3000}]}";
+  AdsbAircraft aircraft[2];
+  const AdsbParseOutcome outcome = adsbParseAircraft(payload, aircraft, 2);
+  assert(outcome.count == 2);
+  assert(aircraft[0].dbFlags == 3);
+  assert(aircraft[0].dbFlags & ADSB_DB_FLAG_MILITARY);
+  assert(aircraft[0].hasGeometricAltitude);
+  assert(aircraft[0].geometricAltitudeFt == 2150.0f);
+  // Chybějící dbFlags znamená nula, ne předchozí letadlo.
+  assert(aircraft[1].dbFlags == 0);
+  assert(!aircraft[1].hasGeometricAltitude);
+}
+
+// Stejné případy jako PredictPassTest v infra/alerts/test_serve.py.
+void testPredictPass() {
+  const float homeLat = 49.9046f;
+  const float homeLon = 14.7842f;
+  AdsbAircraft plane;
+  plane.latitude = homeLat - 3.0f / 110.574f;
+  plane.longitude = homeLon;
+  plane.groundSpeedKt = 120.0f;
+  plane.trackDeg = 0.0f;
+  plane.hasTrack = true;
+  plane.geometricAltitudeFt = (300.0f + 45.0f + 400.0f) / 0.3048f;
+  plane.hasGeometricAltitude = true;
+  AdsbPassPrediction pass;
+  assert(adsbPredictPass(plane, homeLat, homeLon, 400.0f, 180.0f, pass));
+  assert(pass.seconds > 47.0f && pass.seconds < 50.0f);
+  assert(pass.distanceM < 50.0f);
+  assert(pass.heightM > 299.0f && pass.heightM < 301.0f);
+
+  // Odlétá: bere se současná vzdálenost.
+  plane.trackDeg = 180.0f;
+  assert(adsbPredictPass(plane, homeLat, homeLon, 400.0f, 180.0f, pass));
+  assert(pass.seconds == 0.0f);
+  assert(pass.distanceM > 2950.0f && pass.distanceM < 3050.0f);
+
+  // Klesá 1000 ft/min: nad domem o ~250 m níž.
+  plane.trackDeg = 0.0f;
+  plane.verticalRateFtMin = -1000.0f;
+  plane.geometricAltitudeFt = (600.0f + 45.0f + 400.0f) / 0.3048f;
+  assert(adsbPredictPass(plane, homeLat, homeLon, 400.0f, 180.0f, pass));
+  assert(pass.heightM > 340.0f && pass.heightM < 360.0f);
+
+  // Bez geometrické výšky barometrická; bez obou nic.
+  AdsbAircraft hover;
+  hover.latitude = homeLat + 0.5f / 110.574f;
+  hover.longitude = homeLon;
+  hover.groundSpeedKt = 5.0f;
+  hover.hasTrack = true;
+  hover.altitudeFt = (200.0f + 400.0f) / 0.3048f;
+  hover.hasAltitude = true;
+  assert(adsbPredictPass(hover, homeLat, homeLon, 400.0f, 180.0f, pass));
+  assert(pass.seconds == 0.0f);
+  assert(pass.distanceM > 490.0f && pass.distanceM < 510.0f);
+  assert(pass.heightM > 199.0f && pass.heightM < 201.0f);
+  hover.hasAltitude = false;
+  assert(!adsbPredictPass(hover, homeLat, homeLon, 400.0f, 180.0f, pass));
+}
+
 }  // namespace
 
 int main() {
+  testDbFlagsAndGeometricAltitude();
+  testPredictPass();
   testMapLabelPrefersTypeName();
   testMapLabelShortensOnWords();
   testMapShortLabelIsTypeCode();

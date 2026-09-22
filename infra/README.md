@@ -55,6 +55,7 @@ ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$CLOCK_SSH"
 | Družice a noční obloha | 8095, jen loopback | `/opt/satellites/serve.py`, `sky.py`, `requirements.txt`, `.venv`, `satellites-web.service`, dráhy a efemeridy DE421 v `/var/cache/satellites/` | `satellites/` |
 | Srážková předpověď | 8096, jen loopback | `/opt/rain/serve.py`, `rain-web.service` | `rain/` |
 | Výstrahy ČHMÚ | 8097, jen loopback | `/opt/warnings/serve.py`, `orp.json`, `warnings-web.service` | `warnings/` |
+| Upozornění na telefon | 8098, jen loopback | `/opt/alerts/serve.py`, `alerts-web.service`, téma ntfy v `/opt/alerts/alerts.env`, stav v `/opt/alerts/state/` | `alerts/` |
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/` | `backup/` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
@@ -103,6 +104,7 @@ https://hodiny:$SCHOOL_PASSWORD@$CLOCK_HOST/school.json  rozvrh a úkoly (nepovi
 https://hodiny:$SATELLITES_PASSWORD@$CLOCK_HOST/satellites.json  družice (nepovinné)
 https://hodiny:$RAIN_PASSWORD@$CLOCK_HOST/rain.json  srážková předpověď (nepovinné)
 https://hodiny:$WARNINGS_PASSWORD@$CLOCK_HOST/warnings.json  výstrahy ČHMÚ (nepovinné)
+https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts  upozornění na telefon (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
 https://$CLOCK_HOST              Home Assistant
@@ -137,8 +139,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090, 8092, 8093, 8094, 8095, 8096 a 8097 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami, rozvrhem, družicemi, srážkami a výstrahami poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093, 8094, 8095, 8096, 8097 a 8098 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami a upozorněními poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -790,6 +792,77 @@ reloadnout. Do hodin se pak opíše
 **Obrazovky → Výstrahy ČHMÚ**. Testy bez sítě (z kořene repozitáře — spuštěné
 z `infra/` by adresář `warnings` zastínil stejnojmenný modul Pythonu):
 `python3 -m unittest infra/warnings/test_serve.py`.
+
+## Upozornění na telefon
+
+Push na telefon, když se blíží déšť nebo kolem letí něco neobvyklého:
+vojenské letadlo, vzácný typ, nebo letadlo, které projde nízko nad domem.
+**Hlídá server, ne hodiny**, takže upozornění chodí i se všemi hodinami
+vypnutými. Hodiny jen po uložení nastavení (záložka **Obrazovky → Upozornění na
+telefon**) pošlou serveru polohu a co hlídat:
+
+```
+PUT /alerts/config/<MAC bez dvojteček>   JSON, viz parse_config() v alerts/serve.py
+```
+
+Odpověď nese nadmořskou výšku polohy (`{"elevation":478.0}`). Hodiny podle ní
+na obrazovce letadel označí azurovým kroužkem nízký přelet se stejnými mezemi
+jako push; vojenská letadla mají purpurový kroužek podle `dbFlags` vždycky.
+
+a opakují to po každém startu a po chybě, dokud server nepotvrdí. Vypnutá
+upozornění se posílají taky (`"enabled":false`), aby server přestal hlídat;
+proto se nejdřív vypíná přepínač a adresa se maže až potom.
+
+- **Déšť** bere `alerts/serve.py` z `rain-web` po loopbacku (bez Caddy, bez
+  hesla) každé dvě a půl minuty. Push odejde, když teď neprší a některý krok
+  předpovědi do zvolené doby dosáhne prahu; další až po 30 minutách sucha.
+- **Letadla** bere z `planes-web` po loopbacku každých 10 s, takže adsb.fi
+  pořád vidí jediného volajícího s jeho cache — desetina limitu (1 dotaz/s)
+  i se všemi hodinami. `planes/serve.py` kvůli tomu propouští `dbFlags` (bit 1
+  vojenské, bit 2 zajímavé podle databáze tar1090) a `alt_geom`; firmware je
+  nečte. Vzácnost typů se server učí sám do `state/types.json` (typ viděný
+  za 30 dní v méně než třech dnech); prvních 14 dní od prvního spuštění
+  vzácné typy nehlásí. Nízký přelet: přímka z polohy, kurzu, rychlosti
+  a stoupání na tři minuty dopředu; výška nad zemí z `alt_geom` minus geoid
+  (45 m) minus nadmořská výška polohy, kterou server jednou stáhne
+  z api.open-meteo.com do `state/elevations.json`. Bez ní se nízké přelety
+  nehlásí.
+- Stejné letadlo znovu nejdřív za hodinu (nízký přelet) nebo za šest hodin
+  (vojenské, vzácné). Hodiny na téže poloze (zaokrouhleno na ~1 km) sdílejí
+  stažení i to, že push odejde jednou.
+
+Push jde na ntfy JSONem na `NTFY_URL`, stejně jako u hlídání obchodů
+(`/opt/watch`). **Téma je heslo** — vlastní, ne to od hlídání obchodů, aby se
+letadla dala v aplikaci ztlumit zvlášť. **Stav**:
+`curl -s 127.0.0.1:8098/alerts/status` (hodiny, stav deště, počet známých
+typů, poslední chyba); ven nevede.
+
+Zavedení (jednou):
+
+```sh
+set -a; . ./.env; set +a
+SSH() { ssh -i "$CLOCK_SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa "$@"; }
+SSH "$CLOCK_SSH" 'sudo useradd --system --no-create-home --home-dir /opt/alerts --shell /sbin/nologin alerts \
+    && sudo install -d -o root -g alerts -m 750 /opt/alerts \
+    && sudo install -d -o alerts -g alerts -m 700 /opt/alerts/state'
+scp -o PubkeyAcceptedAlgorithms=+ssh-rsa -i "$CLOCK_SSH_KEY" \
+    infra/alerts/serve.py infra/alerts/alerts-web.service "$CLOCK_SSH:"
+SSH "$CLOCK_SSH" 'sudo install -o root -g root -m 644 serve.py alerts-web.service /opt/alerts/ \
+    && rm serve.py alerts-web.service'
+TOPIC="hodiny-$(openssl rand -hex 16)"   # do aplikace ntfy: Subscribe to topic
+SSH "$CLOCK_SSH" "printf 'NTFY_URL=https://ntfy.sh\nNTFY_TOPIC=$TOPIC\nNTFY_TOKEN=\n' \
+    | sudo install -o alerts -g alerts -m 600 /dev/stdin /opt/alerts/alerts.env"
+NEW="$(openssl rand -hex 24)"   # do .env jako ALERTS_PASSWORD
+SSH "$CLOCK_SSH" "echo ALERTS_HASH=\$(caddy hash-password --plaintext '$NEW') | sudo tee -a /etc/caddy/caddy.env >/dev/null"
+SSH "$CLOCK_SSH" 'sudo cp /opt/alerts/alerts-web.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now alerts-web.service && sudo systemctl restart caddy'
+SSH "$CLOCK_SSH" 'sudo -u alerts env $(sudo cat /opt/alerts/alerts.env) python3.11 /opt/alerts/serve.py --test-push'
+```
+
+Stejně jako u výstrah se Caddyfile s blokem `/alerts/config/*` nasazuje až po
+zapsání `ALERTS_HASH` a Caddy se musí restartovat, ne reloadnout. Do hodin se
+opíše `https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts`. Testy bez sítě
+(z kořene repozitáře): `python3 -m unittest infra/alerts/test_serve.py`.
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 

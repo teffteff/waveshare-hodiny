@@ -1,5 +1,6 @@
 #include "AdsbParser.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -89,6 +90,13 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
       target.altitudeFt = value;
       target.hasAltitude = true;
     }
+    if (jsonReadNumberMember(objectBegin, objectEnd, "alt_geom", value)) {
+      target.geometricAltitudeFt = value;
+      target.hasGeometricAltitude = true;
+    }
+    if (jsonReadNumberMember(objectBegin, objectEnd, "dbFlags", value) &&
+        value >= 0.0f && value <= 255.0f)
+      target.dbFlags = static_cast<uint8_t>(value);
     if (jsonReadNumberMember(objectBegin, objectEnd, "gs", value))
       target.groundSpeedKt = value;
     if (jsonReadNumberMember(objectBegin, objectEnd, "baro_rate", value))
@@ -117,6 +125,45 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
     ++outcome.count;
   }
   return outcome;
+}
+
+bool adsbPredictPass(const AdsbAircraft &aircraft, float homeLatitude,
+                     float homeLongitude, float groundElevationM,
+                     float lookaheadSeconds, AdsbPassPrediction &prediction) {
+  constexpr float FT_TO_M = 0.3048f;
+  constexpr float KNOT_TO_MS = 0.514444f;
+  constexpr float GEOID_OFFSET_M = 45.0f;
+  // Pod touhle rychlostí letadlo (vrtulník) skoro stojí a směr nic neznamená.
+  constexpr float HOVER_KNOTS = 30.0f;
+  constexpr float DEG_TO_RAD = 0.017453293f;
+  float height = 0.0f;
+  if (aircraft.hasGeometricAltitude)
+    height = aircraft.geometricAltitudeFt * FT_TO_M - GEOID_OFFSET_M -
+             groundElevationM;
+  else if (aircraft.hasAltitude)
+    height = aircraft.altitudeFt * FT_TO_M - groundElevationM;
+  else
+    return false;
+  const float x = (aircraft.longitude - homeLongitude) * 111320.0f *
+                  cosf(homeLatitude * DEG_TO_RAD);
+  const float y = (aircraft.latitude - homeLatitude) * 110574.0f;
+  float seconds = 0.0f;
+  float vx = 0.0f;
+  float vy = 0.0f;
+  if (aircraft.hasTrack && aircraft.groundSpeedKt >= HOVER_KNOTS) {
+    const float speed = aircraft.groundSpeedKt * KNOT_TO_MS;
+    vx = speed * sinf(aircraft.trackDeg * DEG_TO_RAD);
+    vy = speed * cosf(aircraft.trackDeg * DEG_TO_RAD);
+    seconds = -(x * vx + y * vy) / (vx * vx + vy * vy);
+    if (!(seconds > 0.0f)) seconds = 0.0f;
+    if (seconds > lookaheadSeconds) seconds = lookaheadSeconds;
+  }
+  prediction.seconds = seconds;
+  prediction.distanceM = hypotf(x + vx * seconds, y + vy * seconds);
+  const float climb = aircraft.verticalRateFtMin * FT_TO_M / 60.0f;
+  const float predicted = height + climb * seconds;
+  prediction.heightM = predicted > 0.0f ? predicted : 0.0f;
+  return true;
 }
 
 void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,

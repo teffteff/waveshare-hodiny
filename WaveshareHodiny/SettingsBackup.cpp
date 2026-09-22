@@ -245,6 +245,9 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     // výstrah nese heslo jako adresa srážek.
     CONFIG_FIELD(warnings, PART_SCREENS),
     CONFIG_FIELD(nightSky, PART_SCREENS),
+    // Upozornění na telefon hlídají tytéž věci jako obrazovky výš; adresa nese
+    // heslo stejně jako adresa srážek.
+    CONFIG_FIELD(pushAlerts, PART_SCREENS),
 };
 #undef CONFIG_FIELD
 
@@ -261,8 +264,8 @@ constexpr bool configFieldsInOrder() {
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
 // Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
-static_assert((offsetof(ClockConfig, nightSky) +
-               sizeof(ClockNightSkyConfig) +
+static_assert((offsetof(ClockConfig, pushAlerts) +
+               sizeof(ClockPushAlertsConfig) +
                alignof(ClockConfig) - 1) /
                       alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),
