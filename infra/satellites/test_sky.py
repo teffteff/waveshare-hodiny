@@ -183,10 +183,10 @@ class EphemerisTest(unittest.TestCase):
         # Za 800 s od zacatku pulhodiny ujde Mesic zlomek stupne.
         self.assertAlmostEqual(track["p"][0] / 1000.0, moon["ra"], delta=0.02)
         self.assertAlmostEqual(track["p"][1] / 100.0, moon["dec"], delta=0.3)
-        # Za 14 hodin se posune na vychod asi o 7 stupnu, tedy o pul hodiny.
+        # Za 28 hodin se posune na vychod asi o 15 stupnu, tedy o hodinu.
         shift = (track["p"][-2] - track["p"][0]) / 1000.0 % 24.0
-        self.assertGreater(shift, 0.3)
-        self.assertLess(shift, 0.7)
+        self.assertGreater(shift, 0.7)
+        self.assertLess(shift, 1.3)
 
     def test_dark_window_in_autumn(self):
         # 21. 9. 2026 14:00 UTC: tma prijde vecer a skonci rano.
@@ -200,6 +200,19 @@ class EphemerisTest(unittest.TestCase):
         start, end = self.answer(now)["dark"]
         self.assertLess(start, now)
         self.assertGreater(end, now)
+
+    def test_day_window_before_sunrise(self):
+        # 21. 9. 2026 02:00 UTC: den prijde rano a skonci vecer, 12 hodin.
+        start, end = self.answer(1789956000)["day"]
+        self.assertEqual((time.gmtime(start).tm_mday, time.gmtime(start).tm_hour), (21, 4))
+        self.assertEqual((time.gmtime(end).tm_mday, time.gmtime(end).tm_hour), (21, 17))
+
+    def test_day_window_while_day(self):
+        now = 1789999200  # 21. 9. 2026 14:00 UTC
+        start, end = self.answer(now)["day"]
+        self.assertLess(start, now)
+        self.assertGreater(end, now)
+        self.assertAlmostEqual((end - start) / 3600.0, 12.2, delta=0.3)
 
     def test_no_astronomical_dark_at_midsummer(self):
         self.assertNotIn("dark", self.answer(1781870400))  # 19. 6. 2026 12:00 UTC

@@ -1450,6 +1450,8 @@ void satelliteServiceSkySnapshot(SkySnapshot &snapshot) {
     const SkyFeed &feed = *skyLive;
     snapshot.darkFrom = feed.darkFrom;
     snapshot.darkTo = feed.darkTo;
+    snapshot.dayFrom = feed.dayFrom;
+    snapshot.dayTo = feed.dayTo;
     for (size_t index = 0; index < feed.bodyCount; ++index) {
       const SkyBody &body = feed.bodies[index];
       if (body.kind != SKY_BODY_MOON) continue;

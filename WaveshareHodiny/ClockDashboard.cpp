@@ -7602,8 +7602,9 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
   const bool redNight = redNightVisualEnabled();
   lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
 
-  // Horní řádek: kdy je tma a kdy je nahoře Měsíc. Index Kp jen tehdy, když
-  // se blíží prahu upozornění, a od prahu místo všeho ostatního polární záře.
+  // Horní řádek: kdy je tma (ve dne místo ní kdy svítí Slunce) a kdy je
+  // nahoře Měsíc. Index Kp jen tehdy, když se blíží prahu upozornění, a od
+  // prahu místo všeho ostatního polární záře.
   char text[128];
   char kp[12];
   if (!sky.haveData) {
@@ -7648,8 +7649,20 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
                  maximum);
         append(part);
       }
+      // Ve dne Slunce od východu do západu; tma přijde na řadu po západu.
+      const bool daytime = sky.sunUp && sky.dayFrom <= now && sky.dayTo > now &&
+                           now > 1700000000;
+      if (daytime) {
+        char from[8];
+        char to[8];
+        formatLocalClock(sky.dayFrom, from, sizeof(from));
+        formatLocalClock(sky.dayTo, to, sizeof(to));
+        snprintf(part, sizeof(part), "%s %s-%s", english ? "SUN" : "SLUNCE",
+                 from, to);
+        append(part);
+      }
       // Tma: dokdy, když už je, jinak od kdy do kdy.
-      if (sky.darkTo > now && now > 1700000000) {
+      if (!daytime && sky.darkTo > now && now > 1700000000) {
         char from[8];
         char to[8];
         formatLocalClock(sky.darkFrom, from, sizeof(from));

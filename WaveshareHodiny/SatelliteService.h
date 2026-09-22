@@ -91,6 +91,9 @@ struct SkySnapshot {
   // Astronomická tma (0, když není) a nejbližší východ a západ Měsíce.
   int64_t darkFrom = 0;
   int64_t darkTo = 0;
+  // Den od východu do západu Slunce (0 od staršího serveru).
+  int64_t dayFrom = 0;
+  int64_t dayTo = 0;
   bool hasMoon = false;
   int64_t moonRise = 0;
   int64_t moonSet = 0;

@@ -74,9 +74,11 @@ MAJOR_ECLIPSE_PERCENT = 50
 # Radiant roje se kresli na obloze tolik dni pred maximem a po nem.
 RADIANT_DAYS_BEFORE = 3.0
 RADIANT_DAYS_AFTER = 2.0
-# Draha Mesice: vzorky po pul hodine na tolik hodin dopredu.
+# Draha Mesice: vzorky po pul hodine na tolik hodin dopredu. Hodiny kresli
+# cely nejblizsi prechod oblohou, pokud Mesic vyjde do 12 hodin; prechod
+# trva nejvys kolem 16 hodin.
 MOON_TRACK_STEP_SECONDS = 1800
-MOON_TRACK_HOURS = 14
+MOON_TRACK_HOURS = 28
 # Astronomicka tma: Slunce aspon 18° pod obzorem.
 DARK_SUN_DEGREES = -18.0
 # Tesne prilozeni: Mesic k planete nebo hvezde, planeta k planete.
@@ -459,6 +461,7 @@ class Sky:
                     "bodies": self._bodies(latitude, longitude, english, now),
                     "moonTrack": self._moon_track(latitude, longitude, now),
                     **self._dark_window(latitude, longitude, now),
+                    **self._day_window(latitude, longitude, now),
                 })
                 radiant = self._active_radiant(now, english)
                 if radiant is not None:
@@ -517,20 +520,31 @@ class Sky:
         V lete ji na padesate rovnobezce Slunce vubec nepusti; pak se nic
         neposila a hodiny radek vynechaji.
         """
+        state_at = almanac.dark_twilight_day(self.eph, wgs84.latlon(latitude, longitude))
+        window = self._window(state_at, 0, now)
+        return {"dark": window} if window else {}
+
+    def _day_window(self, latitude: float, longitude: float, now: float) -> dict:
+        """Den od vychodu do zapadu Slunce, ktery prave je nebo prijde."""
+        state_at = almanac.sunrise_sunset(self.eph, wgs84.latlon(latitude, longitude))
+        window = self._window(state_at, 1, now)
+        return {"day": window} if window else {}
+
+    def _window(self, state_at, wanted: int, now: float) -> list[int] | None:
+        """Prvni usek stavu wanted, ktery neskoncil, jako [od, do]."""
         t0 = self.ts.from_datetime(_utc(now - 16 * 3600))
         t1 = self.ts.from_datetime(_utc(now + 32 * 3600))
-        state_at = almanac.dark_twilight_day(self.eph, wgs84.latlon(latitude, longitude))
         times, states = almanac.find_discrete(t0, t1, state_at)
-        # Useky tmy (stav 0) jako dvojice (od, do); okraje hledani se berou jako
-        # hranice, useky na nich ale nejsou cele, tak se nepouziji.
+        # Okraje hledani se berou jako hranice, useky na nich ale nejsou cele,
+        # tak se nepouziji.
         edges = [(_unix(moment), int(state)) for moment, state in zip(times, states)]
         for index, (start, state) in enumerate(edges):
-            if state != 0 or index + 1 >= len(edges):
+            if state != wanted or index + 1 >= len(edges):
                 continue
             end = edges[index + 1][0]
             if end > now:
-                return {"dark": [start, end]}
-        return {}
+                return [start, end]
+        return None
 
     def _active_radiant(self, now: float, english: bool) -> dict | None:
         """Radiant roje, ktery je pobliz maxima; jinak nic."""

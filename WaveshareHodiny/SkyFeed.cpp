@@ -98,6 +98,18 @@ void parseMoonTrack(const JsonValue &value, SkyFeed &feed) {
   feed.moonTrackStep = static_cast<uint32_t>(lroundf(step));
 }
 
+// Úsek [od, do] v unixových sekundách; vadný nechá obě hodnoty nulové.
+void parseWindow(const JsonValue &value, int64_t &from, int64_t &to) {
+  JsonArrayCursor cursor = jsonOpenArray(value);
+  int64_t edges[2] = {};
+  bool valid = true;
+  for (int64_t &edge : edges)
+    valid = valid && jsonNextItem(cursor) && readEpoch(itemValue(cursor), edge);
+  if (!valid || edges[0] >= edges[1]) return;
+  from = edges[0];
+  to = edges[1];
+}
+
 void parseBody(const char *begin, const char *end, SkyFeed &feed) {
   SkyBody body;
   if (!readFinite(begin, end, "ra", body.raHours) ||
@@ -240,16 +252,10 @@ bool skyFeedParse(const char *begin, const char *end, SkyFeed &feed) {
 
   parseMoonTrack(jsonFindMember(objectBegin, objectEnd, "moonTrack"), feed);
 
-  cursor = jsonOpenArray(jsonFindMember(objectBegin, objectEnd, "dark"));
-  int64_t dark[2] = {};
-  bool darkValid = true;
-  for (int64_t &edge : dark)
-    darkValid = darkValid && jsonNextItem(cursor) &&
-                readEpoch(itemValue(cursor), edge);
-  if (darkValid && dark[0] < dark[1]) {
-    feed.darkFrom = dark[0];
-    feed.darkTo = dark[1];
-  }
+  parseWindow(jsonFindMember(objectBegin, objectEnd, "dark"), feed.darkFrom,
+              feed.darkTo);
+  parseWindow(jsonFindMember(objectBegin, objectEnd, "day"), feed.dayFrom,
+              feed.dayTo);
 
   const JsonValue radiant = jsonFindMember(objectBegin, objectEnd, "radiant");
   if (radiant.isObject() &&
