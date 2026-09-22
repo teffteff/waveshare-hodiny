@@ -800,11 +800,8 @@ void setActiveScreen(uint8_t screen) {
   const bool wasSchool = previous == DASHBOARD_SCREEN_SCHOOL;
   const bool isSchool = screen == DASHBOARD_SCREEN_SCHOOL;
   if (wasSchool != isSchool) {
-    // Obrazovka se vždycky otevírá na rozvrhu, i po automatickém střídání.
-    if (schoolPageIndex != 0) {
-      schoolPageIndex = 0;
-      layoutSchoolPage();
-    }
+    // Stránka (rozvrh, nástěnka) zůstává, jak ji majitel nechal, i přes
+    // automatické střídání; bez nástěnky ji vrátí na rozvrh layoutSchoolPage.
     if (schoolVisibilityCallback != nullptr) schoolVisibilityCallback(isSchool);
   }
   // Předpověď běží na vlastním intervalu i skrytá; otevření obrazovky jí jen
@@ -836,8 +833,8 @@ void setActiveScreen(uint8_t screen) {
     if (!isSatellites) {
       // Detail by po návratu visel nad družicí, která mezitím zapadla.
       satelliteServiceCloseDetail();
-      // Po návratu na obrazovku jsou první zase družice.
-      satellitesSkyPage = false;
+      // Stránka (družice, obloha) zůstává, jak ji majitel nechal: po návratu
+      // se ukáže táž. Bez oblohy ji vrátí clockDashboardSetNightSkyAvailable.
       if (satellitesCanvas != nullptr)
         lv_obj_add_flag(satellitesCanvas, LV_OBJ_FLAG_HIDDEN);
       if (satellitesDetailPanel != nullptr)
