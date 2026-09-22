@@ -13,6 +13,7 @@
 
 #include "ClockDashboard.h"
 #include "ClockConfig.h"
+#include "CrashLog.h"
 #include "ClockNamedays.h"
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
@@ -3796,6 +3797,9 @@ void setup() {
     Serial.println("Konfiguracni pamet se nepodarilo nacist");
 #endif
   }
+  // Výpis pádu se po přečtení maže z flash, takže stejně jako migrace
+  // konfigurace musí proběhnout před spuštěním displeje.
+  crashLogBegin();
   uint32_t legacyWeatherIconColor = persistedConfig.leftWeatherIconColor;
   if (persistedConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO) {
     legacyWeatherIconColor = persistedConfig.openMeteoSlots[0].color;
