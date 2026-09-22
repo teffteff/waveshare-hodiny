@@ -95,7 +95,7 @@ serveru zkontrolovat nedají:
 | Srážková předpověď | 8096, jen loopback | `/opt/rain/serve.py`, `rain-web.service` | `rain/` |
 | Výstrahy ČHMÚ | 8097, jen loopback | `/opt/warnings/serve.py`, `orp.json`, `warnings-web.service` | `warnings/` |
 | Upozornění na telefon | 8098, jen loopback | `/opt/alerts/serve.py`, `alerts-web.service`, téma ntfy v `/opt/alerts/alerts.env`, stav v `/opt/alerts/state/` | `alerts/` |
-| Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/` | `backup/` |
+| Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/`, zašifrovaná kopie do OCI Object Storage (`offsite-key.asc`, adresa v `backup.env`) | `backup/` |
 | Hlášení poruch | — | `/opt/health/check.py`, `health.service` + `health.timer`, `notify-failure@.service`, `ha-update-check.sh` + `ha-update.timer` (nová verze HA), drop-in `on-failure.conf` u každé hlídané jednotky, téma ntfy v `/opt/health/health.env`, stav v `/var/lib/health/` | `health/` |
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
@@ -1476,9 +1476,12 @@ Testy bez sítě: `python3 -m unittest infra/health/test_check.py`.
    rovnou z posledního archivu (nese všechny `*_HASH`), jinak `tools/deploy.sh
    --hash JMÉNO` pro každé heslo z `.env`. Bez `caddy.env` se Caddy nespustí,
    viz „Heslo k agendě“.
-3. Hesla a klíče z posledního staženého archivu na jejich místa (`news.env`,
-   `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě
-   `watch.env`) s právy podle „Zabezpečení stroje“. `tools/deploy.sh --init`
+3. Hesla a klíče z posledního archivu na jejich místa (`news.env`,
+   `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`,
+   `backup.env`, obě `watch.env`) s právy podle „Zabezpečení stroje“. Archiv je
+   na Macu v `~/waveshare-zalohy`; když chybí i Mac, stáhne se kopie z bucketu
+   `hodiny-zalohy` a rozšifruje přes `tools/decrypt-backup.sh` (viz „Kopie mimo
+   stroj“). `tools/deploy.sh --init`
    prázdné `*.env` založí, ale nikdy nepřepíše vyplněné.
 4. `tools/deploy.sh --init --all`. Založí uživatele a adresáře, nainstaluje
    všechno z manifestu včetně drop-inů hlášení poruch a jednotky zapne.
@@ -1490,12 +1493,14 @@ Testy bez sítě: `python3 -m unittest infra/health/test_check.py`.
    `watch`, resp. `ouwatch`). Bez databáze by první běh jen potichu zasel
    základ — nic se neztratí, ale nic, co přibylo mezitím, se neohlásí.
 6. Home Assistant: konfiguraci z archivu, kontejner podle „Zabezpečení stroje“.
-7. `backup/backup.env.example` → `/opt/backup/backup.env` s cestou ke konfiguraci
-   HA (600). Na Macu `tools/install-pull-backup-agent.sh`, ať se stahuje dál samo.
+7. `/opt/backup/backup.env` (600) z archivu, jinak z `backup/backup.env.example`
+   s cestou ke konfiguraci HA a adresou PAR (`BACKUP_OFFSITE_URL`; při
+   podezření, že ji zná někdo cizí, vydat v konzoli novou a starou smazat).
+   Na Macu `tools/install-pull-backup-agent.sh`, ať se stahuje dál samo.
 8. `tools/check-stack.sh --deep` a `ssh … 'sudo systemctl start health.service'`.
 
 **Python na tom stroji:** `python3` je 3.6.8, který nemá `zoneinfo` a tiše
-nainstaluje roky staré verze knihoven. Obě `.venv` se proto stavějí výslovně
+nainstaluje roky staré verze knihoven. Všechny `.venv` se proto stavějí výslovně
 `/usr/bin/python3.11`.
 
 **SELinux:** binárka přesunutá z `/tmp` si nese label `user_tmp_t` a systemd ji

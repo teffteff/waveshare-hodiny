@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Zkontroluje, jestli serverová část hodin žije: kanál se zprávami, Home
-# Assistant za HTTPS proxy a platnost certifikátu. Bez parametrů kontroluje
-# jen zvenčí, takže nepotřebuje SSH klíč; --deep přidá kontroly na serveru.
+# Zkontroluje, jestli serverová část hodin žije: zprávy, agendu, zálohy
+# nastavení, letadla, blesky, družice a oblohu, výstrahy, srážky, upozornění,
+# rozvrh, Home Assistant za HTTPS proxy a platnost certifikátu. U každého zdroje
+# ověří, že bez hesla vrací 401 a s heslem z .env čerstvý obsah. Bez parametrů
+# kontroluje jen zvenčí, takže nepotřebuje SSH klíč; --deep přidá kontroly na
+# serveru.
 #
 #   tools/check-stack.sh          rychlá kontrola z internetu
-#   tools/check-stack.sh --deep   + systemd jednotky a shoda infra/ se serverem
+#   tools/check-stack.sh --deep   + jednotky (i hlídačů), selhané jednotky,
+#                                 hlášení poruch a shoda s infra/manifest.txt
 #
 # Neshoda v --deep říká jen to, že se obsah liší; jestli je napřed repozitář
 # (nenasazená změna) nebo server (změna bez commitu), pozná až člověk.

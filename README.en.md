@@ -1039,7 +1039,12 @@ protocol. Use the repository script with the currently verified serial port:
 - `WaveshareHodiny/` – firmware source and embedded web interface,
 - `docs/` – public installer and OTA/weather assets for GitHub Pages,
 - `screenshots/` and `media/` – documentation media,
-- `tools/` – generators and release validation tools,
+- `tools/` – generators and release validation tools, plus the server tooling
+  (`check-stack.sh`, `deploy.sh`, `update-ha.sh`, `pull-backup.sh`,
+  `decrypt-backup.sh`),
+- `infra/` – the server side, a byte-for-byte copy of what runs there;
+  [infra/README.md](infra/README.md) (in Czech) covers deployment, failure
+  alerts, backups and recovery,
 - `build.sh` – development build,
 - `build-release.sh` – isolated release build and package validation.
 
