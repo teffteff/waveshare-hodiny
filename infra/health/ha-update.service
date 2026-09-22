@@ -1,0 +1,24 @@
+[Unit]
+Description=Kontrola nove verze Home Assistanta, push jednou za verzi
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root, na rozdil od health.service: pta se Dockeru, a pristup k Dockeru je
+# stejne root. Nic jineho nedela; push jde pres check.py --notify.
+User=root
+EnvironmentFile=/opt/health/health.env
+# Vlastni adresar, ne /var/lib/health: StateDirectory= u root jednotky by mu
+# zmenil vlastnika na root a health.service by pak nemohl zapisovat.
+StateDirectory=ha-update
+StateDirectoryMode=0700
+Environment=HA_UPDATE_STATE=/var/lib/ha-update
+ExecStart=/bin/bash /opt/health/ha-update-check.sh
+Nice=15
+# Novy image ma 2,3 GB.
+TimeoutStartSec=1800
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true

@@ -1,0 +1,26 @@
+[Unit]
+Description=Hodinova kontrola serveru hodin, push pri zmene
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Vlastni uzivatel, ne opc. Pta se jen sluzeb po loopbacku a systemctl, zapisuje
+# jen svuj stav do StateDirectory. Kod patri rootovi.
+User=health
+Group=health
+# NTFY_URL, NTFY_TOPIC, NTFY_TOKEN, HEALTH_HOST. Tema je heslo, soubor 600 root;
+# systemd ho nacte pred prepnutim na uzivatele.
+EnvironmentFile=/opt/health/health.env
+# systemd 239 na Oracle Linuxu 8 cestu sluzbe nepreda, proto i promenna.
+StateDirectory=health
+StateDirectoryMode=0700
+Environment=HEALTH_STATE_DIR=/var/lib/health
+# Interpret vyslovne 3.11, /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6.
+ExecStart=/usr/bin/python3.11 /opt/health/check.py
+Nice=10
+TimeoutStartSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

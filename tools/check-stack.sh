@@ -20,12 +20,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD)
+      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD|RAIN_PASSWORD|ALERTS_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD|RAIN_PASSWORD|ALERTS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -46,6 +46,8 @@ SETTINGS_URL="https://${HOST}/settings/"
 SCHOOL_URL="https://${HOST}/school.json"
 SATELLITES_URL="https://${HOST}/satellites.json"
 WARNINGS_URL="https://${HOST}/warnings.json"
+RAIN_URL="https://${HOST}/rain.json"
+ALERTS_URL="https://${HOST}/alerts/config/"
 # Agenda je za heslem, kanál se zprávami ne. Jméno je natvrdo i v Caddyfile,
 # tajemstvím je jen heslo, které leží v .env jako AGENDA_PASSWORD.
 AGENDA_USER="${AGENDA_USER:-hodiny}"
@@ -59,6 +61,7 @@ AGENDA_MAX_AGE_HOURS="${AGENDA_MAX_AGE_HOURS:-1}"
 CERT_MIN_DAYS="${CERT_MIN_DAYS:-21}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$REPO_ROOT/tools/manifest-lib.sh"
 # Zachytit hned: níž se poziční parametry přepisují při rozebírání výstupů.
 MODE="${1:-}"
 failures=0
@@ -69,7 +72,7 @@ warn() { printf '  \033[33mwarn\033[0m  %s\n' "$1"; }
 head_() { printf '\n%s\n' "$1"; }
 
 ssh_run() {
-  ssh -i "$SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa \
+  ssh -i "$SSH_KEY" \
       -o ConnectTimeout=15 -o BatchMode=yes "$SSH_TARGET" "$@" 2>/dev/null
 }
 
@@ -461,6 +464,82 @@ print("OK", data.get("orp") or "-", len(items), 1 if data.get("stale") else 0)
   fi
 fi
 
+# --- srážková předpověď ----------------------------------------------------------
+# Data jsou veřejná, heslo chrání stroj a polohu v dotazu, takže bez něj 401.
+# S heslem z .env (RAIN_PASSWORD) se kontroluje, že testovací poloha (Ondřejov)
+# leží v dosahu radarů a že předpověď vyšla z analýzy mladší než půl hodiny —
+# ČHMÚ ji vydává po pěti minutách.
+rain_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "${RAIN_URL}?lat=49.90&lon=14.78")"
+if [ "$rain_public_code" = "401" ]; then
+  ok "srážky jsou bez hesla nedostupné (401)"
+elif [ "$rain_public_code" = "200" ]; then
+  bad "srážky bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth"
+else
+  warn "srážky bez hesla vrací '${rain_public_code:-nic}' (nepovinná služba)"
+fi
+if [ -z "${RAIN_PASSWORD:-}" ]; then
+  warn "v .env chybí RAIN_PASSWORD, obsah srážek se nekontroluje"
+else
+  rain_curl_config="$(mktemp)"
+  chmod 600 "$rain_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$RAIN_PASSWORD" > "$rain_curl_config"
+  rain_body="$(curl -sS --max-time 40 -K "$rain_curl_config" -w '\n%{http_code}' "${RAIN_URL}?lat=49.90461&lon=14.7842&r=5" 2>/dev/null)"
+  rm -f "$rain_curl_config"
+  rain_code="$(printf '%s' "$rain_body" | tail -n 1)"
+  rain_body="$(printf '%s' "$rain_body" | sed '$d')"
+  if [ "$rain_code" != "200" ]; then
+    warn "srážky na $RAIN_URL s heslem z .env vrací '${rain_code:-nic}' (heslo, nebo rain-web.service)"
+  else
+    rain_report="$(printf '%s' "$rain_body" | python3 -c '
+import json, sys, time
+try:
+    data = json.loads(sys.stdin.read())
+    steps = data["steps"]
+except Exception:
+    print("BAD 0 0 0"); raise SystemExit
+age = int((time.time() - int(data.get("slot") or 0)) / 60)
+print("OK", 1 if data.get("covered") else 0, age, len(steps))
+')"
+    read -r rain_status rain_covered rain_age rain_steps <<< "$rain_report"
+    if [ "${rain_status:-BAD}" = "BAD" ]; then
+      bad "srážky odpovídají, ale bez pole steps — firmware by nenačetl nic"
+    elif [ "$rain_covered" != "1" ]; then
+      bad "srážky tvrdí, že Ondřejov je mimo dosah radarů — maska nebo geometrie v rain/serve.py nesedí"
+    elif [ "$rain_age" -gt 30 ]; then
+      warn "srážky odpovídají předpovědí starou $rain_age min — ČHMÚ nevydává, nebo stahování selhává (curl 127.0.0.1:8096/rain/status na serveru)"
+    else
+      ok "srážky odpovídají, předpověď stará $rain_age min, kroků: $rain_steps"
+    fi
+  fi
+fi
+
+# --- upozornění na telefon -----------------------------------------------------
+# Kdo zná heslo, přepíše polohu a zaplaví telefon, takže bez něj 401. Ven vede
+# jen PUT nastavení, žádné GET s obsahem; s heslem stačí, že odpoví služba
+# (404 na neexistující cestu), ne Caddy s 401.
+alerts_public_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X PUT --data '{}' "${ALERTS_URL}check")"
+if [ "$alerts_public_code" = "401" ]; then
+  ok "nastavení upozornění je bez hesla nedostupné (401)"
+elif [ "$alerts_public_code" = "200" ]; then
+  bad "nastavení upozornění bez hesla vrací 200 — v /etc/caddy/Caddyfile chybí basic_auth"
+else
+  warn "nastavení upozornění bez hesla vrací '${alerts_public_code:-nic}' (nepovinná služba)"
+fi
+if [ -z "${ALERTS_PASSWORD:-}" ]; then
+  warn "v .env chybí ALERTS_PASSWORD, heslo k upozorněním se nekontroluje"
+else
+  alerts_curl_config="$(mktemp)"
+  chmod 600 "$alerts_curl_config"
+  printf 'user = "%s:%s"\n' "$AGENDA_USER" "$ALERTS_PASSWORD" > "$alerts_curl_config"
+  alerts_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -K "$alerts_curl_config" "${ALERTS_URL}check")"
+  rm -f "$alerts_curl_config"
+  if [ "$alerts_code" = "401" ] || [ -z "$alerts_code" ] || [ "$alerts_code" = "000" ] || [ "${alerts_code#5}" != "$alerts_code" ]; then
+    warn "upozornění s heslem z .env vrací '${alerts_code:-nic}' (heslo, nebo alerts-web.service)"
+  else
+    ok "heslo k upozorněním platí (služba odpověděla $alerts_code)"
+  fi
+fi
+
 # --- rozvrh a úkoly ---------------------------------------------------------
 # Škola nese jméno dítěte a jeho úkoly, takže bez hesla musí přijít 401. S heslem
 # z .env (SCHOOL_PASSWORD) se kontroluje čerstvost. Ve dne je práh 4 h (nejdelší
@@ -560,7 +639,10 @@ if [ "$MODE" = "--deep" ]; then
   if ! ssh_run true; then
     bad "SSH se nepřipojilo (klíč $SSH_KEY)"
   else
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service alerts-web.service caddy.service backup.timer; do
+    # Hlídače obchodů a obce mají vlastní repozitáře (hlidac-novinek,
+    # hlidac-ondrejov) i nasazení, ale stejný stroj, Caddy a ntfy: hlídá se
+    # tady, že běží, obsah a shodu kódu si kontrolují samy (tools/check-deploy.sh).
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service alerts-web.service caddy.service backup.timer health.timer ha-update.timer watch.timer watch-web.service ou-watch.timer; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"
@@ -569,7 +651,7 @@ if [ "$MODE" = "--deep" ]; then
       fi
     done
 
-    for unit in news.service agenda.service backup.service; do
+    for unit in news.service agenda.service backup.service health.service ha-update.service watch.service ou-watch.service; do
       last_run="$(ssh_run "systemctl show $unit -p ExecMainStatus --value")"
       if [ "$last_run" = "0" ]; then
         ok "poslední běh $unit skončil úspěšně"
@@ -577,6 +659,41 @@ if [ "$MODE" = "--deep" ]; then
         bad "poslední běh $unit skončil kódem '${last_run:-neznámý}' — journalctl -u $unit"
       fi
     done
+
+    # Selhané jednotky z celého stroje, i ty mimo infra/: při ladění
+    # zbývají po systemd-run a zakryly by skutečnou poruchu.
+    failed_units="$(ssh_run "systemctl list-units --state=failed --no-legend --plain" | awk '{print $1}' | tr '\n' ' ')"
+    if [ -z "${failed_units// /}" ]; then
+      ok "žádná jednotka není ve stavu failed"
+    else
+      bad "jednotky ve stavu failed: $failed_units— journalctl -u …, po opravě sudo systemctl reset-failed"
+    fi
+
+    # Hlášení poruch (infra/health): bez tématu ntfy se nic nepošle, a co
+    # hodinová kontrola právě vidí jako problém, vypíše tady.
+    health_report="$(ssh_run "sudo cat /var/lib/health/checks.json 2>/dev/null; echo; sudo grep -c '^NTFY_TOPIC=.' /opt/health/health.env 2>/dev/null || echo 0" | python3 -c '
+import json, sys, time
+text = sys.stdin.read().strip().splitlines()
+topic = text[-1].strip() if text else "0"
+try:
+    data = json.loads("\n".join(text[:-1]))
+except Exception:
+    print(topic, -1, "-"); raise SystemExit
+age = int((time.time() - data.get("time", 0)) / 60)
+print(topic, age, "; ".join(data.get("problems", {}).values()) or "-")
+')"
+    read -r health_topic health_age health_problems <<< "$health_report"
+    if [ "${health_topic:-0}" = "0" ]; then
+      bad "hlášení poruch nemá NTFY_TOPIC v /opt/health/health.env — nic se neposílá"
+    elif [ "${health_age:--1}" = "-1" ]; then
+      warn "hodinová kontrola ještě neběžela (sudo systemctl start health.service)"
+    elif [ "$health_age" -gt 90 ]; then
+      bad "hodinová kontrola naposledy před $health_age min — health.timer stojí"
+    elif [ "$health_problems" != "-" ]; then
+      warn "hodinová kontrola vidí: $health_problems"
+    else
+      ok "hodinová kontrola před $health_age min bez problémů"
+    fi
 
     # Reverzní proxy: HA na proxovaný požadavek vrací 400, dokud nemá zapnuté
     # use_x_forwarded_for a mezi trusted_proxies i 127.0.0.1 — forwarded.py
@@ -619,47 +736,27 @@ print("OK", 1 if data.get("topic") else 0, active, planes_age)
     fi
 
     head_ "Shoda infra/ se serverem"
-    # Přes sudo: /opt/agenda, /opt/settings a /opt/school jsou jen pro své služby (750/700),
-    # opc do nich bez sudo nevidí.
-    remote_sums="$(ssh_run 'sudo md5sum /opt/news/generate.py /opt/news/serve.py /opt/news/locations.py /opt/news/news.service /opt/news/news.timer /opt/news/news-web.service /opt/agenda/generate.py /opt/agenda/feed.py /opt/agenda/serve.py /opt/agenda/agenda.service /opt/agenda/agenda.timer /opt/agenda/agenda-web.service /opt/planes/serve.py /opt/planes/planes-web.service /opt/lightning/serve.py /opt/lightning/lightning-web.service /opt/settings/serve.py /opt/settings/settings-web.service /opt/school/feed.py /opt/school/serve.py /opt/school/school-web.service /opt/satellites/serve.py /opt/satellites/satellites-web.service /opt/satellites/requirements.txt /opt/satellites/sky.py /opt/rain/serve.py /opt/rain/rain-web.service /opt/warnings/serve.py /opt/warnings/orp.json /opt/warnings/warnings-web.service /opt/alerts/serve.py /opt/alerts/alerts-web.service /etc/caddy/Caddyfile /etc/systemd/system/caddy.service /opt/backup/backup.sh /etc/systemd/system/backup.service /etc/systemd/system/backup.timer')"
+    # Seznam souborů je v infra/manifest.txt, stejný, podle kterého nasazuje
+    # tools/deploy.sh. Přes sudo: /opt/agenda, /opt/settings a /opt/school jsou
+    # jen pro své služby (750/700), opc do nich bez sudo nevidí.
+    pairs="$(manifest_files | sort -u)"
+    remote_paths="$(printf '%s\n' "$pairs" | awk '{print $2}' | tr '\n' ' ')"
+    remote_sums="$(ssh_run "sudo md5sum $remote_paths")"
     if [ -z "$remote_sums" ]; then
       warn "kontrolní součty ze serveru se nepodařilo přečíst"
     else
-      # news.env.example schválně chybí: kopie v repu je opravená (Gemini),
-      # zatímco na serveru zůstala původní s ANTHROPIC_API_KEY.
-      while read -r sum path; do
-        case "$path" in
-          /opt/news/*)                    local_path="infra/news/$(basename "$path")" ;;
-          /opt/agenda/*)                  local_path="infra/agenda/$(basename "$path")" ;;
-          /opt/planes/*)                  local_path="infra/planes/$(basename "$path")" ;;
-          /opt/lightning/*)               local_path="infra/lightning/$(basename "$path")" ;;
-          /opt/settings/*)                local_path="infra/settings/$(basename "$path")" ;;
-          /opt/school/*)                  local_path="infra/school/$(basename "$path")" ;;
-          /opt/satellites/*)              local_path="infra/satellites/$(basename "$path")" ;;
-          /opt/rain/*)                    local_path="infra/rain/$(basename "$path")" ;;
-          /opt/warnings/*)                local_path="infra/warnings/$(basename "$path")" ;;
-          /opt/alerts/*)                  local_path="infra/alerts/$(basename "$path")" ;;
-          /etc/caddy/Caddyfile)           local_path="infra/caddy/Caddyfile" ;;
-          /etc/systemd/system/caddy.service) local_path="infra/caddy/caddy.service" ;;
-          /opt/backup/*)                  local_path="infra/backup/$(basename "$path")" ;;
-          /etc/systemd/system/backup.*)   local_path="infra/backup/$(basename "$path")" ;;
-          *) continue ;;
-        esac
-        if [ "$local_path" = "infra/caddy/Caddyfile" ]; then
-          # Šablona: {{DOMAIN}} se dosadí, teprve pak má smysl porovnávat.
-          rendered="$(mktemp)"
-          sed "s/{{DOMAIN}}/$HOST/g" "$REPO_ROOT/$local_path" > "$rendered"
-          local_sum="$(md5 -q "$rendered" 2>/dev/null || md5sum "$rendered" 2>/dev/null | cut -d' ' -f1)"
-          rm -f "$rendered"
+      while read -r local_path path; do
+        sum="$(printf '%s\n' "$remote_sums" | awk -v p="$path" '$2 == p {print $1}')"
+        local_sum="$(manifest_local_md5 "$local_path" "$HOST")"
+        if [ -z "$sum" ]; then
+          svc="$(awk -v f="$local_path" '$3 == f {print $1; exit}' "$MANIFEST")"
+          bad "$path na serveru chybí — tools/deploy.sh ${svc:---all}"
+        elif [ "$sum" = "$local_sum" ]; then
+          ok "$path odpovídá $local_path"
         else
-          local_sum="$(md5 -q "$REPO_ROOT/$local_path" 2>/dev/null || md5sum "$REPO_ROOT/$local_path" 2>/dev/null | cut -d' ' -f1)"
+          bad "$local_path se liší od $path — tools/deploy.sh, nebo commitni změnu ze serveru"
         fi
-        if [ "$sum" = "$local_sum" ]; then
-          ok "$local_path odpovídá serveru"
-        else
-          bad "$local_path se liší od $path — nasaď repo na server, nebo commitni změnu ze serveru"
-        fi
-      done <<< "$remote_sums"
+      done <<< "$pairs"
     fi
   fi
 fi
