@@ -1255,7 +1255,7 @@ věcí na serveru nemá kopii nikde jinde:
 | Konfigurace Home Assistanta | `/path/to/your/config` (bind-mount kontejneru) | `configuration.yaml`, `secrets.yaml`, automatizace a hlavně `.storage` — registr entit, uživatelé, tokeny a integrace naklikané v UI. Bez `.storage` je obnovené HA prázdné, i když YAML sedí. |
 | Historie senzorů | `home-assistant_v2.db` | Grafy a statistiky. Šablonové senzory na ní nestojí. |
 | Stav hlídačů | `/var/lib/watch/state.db`, `/var/lib/ou-watch/state.db` | Co už hlídač viděl. Bez toho přijde po restartu buď záplava „novinek“, nebo se dávka tiše ztratí. |
-| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě `watch.env` | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
+| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě `watch.env`, `backup.env` (adresa PAR) | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
 
 Naopak se zálohovat nemusí: dráhy družic a registr poloh zpráv se stáhnou
 samy, certifikáty si Caddy vyžádá znovu přes ACME a kód služeb je v `infra/`
@@ -1306,17 +1306,62 @@ nastavení Time Machine, ale `xattr` na adresáři — když adresář někdo sm
 a založí znovu, vyloučení zmizí, proto se kontroluje pokaždé. Ověřit jde
 `tmutil isexcluded ~/waveshare-zalohy`.
 
-Archivy se **nešifrují**, a je to vědomé rozhodnutí. U noční úlohy bez obsluhy
-by heslo muselo ležet na serveru vedle toho, co šifruje, takže by nekrylo nic;
-smysl by dávalo jedině šifrování veřejným klíčem, kde server dostane jen tu
-půlku, kterou se zašifrovat dá. Za to se platí tím, že ztráta soukromého klíče
-znamená ztrátu všech archivů najednou — a to je horší riziko než to, které by
-řešilo, dokud se zálohy nedostanou někam mimo Mac a server.
+Archivy na serveru a na Macu se **nešifrují**, a je to vědomé rozhodnutí.
+U noční úlohy bez obsluhy by heslo muselo ležet na serveru vedle toho, co
+šifruje, takže by nekrylo nic. Ztráta klíče by přitom znamenala ztrátu všech
+archivů najednou — horší riziko než to, které by šifrování řešilo na dvou
+strojích, které stejně chrání práva a FileVault.
 
-**Až je někam pošleš** — Object Storage, cizí disk, jiný stroj —, tahle úvaha
-přestane platit a šifrování je potřeba doplnit. Totéž platí pro každou další
-zálohovací službu na Macu (Backblaze a spol.): vyloučit `~/waveshare-zalohy`
-stejně jako u Time Machine, jinak tajemství odtečou tam.
+Kopie, která odchází **mimo oba stroje**, se šifruje vždycky (viz „Kopie mimo
+stroj“). Totéž by platilo pro každou další zálohovací službu na Macu (Backblaze
+a spol.): `~/waveshare-zalohy` vyloučit stejně jako u Time Machine, jinak
+tajemství odtečou tam nešifrovaná.
+
+### Kopie mimo stroj
+
+Mac a server můžou zmizet najednou — ukradený notebook a zrušený účet, požár,
+omylem smazaná instance. Proto `backup.sh` po každé noční záloze pošle
+zašifrovanou kopii do **OCI Object Storage** (Frankfurt, bucket
+`hodiny-zalohy`):
+
+- **Šifruje se veřejným klíčem** `infra/backup/offsite-key.asc` (GnuPG, ed25519
+  + cv25519, otisk `9393 76ED 89E5 C11D B2B6  CBA6 3BEA 33FF 721A 5588`), na
+  serveru jako `/opt/backup/offsite-key.asc`. **Soukromý klíč na serveru
+  není**: kdo stroj ovládne, starší kopie nerozšifruje. Leží na Macu
+  v `~/.config/hodiny-backup/offsite-secret.asc` a v záloze
+  `~/Documents/oracleKeys/hodiny-backup/`. Bez něj jsou kopie k ničemu — patří
+  i do správce hesel. Klíč je bez hesla, stejně jako SSH klíč vedle něj.
+  Server má GnuPG 2.2 a Mac 2.5; klíč je ve formátu v4, který umí oba
+  (ověřeno oběma směry 22. 9. 2026). Nový klíč z GnuPG 2.5 by měl vyrobit
+  totéž: `--quick-gen-key … ed25519 cert`, pak `--quick-add-key … cv25519 encr`.
+- **Nahrává se přes pre-authenticated request** (PAR) s právem jen zapisovat
+  objekty. Server tedy kopie nevidí, nemůže je vypsat ani smazat, jen přidávat.
+  Adresa PAR nese tajný token, je jen v `/opt/backup/backup.env` (600) jako
+  `BACKUP_OFFSITE_URL` a kopie v kořenovém `.env`; do logu se nedostane.
+  PAR má datum vypršení — po něm nahrávání selže, `backup.service` skončí
+  chybou a přijde push. Pak stačí v konzoli vydat nový a přepsat adresu.
+- **Mazání** obstarává pravidlo životního cyklu v bucketu (objekty starší než
+  30 dní). Jedna kopie má kolem 12 MB, měsíc tedy asi 360 MB; Always Free kryje
+  20 GB.
+- Když nahrání selže, místní záloha už je hotová a prořezaná; jednotka jen
+  skončí chybou, aby o tom přišel push.
+
+Zřízení v konzoli OCI (jednou): **Storage → Buckets → Create Bucket**
+`hodiny-zalohy` (Standard, soukromý); v bucketu **Lifecycle Policy Rules →
+Create Rule** „Delete“, objekty starší než 30 dní; **Pre-Authenticated Requests →
+Create**, cíl *Bucket*, *Permit object writes*, bez výpisu objektů, s dlouhým
+vypršením. Adresa se ukáže jen jednou; končí na `/o/` a patří do `.env` jako
+`BACKUP_OFFSITE_URL` a do `/opt/backup/backup.env`.
+
+**Obnova z kopie:** v konzoli stáhnout objekt (`majnr/server-….tar.gz.gpg`), pak
+
+```sh
+tools/decrypt-backup.sh ~/Downloads/server-20260923-032000.tar.gz.gpg
+```
+
+Skript naimportuje soukromý klíč do dočasné klíčenky (běžný GnuPG na Macu
+zůstane nedotčený), rozšifruje a ověří, že je to archiv zálohy; dál podle
+„Obnova z archivu“. Potřebuje `brew install gnupg`.
 
 ### Denní stahování na Macu
 
