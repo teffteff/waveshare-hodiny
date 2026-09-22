@@ -145,6 +145,7 @@ alerts     restart   alerts-web.service
 backup     dir       /opt/backup root:root 700
 backup     dir       /opt/backup/data root:root 700
 backup     exec      infra/backup/backup.sh             /opt/backup/backup.sh
+backup     file      infra/backup/offsite-key.asc       /opt/backup/offsite-key.asc
 backup     sysunit   infra/backup/backup.service        /etc/systemd/system/backup.service
 backup     sysunit   infra/backup/backup.timer          /etc/systemd/system/backup.timer
 backup     dropin    backup.service

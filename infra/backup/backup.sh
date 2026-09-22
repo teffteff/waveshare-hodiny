@@ -6,7 +6,8 @@
 #
 # Archiv na stroji je jen mezistupen. Smysl dostane az tim, ze si ho nekdo
 # stahne pryc - tools/pull-backup.sh. Zaloha na stejnem disku neochrani pred
-# nicim krome vlastniho rm.
+# nicim krome vlastniho rm. Druha kopie jde zasifrovana do OCI Object Storage
+# (BACKUP_OFFSITE_URL), aby ztrata Macu i stroje naraz neznamenala ztratu dat.
 set -eu
 
 : "${BACKUP_DEST:=/opt/backup/data}"
@@ -23,7 +24,7 @@ set -eu
 : "${BACKUP_HA_HISTORY:=1}"
 # Soubory s hesly a klici. Chybejici se preskoci - stroj nemusi mit vsechno.
 # Vyslovne prazdna hodnota znamena "zadne"; proto "=" a ne ":=" niz.
-: "${BACKUP_SECRETS=/etc/caddy/caddy.env /opt/news/news.env /opt/agenda/agenda.env /opt/agenda/key.json /opt/school/school.env /opt/alerts/alerts.env /opt/health/health.env /opt/watch/watch.env /opt/ou-watch/watch.env}"
+: "${BACKUP_SECRETS=/etc/caddy/caddy.env /opt/news/news.env /opt/agenda/agenda.env /opt/agenda/key.json /opt/school/school.env /opt/alerts/alerts.env /opt/health/health.env /opt/backup/backup.env /opt/watch/watch.env /opt/ou-watch/watch.env}"
 # Databaze, ktere se za behu zapisuji. Kopiruji se pres sqlite3 .backup, ne
 # cp: prosty cp za behu utrhne stranku uprostred transakce a vysledek je
 # nepouzitelny. Hlidaci si v nich drzi, co uz videli.
@@ -31,6 +32,13 @@ set -eu
 # Cokoli navic, oddelene mezerami. Svety Minecraftu sem patri jen tehdy, kdyz
 # je na ne dost mista - jsou radove GB a meni se porad.
 : "${BACKUP_EXTRA:=}"
+# Kopie mimo stroj. Adresa je pre-authenticated request (PAR) na bucket
+# s pravem jen zapisovat objekty, koncici na /o/; prazdna = kopie se nedela.
+# Nese tajny token, proto jen v backup.env (600) a nikdy v logu.
+: "${BACKUP_OFFSITE_URL:=}"
+# Verejny klic, kterym se kopie sifruje (infra/backup/offsite-key.asc). Soukromy
+# ke nemu na serveru neni: kdo stroj ovladne, kopie nerozsifruje.
+: "${BACKUP_OFFSITE_KEY:=/opt/backup/offsite-key.asc}"
 
 log() { echo "backup: $*"; }
 
@@ -155,3 +163,24 @@ ls -1t "$BACKUP_DEST"/server-*.tar.gz 2>/dev/null | while read -r old; do
 done
 
 log "hotovo: $archive ($(du -h "$archive" | cut -f1))"
+
+# --- kopie mimo stroj --------------------------------------------------------
+# Sifruje se verejnym klicem v docasne klicence, ne v klicence roota: nic se
+# nikam neimportuje natrvalo a zmena klice je jen novy soubor. Nahrava se az po
+# prorezani, takze selhane nahrani nezastavi mistni zalohu; jednotka pak ale
+# skonci chybou a OnFailure= posle push.
+if [ -n "$BACKUP_OFFSITE_URL" ]; then
+  keyring="$stage/gnupg"
+  mkdir -m 700 "$keyring"
+  gpg2 -q --homedir "$keyring" --batch --import "$BACKUP_OFFSITE_KEY"
+  fingerprint="$(gpg2 --homedir "$keyring" --with-colons --list-keys | awk -F: '/^fpr/ {print $10; exit}')"
+  encrypted="$stage/$(basename "$archive").gpg"
+  gpg2 -q --homedir "$keyring" --batch --trust-model always \
+    --encrypt --recipient "$fingerprint" --output "$encrypted" "$archive"
+  object="$(hostname -s)/$(basename "$encrypted")"
+  # -f: HTTP chyba = nenulovy kod. curl pri chybe vypise jen kod, ne adresu,
+  # takze token z PAR se do zurnalu nedostane.
+  curl -fsS --retry 3 --retry-delay 30 --max-time 900 -o /dev/null \
+    -T "$encrypted" "${BACKUP_OFFSITE_URL%/}/$object"
+  log "mimo stroj: $object ($(du -h "$encrypted" | cut -f1), klic ${fingerprint#????????????????????????})"
+fi
