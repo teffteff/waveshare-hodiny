@@ -39,9 +39,7 @@ if [ -z "$SSH_TARGET" ] || [ -z "$SSH_KEY" ]; then
   exit 2
 fi
 
-# Klíč bývá RSA, novější OpenSSH ho bez tohohle odmítne — stejně jako
-# v tools/check-stack.sh a v infra/README.md.
-SSH_OPTS=(-i "$SSH_KEY" -o PubkeyAcceptedAlgorithms=+ssh-rsa -o ConnectTimeout=15)
+SSH_OPTS=(-i "$SSH_KEY" -o ConnectTimeout=15)
 ssh_run() { ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"; }
 
 case "${1:-}" in

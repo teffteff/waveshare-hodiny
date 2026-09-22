@@ -1,0 +1,174 @@
+# Co z infra/ lezi kde na serveru a jak se to nasazuje.
+#
+# Cte ho tools/deploy.sh (nasazeni) i tools/check-stack.sh --deep (shoda repa
+# se serverem), takze nova sluzba se zapisuje jen sem. Radek je
+#
+#     sluzba  druh  argumenty...
+#
+# Soubory (porovnavaji se v --deep):
+#   file     repo server          root:root 644
+#   exec     repo server          root:root 700
+#   unit     repo server          jako file a navic kopie do /etc/systemd/system/
+#   sysunit  repo server          rovnou do /etc/systemd/system/ (jina kopie neni)
+#   caddyfile repo server         {{DOMAIN}} se dosadi z CLOCK_HOST; po nasazeni reload
+#   dropin   jednotka             infra/health/on-failure.conf do /etc/systemd/system/<jednotka>.d/
+#
+# Akce po nahrani souboru, v poradi, jak jsou zapsane:
+#   restart  jednotka             systemctl restart
+#   start    jednotka             systemctl start (oneshot: jeden beh hned)
+#   enable   jednotka             systemctl enable --now (idempotentni)
+#   run      prikaz...            libovolny prikaz pres sudo
+#
+# Jen s --init (prvni zavedeni sluzby):
+#   user     jmeno domov          systemovy uzivatel bez shellu
+#   dir      cesta vlastnik:skupina prava
+#   secret   cesta vlastnik:skupina prava
+#                                 prazdny soubor s hesly, jen kdyz chybi: jednotka
+#                                 s EnvironmentFile= bez nej nenastartuje. Obsah
+#                                 se doplni rucne (vzor *.env.example), nikdy
+#                                 se neprepisuje.
+#
+# news.env.example tu schvalne neni: kopie v repu je opravena (Gemini), na
+# serveru zustala puvodni s ANTHROPIC_API_KEY.
+
+caddy      caddyfile infra/caddy/Caddyfile              /etc/caddy/Caddyfile
+caddy      sysunit   infra/caddy/caddy.service          /etc/systemd/system/caddy.service
+caddy      dropin    caddy.service
+
+news       user      news /opt/news
+news       dir       /opt/news root:news 750
+news       dir       /opt/news/www news:news 775
+news       dir       /opt/news/state/locations news:news 755
+news       secret    /opt/news/news.env root:root 600
+news       file      infra/news/generate.py             /opt/news/generate.py
+news       file      infra/news/serve.py                /opt/news/serve.py
+news       file      infra/news/locations.py            /opt/news/locations.py
+news       unit      infra/news/news.service            /opt/news/news.service
+news       unit      infra/news/news.timer              /opt/news/news.timer
+news       unit      infra/news/news-web.service        /opt/news/news-web.service
+news       dropin    news.service
+news       dropin    news-web.service
+news       enable    news.timer
+news       restart   news-web.service
+news       start     news.service
+
+agenda     user      agenda /opt/agenda
+agenda     dir       /opt/agenda root:agenda 750
+agenda     dir       /opt/agenda/www agenda:agenda 700
+agenda     secret    /opt/agenda/agenda.env root:root 600
+agenda     file      infra/agenda/generate.py           /opt/agenda/generate.py
+agenda     file      infra/agenda/feed.py               /opt/agenda/feed.py
+agenda     file      infra/agenda/serve.py              /opt/agenda/serve.py
+agenda     unit      infra/agenda/agenda.service        /opt/agenda/agenda.service
+agenda     unit      infra/agenda/agenda.timer          /opt/agenda/agenda.timer
+agenda     unit      infra/agenda/agenda-web.service    /opt/agenda/agenda-web.service
+agenda     dropin    agenda.service
+agenda     dropin    agenda-web.service
+agenda     enable    agenda.timer
+agenda     restart   agenda-web.service
+agenda     start     agenda.service
+
+planes     user      planes /opt/planes
+planes     dir       /opt/planes root:planes 750
+planes     file      infra/planes/serve.py              /opt/planes/serve.py
+planes     unit      infra/planes/planes-web.service    /opt/planes/planes-web.service
+planes     dropin    planes-web.service
+planes     enable    planes-web.service
+planes     restart   planes-web.service
+
+lightning  user      lightning /opt/lightning
+lightning  dir       /opt/lightning root:lightning 750
+lightning  file      infra/lightning/serve.py           /opt/lightning/serve.py
+lightning  unit      infra/lightning/lightning-web.service /opt/lightning/lightning-web.service
+lightning  dropin    lightning-web.service
+lightning  enable    lightning-web.service
+lightning  restart   lightning-web.service
+
+settings   user      settings /opt/settings
+settings   dir       /opt/settings root:settings 750
+settings   dir       /opt/settings/data settings:settings 700
+settings   file      infra/settings/serve.py            /opt/settings/serve.py
+settings   unit      infra/settings/settings-web.service /opt/settings/settings-web.service
+settings   dropin    settings-web.service
+settings   enable    settings-web.service
+settings   restart   settings-web.service
+
+school     user      school /opt/school
+school     dir       /opt/school root:school 750
+school     secret    /opt/school/school.env root:root 600
+school     file      infra/school/feed.py               /opt/school/feed.py
+school     file      infra/school/serve.py              /opt/school/serve.py
+school     unit      infra/school/school-web.service    /opt/school/school-web.service
+school     dropin    school-web.service
+school     enable    school-web.service
+school     restart   school-web.service
+
+satellites user      satellites /opt/satellites
+satellites dir       /opt/satellites root:satellites 750
+satellites file      infra/satellites/serve.py          /opt/satellites/serve.py
+satellites file      infra/satellites/sky.py            /opt/satellites/sky.py
+satellites file      infra/satellites/requirements.txt  /opt/satellites/requirements.txt
+satellites unit      infra/satellites/satellites-web.service /opt/satellites/satellites-web.service
+satellites dropin    satellites-web.service
+satellites run       test -x /opt/satellites/.venv/bin/python || /usr/bin/python3.11 -m venv /opt/satellites/.venv
+satellites run       /opt/satellites/.venv/bin/pip install --quiet -r /opt/satellites/requirements.txt
+satellites enable    satellites-web.service
+satellites restart   satellites-web.service
+
+rain       user      rain /opt/rain
+rain       dir       /opt/rain root:rain 750
+rain       file      infra/rain/serve.py                /opt/rain/serve.py
+rain       unit      infra/rain/rain-web.service        /opt/rain/rain-web.service
+rain       dropin    rain-web.service
+rain       enable    rain-web.service
+rain       restart   rain-web.service
+
+warnings   user      warnings /opt/warnings
+warnings   dir       /opt/warnings root:warnings 750
+warnings   file      infra/warnings/serve.py            /opt/warnings/serve.py
+warnings   file      infra/warnings/orp.json            /opt/warnings/orp.json
+warnings   unit      infra/warnings/warnings-web.service /opt/warnings/warnings-web.service
+warnings   dropin    warnings-web.service
+warnings   enable    warnings-web.service
+warnings   restart   warnings-web.service
+
+alerts     user      alerts /opt/alerts
+alerts     dir       /opt/alerts root:alerts 750
+alerts     dir       /opt/alerts/state alerts:alerts 700
+alerts     secret    /opt/alerts/alerts.env alerts:alerts 600
+alerts     file      infra/alerts/serve.py              /opt/alerts/serve.py
+alerts     unit      infra/alerts/alerts-web.service    /opt/alerts/alerts-web.service
+alerts     dropin    alerts-web.service
+alerts     enable    alerts-web.service
+alerts     restart   alerts-web.service
+
+backup     dir       /opt/backup root:root 700
+backup     dir       /opt/backup/data root:root 700
+backup     exec      infra/backup/backup.sh             /opt/backup/backup.sh
+backup     sysunit   infra/backup/backup.service        /etc/systemd/system/backup.service
+backup     sysunit   infra/backup/backup.timer          /etc/systemd/system/backup.timer
+backup     dropin    backup.service
+backup     run       restorecon /opt/backup/backup.sh
+backup     enable    backup.timer
+
+health     user      health /opt/health
+health     dir       /opt/health root:health 750
+health     secret    /opt/health/health.env root:root 600
+health     file      infra/health/check.py              /opt/health/check.py
+health     unit      infra/health/health.service        /opt/health/health.service
+health     unit      infra/health/health.timer          /opt/health/health.timer
+health     unit      infra/health/notify-failure@.service /opt/health/notify-failure@.service
+health     file      infra/health/on-failure.conf       /opt/health/on-failure.conf
+health     file      infra/health/ha-update-check.sh    /opt/health/ha-update-check.sh
+health     unit      infra/health/ha-update.service     /opt/health/ha-update.service
+health     unit      infra/health/ha-update.timer       /opt/health/ha-update.timer
+health     dropin    ha-update.service
+# Hlidace obchodu a obce maji vlastni repozitare i nasazeni (hlidac-novinek,
+# hlidac-ondrejov); odtud dostanou jen drop-in s hlasenim poruch.
+health     dropin    watch.service
+health     dropin    watch-web.service
+health     dropin    ou-watch.service
+health     dropin    docker.service
+health     enable    health.timer
+health     enable    ha-update.timer
+health     restart   ha-update.service

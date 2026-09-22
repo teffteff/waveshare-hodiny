@@ -1,0 +1,21 @@
+[Unit]
+Description=Push na telefon: selhala jednotka %i
+# Sama sebe nehlida: kdyby selhal push, OnFailure= by ji jinak volal dokola.
+
+[Service]
+Type=oneshot
+User=health
+Group=health
+# Konec zurnalu selhane jednotky jde do pushe; cist cizi zurnal smi jen
+# skupina systemd-journal.
+SupplementaryGroups=systemd-journal
+EnvironmentFile=/opt/health/health.env
+StateDirectory=health
+StateDirectoryMode=0700
+Environment=HEALTH_STATE_DIR=/var/lib/health
+ExecStart=/usr/bin/python3.11 /opt/health/check.py --unit %i
+TimeoutStartSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

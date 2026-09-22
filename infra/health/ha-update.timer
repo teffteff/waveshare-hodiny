@@ -1,0 +1,11 @@
+[Unit]
+Description=Tydne zkontroluje, jestli vysel novy Home Assistant
+
+[Timer]
+# Pondeli rano; push prijde jednou za verzi, ne kazdy tyden.
+OnCalendar=Mon *-*-* 07:40:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

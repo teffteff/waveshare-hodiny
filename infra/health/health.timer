@@ -1,0 +1,10 @@
+[Unit]
+Description=Spousti kontrolu serveru hodin kazdou hodinu
+
+[Timer]
+# :52, mimo news.timer (:05), agenda.timer (po 15 min) a hlidace (:00, :07 ...).
+OnCalendar=*:52
+Persistent=true
+
+[Install]
+WantedBy=timers.target
