@@ -6,7 +6,8 @@ atomicky vsechny jejich udalosti do jednoho souboru. Hotovou odpoved pro hodiny
 z nej sklada az serve.py pri kazdem dotazu (viz feed.py), protoze kazde hodiny
 mohou chtit jiny vyber kalendaru a soukrome kalendare dostane jen ten, kdo zna
 heslo. Pri jakekoli chybe skript skonci nenulove a ponecha predchozi soubor,
-aby na hodinach nezustal prazdny seznam.
+aby na hodinach nezustal prazdny seznam. Prechodne chyby Googlu (429, 5xx,
+vypadek spojeni) se predtim par desitek sekund opakuji, viz get().
 
 Snimek obsahuje i udalosti soukromych kalendaru, takze nesmi byt citelny
 nikomu jinemu nez uctu, pod kterym bezi agenda: lezi v /opt/agenda s pravy 700.
@@ -17,10 +18,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
+import requests
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
 
@@ -43,6 +46,42 @@ GRACE_MINUTES = int(os.environ.get("AGENDA_GRACE_MINUTES", "60"))
 # kalendare jdou az za verejnymi, aby jejich pridani neprebarvilo ty stavajici.
 CALENDARS = parse_calendar_list(os.environ.get("AGENDA_CALENDARS", ""), private=False) + \
     parse_calendar_list(os.environ.get("AGENDA_PRIVATE_CALENDARS", ""), private=True)
+# Google Calendar obcas vrati 503 nebo 429 na jediny dotaz; 22. 9. 2026 tim
+# spadl beh a odesel zbytecny push. Prechodne chyby se proto opakuji, dokud
+# od startu behu neuplyne RETRY_BUDGET sekund (TimeoutStartSec je 120).
+# 404 a ostatni 4xx se neopakuji: znamenaji odebrane sdileni nebo chybu tady.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+RETRY_DELAYS = (5, 15, 30)
+RETRY_BUDGET = float(os.environ.get("AGENDA_RETRY_BUDGET", "80"))
+REQUEST_TIMEOUT = 20
+_started = time.monotonic()
+
+
+def may_retry(delay: float | None) -> bool:
+    return delay is not None and time.monotonic() - _started + delay <= RETRY_BUDGET
+
+
+def get(http: AuthorizedSession, url: str, **kwargs) -> requests.Response:
+    """GET s opakovanim prechodnych chyb. Konecnou odpoved vrati volajicimu,
+    ktery rozhodne sam (404 -> srozumitelna hlaska, jinak raise_for_status)."""
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        delay = RETRY_DELAYS[attempt] if attempt < len(RETRY_DELAYS) else None
+        try:
+            response = http.get(url, timeout=REQUEST_TIMEOUT, **kwargs)
+        except (requests.ConnectionError, requests.Timeout) as error:
+            if not may_retry(delay):
+                raise
+            problem = error.__class__.__name__
+        else:
+            if response.status_code not in RETRY_STATUSES or not may_retry(delay):
+                return response
+            problem = f"HTTP {response.status_code}"
+            retry_after = response.headers.get("Retry-After", "")
+            if retry_after.isdigit():
+                delay = max(delay, min(int(retry_after), 30))
+        print(f"{problem} pro {url.split('/calendars/')[-1]}, znovu za {delay} s", file=sys.stderr)
+        time.sleep(delay)
+    raise AssertionError("nedosazitelne")
 
 
 def session() -> AuthorizedSession:
@@ -57,10 +96,7 @@ def calendar_name(http: AuthorizedSession, calendar: dict) -> str:
     se po prejmenovani kalendare musel editovat agenda.env. Vyjimkou je jmeno
     zapsane v agenda.env za svislitkem."""
     calendar_id = calendar["id"]
-    response = http.get(
-        f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id)}",
-        timeout=30,
-    )
+    response = get(http, f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id)}")
     if response.status_code == 404:
         raise RuntimeError(f"kalendar {calendar_id} neni sdileny se servisnim uctem (404)")
     response.raise_for_status()
@@ -79,7 +115,7 @@ def fetch(http: AuthorizedSession, calendar_id: str, start: datetime, end: datet
         "maxResults": 250,
     }
     url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id)}/events"
-    response = http.get(url, params=params, timeout=30)
+    response = get(http, url, params=params)
     # Kalendar, ke kteremu ucet nema pristup, vraci 404, ne 403. Chyba tady
     # znamena spis odebrane sdileni nez preklep, at to hlaska rekne rovnou.
     if response.status_code == 404:
