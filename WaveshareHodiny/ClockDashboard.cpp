@@ -7657,8 +7657,11 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
         char to[8];
         formatLocalClock(sky.dayFrom, from, sizeof(from));
         formatLocalClock(sky.dayTo, to, sizeof(to));
-        snprintf(part, sizeof(part), "%s %s-%s", english ? "SUN" : "SLUNCE",
-                 from, to);
+        // V barvě Slunce a jeho dráhy; v červeném nočním režimu červeně.
+        snprintf(part, sizeof(part), "#%06lX %s %s-%s#",
+                 redNight ? 0xFF4848UL
+                          : static_cast<unsigned long>(SKY_SUN_RGB),
+                 english ? "SUN" : "SLUNCE", from, to);
         append(part);
       }
       // Tma: dokdy, když už je, jinak od kdy do kdy.
@@ -7684,7 +7687,11 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
         const char *label =
             up ? (english ? "MOON UNTIL" : "MĚSÍC DO")
                : (english ? "MOON FROM" : "MĚSÍC OD");
-        snprintf(part, sizeof(part), "%s %s (%d %%)", label, clock,
+        // V barvě Měsíce a jeho dráhy.
+        snprintf(part, sizeof(part), "#%06lX %s %s (%d %%)#",
+                 redNight ? 0xFF4848UL
+                          : static_cast<unsigned long>(SKY_MOON_RGB),
+                 label, clock,
                  static_cast<int>(std::lround(sky.moonIllumination * 100.0f)));
         append(part);
       }

@@ -17,6 +17,11 @@
 // (MapLabelFont), protože jako objekty LVGL by zabraly interní RAM. Kresba
 // jim tu jen najde místo. Pixelovým písmem jdou hodiny na dráze Měsíce.
 
+// Barvy Slunce a Měsíce (0xRRGGBB) na obloze, na jejich dráhách i v horním
+// řádku stránky, aby se k sobě daly přiřadit.
+constexpr uint32_t SKY_SUN_RGB = 0xFFDC3C;
+constexpr uint32_t SKY_MOON_RGB = 0xE6E6DC;
+
 // Obrazce a radiant roje.
 constexpr size_t SKY_MAX_PAINTED_LABELS = SKY_MAX_FIGURES + 1;
 // Klepnout jde na těleso i na hvězdu.
