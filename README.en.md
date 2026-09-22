@@ -97,7 +97,7 @@ changes the system text and verbal date shown on the display.
   server from CelesTrak data,
 - a night sky on the second page of the satellite screen (swipe): planets, the
   Moon with its phase and the path of its whole pass across the sky (at night
-  until morning), by day the Sun's path until sunset, bright stars, named
+  until morning), by day the Sun's whole path from sunrise to sunset, bright stars, named
   constellation figures, the ecliptic and, around a shower's peak, its radiant
   in the same circle; tapping a planet or a star opens its details. The top
   line shows when it is astronomically dark (by day sunrise and sunset

@@ -99,8 +99,8 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   a časem příštího přeletu ISS nebo domácí družice SATGUS; dráhy počítá
   vlastní server z dat CelesTrak,
 - noční oblohu na druhé stránce družic (tažením prstu): planety, Měsíc s fází
-  a dráhou celého jeho přechodu oblohou (v noci do rána), ve dne dráhu Slunce
-  do západu, jasné hvězdy, obrazce souhvězdí se jmény, ekliptiku a kolem
+  a dráhou celého jeho přechodu oblohou (v noci do rána), ve dne celou dráhu
+  Slunce od východu do západu, jasné hvězdy, obrazce souhvězdí se jmény, ekliptiku a kolem
   maxima roje jeho radiant ve stejném kruhu; klepnutím na planetu nebo
   hvězdu se ukáže detail. Nahoře kdy je astronomická tma (ve dne místo ní
   východ a západ Slunce) a kdy je nahoře Měsíc, index Kp jen když se blíží prahu upozornění na polární záři, dole
