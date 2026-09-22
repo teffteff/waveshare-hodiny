@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "HttpDownload.h"
+#include "JsonScan.h"
 #include "NetworkCoordinator.h"
 #include "PushAlerts.h"
 
@@ -21,6 +22,28 @@ constexpr uint32_t RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint32_t NETWORK_GUARD_MS = 10000;
 constexpr uint32_t FIRST_RETRY_MS = 60 * 1000;
 constexpr uint32_t MAX_RETRY_MS = 30 * 60 * 1000;
+// Odpověď je {"elevation":478.0}; víc se od serveru nečte.
+constexpr size_t MAX_RESPONSE_BYTES = 128;
+
+class BoundedPrint : public Print {
+ public:
+  BoundedPrint(char *buffer, size_t capacity)
+      : buffer_(buffer), capacity_(capacity) {}
+  size_t write(uint8_t value) override { return write(&value, 1); }
+  size_t write(const uint8_t *data, size_t size) override {
+    const size_t remaining = capacity_ - length_;
+    const size_t accepted = size < remaining ? size : remaining;
+    if (accepted > 0) memcpy(buffer_ + length_, data, accepted);
+    length_ += accepted;
+    return accepted;
+  }
+  size_t length() const { return length_; }
+
+ private:
+  char *buffer_;
+  size_t capacity_;
+  size_t length_ = 0;
+};
 
 struct Desired {
   bool valid = false;
@@ -37,6 +60,12 @@ Desired desired;
 uint32_t desiredRevision = 0;
 bool suspended = false;
 char statusMessage[80] = "Vypnuto";
+// Meze nízkého přeletu z nastavení a výška od serveru; pod stateMux.
+bool lowPassEnabled = false;
+uint16_t lowPassRadiusM = 0;
+uint16_t lowPassHeightM = 0;
+bool elevationKnown = false;
+float groundElevationM = 0.0f;
 
 void setStatus(const char *message) {
   portENTER_CRITICAL(&stateMux);
@@ -44,7 +73,8 @@ void setStatus(const char *message) {
   portEXIT_CRITICAL(&stateMux);
 }
 
-int putConfig(const Desired &request) {
+int putConfig(const Desired &request, char *response, size_t capacity) {
+  response[0] = '\0';
   int status = 0;
   char id[PUSH_ALERTS_ID_LENGTH];
   char url[PUSH_ALERTS_REQUEST_URL_LENGTH];
@@ -79,6 +109,13 @@ int putConfig(const Desired &request) {
           "PUT",
           reinterpret_cast<uint8_t *>(const_cast<char *>(request.body)),
           strlen(request.body));
+      if (status == 200) {
+        // Ne getString(): používá writeToStream, který se u chunked odpovědi
+        // nemusí vrátit (viz HttpDownload.h).
+        BoundedPrint body(response, capacity - 1);
+        if (httpDownloadBody(http, body, RESPONSE_TIMEOUT_MS) >= 0)
+          response[body.length()] = '\0';
+      }
       http.end();
     }
     client.stop();
@@ -107,6 +144,18 @@ void describe(int status) {
   } else {
     setStatus("Server upozornění není dostupný");
   }
+}
+
+// Poloha je v těle za "lat": až po "rain"; stačí porovnat ten kus textu.
+bool sameLocation(const char *a, const char *b) {
+  const char *startA = strstr(a, "\"lat\":");
+  const char *startB = strstr(b, "\"lat\":");
+  if (startA == nullptr || startB == nullptr) return false;
+  const char *endA = strstr(startA, ",\"rain\"");
+  const char *endB = strstr(startB, ",\"rain\"");
+  if (endA == nullptr || endB == nullptr) return false;
+  return endA - startA == endB - startB &&
+         strncmp(startA, startB, endA - startA) == 0;
 }
 
 void pushAlertsTask(void *) {
@@ -142,12 +191,23 @@ void pushAlertsTask(void *) {
     }
 
     int status = 0;
+    char response[MAX_RESPONSE_BYTES];
     {
       NetworkOperationGuard guard(NETWORK_GUARD_MS);
       if (!guard) continue;
-      status = putConfig(current);
+      status = putConfig(current, response, sizeof(response));
     }
     describe(status);
+    float elevation = 0.0f;
+    if (status == 200 &&
+        jsonReadNumberMember(response, response + strlen(response),
+                             "elevation", elevation) &&
+        elevation > -500.0f && elevation < 9000.0f) {
+      portENTER_CRITICAL(&stateMux);
+      groundElevationM = elevation;
+      elevationKnown = true;
+      portEXIT_CRITICAL(&stateMux);
+    }
     if (status == 200 || status == 204) {
       acknowledged = current;
       failures = 0;
@@ -194,6 +254,13 @@ void pushAlertsServiceSetConfig(const ClockPushAlertsConfig &alerts,
 
   bool changed = false;
   portENTER_CRITICAL(&stateMux);
+  lowPassEnabled = alerts.enabled && alerts.low;
+  lowPassRadiusM = alerts.lowRadiusM;
+  lowPassHeightM = alerts.lowHeightM;
+  // Jiná poloha nebo adresa, jiná nadmořská výška; stará by tu lhala.
+  if (strcmp(next.url, desired.url) != 0 ||
+      !sameLocation(next.body, desired.body))
+    elevationKnown = false;
   if (next.valid != desired.valid || strcmp(next.url, desired.url) != 0 ||
       strcmp(next.body, desired.body) != 0) {
     desired = next;
@@ -205,6 +272,15 @@ void pushAlertsServiceSetConfig(const ClockPushAlertsConfig &alerts,
             sizeof(statusMessage));
   portEXIT_CRITICAL(&stateMux);
   if (changed && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+}
+
+void pushAlertsServiceLowPass(PushAlertsLowPass &lowPass) {
+  portENTER_CRITICAL(&stateMux);
+  lowPass.valid = lowPassEnabled && elevationKnown;
+  lowPass.groundElevationM = groundElevationM;
+  lowPass.radiusM = lowPassRadiusM;
+  lowPass.heightM = lowPassHeightM;
+  portEXIT_CRITICAL(&stateMux);
 }
 
 void pushAlertsServiceMessage(char *message, size_t capacity) {

@@ -270,6 +270,16 @@ class WatcherTest(unittest.TestCase):
         self.run_planes([plane_at(10, 0, dbFlags=1, alt_geom=20000)], night)
         self.assertEqual(self.pushes, [])
 
+    def test_elevation_for_known_and_unknown_place(self):
+        config = serve.parse_config(clock_payload())
+        self.assertEqual(self.watcher.elevation_for(config), 400.0)
+        elsewhere = serve.parse_config(clock_payload(lat=50.5, lon=15.0))
+        with mock.patch.object(serve, "get_json", return_value={"elevation": [312.0]}):
+            self.assertEqual(self.watcher.elevation_for(elsewhere), 312.0)
+        failing = serve.parse_config(clock_payload(lat=51.0, lon=15.0))
+        with mock.patch.object(serve, "get_json", side_effect=OSError("offline")):
+            self.assertIsNone(self.watcher.elevation_for(failing))
+
     def test_config_survives_restart(self):
         reloaded = serve.Watcher(Path(self.directory.name))
         self.assertIn("aabbccddeeff", reloaded.configs)

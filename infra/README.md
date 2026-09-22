@@ -805,6 +805,10 @@ telefon**) pošlou serveru polohu a co hlídat:
 PUT /alerts/config/<MAC bez dvojteček>   JSON, viz parse_config() v alerts/serve.py
 ```
 
+Odpověď nese nadmořskou výšku polohy (`{"elevation":478.0}`). Hodiny podle ní
+na obrazovce letadel označí azurovým kroužkem nízký přelet se stejnými mezemi
+jako push; vojenská letadla mají purpurový kroužek podle `dbFlags` vždycky.
+
 a opakují to po každém startu a po chybě, dokud server nepotvrdí. Vypnutá
 upozornění se posílají taky (`"enabled":false`), aby server přestal hlídat;
 proto se nejdřív vypíná přepínač a adresa se maže až potom.

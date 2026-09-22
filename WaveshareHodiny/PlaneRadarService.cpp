@@ -20,6 +20,7 @@
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
 #include "PlaneFeedUrl.h"
+#include "PushAlertsService.h"
 
 // Kořenové certifikáty Mozilly slinkované v mbedTLS. adsb.fi ani adsb.lol
 // nejsou naše servery a jejich certifikát se může kdykoli přepnout na jiný
@@ -77,6 +78,12 @@ constexpr uint16_t COLOR_HIGH = 0xffe0;     // 6-10 km
 constexpr uint16_t COLOR_CRUISE = 0x3cbb;   // 10 km a výš
 constexpr uint16_t COLOR_UNKNOWN = 0x8410;  // výšku nehlásí
 constexpr uint16_t COLOR_WATCHED = 0x6628;
+// Kroužky neobvyklých letadel. Barvy stranou od výškové stupnice ikon
+// (červená, oranžová, žlutá, modrá) i od nouze a hlídaného letu.
+constexpr uint16_t COLOR_MILITARY = 0xf81f;  // purpurová
+constexpr uint16_t COLOR_LOW_PASS = 0x07ff;  // azurová
+// Jak daleko dopředu se nízký přelet předpovídá; stejně jako v infra/alerts.
+constexpr float LOW_PASS_LOOKAHEAD_SECONDS = 180.0f;
 
 // --- Stav -------------------------------------------------------------------
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -601,6 +608,16 @@ uint16_t altitudeColor(float altitudeFt, bool known) {
 // Ikona letadla: okřídlená šipka otočená po traťovém úhlu, vyplněná vějířem
 // trojúhelníků ze středu. Neznámý směr se kreslí kolečkem - natočit ho není
 // podle čeho.
+// Barva kroužku a popisku; bílá znamená bez kroužku.
+uint16_t markerColor(bool emergency, bool watched, bool lowPass,
+                     bool military) {
+  if (emergency) return COLOR_LOW;
+  if (watched) return COLOR_WATCHED;
+  if (lowPass) return COLOR_LOW_PASS;
+  if (military) return COLOR_MILITARY;
+  return COLOR_WHITE;
+}
+
 void drawAircraftIcon(int x, int y, float trackDeg, bool hasTrack,
                       uint16_t color) {
   const uint16_t drawColor = paletteColor(color);
@@ -833,9 +850,15 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     uint8_t labelKind;
     bool emergency;
     bool watched;
+    bool military;
+    bool lowPass;
   };
   PlannedAircraft plan[ADSB_MAX_AIRCRAFT];
   uint8_t planCount = 0;
+  // Nízký přelet podle týchž mezí jako upozornění na telefon; bez nadmořské
+  // výšky od serveru upozornění se neoznačuje nic.
+  PushAlertsLowPass lowPassCriteria;
+  pushAlertsServiceLowPass(lowPassCriteria);
 
   // 1. průchod: která letadla jsou vidět.
   for (uint8_t index = 0; index < count; ++index) {
@@ -853,7 +876,19 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
       worstEmergency = emergency;
     }
     if (watched) watchedSeen = true;
-    if (emergency == nullptr && !watched && !passesFilter(aircraft, planes))
+    const bool military = (aircraft.dbFlags & ADSB_DB_FLAG_MILITARY) != 0;
+    bool lowPass = false;
+    AdsbPassPrediction pass;
+    if (lowPassCriteria.valid &&
+        adsbPredictPass(aircraft, context.centerLatitude,
+                        context.centerLongitude,
+                        lowPassCriteria.groundElevationM,
+                        LOW_PASS_LOOKAHEAD_SECONDS, pass))
+      lowPass = pass.distanceM <= lowPassCriteria.radiusM &&
+                pass.heightM <= lowPassCriteria.heightM;
+    // Označená letadla filtr výšky neschová, stejně jako nouzi.
+    if (emergency == nullptr && !watched && !military && !lowPass &&
+        !passesFilter(aircraft, planes))
       continue;
 
     int x = 0;
@@ -870,6 +905,8 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     entry.labelKind = 0;
     entry.emergency = emergency != nullptr;
     entry.watched = watched;
+    entry.military = military;
+    entry.lowPass = lowPass;
   }
 
   // 2. průchod: popisky letadel. Místo si berou dřív než města - na radaru
@@ -886,6 +923,7 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
       PlannedAircraft &entry = plan[planIndex];
       const bool priority = entry.emergency || entry.watched ||
+                            entry.lowPass || entry.military ||
                             static_cast<int>(entry.index) == selectedIndex;
       if (priority != priorityRound) continue;
       const AdsbAircraft &aircraft = liveList[entry.index];
@@ -931,14 +969,14 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
     // azurová seděla příliš blízko modré hladinové.
     if (static_cast<int>(entry.index) == selectedIndex)
       drawMapCircle(pixels, x, y, 16, paletteColor(COLOR_WHITE), 100);
-    // Nouze červený kroužek, hlídaný let zelený. Oba širší než výběr, aby byly
-    // vidět na první pohled.
-    if (entry.emergency) {
-      drawMapCircle(pixels, x, y, 20, paletteColor(COLOR_LOW), 100);
-      drawMapCircle(pixels, x, y, 21, paletteColor(COLOR_LOW), 100);
-    } else if (entry.watched) {
-      drawMapCircle(pixels, x, y, 20, paletteColor(COLOR_WATCHED), 100);
-      drawMapCircle(pixels, x, y, 21, paletteColor(COLOR_WATCHED), 100);
+    // Nouze červený kroužek, hlídaný let zelený, nízký přelet azurový,
+    // vojenské purpurové. Všechny širší než výběr, aby byly vidět na první
+    // pohled; když platí víc, vyhraje to první.
+    const uint16_t ringColor = markerColor(entry.emergency, entry.watched,
+                                           entry.lowPass, entry.military);
+    if (ringColor != COLOR_WHITE) {
+      drawMapCircle(pixels, x, y, 20, paletteColor(ringColor), 100);
+      drawMapCircle(pixels, x, y, 21, paletteColor(ringColor), 100);
     }
 
     const bool altitudeKnown = aircraft.hasAltitude;
@@ -960,9 +998,8 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
         adsbMapLabel(aircraft, typeNameLabels, label, sizeof(label));
       else
         adsbMapShortLabel(aircraft, typeNameLabels, label, sizeof(label));
-      const uint16_t labelColor =
-          entry.emergency ? COLOR_LOW
-                          : (entry.watched ? COLOR_WATCHED : COLOR_WHITE);
+      const uint16_t labelColor = markerColor(entry.emergency, entry.watched,
+                                              entry.lowPass, entry.military);
       drawPlaneLabel(entry.labelX + 2, entry.labelY + 3, label,
                      paletteColor(labelColor));
     }

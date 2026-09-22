@@ -9,6 +9,7 @@ Nastaveni se zadava v hodinach (zalozka Obrazovky, Upozorneni na telefon)
 a hodiny ho po ulozeni poslou sem:
 
     PUT /alerts/config/<id>     id = MAC adresa hodin, telo viz parse_config()
+                                odpoved {"elevation": 478.0} (nebo null)
 
 Server si ho ulozi na disk a hlida dal bez nich. Vypnute upozorneni hodiny
 poslou taky, jen s "enabled":false; soubor pak zustane, ale nehlida se nic.
@@ -31,6 +32,9 @@ Co se hlida:
   odejde, kdyz letadlo projde blize nez nastaveny polomer a nize nez nastavena
   vyska nad zemi. Vrtulniky a letadla v okruhu nad letistem primo neleti,
   takze u nich je odhad hrubsi.
+
+Odpoved na PUT nese nadmorskou vysku polohy. Hodiny podle ni na obrazovce
+letadel oznaci nizky prelet stejne jako tenhle server; samy ji odnikud nemaji.
 
 Letadla i predpoved se berou z ostatnich sluzeb na tomto stroji po loopbacku
 (infra/planes, infra/rain), takze adsb.fi i CHMU dal vidi jediny zdroj dotazu
@@ -638,6 +642,9 @@ class Watcher:
                    {f"{k[0]},{k[1]}": v for k, v in self.elevations.items()})
         return float(value)
 
+    def elevation_for(self, config: dict) -> float | None:
+        return self._elevation(location_key(config), config["lat"], config["lon"], time.time())
+
     def status(self) -> dict:
         with self.lock:
             configs = {key: {"name": c["name"], "enabled": c["enabled"],
@@ -712,7 +719,9 @@ class Handler(BaseHTTPRequestHandler):
         if not WATCHER.store_config(config_id, config):
             self._send(507, b"too many clocks\n")
             return
-        self._send(204)
+        elevation = WATCHER.elevation_for(config)
+        self._send(200, json.dumps({"elevation": elevation}).encode("utf-8"),
+                   "application/json; charset=utf-8")
 
     def log_message(self, *args):
         pass

@@ -23,5 +23,16 @@ void pushAlertsServiceSetConfig(const ClockPushAlertsConfig &alerts,
                                 float latitude, float longitude,
                                 const char *deviceName);
 
+// Podle čeho obrazovka letadel pozná nízký přelet: tytéž meze jako push
+// a nadmořská výška polohy, kterou vrací server v odpovědi na nastavení.
+// valid jen se zapnutými upozorněními na nízké přelety a známou výškou.
+struct PushAlertsLowPass {
+  bool valid = false;
+  float groundElevationM = 0.0f;
+  uint16_t radiusM = 0;
+  uint16_t heightM = 0;
+};
+void pushAlertsServiceLowPass(PushAlertsLowPass &lowPass);
+
 // Poslední stav pro stránku nastavení, třeba "Server nastavení přijal".
 void pushAlertsServiceMessage(char *message, size_t capacity);
