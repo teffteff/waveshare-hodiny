@@ -95,6 +95,7 @@ serveru zkontrolovat nedají:
 | Srážková předpověď | 8096, jen loopback | `/opt/rain/serve.py`, `rain-web.service` | `rain/` |
 | Výstrahy ČHMÚ | 8097, jen loopback | `/opt/warnings/serve.py`, `orp.json`, `warnings-web.service` | `warnings/` |
 | Upozornění na telefon | 8098, jen loopback | `/opt/alerts/serve.py`, `alerts-web.service`, téma ntfy v `/opt/alerts/alerts.env`, stav v `/opt/alerts/state/` | `alerts/` |
+| Nastavení všech hodin | 8099, jen loopback | `/opt/fleet/serve.py`, `fleet-web.service`, heslo a TOTP v `/opt/fleet/fleet.env`, registrované hodiny v `/opt/fleet/state/` | `fleet/` |
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/`, zašifrovaná kopie do OCI Object Storage (`offsite-key.asc`, adresa v `backup.env`) | `backup/` |
 | Hlášení poruch | — | `/opt/health/check.py`, `health.service` + `health.timer`, `notify-failure@.service`, `ha-update-check.sh` + `ha-update.timer` (nová verze HA), drop-in `on-failure.conf` u každé hlídané jednotky, téma ntfy v `/opt/health/health.env`, stav v `/var/lib/health/` | `health/` |
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
@@ -148,6 +149,7 @@ https://hodiny:$WARNINGS_PASSWORD@$CLOCK_HOST/warnings.json  výstrahy ČHMÚ (n
 https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts  upozornění na telefon (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
+https://$CLOCK_HOST/fleet         vzdálená správa (nepovinné; adresa + token, viz níž)
 https://$CLOCK_HOST              Home Assistant
 ```
 
@@ -180,8 +182,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090, 8092, 8093, 8094, 8095, 8096, 8097 a 8098 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami a upozorněními poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093, 8094, 8095, 8096, 8097, 8098 a 8099 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami, upozorněními a vzdálenou správou poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -829,6 +831,77 @@ SSH "$CLOCK_SSH" 'sudo -u alerts env $(sudo cat /opt/alerts/alerts.env) python3.
 
 Do hodin se opíše `https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts`. Testy bez sítě
 (z kořene repozitáře): `python3 -m unittest infra/alerts/test_serve.py`.
+
+## Nastavení všech hodin přes server
+
+`https://$CLOCK_HOST/fleet/` je jedno místo pro nastavení všech hodin, i mimo
+domácí síť. Po přihlášení je tam seznam hodin a u každé její vlastní stránka
+nastavení — ta z firmwaru daného kusu, jen s výběrem hodin v hlavičce.
+
+**Jak to jde přes NAT.** Server v OCI se k hodinám doma nedovolá, proto se
+hodiny připojují samy: drží jedno odchozí TLS spojení a ptají se
+`GET /fleet/agent/poll` (server drží dotaz až 25 s). Když prohlížeč něco chce,
+server to hodinám vrátí jako odpověď na dotaz, hodiny to pošlou svému vlastnímu
+webu přes loopback (`127.0.0.1:80`) a výsledek vrátí `POST /fleet/agent/result`.
+Server ke stránce jen přidá prefix `/fleet/d/<název>/` před adresy a výběr
+hodin; firmware nic nevykládá, takže nové funkce stránky fungují přes server
+samy. Hodiny, které se 45 s neozvaly, jsou offline. V domácí síti se nic
+neotevírá a server adresy hodin nezná.
+
+**Zabezpečení:**
+
+- přihlášení heslem (scrypt) a kódem **TOTP** (Aegis, Google Authenticator…)
+  v jednom kroku; kód nejde použít dvakrát, neúspěch neřekne, co nesedělo,
+- brzda: 5 neúspěchů z jedné IP za 15 min, 30 celkem za hodinu → 15 min nic;
+  pokusy jsou v journalu jako `fleet: failed login from <IP>`,
+- relace jen v paměti (restart služby odhlásí), cookie `__Secure-fleet`
+  HttpOnly/Secure/SameSite=Strict, 30 min nečinnosti, nejvýš 12 h,
+- každý dotaz na API hodin nese token proti CSRF (hlavička `X-Fleet-Csrf`) —
+  Home Assistant běží na stejném jménu, takže SameSite sám nestačí,
+- hodiny se hlásí vlastním tokenem, server drží jen jeho SHA-256,
+- přes server **nejde**: heslo webu hodin, nastavení vzdálené správy, ovládací
+  API ani přihlášení do webu hodin — hlídá to server i firmware
+  (`RemoteAdmin.cpp`). Firmware jde instalovat jen z oficiálního vydání,
+- hodiny ověřují certifikát serveru (svazek kořenů Mozilly) a na vlastní web
+  pouštějí jen dotazy s klíčem loopbacku, který se generuje při každém startu.
+
+Co to znamená: kdo ovládne server nebo přihlášení, může přenastavit všechny
+připojené hodiny a přečíst jejich nastavení (adresy s hesly, ne tokeny — ty
+web nevrací). Proto TOTP a proto je správa v hodinách ve výchozím stavu
+vypnutá a zapíná se jen doma.
+
+Zavedení (jednou):
+
+```sh
+python3 infra/fleet/serve.py hash-password   # na Macu; FLEET_PASSWORD_HASH=...
+python3 infra/fleet/serve.py new-totp        # FLEET_TOTP_SECRET=... + otpauth:// adresa
+tools/deploy.sh --init fleet                 # uživatel, /opt/fleet, state/ 700, prázdný fleet.env
+# oba řádky do /opt/fleet/fleet.env (root:root 600), pak:
+ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo systemctl restart fleet-web.service'
+tools/deploy.sh caddy                        # blok /fleet/*
+```
+
+Adresu `otpauth://` stačí převést na QR kód (`qrencode -t ansiutf8 '<adresa>'`)
+a naskenovat, nebo tajemství opsat ručně. Nikam jinam ji neukládej.
+
+Hodiny se přidávají na serveru; token se ukáže jen jednou:
+
+```sh
+ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo -u fleet env FLEET_STATE=/opt/fleet/state python3.11 /opt/fleet/serve.py add-device pracovna'
+```
+
+Pak v hodinách **doma** Systém → **Vzdálená správa přes server**: adresa
+`https://$CLOCK_HOST/fleet`, token, zapnout, uložit. Webový server hodin musí
+být „Vždy zapnutý“ (v režimu na 10 minut odpovídá po jejich uplynutí zamčeně).
+Stav spojení je vidět tamtéž. `remove-device <název>` token okamžitě zneplatní
+(`devices.json` se čte bez restartu), `list-devices` vypíše registrované.
+`curl -s http://127.0.0.1:8099/fleet-status` na serveru ukáže, kdo je online.
+
+Testy bez sítě: `python3 -m unittest infra/fleet/test_serve.py`; protokol
+ve firmwaru `tools/run_host_tests.sh` (`remote_admin`). Stránku přes server jde
+vyzkoušet i bez hodin: `tools/preview_web_ui.py` jako „hodiny“ a malý agent,
+který jeho odpovědi posílá serveru (hlavička `X-Remote-Admin` přepne náhled
+do režimu „otevřeno přes server“).
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
 

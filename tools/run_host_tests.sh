@@ -77,6 +77,7 @@ run_test push_alerts "$FIRMWARE_DIR/PushAlerts.cpp" || failures=$((failures + 1)
 run_test weather_warnings "$FIRMWARE_DIR/WeatherWarnings.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test sky_feed "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test crash_log "$FIRMWARE_DIR/CrashLog.cpp" || failures=$((failures + 1))
+run_test remote_admin "$FIRMWARE_DIR/RemoteAdmin.cpp" || failures=$((failures + 1))
 run_test sky_render "$FIRMWARE_DIR/SkyRender.cpp" "$FIRMWARE_DIR/SkyCanvas.cpp" "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 
 echo

@@ -122,6 +122,18 @@
 		}
 		reverse_proxy 127.0.0.1:8098
 	}
+	# Nastaveni vsech hodin pres server (infra/fleet). Hodiny se sem pripojuji
+	# samy a server jim predava pozadavky z prohlizece, takze kdo je tu
+	# prihlaseny, nastavuje hodiny doma. Heslo a kod TOTP resi sama sluzba
+	# (basic_auth by kolidoval s tokenem hodin v Authorization); /fleet-status
+	# ven nevede. Odpoved hodin nese stranku nastaveni (kolem 80 kB gzipem).
+	handle /fleet/* {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy 127.0.0.1:8099
+	}
+	redir /fleet /fleet/
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by

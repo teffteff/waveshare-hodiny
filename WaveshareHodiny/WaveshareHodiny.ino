@@ -18,6 +18,7 @@
 #include "ChmiRadarService.h"
 #include "PlaneRadarService.h"
 #include "PushAlertsService.h"
+#include "RemoteAdminService.h"
 #include "RainAlertService.h"
 #include "WeatherWarningService.h"
 #include "SatelliteService.h"
@@ -2671,6 +2672,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     rainAlertServicePrepareForFirmwareUpdate();
     weatherWarningServicePrepareForFirmwareUpdate();
     pushAlertsServicePrepareForFirmwareUpdate();
+    remoteAdminServicePrepareForFirmwareUpdate();
   } else {
     chmiRadarServiceBegin();
     planeRadarServiceBegin();
@@ -2687,6 +2689,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     weatherWarningServiceBegin();
     applyWarningState(loopConfigSnapshot());
     pushAlertsServiceBegin();
+    remoteAdminServiceBegin();
     firmwareUpdateCountdownStarted = false;
     firmwareUpdateBlackRequested = false;
     displayResyncAt = millis() + 500;
@@ -3930,6 +3933,8 @@ void setup() {
                         previewClockAppearanceFromWeb,
                         saveClockAppearanceFromWeb);
   clockDashboardSetWebMode(configurationWebMode());
+  // Až po webu: požadavky ze serveru jdou na něj a nesou jeho klíč loopbacku.
+  remoteAdminServiceBegin();
 
   const esp_task_wdt_config_t watchdogConfig = {
       .timeout_ms = LOOP_WATCHDOG_TIMEOUT_MS,

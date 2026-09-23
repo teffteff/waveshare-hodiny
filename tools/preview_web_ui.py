@@ -305,6 +305,17 @@ PREVIEW_BACKUP_PASSWORD = "zalohove-heslo"
 preview_password_configured = True
 # Obrazovka, kterou náhled hlásí jako zobrazenou; mění ji "Zobrazit teď".
 preview_current_screen = "clock"
+# Vzdálená správa; stránku přes server pozná náhled podle hlavičky
+# X-Remote-Admin, kterou přidává i firmware.
+preview_remote_admin = {"enabled": False, "url": "", "tokenSet": False}
+
+
+def remote_admin_state(via_server: bool) -> dict:
+    enabled = preview_remote_admin["enabled"]
+    return {"ok": True, **preview_remote_admin, "connected": enabled,
+            "status": "Připojeno k serveru" if enabled else "Vypnuto",
+            "secondsSinceContact": 3 if enabled else None,
+            "requestsServed": 0, "viaServer": via_server}
 
 
 STUB_RESPONSES = {
@@ -344,6 +355,8 @@ class PreviewHandler(BaseHTTPRequestHandler):
                        script.encode("utf-8"))
         elif path == "/api/config":
             self._json(stub_config())
+        elif path == "/api/remote-admin":
+            self._json(remote_admin_state("X-Remote-Admin" in self.headers))
         elif path in STUB_RESPONSES:
             self._json(STUB_RESPONSES[path])
         else:
@@ -364,6 +377,21 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 return
             preview_current_screen = screen
             self._json({"ok": True, "screen": screen})
+            return
+        if path == "/api/remote-admin":
+            fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+            print(f"POST {path}: {sorted(fields)}", flush=True)
+            if "X-Remote-Admin" in self.headers:
+                self._json({"ok": False, "message": "Vzdálenou správu jde nastavit "
+                            "jen v domácí síti přímo na hodinách."}, 403)
+            elif fields.get("action") == "forget":
+                preview_remote_admin.update(enabled=False, url="", tokenSet=False)
+                self._json(remote_admin_state(False))
+            else:
+                preview_remote_admin.update(
+                    enabled=fields.get("enabled") == "1", url=fields.get("url", ""),
+                    tokenSet=preview_remote_admin["tokenSet"] or bool(fields.get("token")))
+                self._json(remote_admin_state(False))
             return
         if path == "/api/config":
             fields = {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}

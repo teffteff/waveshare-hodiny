@@ -646,7 +646,7 @@ if [ "$MODE" = "--deep" ]; then
     # Hlídače obchodů a obce mají vlastní repozitáře (hlidac-novinek,
     # hlidac-ondrejov) i nasazení, ale stejný stroj, Caddy a ntfy: hlídá se
     # tady, že běží, obsah a shodu kódu si kontrolují samy (tools/check-deploy.sh).
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service alerts-web.service caddy.service backup.timer health.timer ha-update.timer watch.timer watch-web.service ou-watch.timer; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service alerts-web.service fleet-web.service caddy.service backup.timer health.timer ha-update.timer watch.timer watch-web.service ou-watch.timer; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"

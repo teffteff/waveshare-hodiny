@@ -1,0 +1,33 @@
+[Unit]
+Description=Nastaveni vsech hodin pres server (predavani webu hodin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Kod patri rootovi,
+# sluzba zapisuje jen do state/: registrovane hodiny a posledni kod TOTP.
+User=fleet
+Group=fleet
+Environment=FLEET_PORT=8099
+# Jen pro Caddy na stejnem stroji: sluzba veri X-Forwarded-For (brzda
+# prihlaseni podle IP) a /fleet-status nema heslo.
+Environment=FLEET_BIND=127.0.0.1
+Environment=FLEET_STATE=/opt/fleet/state
+# FLEET_PASSWORD_HASH a FLEET_TOTP_SECRET (vzor fleet.env.example). Bez nich
+# sluzba bezi, ale nikoho neprihlasi.
+EnvironmentFile=/opt/fleet/fleet.env
+# Zadny venv, jen standardni knihovna. Interpret vyslovne 3.11, protoze
+# /usr/bin/python3 je na Oracle Linuxu 8 porad 3.6 (viz rain-web.service).
+ExecStart=/usr/bin/python3.11 /opt/fleet/serve.py
+UMask=0077
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/fleet/state
+
+[Install]
+WantedBy=multi-user.target
