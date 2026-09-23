@@ -149,7 +149,7 @@ https://hodiny:$WARNINGS_PASSWORD@$CLOCK_HOST/warnings.json  výstrahy ČHMÚ (n
 https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts  upozornění na telefon (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
-https://$CLOCK_HOST/fleet         vzdálená správa (nepovinné; adresa + token, viz níž)
+https://$FLEET_HOST              vzdálená správa (nepovinné; adresa + token, viz níž)
 https://$CLOCK_HOST              Home Assistant
 ```
 
@@ -834,16 +834,26 @@ Do hodin se opíše `https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts`. Testy 
 
 ## Nastavení všech hodin přes server
 
-`https://$CLOCK_HOST/fleet/` je jedno místo pro nastavení všech hodin, i mimo
+`https://$FLEET_HOST/` je jedno místo pro nastavení všech hodin, i mimo
 domácí síť. Po přihlášení je tam seznam hodin a u každé její vlastní stránka
 nastavení — ta z firmwaru daného kusu, jen s výběrem hodin v hlavičce.
 
+**Proč vlastní jméno.** Na `$CLOCK_HOST` běží v kořeni Home Assistant a jeho
+service worker (`sw-modern.js`, scope `/`) obsluhuje v prohlížeči všechno na
+tom jméně: stránky končící `/` vrací z mezipaměti a čerstvé stahuje až na
+pozadí. Nastavení hodin i `/novinky/` pak byly o návštěvu pozadu (po
+přihlášení se stránka nezměnila, starý token proti CSRF) a sdílely s HA
+úložiště prohlížeče, kde HA drží přihlašovací tokeny. Proto `$FLEET_HOST`
+(v `.env`, Caddy `{{FLEET_DOMAIN}}`, služba s `FLEET_PREFIX=` prázdným);
+staré adresy `/fleet/…` a `/novinky/…` na `$CLOCK_HOST` přesměrují. Datové
+kanály pro hodiny zůstávají na `$CLOCK_HOST`, hodiny nejsou prohlížeč.
+
 **Jak to jde přes NAT.** Server v OCI se k hodinám doma nedovolá, proto se
 hodiny připojují samy: drží jedno odchozí TLS spojení a ptají se
-`GET /fleet/agent/poll` (server drží dotaz až 25 s). Když prohlížeč něco chce,
+`GET /agent/poll` (server drží dotaz až 25 s). Když prohlížeč něco chce,
 server to hodinám vrátí jako odpověď na dotaz, hodiny to pošlou svému vlastnímu
-webu přes loopback (`127.0.0.1:80`) a výsledek vrátí `POST /fleet/agent/result`.
-Server ke stránce jen přidá prefix `/fleet/d/<název>/` před adresy a výběr
+webu přes loopback (`127.0.0.1:80`) a výsledek vrátí `POST /agent/result`.
+Server ke stránce jen přidá prefix `/d/<název>/` před adresy a výběr
 hodin; firmware nic nevykládá, takže nové funkce stránky fungují přes server
 samy. Hodiny, které se 45 s neozvaly, jsou offline. V domácí síti se nic
 neotevírá a server adresy hodin nezná.
@@ -878,7 +888,7 @@ python3 infra/fleet/serve.py new-totp        # FLEET_TOTP_SECRET=... + otpauth:/
 tools/deploy.sh --init fleet                 # uživatel, /opt/fleet, state/ 700, prázdný fleet.env
 # oba řádky do /opt/fleet/fleet.env (root:root 600), pak:
 ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo systemctl restart fleet-web.service'
-tools/deploy.sh caddy                        # blok /fleet/*
+tools/deploy.sh caddy                        # blok {{FLEET_DOMAIN}}
 ```
 
 Adresu `otpauth://` stačí převést na QR kód (`qrencode -t ansiutf8 '<adresa>'`)
@@ -891,7 +901,7 @@ ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo -u fleet env FLEET_STATE=/opt/fleet/s
 ```
 
 Pak v hodinách **doma** Systém → **Vzdálená správa přes server**: adresa
-`https://$CLOCK_HOST/fleet`, token, zapnout, uložit. Webový server hodin musí
+`https://$FLEET_HOST`, token, zapnout, uložit. Webový server hodin musí
 být „Vždy zapnutý“ (v režimu na 10 minut odpovídá po jejich uplynutí zamčeně).
 Stav spojení je vidět tamtéž. `remove-device <název>` token okamžitě zneplatní
 (`devices.json` se čte bez restartu), `list-devices` vypíše registrované.

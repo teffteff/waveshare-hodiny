@@ -83,7 +83,7 @@ class FakeClock(threading.Thread):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         auth = {"Authorization": f"Bearer {self.token}"}
         while not self.stop.is_set():
-            connection.request("GET", "/fleet/agent/poll",
+            connection.request("GET", serve.PREFIX + "/agent/poll",
                                headers={**auth, "X-Clock-Firmware": "2.3.0",
                                         "X-Clock-Name": "kuchyn"})
             response = connection.getresponse()
@@ -103,7 +103,7 @@ class FakeClock(threading.Thread):
             unchanged = bool(tag) and tag == known
             if unchanged:
                 self.skipped += 1
-            connection.request("POST", "/fleet/agent/result",
+            connection.request("POST", serve.PREFIX + "/agent/result",
                                body=b"" if unchanged else payload, headers={
                 **auth, "X-Job-Id": response.getheader("X-Job-Id"),
                 "X-Job-Status": str(status), "X-Job-Content-Type": ctype,
@@ -113,7 +113,9 @@ class FakeClock(threading.Thread):
             response.read()
 
 
-class ServerTest(unittest.TestCase):
+class ServerBase(unittest.TestCase):
+    """Server a hodiny v jednom procesu; testy jsou v podtridach."""
+
     def setUp(self):
         self.state = tempfile.TemporaryDirectory()
         serve.STATE = Path(self.state.name)
@@ -165,6 +167,8 @@ class ServerTest(unittest.TestCase):
             time.sleep(0.05)
         self.fail("hodiny se nepripojily")
 
+
+class ServerTest(ServerBase):
     def test_login_flow_and_code_reuse(self):
         response, body = self.request("GET", "/fleet/")
         self.assertIn("Kód z ověřovací aplikace", body.decode())
@@ -324,6 +328,49 @@ class ServerTest(unittest.TestCase):
         response, _ = self.request("GET", "/fleet/agent/poll",
                                    headers={"Authorization": f"Bearer {self.token}"})
         self.assertEqual(response.status, 401)
+
+
+class RootPrefixTest(ServerBase):
+    """Sluzba na vlastnim jmene (fleet.sytes.net): bez /fleet v adresach."""
+
+    def setUp(self):
+        self.saved_prefix = serve.PREFIX
+        serve.PREFIX = ""
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        serve.PREFIX = self.saved_prefix
+
+    def login(self, code=None, ip="203.0.113.5"):
+        code = code or serve.totp_code(RFC_SECRET, int(time.time() // 30))
+        form = urllib.parse.urlencode({"password": PASSWORD, "code": code})
+        return self.request("POST", "/login", form, {
+            "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip})
+
+    def test_root_prefix_round_trip(self):
+        response, body = self.request("GET", "/")
+        self.assertIn('action="/login"', body.decode())
+        response, _ = self.login()
+        self.assertEqual(response.status, 303)
+        self.assertEqual(response.getheader("Location"), "/")
+        self.assertIn("Path=/;", response.getheader("Set-Cookie"))
+        cookie = response.getheader("Set-Cookie").split(";")[0]
+        csrf = self.guard.sessions[cookie.split("=", 1)[1]].csrf
+        self.start_clock()
+        response, body = self.request("GET", "/", headers={"Cookie": cookie})
+        self.assertIn('href="/d/kuchyn/"', body.decode())
+        self.assertIn('action="/logout"', body.decode())
+        response, body = self.request("GET", "/d/kuchyn/", headers={"Cookie": cookie})
+        page = body.decode()
+        self.assertIn('const base="/d/kuchyn"', page)
+        self.assertIn('src="/d/kuchyn/ui-language.js"', page)
+        response, body = self.request("GET", "/d/kuchyn/api/config", headers={
+            "Cookie": cookie, "X-Fleet-Csrf": csrf})
+        self.assertEqual(json.loads(body), {"deviceName": "kuchyn"})
+        response, body = self.request("GET", "/api/session", headers={
+            "Cookie": cookie, "X-Fleet-Session": "1"})
+        self.assertEqual(json.loads(body)["csrf"], csrf)
 
 
 if __name__ == "__main__":

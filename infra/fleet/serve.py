@@ -74,7 +74,10 @@ from pathlib import Path
 PORT = int(os.environ.get("FLEET_PORT", "8099"))
 BIND = os.environ.get("FLEET_BIND", "127.0.0.1")
 STATE = Path(os.environ.get("FLEET_STATE", "/opt/fleet/state"))
-PREFIX = "/fleet"
+# Kde sluzba na webu zije: "/fleet" pod spolecnym jmenem, "" na vlastnim
+# jmene (fleet.sytes.net). Vlastni jmeno ji oddeli od service workeru
+# Home Assistanta, ktery by jinak stranky servirovals z mezipameti.
+PREFIX = os.environ.get("FLEET_PREFIX", "/fleet").rstrip("/")
 
 # Hodiny se ptaji znovu hned po odpovedi; 25 s je pod vychozim limitem
 # necinnosti vetsiny proxy i NAT v routerech.
@@ -485,7 +488,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px}
 LOGIN_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
 <title>Hodiny – přihlášení</title><style>{style}</style>{guard}</head><body><main>
-<h1>Nastavení hodin</h1><form class="card" method="post" action="/fleet/login">
+<h1>Nastavení hodin</h1><form class="card" method="post" action="{prefix}/login">
 {error}<label for="password">Heslo</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
 <label for="code">Kód z ověřovací aplikace</label><input id="code" name="code" inputmode="numeric" pattern="[0-9]{{6}}" maxlength="6" autocomplete="one-time-code" required>
 <button class="primary" type="submit">Přihlásit</button></form></main></body></html>"""
@@ -493,7 +496,7 @@ LOGIN_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 DEVICES_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
 <title>Hodiny</title><style>{style}</style>{guard}</head><body><main>
-<header><h1>Hodiny</h1><form method="post" action="/fleet/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Odhlásit</button></form></header>
+<header><h1>Hodiny</h1><form method="post" action="{prefix}/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Odhlásit</button></form></header>
 <div class="card"><ul>{items}</ul></div>
 <p class="hint">Hodiny se připojují samy; „offline“ znamená, že se neozvaly {online} s. Nové hodiny se přidávají na serveru příkazem <code>serve.py add-device</code>.</p>
 </main></body></html>"""
@@ -501,29 +504,29 @@ DEVICES_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 MESSAGE_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
 <title>Hodiny</title><style>{style}</style></head><body><main>
-<h1>Hodiny</h1><div class="card"><p>{message}</p><a class="button" href="/fleet/">Zpět na seznam hodin</a></div>
+<h1>Hodiny</h1><div class="card"><p>{message}</p><a class="button" href="{prefix}/">Zpět na seznam hodin</a></div>
 </main></body></html>"""
 
 # Vlozi se na zacatek <head> stranky z hodin, pred jeji vlastni skripty.
 # Adresy zacinajici lomitkem dostanou prefix hodin a kazdy dotaz nese token
 # proti CSRF. Do hlavicky stranky pribude vyber hodin a odhlaseni.
 SHIM = """<script>(()=>{{const base={base};let csrf={csrf};const devices={devices};const current={name};
-const fix=u=>typeof u==="string"&&u.startsWith("/")&&!u.startsWith("//")&&!u.startsWith("/fleet/")?base+u:u;
+const fix=u=>typeof u==="string"&&u.startsWith("/")&&!u.startsWith("//")&&!u.startsWith(base+"/")?base+u:u;
 const nativeFetch=window.fetch.bind(window);
 // Token proti CSRF je vazany na relaci. Stranka z drivejska (jina karta,
 // obnovena karta, nove prihlaseni) si pri odmitnuti vezme aktualni a pozadavek
 // zopakuje; vyprsela relace vede na prihlaseni.
-const refreshCsrf=async()=>{{const r=await nativeFetch("/fleet/api/session",{{credentials:"same-origin",headers:{{"X-Fleet-Session":"1"}}}});
-if(!r.ok){{location.href="/fleet/";return false}}const j=await r.json();csrf=j.csrf;return true}};
+const refreshCsrf=async()=>{{const r=await nativeFetch({prefix}+"/api/session",{{credentials:"same-origin",headers:{{"X-Fleet-Session":"1"}}}});
+if(!r.ok){{location.href={prefix}+"/";return false}}const j=await r.json();csrf=j.csrf;return true}};
 const send=(input,options)=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Fleet-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}})}};
 window.fetch=async(input,options={{}})=>{{let response=await send(input,options);const action=response.headers.get("X-Fleet-Action");
-if(action==="refresh"&&await refreshCsrf())response=await send(input,options);else if(action==="login")location.href="/fleet/";return response}};
+if(action==="refresh"&&await refreshCsrf())response=await send(input,options);else if(action==="login")location.href={prefix}+"/";return response}};
 const addBar=()=>{{const host=document.querySelector("header .header-actions")||document.querySelector("header")||document.body;if(!host||document.getElementById("fleetBar"))return;
 const bar=document.createElement("div");bar.id="fleetBar";bar.style.cssText="display:flex;align-items:center;gap:8px";
 const select=document.createElement("select");select.setAttribute("aria-label","Hodiny");select.style.cssText="min-height:48px;padding:0 12px;border:1px solid var(--line,#3b444b);border-radius:12px;background:var(--surface,#171c20);color:var(--text,#f3f6f8);font-size:16px;font-weight:700";
 for(const d of devices){{const o=document.createElement("option");o.value=d.name;o.textContent=(d.online?"● ":"○ ")+(d.clockName&&d.clockName!==d.name?d.name+" ("+d.clockName+")":d.name);o.selected=d.name===current;select.append(o)}}
-select.addEventListener("change",()=>{{location.href="/fleet/d/"+encodeURIComponent(select.value)+"/"}});
-const list=document.createElement("a");list.href="/fleet/";list.textContent="☰";list.title="Všechny hodiny";list.style.cssText="display:grid;place-items:center;width:48px;height:48px;border:1px solid var(--line,#3b444b);border-radius:12px;color:var(--text,#f3f6f8);text-decoration:none;font-size:20px";
+select.addEventListener("change",()=>{{location.href={prefix}+"/d/"+encodeURIComponent(select.value)+"/"}});
+const list=document.createElement("a");list.href={prefix}+"/";list.textContent="☰";list.title="Všechny hodiny";list.style.cssText="display:grid;place-items:center;width:48px;height:48px;border:1px solid var(--line,#3b444b);border-radius:12px;color:var(--text,#f3f6f8);text-decoration:none;font-size:20px";
 bar.append(list,select);host.prepend(bar)}};
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",addBar);else addBar();
 addEventListener("pageshow",e=>{{if(e.persisted)location.reload()}});
@@ -559,7 +562,7 @@ def inject(page: str, name: str, csrf: str, devices: list[dict]) -> str:
     # </script> v nazvu hodin nehrozi (NAME), ale json.dumps je i tak
     # zabalen, aby "<" nemohlo ukoncit skript.
     as_js = lambda value: json.dumps(value).replace("<", "\\u003c")
-    shim = SHIM.format(base=as_js(base), csrf=as_js(csrf),
+    shim = SHIM.format(base=as_js(base), prefix=as_js(PREFIX), csrf=as_js(csrf),
                        devices=as_js(devices), name=as_js(name))
     match = re.search(r"<head[^>]*>", page, re.IGNORECASE)
     if match:
@@ -599,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(code, {"ok": False, "message": message})
 
     def _page_error(self, code: int, message: str):
-        page = MESSAGE_PAGE.format(style=STYLE, message=html.escape(message))
+        page = MESSAGE_PAGE.format(style=STYLE, prefix=PREFIX, message=html.escape(message))
         self._send(code, page.encode(), "text/html; charset=utf-8")
 
     def _redirect(self, location: str, headers: list[tuple[str, str]] = ()):
@@ -754,7 +757,7 @@ class Handler(BaseHTTPRequestHandler):
                         f'<span class="hint">{state} · firmware {detail}</span></span>{link}</li>')
         if not rows:
             rows.append('<li class="hint">Zatím nejsou zaregistrované žádné hodiny.</li>')
-        page = DEVICES_PAGE.format(style=STYLE, guard=PAGE_GUARD, csrf=html.escape(session.csrf),
+        page = DEVICES_PAGE.format(style=STYLE, guard=PAGE_GUARD, prefix=PREFIX, csrf=html.escape(session.csrf),
                                    items="".join(rows), online=int(ONLINE_WINDOW_S))
         self._send(200, page.encode(), "text/html; charset=utf-8")
 
@@ -762,7 +765,7 @@ class Handler(BaseHTTPRequestHandler):
         message = f'<p class="error">{html.escape(error)}</p>' if error else ""
         if not self.guard.configured():
             message = '<p class="error">Přihlášení není na serveru nastavené (fleet.env).</p>'
-        page = LOGIN_PAGE.format(style=STYLE, guard=PAGE_GUARD, error=message)
+        page = LOGIN_PAGE.format(style=STYLE, guard=PAGE_GUARD, prefix=PREFIX, error=message)
         self._send(code, page.encode(), "text/html; charset=utf-8")
 
     def _login(self):

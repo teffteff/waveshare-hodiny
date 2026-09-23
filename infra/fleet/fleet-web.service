@@ -14,6 +14,8 @@ Environment=FLEET_PORT=8099
 # prihlaseni podle IP) a /fleet-status nema heslo.
 Environment=FLEET_BIND=127.0.0.1
 Environment=FLEET_STATE=/opt/fleet/state
+# Vlastni jmeno (Caddy {{FLEET_DOMAIN}}), adresy bez /fleet.
+Environment=FLEET_PREFIX=
 # FLEET_PASSWORD_HASH a FLEET_TOTP_SECRET (vzor fleet.env.example). Bez nich
 # sluzba bezi, ale nikoho neprihlasi.
 EnvironmentFile=/opt/fleet/fleet.env
