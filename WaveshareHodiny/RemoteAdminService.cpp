@@ -338,6 +338,7 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
              "X-Clock-Firmware: %s\r\nX-Clock-Name: %s\r\n\r\n",
              connection.endpoint.basePath, connection.hostHeader,
              connection.token, FIRMWARE_VERSION, connection.deviceName);
+    const uint32_t pollSentMs = millis();
     if (!writeText(client, head)) return SessionEnd::Failed;
     RemoteAdminHead job;
     if (!readHead(client, head, sizeof(head), headLength, POLL_TIMEOUT_MS) ||
@@ -358,6 +359,7 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
     // Id úlohy je od serveru a vrací se v hlavičce; smí mít jen bezpečné znaky.
     for (const char *c = job.jobId; *c != '\0'; ++c)
       if (!isalnum(static_cast<unsigned char>(*c))) return SessionEnd::Failed;
+    const uint32_t jobHeadMs = millis();
     const size_t bodyLength = static_cast<size_t>(job.contentLength);
     if (bodyLength > 0 &&
         !readExact(client, requestBody, bodyLength, BODY_TIMEOUT_MS))
@@ -365,7 +367,9 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
     setStatus("Připojeno k serveru", true);
 
     LocalResult result;
+    const uint32_t localStartMs = millis();
     executeLocally(job, requestBody, bodyLength, response, result);
+    const uint32_t localDoneMs = millis();
     portENTER_CRITICAL(&stateMux);
     ++requestsServed;
     portEXIT_CRITICAL(&stateMux);
@@ -382,12 +386,25 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
     const bool sent = writeText(client, head) &&
                       (result.bodyLength == 0 ||
                        writeAll(client, result.body, result.bodyLength));
+    const uint32_t resultSentMs = millis();
     response.trim();
     if (!sent) return SessionEnd::Failed;
     RemoteAdminHead ack;
     if (!readHead(client, head, sizeof(head), headLength, RESULT_TIMEOUT_MS) ||
         !remoteAdminParseHead(head, headLength, ack))
       return SessionEnd::Failed;
+#if !FIRMWARE_RELEASE
+    // Kde se ztrácí čas u požadavků přes server (vývojové buildy).
+    Serial.printf("[relay] %s %s %d %u B | poll->job %lu ms, body %lu, local %lu, "
+                  "upload %lu, ack %lu\n",
+                  job.jobMethod, job.jobPath, result.status,
+                  static_cast<unsigned>(result.bodyLength),
+                  static_cast<unsigned long>(jobHeadMs - pollSentMs),
+                  static_cast<unsigned long>(localStartMs - jobHeadMs),
+                  static_cast<unsigned long>(localDoneMs - localStartMs),
+                  static_cast<unsigned long>(resultSentMs - localDoneMs),
+                  static_cast<unsigned long>(millis() - resultSentMs));
+#endif
     if (ack.status == 401 || ack.status == 403) return SessionEnd::Rejected;
     if (!discardBody(client, ack)) return SessionEnd::Failed;
     if (ack.close) return SessionEnd::Reconnect;
