@@ -178,6 +178,20 @@ class ServerTest(unittest.TestCase):
         response, _ = self.login()
         self.assertEqual(response.status, 401)
 
+    def test_speculative_loads_are_refused_and_pages_guarded(self):
+        cookie, _ = self.session()
+        for path in ("/fleet/", "/fleet/d/kuchyn/"):
+            response, _ = self.request("GET", path, headers={
+                "Cookie": cookie, "Sec-Purpose": "prefetch;prerender"})
+            self.assertEqual(response.status, 503, path)
+        response, body = self.request("GET", "/fleet/", headers={"Cookie": cookie})
+        self.assertIn("e.persisted", body.decode())
+        response, body = self.request("GET", "/fleet/")
+        self.assertIn("e.persisted", body.decode())
+        # Cookie relace konci se zavrenim prohlizece.
+        response, _ = self.login(code=serve.totp_code(RFC_SECRET, int(time.time() // 30) + 1))
+        self.assertNotIn("Max-Age", response.getheader("Set-Cookie"))
+
     def test_wrong_code_and_rate_limit(self):
         for _ in range(serve.IP_FAILURES):
             response, _ = self.login(code="000000")

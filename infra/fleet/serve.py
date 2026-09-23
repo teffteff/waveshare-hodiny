@@ -476,7 +476,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px}
 
 LOGIN_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
-<title>Hodiny – přihlášení</title><style>{style}</style></head><body><main>
+<title>Hodiny – přihlášení</title><style>{style}</style>{guard}</head><body><main>
 <h1>Nastavení hodin</h1><form class="card" method="post" action="/fleet/login">
 {error}<label for="password">Heslo</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
 <label for="code">Kód z ověřovací aplikace</label><input id="code" name="code" inputmode="numeric" pattern="[0-9]{{6}}" maxlength="6" autocomplete="one-time-code" required>
@@ -484,7 +484,7 @@ LOGIN_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 
 DEVICES_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
-<title>Hodiny</title><style>{style}</style></head><body><main>
+<title>Hodiny</title><style>{style}</style>{guard}</head><body><main>
 <header><h1>Hodiny</h1><form method="post" action="/fleet/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Odhlásit</button></form></header>
 <div class="card"><ul>{items}</ul></div>
 <p class="hint">Hodiny se připojují samy; „offline“ znamená, že se neozvaly {online} s. Nové hodiny se přidávají na serveru příkazem <code>serve.py add-device</code>.</p>
@@ -517,7 +517,15 @@ for(const d of devices){{const o=document.createElement("option");o.value=d.name
 select.addEventListener("change",()=>{{location.href="/fleet/d/"+encodeURIComponent(select.value)+"/"}});
 const list=document.createElement("a");list.href="/fleet/";list.textContent="☰";list.title="Všechny hodiny";list.style.cssText="display:grid;place-items:center;width:48px;height:48px;border:1px solid var(--line,#3b444b);border-radius:12px;color:var(--text,#f3f6f8);text-decoration:none;font-size:20px";
 bar.append(list,select);host.prepend(bar)}};
-if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",addBar);else addBar()}})();</script>"""
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",addBar);else addBar();
+addEventListener("pageshow",e=>{{if(e.persisted)location.reload()}});
+if(document.prerendering)document.addEventListener("prerenderingchange",()=>location.reload(),{{once:true}})}})();</script>"""
+
+# Stranka vracena z pameti prohlizece (zpet/vpred, obnovena karta) muze patrit
+# jine relaci nez aktualni cookie: nacte se znovu ze serveru.
+PAGE_GUARD = ('<script>addEventListener("pageshow",e=>{if(e.persisted)location.reload()});'
+              'if(document.prerendering)document.addEventListener("prerenderingchange",'
+              '()=>location.reload(),{once:true});</script>')
 
 ROOTED_ATTRIBUTE = re.compile(r'\b(src|href|action)="/(?!/)')
 
@@ -663,6 +671,19 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self):
         path, _, query = self.path.partition("?")
         try:
+            if path.startswith(f"{PREFIX}/") and not path.startswith(f"{PREFIX}/agent/"):
+                purpose = self.headers.get("Sec-Purpose", "") or self.headers.get("Purpose", "")
+                if "prefetch" in purpose or "prerender" in purpose:
+                    # Predem nactena stranka by mohla patrit jine relaci nez ta
+                    # po kliknuti; prohlizec ji pri odmitnuti nacte az na klik.
+                    log(f"fleet: refused speculative {self.command} {path} ({purpose})")
+                    return self._send(503, b"", "text/plain", security_headers())
+                if self.headers.get("Sec-Fetch-Mode") == "navigate":
+                    agent = self.headers.get("User-Agent", "")
+                    browser = next((name for name in ("Edg/", "OPR/", "Firefox/", "Chrome/", "Safari/")
+                                    if name in agent), "?").rstrip("/")
+                    log(f"fleet: navigate {self.command} {path} session={'yes' if self._session() else 'no'} "
+                        f"browser={browser}")
             if path == "/fleet-status" and self.command == "GET":
                 return self._status()
             if path.startswith(f"{PREFIX}/agent/"):
@@ -725,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
                         f'<span class="hint">{state} · firmware {detail}</span></span>{link}</li>')
         if not rows:
             rows.append('<li class="hint">Zatím nejsou zaregistrované žádné hodiny.</li>')
-        page = DEVICES_PAGE.format(style=STYLE, csrf=html.escape(session.csrf),
+        page = DEVICES_PAGE.format(style=STYLE, guard=PAGE_GUARD, csrf=html.escape(session.csrf),
                                    items="".join(rows), online=int(ONLINE_WINDOW_S))
         self._send(200, page.encode(), "text/html; charset=utf-8")
 
@@ -733,7 +754,7 @@ class Handler(BaseHTTPRequestHandler):
         message = f'<p class="error">{html.escape(error)}</p>' if error else ""
         if not self.guard.configured():
             message = '<p class="error">Přihlášení není na serveru nastavené (fleet.env).</p>'
-        page = LOGIN_PAGE.format(style=STYLE, error=message)
+        page = LOGIN_PAGE.format(style=STYLE, guard=PAGE_GUARD, error=message)
         self._send(code, page.encode(), "text/html; charset=utf-8")
 
     def _login(self):
@@ -754,8 +775,8 @@ class Handler(BaseHTTPRequestHandler):
             log(f"fleet: failed login from {ip}")
             return self._login_page("Heslo nebo kód nesouhlasí.", 401)
         log(f"fleet: login from {ip}")
-        cookie = (f"{COOKIE}={token}; Path={PREFIX}/; Secure; HttpOnly; "
-                  f"SameSite=Strict; Max-Age={SESSION_MAX_S}")
+        # Bez Max-Age: zavreni prohlizece prihlaseni ukonci (limity hlida server).
+        cookie = f"{COOKIE}={token}; Path={PREFIX}/; Secure; HttpOnly; SameSite=Strict"
         self._redirect(f"{PREFIX}/", [("Set-Cookie", cookie)])
 
     def _logout(self):
