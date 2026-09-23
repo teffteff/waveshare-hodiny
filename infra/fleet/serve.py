@@ -472,15 +472,17 @@ MESSAGE_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 # Vlozi se na zacatek <head> stranky z hodin, pred jeji vlastni skripty.
 # Adresy zacinajici lomitkem dostanou prefix hodin a kazdy dotaz nese token
 # proti CSRF. Do hlavicky stranky pribude vyber hodin a odhlaseni.
-SHIM = """<script>(()=>{{const base={base};const csrf={csrf};const devices={devices};const current={name};
+SHIM = """<script>(()=>{{const base={base};let csrf={csrf};const devices={devices};const current={name};
 const fix=u=>typeof u==="string"&&u.startsWith("/")&&!u.startsWith("//")&&!u.startsWith("/fleet/")?base+u:u;
 const nativeFetch=window.fetch.bind(window);
-const act=response=>{{const action=response.headers.get("X-Fleet-Action");
-if(action==="login")location.href="/fleet/";
-else if(action==="reload"){{let last=0;try{{last=Number(sessionStorage.getItem("fleetReload"))||0}}catch(e){{}}
-if(Date.now()-last>15000){{try{{sessionStorage.setItem("fleetReload",String(Date.now()))}}catch(e){{}}location.reload()}}}}
-return response}};
-window.fetch=(input,options={{}})=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Fleet-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}}).then(act)}};
+// Token proti CSRF je vazany na relaci. Stranka z drivejska (jina karta,
+// obnovena karta, nove prihlaseni) si pri odmitnuti vezme aktualni a pozadavek
+// zopakuje; vyprsela relace vede na prihlaseni.
+const refreshCsrf=async()=>{{const r=await nativeFetch("/fleet/api/session",{{credentials:"same-origin",headers:{{"X-Fleet-Session":"1"}}}});
+if(!r.ok){{location.href="/fleet/";return false}}const j=await r.json();csrf=j.csrf;return true}};
+const send=(input,options)=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Fleet-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}})}};
+window.fetch=async(input,options={{}})=>{{let response=await send(input,options);const action=response.headers.get("X-Fleet-Action");
+if(action==="refresh"&&await refreshCsrf())response=await send(input,options);else if(action==="login")location.href="/fleet/";return response}};
 const addBar=()=>{{const host=document.querySelector("header .header-actions")||document.querySelector("header")||document.body;if(!host||document.getElementById("fleetBar"))return;
 const bar=document.createElement("div");bar.id="fleetBar";bar.style.cssText="display:flex;align-items:center;gap:8px";
 const select=document.createElement("select");select.setAttribute("aria-label","Hodiny");select.style.cssText="min-height:48px;padding:0 12px;border:1px solid var(--line,#3b444b);border-radius:12px;background:var(--surface,#171c20);color:var(--text,#f3f6f8);font-size:16px;font-weight:700";
@@ -644,6 +646,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._login()
             if path == f"{PREFIX}/logout" and self.command == "POST":
                 return self._logout()
+            if path == f"{PREFIX}/api/session" and self.command == "GET":
+                return self._session_token()
             if path == f"{PREFIX}/api/devices" and self.command == "GET":
                 session = self._session()
                 if session is None or not self._csrf_ok(session):
@@ -657,6 +661,15 @@ class Handler(BaseHTTPRequestHandler):
             self._error(404, "not found")
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
+
+    def _session_token(self):
+        # Vlastni hlavicku cizi stranka bez CORS neposle a cookie je
+        # SameSite=Strict; odpoved si stejne precist nemuze.
+        session = self._session()
+        if session is None or self.headers.get("X-Fleet-Session") != "1" or \
+                not self._same_origin():
+            return self._json(401, {"ok": False, "message": "Přihlášení vypršelo."})
+        self._json(200, {"ok": True, "csrf": session.csrf})
 
     def _status(self):
         if self.client_address[0] != "127.0.0.1" or self.headers.get("X-Forwarded-For"):
@@ -792,8 +805,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra = []
                 if problem == "stale token":
                     # Relace plati, jen stranka nese token starsi relace:
-                    # znovu nactena dostane aktualni (SHIM).
-                    extra = [("X-Fleet-Action", "reload")]
+                    # SHIM si vezme aktualni z /fleet/api/session a zopakuje.
+                    extra = [("X-Fleet-Action", "refresh")]
                 return self._json(403, {"ok": False, "message": "Požadavek z cizí stránky byl odmítnut."},
                                   security_headers() + extra)
         if self.command not in ("GET", "POST") or not RELAY_PATH.match(path) or \

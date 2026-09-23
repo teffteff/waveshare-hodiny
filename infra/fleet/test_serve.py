@@ -215,7 +215,16 @@ class ServerTest(unittest.TestCase):
         response, _ = self.request("GET", "/fleet/d/kuchyn/api/config", headers={
             "Cookie": cookie, "X-Fleet-Csrf": old_csrf})
         self.assertEqual(response.status, 403)
-        self.assertEqual(response.getheader("X-Fleet-Action"), "reload")
+        self.assertEqual(response.getheader("X-Fleet-Action"), "refresh")
+        # Stranka si vezme aktualni token relace a pozadavek zopakuje.
+        response, body = self.request("GET", "/fleet/api/session", headers={
+            "Cookie": cookie, "X-Fleet-Session": "1"})
+        self.assertEqual(json.loads(body)["csrf"], csrf)
+        response, _ = self.request("GET", "/fleet/api/session", headers={"Cookie": cookie})
+        self.assertEqual(response.status, 401)
+        response, _ = self.request("GET", "/fleet/api/session", headers={
+            "Cookie": cookie, "X-Fleet-Session": "1", "Origin": "https://evil.example"})
+        self.assertEqual(response.status, 401)
         # Chybejici token je utok nebo chyba, ne zastarala stranka.
         response, _ = self.request("GET", "/fleet/d/kuchyn/api/config",
                                    headers={"Cookie": cookie})
