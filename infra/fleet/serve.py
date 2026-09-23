@@ -86,6 +86,9 @@ ONLINE_WINDOW_S = 45.0
 # jednotky az desitky sekund.
 JOB_TIMEOUT_S = 75.0
 MAX_QUEUE = 16
+# Kolik velkych odpovedi na hodiny si server pamatuje (stranka, preklady...).
+CACHE_ENTRIES = 8
+TAG = re.compile(r"^[0-9a-f]{16}$")
 MAX_REQUEST_BODY = 64 * 1024
 # Stranka nastaveni je gzipem kolem 80 kB, preklady 40 kB.
 MAX_RESULT_BODY = 1024 * 1024
@@ -209,6 +212,9 @@ class Job:
     body: bytes
     created: float = field(default_factory=time.monotonic)
     picked: float = 0.0
+    # Otisk odpovedi, kterou server pro tuhle cestu uz ma (posle se hodinam).
+    if_none_match: str = ""
+    from_cache: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     status: int = 0
     result_type: str = ""
@@ -226,6 +232,9 @@ class Device:
     firmware: str = ""
     clock_name: str = ""
     polling: int = 0
+    # Posledni velke odpovedi na GET: cesta -> (otisk, typ, kodovani, telo).
+    # Hodiny pri shode otisku telo znovu neposilaji.
+    cache: dict = field(default_factory=dict)
 
     def online(self, now: float) -> bool:
         return self.polling > 0 or now - self.last_poll < ONLINE_WINDOW_S
@@ -325,15 +334,33 @@ class Relay:
         return finished
 
     def complete(self, device: Device, job_id: str, status: int,
-                 result_type: str, encoding: str, body: bytes) -> bool:
+                 result_type: str, encoding: str, body: bytes,
+                 tag: str = "", not_modified: bool = False) -> bool:
         with self.lock:
             job = device.inflight.pop(job_id, None)
-        if job is None:
-            return False
+            if job is None:
+                return False
+            if not_modified:
+                cached = device.cache.get(job.path)
+                if job.method == "GET" and cached is not None and cached[0] == tag:
+                    _, result_type, encoding, body = cached
+                    job.from_cache = True
+                else:
+                    status, result_type, encoding, body = 502, "", "", b""
+            elif tag and job.method == "GET" and status == 200 and body:
+                device.cache.pop(job.path, None)
+                device.cache[job.path] = (tag, result_type, encoding, body)
+                while len(device.cache) > CACHE_ENTRIES:
+                    device.cache.pop(next(iter(device.cache)))
         job.status, job.result_type = status, result_type
         job.result_encoding, job.result_body = encoding, body
         job.done.set()
         return True
+
+    def cached_tag(self, device: Device, path: str) -> str:
+        with self.lock:
+            cached = device.cache.get(path)
+            return cached[0] if cached else ""
 
     def _expire(self, device: Device) -> None:
         limit = time.monotonic() - JOB_TIMEOUT_S
@@ -669,6 +696,7 @@ class Handler(BaseHTTPRequestHandler):
         if session is None or self.headers.get("X-Fleet-Session") != "1" or \
                 not self._same_origin():
             return self._json(401, {"ok": False, "message": "Přihlášení vypršelo."})
+        log("fleet: csrf refreshed")
         self._json(200, {"ok": True, "csrf": session.csrf})
 
     def _status(self):
@@ -765,6 +793,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(204, headers=[("Cache-Control", "no-store")])
             headers = [("Cache-Control", "no-store"), ("X-Job-Id", job.id),
                        ("X-Job-Method", job.method), ("X-Job-Path", job.path)]
+            if job.if_none_match:
+                headers.append(("X-Job-If-None-Match", job.if_none_match))
             return self._send(200, job.body, job.content_type or "application/octet-stream",
                               headers)
         if action == "result" and self.command == "POST":
@@ -782,8 +812,12 @@ class Handler(BaseHTTPRequestHandler):
                 result_type = "application/octet-stream"
             encoding = self.headers.get("X-Job-Content-Encoding", "")
             encoding = "gzip" if encoding == "gzip" else ""
+            tag = self.headers.get("X-Job-Tag", "")
+            tag = tag if TAG.match(tag) else ""
+            not_modified = bool(tag) and self.headers.get("X-Job-Not-Modified") == "1"
             accepted = self.relay.complete(device, self.headers.get("X-Job-Id", ""),
-                                           status, result_type, encoding, body)
+                                           status, result_type, encoding, body,
+                                           tag, not_modified)
             return self._send(204 if accepted else 410,
                               headers=[("Cache-Control", "no-store")])
         self._error(404, "not found")
@@ -830,6 +864,8 @@ class Handler(BaseHTTPRequestHandler):
                 content_type = "application/x-www-form-urlencoded"
         job = Job(secrets.token_hex(8), self.command,
                   path + (f"?{query}" if query else ""), content_type, body)
+        if job.method == "GET":
+            job.if_none_match = self.relay.cached_tag(device, job.path)
         problem = self.relay.submit(device, job)
         if problem == "offline":
             return fail(503, "Hodiny nejsou připojené k serveru.")
@@ -841,7 +877,8 @@ class Handler(BaseHTTPRequestHandler):
         now = time.monotonic()
         queued = (job.picked or now) - job.created
         log(f"fleet: relay {name} {self.command} {path} "
-            f"{job.status if finished else 'timeout'} {len(job.result_body)} B "
+            f"{job.status if finished else 'timeout'} {len(job.result_body)} B"
+            f"{' (cache)' if job.from_cache else ''} "
             f"wait {queued * 1000:.0f} ms total {(now - job.created) * 1000:.0f} ms")
         if not finished:
             return fail(504, "Hodiny neodpověděly včas.")

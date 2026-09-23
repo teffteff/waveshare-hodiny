@@ -38,6 +38,8 @@ constexpr size_t MAX_REQUEST_BODY = 64 * 1024;
 constexpr size_t MAX_RESPONSE = 1024 * 1024;
 constexpr size_t KEEP_BUFFER = 256 * 1024;
 constexpr size_t WRITE_CHUNK = 4096;
+// Menší odpovědi se neotiskují: ušetřilo by se méně, než stojí hlavičky.
+constexpr size_t TAG_MIN_BODY = 4096;
 constexpr uint32_t FIRST_RETRY_MS = 5000;
 constexpr uint32_t MAX_RETRY_MS = 5 * 60 * 1000;
 constexpr uint32_t REJECTED_RETRY_MS = 10 * 60 * 1000;
@@ -374,18 +376,30 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
     ++requestsServed;
     portEXIT_CRITICAL(&stateMux);
 
+    // Velké odpovědi (stránka, překlady) nahrávání na server zdržuje nejvíc.
+    // Když server stejnou odpověď už má (shodný otisk), pošle se jen otisk.
+    char tag[REMOTE_ADMIN_TAG_LENGTH] = "";
+    bool notModified = false;
+    if (strcmp(job.jobMethod, "GET") == 0 && result.status == 200 &&
+        result.bodyLength >= TAG_MIN_BODY) {
+      remoteAdminBodyTag(result.body, result.bodyLength, tag);
+      notModified = strcmp(tag, job.jobIfNoneMatch) == 0;
+    }
+    const size_t uploadLength = notModified ? 0 : result.bodyLength;
     snprintf(head, sizeof(head),
              "POST %s/agent/result HTTP/1.1\r\nHost: %s\r\n"
              "Authorization: Bearer %s\r\nUser-Agent: WaveshareHodiny\r\n"
              "X-Job-Id: %s\r\nX-Job-Status: %d\r\nX-Job-Content-Type: %s\r\n"
-             "X-Job-Content-Encoding: %s\r\nContent-Type: application/octet-stream\r\n"
+             "X-Job-Content-Encoding: %s\r\nX-Job-Tag: %s\r\n"
+             "X-Job-Not-Modified: %s\r\nContent-Type: application/octet-stream\r\n"
              "Content-Length: %u\r\n\r\n",
              connection.endpoint.basePath, connection.hostHeader,
              connection.token, job.jobId, result.status, result.contentType,
-             result.gzip ? "gzip" : "", static_cast<unsigned>(result.bodyLength));
+             result.gzip ? "gzip" : "", tag, notModified ? "1" : "",
+             static_cast<unsigned>(uploadLength));
     const bool sent = writeText(client, head) &&
-                      (result.bodyLength == 0 ||
-                       writeAll(client, result.body, result.bodyLength));
+                      (uploadLength == 0 ||
+                       writeAll(client, result.body, uploadLength));
     const uint32_t resultSentMs = millis();
     response.trim();
     if (!sent) return SessionEnd::Failed;
@@ -395,10 +409,11 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
       return SessionEnd::Failed;
 #if !FIRMWARE_RELEASE
     // Kde se ztrácí čas u požadavků přes server (vývojové buildy).
-    Serial.printf("[relay] %s %s %d %u B | poll->job %lu ms, body %lu, local %lu, "
+    Serial.printf("[relay] %s %s %d %u B%s | poll->job %lu ms, body %lu, local %lu, "
                   "upload %lu, ack %lu\n",
                   job.jobMethod, job.jobPath, result.status,
                   static_cast<unsigned>(result.bodyLength),
+                  notModified ? " (server má)" : "",
                   static_cast<unsigned long>(jobHeadMs - pollSentMs),
                   static_cast<unsigned long>(localStartMs - jobHeadMs),
                   static_cast<unsigned long>(localDoneMs - localStartMs),

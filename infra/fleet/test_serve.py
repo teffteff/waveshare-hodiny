@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import http.client
 import json
 import sys
@@ -66,6 +67,8 @@ class FakeClock(threading.Thread):
         self.port, self.token = port, token
         self.stop = threading.Event()
         self.seen: list[tuple[str, str, bytes]] = []
+        self.tags = True
+        self.skipped = 0
 
     def answer(self, method: str, path: str, body: bytes):
         if path == "/":
@@ -89,12 +92,23 @@ class FakeClock(threading.Thread):
                 continue
             method = response.getheader("X-Job-Method")
             path = response.getheader("X-Job-Path")
+            known = response.getheader("X-Job-If-None-Match") or ""
             self.seen.append((method, path, body))
             status, ctype, encoding, payload = self.answer(method, path, body)
-            connection.request("POST", "/fleet/agent/result", body=payload, headers={
+            # Jako firmware: velke odpovedi na GET dostanou otisk; kdyz ho
+            # server uz ma, telo se neposila.
+            tag = ""
+            if self.tags and method == "GET" and status == 200 and len(payload) >= 64:
+                tag = hashlib.sha256(payload).hexdigest()[:16]
+            unchanged = bool(tag) and tag == known
+            if unchanged:
+                self.skipped += 1
+            connection.request("POST", "/fleet/agent/result",
+                               body=b"" if unchanged else payload, headers={
                 **auth, "X-Job-Id": response.getheader("X-Job-Id"),
                 "X-Job-Status": str(status), "X-Job-Content-Type": ctype,
-                "X-Job-Content-Encoding": encoding})
+                "X-Job-Content-Encoding": encoding, "X-Job-Tag": tag,
+                "X-Job-Not-Modified": "1" if unchanged else ""})
             response = connection.getresponse()
             response.read()
 
@@ -235,6 +249,30 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(response.status, 401)
         self.assertEqual(response.getheader("X-Fleet-Action"), "login")
         self.assertEqual(self.clock.seen, [])
+
+    def test_unchanged_page_is_not_uploaded_again(self):
+        cookie, csrf = self.session()
+        self.start_clock()
+        first = self.request("GET", "/fleet/d/kuchyn/", headers={"Cookie": cookie})[1]
+        second = self.request("GET", "/fleet/d/kuchyn/", headers={"Cookie": cookie})[1]
+        self.assertEqual(first, second)
+        self.assertEqual(self.clock.skipped, 1)
+        # Kazdy pozadavek pritom do hodin dosel (stav a vedlejsi ucinky plati).
+        self.assertEqual([p for _, p, _ in self.clock.seen], ["/", "/"])
+        # Male odpovedi se neotiskuji.
+        self.request("GET", "/fleet/d/kuchyn/api/config",
+                     headers={"Cookie": cookie, "X-Fleet-Csrf": csrf})
+        self.request("GET", "/fleet/d/kuchyn/api/config",
+                     headers={"Cookie": cookie, "X-Fleet-Csrf": csrf})
+        self.assertEqual(self.clock.skipped, 1)
+
+    def test_not_modified_without_cached_copy_fails_cleanly(self):
+        device = self.relay.device("kuchyn")
+        job = serve.Job("j1", "GET", "/", "", b"")
+        device.inflight[job.id] = job
+        self.assertTrue(self.relay.complete(device, "j1", 200, "text/html", "", b"",
+                                            "0123456789abcdef", True))
+        self.assertEqual(job.status, 502)
 
     def test_blocked_paths_never_reach_clock(self):
         cookie, csrf = self.session()

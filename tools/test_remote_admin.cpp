@@ -130,6 +130,23 @@ void testCompleteLength() {
   assert(completeLength("HTTP/1.1 200 OK\r\n\r\nabc") == -1);
 }
 
+void testBodyTag() {
+  char tag[REMOTE_ADMIN_TAG_LENGTH];
+  remoteAdminBodyTag(nullptr, 0, tag);
+  assert(strcmp(tag, "cbf29ce484222325") == 0);
+  // Známá hodnota FNV-1a 64 pro "a".
+  remoteAdminBodyTag(reinterpret_cast<const uint8_t *>("a"), 1, tag);
+  assert(strcmp(tag, "af63dc4c8601ec8c") == 0);
+  char other[REMOTE_ADMIN_TAG_LENGTH];
+  remoteAdminBodyTag(reinterpret_cast<const uint8_t *>("b"), 1, other);
+  assert(strcmp(tag, other) != 0);
+  RemoteAdminHead head;
+  const char *text = "HTTP/1.1 200 OK\r\nX-Job-Id: abc\r\n"
+                     "X-Job-If-None-Match: af63dc4c8601ec8c";
+  assert(remoteAdminParseHead(text, strlen(text), head));
+  assert(strcmp(head.jobIfNoneMatch, "af63dc4c8601ec8c") == 0);
+}
+
 void testLocalRequest() {
   char out[512];
   size_t length = remoteAdminBuildLocalRequest(
@@ -155,6 +172,7 @@ int main() {
   testHead();
   testDechunk();
   testCompleteLength();
+  testBodyTag();
   testLocalRequest();
   return 0;
 }

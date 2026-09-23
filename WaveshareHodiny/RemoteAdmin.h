@@ -18,6 +18,8 @@ constexpr size_t REMOTE_ADMIN_HOST_LENGTH = 96;
 constexpr size_t REMOTE_ADMIN_PATH_LENGTH = 160;
 constexpr size_t REMOTE_ADMIN_JOB_ID_LENGTH = 33;
 constexpr size_t REMOTE_ADMIN_CONTENT_TYPE_LENGTH = 100;
+// Otisk těla odpovědi: 64bitové FNV-1a v šestnácti hex znacích.
+constexpr size_t REMOTE_ADMIN_TAG_LENGTH = 17;
 
 struct RemoteAdminEndpoint {
   char host[REMOTE_ADMIN_HOST_LENGTH] = "";
@@ -49,6 +51,8 @@ struct RemoteAdminHead {
   char jobId[REMOTE_ADMIN_JOB_ID_LENGTH] = "";
   char jobMethod[8] = "";
   char jobPath[REMOTE_ADMIN_PATH_LENGTH] = "";
+  // Otisk odpovědi, kterou server už má (X-Job-If-None-Match).
+  char jobIfNoneMatch[REMOTE_ADMIN_TAG_LENGTH] = "";
 };
 
 // Rozebere stavový řádek a hlavičky HTTP/1.x až po prázdný řádek (bez něj).
@@ -65,6 +69,11 @@ long remoteAdminDechunk(uint8_t *body, size_t length);
 // ještě není, -1, když se konec pozná jen zavřením spojení. Web hodin totiž
 // spojení sám nezavře, dokud ho nezavře klient, i když posílá Connection: close.
 long remoteAdminCompleteLength(const uint8_t *data, size_t length);
+
+// Otisk těla, podle kterého server pozná, že má stejnou odpověď uloženou, a
+// hodiny ji pak nemusí posílat znovu. Nejde o bezpečnost, jen o shodu obsahu.
+void remoteAdminBodyTag(const uint8_t *data, size_t length,
+                        char out[REMOTE_ADMIN_TAG_LENGTH]);
 
 // Hlavička požadavku na vlastní web: metoda, cesta, klíč loopbacku a délka.
 // Vrací délku, nebo 0, když se nevejde.

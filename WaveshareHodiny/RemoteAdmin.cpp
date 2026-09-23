@@ -198,6 +198,9 @@ bool remoteAdminParseHead(const char *head, size_t length,
         copyValue(out.jobMethod, sizeof(out.jobMethod), value, valueLength);
       } else if (headerNameIs(line, nameLength, "x-job-path")) {
         copyValue(out.jobPath, sizeof(out.jobPath), value, valueLength);
+      } else if (headerNameIs(line, nameLength, "x-job-if-none-match")) {
+        copyValue(out.jobIfNoneMatch, sizeof(out.jobIfNoneMatch), value,
+                  valueLength);
       }
     }
     line = next != nullptr ? next + 1 : end;
@@ -281,6 +284,21 @@ long remoteAdminCompleteLength(const uint8_t *data, size_t length) {
       (head.status >= 100 && head.status < 200))
     return static_cast<long>(headEnd);
   return -1;
+}
+
+void remoteAdminBodyTag(const uint8_t *data, size_t length,
+                        char out[REMOTE_ADMIN_TAG_LENGTH]) {
+  uint64_t hash = 0xcbf29ce484222325ULL;
+  for (size_t i = 0; i < length; ++i) {
+    hash ^= data[i];
+    hash *= 0x100000001b3ULL;
+  }
+  static constexpr char HEX_DIGITS[] = "0123456789abcdef";
+  for (int i = 15; i >= 0; --i) {
+    out[i] = HEX_DIGITS[hash & 0x0F];
+    hash >>= 4;
+  }
+  out[16] = '\0';
 }
 
 size_t remoteAdminBuildLocalRequest(char *out, size_t capacity,
