@@ -221,6 +221,12 @@ class ServerTest(ServerBase):
         self.assertIn('src="/fleet/d/kuchyn/ui-language.js"', page)
         self.assertIn(json.dumps(csrf), page)
         self.assertIn("obyvak", page)  # vyber hodin zna i ostatni
+        self.assertIsNone(response.getheader("Content-Encoding"))
+        # Prohlizeci, ktery gzip umi, jde stranka zase zabalena.
+        response, body = self.request("GET", "/fleet/d/kuchyn/", headers={
+            "Cookie": cookie, "Accept-Encoding": "gzip, deflate, br"})
+        self.assertEqual(response.getheader("Content-Encoding"), "gzip")
+        self.assertEqual(gzip.decompress(body).decode(), page)
         headers = {"Cookie": cookie, "X-Fleet-Csrf": csrf}
         response, body = self.request("GET", "/fleet/d/kuchyn/api/config", headers=headers)
         self.assertEqual(response.status, 200)

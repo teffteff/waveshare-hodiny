@@ -689,12 +689,6 @@ class Handler(BaseHTTPRequestHandler):
                     # po kliknuti; prohlizec ji pri odmitnuti nacte az na klik.
                     log(f"fleet: refused speculative {self.command} {path} ({purpose})")
                     return self._send(503, b"", "text/plain", security_headers())
-                if self.headers.get("Sec-Fetch-Mode") == "navigate":
-                    agent = self.headers.get("User-Agent", "")
-                    browser = next((name for name in ("Edg/", "OPR/", "Firefox/", "Chrome/", "Safari/")
-                                    if name in agent), "?").rstrip("/")
-                    log(f"fleet: navigate {self.command} {path} session={'yes' if self._session() else 'no'} "
-                        f"browser={browser}")
             if path == "/fleet-status" and self.command == "GET":
                 return self._status()
             if path.startswith(f"{PREFIX}/agent/"):
@@ -926,6 +920,10 @@ class Handler(BaseHTTPRequestHandler):
             page = inject(payload.decode("utf-8", "replace"), name, session.csrf,
                           self.relay.overview())
             payload = page.encode()
+            # Rozbalena stranka ma kolem 270 kB; znovu zabalena zase kolem 80.
+            if "gzip" in self.headers.get("Accept-Encoding", ""):
+                payload = gzip.compress(payload, 6)
+                extra += [("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]
         elif job.result_encoding == "gzip":
             extra.append(("Content-Encoding", "gzip"))
         self._send(job.status, payload, ctype, security_headers() + extra)
