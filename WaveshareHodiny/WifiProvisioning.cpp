@@ -131,6 +131,25 @@ bool savePendingCredentials(const String &ssid, const String &password) {
 #endif
 }
 
+// Development builds may pin the main network to a fixed address from .env,
+// because a stray DHCP server on the LAN can win the race against the router.
+// Any other network, including the fallback, keeps using DHCP.
+void applyAddressing(bool mainNetwork) {
+#if HAS_DEVELOPMENT_WIFI && defined(WIFI_STATIC_IP)
+  if (mainNetwork) {
+    IPAddress ip, gateway, subnet, dns;
+    if (ip.fromString(WIFI_STATIC_IP) && gateway.fromString(WIFI_STATIC_GATEWAY) &&
+        subnet.fromString(WIFI_STATIC_SUBNET) && dns.fromString(WIFI_STATIC_DNS)) {
+      WiFi.config(ip, gateway, subnet, dns);
+      return;
+    }
+  }
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+#else
+  (void)mainNetwork;
+#endif
+}
+
 void beginWifiConnection(const String &ssid, const String &password) {
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
@@ -139,6 +158,7 @@ void beginWifiConnection(const String &ssid, const String &password) {
 
 void connectStoredCredentials() {
   if (startupSsid.isEmpty()) return;
+  applyAddressing(!useFallback);
   if (useFallback) {
     beginWifiConnection(fallbackSsid, fallbackPassword);
   } else {
