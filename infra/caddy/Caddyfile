@@ -14,6 +14,9 @@
 	# Bez includeSubDomains: nadrazena domena patri poskytovateli dynamicke DNS,
 	# jeji dalsi poddomeny nejsou nase.
 	header Strict-Transport-Security "max-age=31536000"
+	# Prohlizece si HTTP/3 z drivejsiho Alt-Svc pamatuji az mesic (Chrome ho
+	# mel ulozeny i s 155 neuspesnymi pokusy); "clear" je prinuti zapomenout.
+	header Alt-Svc "clear"
 	handle /top.xml {
 		reverse_proxy 127.0.0.1:8088
 	}
