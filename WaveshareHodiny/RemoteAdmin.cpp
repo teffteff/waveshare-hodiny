@@ -233,6 +233,56 @@ long remoteAdminDechunk(uint8_t *body, size_t length) {
   }
 }
 
+long remoteAdminCompleteLength(const uint8_t *data, size_t length) {
+  const size_t headEnd = remoteAdminHeadLength(data, length);
+  if (headEnd == 0) return 0;
+  RemoteAdminHead head;
+  if (!remoteAdminParseHead(reinterpret_cast<const char *>(data), headEnd - 4,
+                            head))
+    return -1;
+  if (head.chunked) {
+    // Projde velikosti bloků bez rozbalování až k poslednímu (0) a prázdnému
+    // řádku za případnými trailery.
+    size_t read = headEnd;
+    for (;;) {
+      size_t size = 0;
+      size_t digits = 0;
+      while (read < length && isxdigit(data[read])) {
+        const char c = static_cast<char>(tolower(data[read]));
+        size = size * 16 + static_cast<size_t>(c <= '9' ? c - '0' : c - 'a' + 10);
+        if (++digits > 8) return -1;
+        ++read;
+      }
+      if (read >= length) return 0;
+      if (digits == 0) return -1;
+      while (read < length && data[read] != '\n') ++read;
+      if (read >= length) return 0;
+      ++read;
+      if (size == 0) {
+        for (;;) {
+          size_t lineEnd = read;
+          while (lineEnd < length && data[lineEnd] != '\n') ++lineEnd;
+          if (lineEnd >= length) return 0;
+          const bool empty = lineEnd == read ||
+                             (lineEnd == read + 1 && data[read] == '\r');
+          read = lineEnd + 1;
+          if (empty) return static_cast<long>(read);
+        }
+      }
+      if (size > length - read || length - read - size < 2) return 0;
+      read += size + 2;
+    }
+  }
+  if (head.contentLength >= 0) {
+    const size_t wanted = headEnd + static_cast<size_t>(head.contentLength);
+    return length >= wanted ? static_cast<long>(wanted) : 0;
+  }
+  if (head.status == 204 || head.status == 304 ||
+      (head.status >= 100 && head.status < 200))
+    return static_cast<long>(headEnd);
+  return -1;
+}
+
 size_t remoteAdminBuildLocalRequest(char *out, size_t capacity,
                                     const char *method, const char *path,
                                     const char *contentType,

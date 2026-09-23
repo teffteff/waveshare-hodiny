@@ -243,7 +243,9 @@ void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
     failLocal(result, 502, "Web hodin neodpovídá.");
     return;
   }
-  // Web hodin posílá Connection: close, konec odpovědi je zavření spojení.
+  // Web hodin sice posílá Connection: close, ale spojení zavře až po klientovi
+  // (u prohlížeče hned, tady by se čekalo LOCAL_TIMEOUT_MS). Čte se proto jen
+  // do konce odpovědi podle Content-Length nebo posledního bloku chunked.
   response.length = 0;
   const uint32_t started = millis();
   bool overflow = false;
@@ -256,6 +258,12 @@ void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
                                response.capacity - response.length);
     if (got > 0) {
       response.length += static_cast<size_t>(got);
+      const long complete =
+          remoteAdminCompleteLength(response.data, response.length);
+      if (complete > 0) {
+        response.length = static_cast<size_t>(complete);
+        break;
+      }
       continue;
     }
     if (!local.connected() && local.available() <= 0) break;

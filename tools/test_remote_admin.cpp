@@ -100,6 +100,36 @@ void testDechunk() {
          -1);
 }
 
+long completeLength(const char *text) {
+  return remoteAdminCompleteLength(reinterpret_cast<const uint8_t *>(text),
+                                   strlen(text));
+}
+
+void testCompleteLength() {
+  const char *sized = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+  assert(completeLength(sized) == static_cast<long>(strlen(sized)));
+  assert(completeLength("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhel") == 0);
+  assert(completeLength("HTTP/1.1 200 OK\r\nContent-Len") == 0);
+  const char *empty = "HTTP/1.1 204 No Content\r\n\r\n";
+  assert(completeLength(empty) == static_cast<long>(strlen(empty)));
+  const char *chunked =
+      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+      "5\r\nhello\r\n3;x=1\r\nabc\r\n0\r\n\r\n";
+  assert(completeLength(chunked) == static_cast<long>(strlen(chunked)));
+  // Každý kratší prefix je neúplný.
+  const size_t chunkedLength = strlen(chunked);
+  for (size_t cut = 0; cut < chunkedLength; ++cut)
+    assert(remoteAdminCompleteLength(reinterpret_cast<const uint8_t *>(chunked),
+                                     cut) == 0);
+  const char *trailer =
+      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+      "0\r\nX-Done: 1\r\n\r\n";
+  assert(completeLength(trailer) == static_cast<long>(strlen(trailer)));
+  assert(completeLength("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n") == -1);
+  // Bez délky a bez chunked rozhodne až zavření spojení.
+  assert(completeLength("HTTP/1.1 200 OK\r\n\r\nabc") == -1);
+}
+
 void testLocalRequest() {
   char out[512];
   size_t length = remoteAdminBuildLocalRequest(
@@ -124,6 +154,7 @@ int main() {
   testAllowedRequests();
   testHead();
   testDechunk();
+  testCompleteLength();
   testLocalRequest();
   return 0;
 }

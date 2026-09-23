@@ -61,6 +61,11 @@ size_t remoteAdminHeadLength(const uint8_t *data, size_t length);
 // -1, když je tělo useknuté nebo poškozené.
 long remoteAdminDechunk(uint8_t *body, size_t length);
 
+// Délka celé odpovědi (hlavičky i tělo), jakmile je v bufferu úplná; 0, když
+// ještě není, -1, když se konec pozná jen zavřením spojení. Web hodin totiž
+// spojení sám nezavře, dokud ho nezavře klient, i když posílá Connection: close.
+long remoteAdminCompleteLength(const uint8_t *data, size_t length);
+
 // Hlavička požadavku na vlastní web: metoda, cesta, klíč loopbacku a délka.
 // Vrací délku, nebo 0, když se nevejde.
 size_t remoteAdminBuildLocalRequest(char *out, size_t capacity,
