@@ -59,6 +59,10 @@ uint32_t lastContactMs = 0;
 bool contacted = false;
 uint32_t requestsServed = 0;
 char statusMessage[80] = "Vypnuto";
+// Úloha má zásobník v PSRAM, a ta je při čtení flash vypnutá: NVS (a tedy
+// deviceNameLoad) smí sahat jen volající s vnitřním zásobníkem. Jméno se
+// proto načte při startu a úloha si bere kopii.
+char deviceName[DEVICE_NAME_LENGTH] = "";
 
 void setStatus(const char *message, bool isConnected) {
   portENTER_CRITICAL(&stateMux);
@@ -441,7 +445,9 @@ void remoteAdminTask(void *) {
                connection.endpoint.host,
                static_cast<unsigned>(connection.endpoint.port));
     strlcpy(connection.token, current.token, sizeof(connection.token));
-    deviceNameLoad(connection.deviceName, sizeof(connection.deviceName));
+    portENTER_CRITICAL(&stateMux);
+    strlcpy(connection.deviceName, deviceName, sizeof(connection.deviceName));
+    portEXIT_CRITICAL(&stateMux);
 
     setStatus("Připojuji k serveru…", false);
     SessionEnd end = SessionEnd::Failed;
@@ -490,6 +496,9 @@ void remoteAdminTask(void *) {
 
 void remoteAdminServiceBegin() {
   if (!loaded) loadSettings();
+  char name[DEVICE_NAME_LENGTH];
+  deviceNameLoad(name, sizeof(name));
+  remoteAdminServiceSetDeviceName(name);
   if (taskHandle != nullptr) {
     portENTER_CRITICAL(&stateMux);
     suspended = false;
@@ -500,6 +509,12 @@ void remoteAdminServiceBegin() {
   xTaskCreatePinnedToCoreWithCaps(remoteAdminTask, "remote-admin", 16384,
                                   nullptr, 1, &taskHandle, 0,
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+void remoteAdminServiceSetDeviceName(const char *name) {
+  portENTER_CRITICAL(&stateMux);
+  strlcpy(deviceName, name, sizeof(deviceName));
+  portEXIT_CRITICAL(&stateMux);
 }
 
 void remoteAdminServicePrepareForFirmwareUpdate() {

@@ -2484,6 +2484,7 @@ void handleDeviceNameChanged(const char *name) {
   clockConfigCopy(networkDeviceName, sizeof(networkDeviceName), name);
   // DHCP jméno převezme router při dalším připojení k Wi-Fi.
   WiFi.setHostname(networkDeviceName);
+  remoteAdminServiceSetDeviceName(networkDeviceName);
   mdnsRestartAt = (millis() + MDNS_RENAME_DELAY_MS) | 1;
 }
 

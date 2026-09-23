@@ -41,6 +41,8 @@ enum class RemoteAdminSaveResult : uint8_t {
 
 void remoteAdminServiceBegin();
 void remoteAdminServicePrepareForFirmwareUpdate();
+// Nové jméno hodin po přejmenování na webu; úloha samotná NVS číst nesmí.
+void remoteAdminServiceSetDeviceName(const char *name);
 
 void remoteAdminServiceSettings(RemoteAdminSettings &settings);
 // Prázdný token nechá uložený. Zapnout bez adresy a tokenu nejde.
