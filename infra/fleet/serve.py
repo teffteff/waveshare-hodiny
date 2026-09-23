@@ -430,6 +430,14 @@ class Guard:
                 self.sessions[token] = Session(secrets.token_urlsafe(24), now, now)
                 self.ip_failures.pop(ip, None)
                 return token
+            # Duvod jen do journalu, prihlasovaci stranka ho neprozradi.
+            if not password_ok:
+                reason = "password"
+            elif counter is None:
+                reason = f"code (server time step {int(now // TOTP_STEP)})"
+            else:
+                reason = f"code already used (step {counter}, last {self.last_counter})"
+            log(f"fleet: login rejected: {reason}")
             self.ip_failures.setdefault(ip, []).append(now)
             self.global_failures = [t for t in self.global_failures
                                     if now - t < GLOBAL_WINDOW_S] + [now]
