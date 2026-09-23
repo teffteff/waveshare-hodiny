@@ -1022,7 +1022,22 @@ Pracovní profil sestavíš pomocí `./build.sh work`; ten použije samostatné
 hodnoty `WIFI_WORK_SSID` a `WIFI_WORK_PASSWORD`. Volitelná záložní síť
 `WIFI_FALLBACK_SSID` a `WIFI_FALLBACK_PASSWORD` platí pro oba profily: když se
 hodiny k hlavní síti nepřipojí, střídají ji se záložní každých 15 sekund, dokud
-se jedna z nich nepřipojí.
+se jedna z nich nepřipojí. `WIFI_STATIC_IP` s `WIFI_STATIC_GATEWAY` (volitelně
+`WIFI_STATIC_SUBNET`, výchozí 255.255.255.0, a `WIFI_STATIC_DNS`, výchozí brána)
+přidělí domácí hlavní síti pevnou adresu místo DHCP; záložní a pracovní síť
+zůstávají na DHCP. Hodí se, když v síti odpovídá cizí DHCP server a přebije
+router. Po připojení vypíše sériová linka síť, BSSID, adresu, bránu a DNS.
+
+**Hodiny mají podivnou adresu a nejdou na internet.** Když hodiny ukazují
+adresu mimo domácí rozsah (v nastavení, strana 4) a nesynchronizují čas, bývá
+v síti druhý DHCP server, který odpovídá rychleji než router; ESP32 vezme první
+nabídku. V září 2026 to byla meteostanice (MAC `70:ee:50:90:70:ee`) zaseknutá
+v režimu nastavení s otevřenou sítí `Weather Station-9070ee`: pracovní deska
+dostávala 192.168.0.16 s bránou 192.168.0.11, ostatní hodiny ne, protože
+stanice odpovídala jen adresám, které znala. Pomohl restart stanice.
+Postup: sériový výpis `Wi-Fi … bssid=… gw=…` ukáže přístupový bod a bránu;
+DHCP DISCOVER z Macu s MAC adresou hodin vypíše všechny servery, které
+odpovídají. Do vyřešení příčiny pomůže vývojovému buildu `WIFI_STATIC_IP`.
 
 Volitelný port lze předat explicitně:
 
@@ -1066,6 +1081,10 @@ WIFI_WORK_SSID=
 WIFI_WORK_PASSWORD=
 WIFI_FALLBACK_SSID=
 WIFI_FALLBACK_PASSWORD=
+WIFI_STATIC_IP=
+WIFI_STATIC_GATEWAY=
+WIFI_STATIC_SUBNET=
+WIFI_STATIC_DNS=
 HOME_ASSISTANT_URL=
 HOME_ASSISTANT_TOKEN=
 HA_ENTITY_WEATHER_CODE=

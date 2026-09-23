@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ipaddress
 import sys
 
 
@@ -15,6 +16,12 @@ FIRMWARE_CONFIG_FILE = LOCAL_DIR / "firmware_config.h"
 HOME_WIFI_KEYS = ("WIFI_SSID", "WIFI_PASSWORD")
 WORK_WIFI_KEYS = ("WIFI_WORK_SSID", "WIFI_WORK_PASSWORD")
 FALLBACK_WIFI_KEYS = ("WIFI_FALLBACK_SSID", "WIFI_FALLBACK_PASSWORD")
+STATIC_IP_KEYS = (
+    "WIFI_STATIC_IP",
+    "WIFI_STATIC_GATEWAY",
+    "WIFI_STATIC_SUBNET",
+    "WIFI_STATIC_DNS",
+)
 FIRMWARE_KEYS = ("FIRMWARE_SERVER_URL", "FIRMWARE_PROJECT_SLUG")
 PUBLIC_FIRMWARE_CONFIG = {
     "FIRMWARE_SERVER_URL": "https://teffteff.github.io",
@@ -135,6 +142,24 @@ def main() -> None:
                 f"#define WIFI_FALLBACK_PASSWORD {cpp_string(values.get(FALLBACK_WIFI_KEYS[1], ''))}",
             ]
         )
+    # Pevná adresa jen pro hlavní domácí síť: cizí DHCP server v síti (např.
+    # meteostanice v režimu nastavení) jinak může routeru přebít nabídku.
+    static_ip = "" if work_wifi else values.get(STATIC_IP_KEYS[0], "")
+    if static_ip:
+        gateway = values.get(STATIC_IP_KEYS[1], "")
+        if not gateway:
+            raise SystemExit("WIFI_STATIC_IP vyžaduje i WIFI_STATIC_GATEWAY.")
+        subnet = values.get(STATIC_IP_KEYS[2], "") or "255.255.255.0"
+        dns = values.get(STATIC_IP_KEYS[3], "") or gateway
+        for key, value in zip(STATIC_IP_KEYS, (static_ip, gateway, subnet, dns)):
+            try:
+                ipaddress.IPv4Address(value)
+            except ValueError:
+                raise SystemExit(f"{key} není platná IPv4 adresa: {value}")
+        lines.extend(
+            f"#define {key} {cpp_string(value)}"
+            for key, value in zip(STATIC_IP_KEYS, (static_ip, gateway, subnet, dns))
+        )
     missing_home_assistant = [
         key for key in HOME_ASSISTANT_KEYS if not values.get(key)
     ]
@@ -172,6 +197,8 @@ def main() -> None:
         )
     if has_fallback:
         print(f"Záložní Wi-Fi {fallback_ssid} byla připravena pro sestavení.")
+    if static_ip:
+        print(f"Hlavní Wi-Fi použije pevnou adresu {static_ip}.")
     if news_url:
         print("Adresa zpravodajského kanálu byla připravena pro sestavení.")
     else:

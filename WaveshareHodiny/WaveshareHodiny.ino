@@ -2511,6 +2511,14 @@ void maintainNetworkTime() {
     displayResyncAt = millis() + 2000;
 #if !FIRMWARE_RELEASE
     Serial.println("Wi-Fi pripojena, cekam na NTP");
+    // Který přístupový bod a čí DHCP: cizí DHCP server v síti se jinak
+    // pozná jen podle podivné adresy.
+    Serial.printf("Wi-Fi %s bssid=%s ch=%d rssi=%d ip=%s mask=%s gw=%s dns=%s\n",
+                  WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), WiFi.channel(),
+                  WiFi.RSSI(), WiFi.localIP().toString().c_str(),
+                  WiFi.subnetMask().toString().c_str(),
+                  WiFi.gatewayIP().toString().c_str(),
+                  WiFi.dnsIP(0).toString().c_str());
 #endif
     if (!mdnsStarted) startMdns();
   }
