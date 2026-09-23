@@ -208,6 +208,7 @@ class Job:
     content_type: str
     body: bytes
     created: float = field(default_factory=time.monotonic)
+    picked: float = 0.0
     done: threading.Event = field(default_factory=threading.Event)
     status: int = 0
     result_type: str = ""
@@ -293,6 +294,7 @@ class Relay:
                     self._expire(device)
                     if device.queue:
                         job = device.queue.popleft()
+                        job.picked = time.monotonic()
                         device.inflight[job.id] = job
                         return job
                     remaining = deadline - time.monotonic()
@@ -820,7 +822,15 @@ class Handler(BaseHTTPRequestHandler):
             return fail(503, "Hodiny nejsou připojené k serveru.")
         if problem == "busy":
             return fail(503, "Hodiny mají rozpracováno příliš mnoho požadavků.")
-        if not self.relay.wait(device, job, JOB_TIMEOUT_S):
+        finished = self.relay.wait(device, job, JOB_TIMEOUT_S)
+        # Jeden radek na pozadavek: kolik ceka na hodiny (fronta + long-poll)
+        # a kolik trva cely. Jen cesta, bez dotazu.
+        now = time.monotonic()
+        queued = (job.picked or now) - job.created
+        log(f"fleet: relay {name} {self.command} {path} "
+            f"{job.status if finished else 'timeout'} {len(job.result_body)} B "
+            f"wait {queued * 1000:.0f} ms total {(now - job.created) * 1000:.0f} ms")
+        if not finished:
             return fail(504, "Hodiny neodpověděly včas.")
         payload = job.result_body
         ctype = job.result_type or "application/octet-stream"
