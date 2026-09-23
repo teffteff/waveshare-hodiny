@@ -473,7 +473,12 @@ MESSAGE_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 SHIM = """<script>(()=>{{const base={base};const csrf={csrf};const devices={devices};const current={name};
 const fix=u=>typeof u==="string"&&u.startsWith("/")&&!u.startsWith("//")&&!u.startsWith("/fleet/")?base+u:u;
 const nativeFetch=window.fetch.bind(window);
-window.fetch=(input,options={{}})=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Fleet-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}})}};
+const act=response=>{{const action=response.headers.get("X-Fleet-Action");
+if(action==="login")location.href="/fleet/";
+else if(action==="reload"){{let last=0;try{{last=Number(sessionStorage.getItem("fleetReload"))||0}}catch(e){{}}
+if(Date.now()-last>15000){{try{{sessionStorage.setItem("fleetReload",String(Date.now()))}}catch(e){{}}location.reload()}}}}
+return response}};
+window.fetch=(input,options={{}})=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Fleet-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}}).then(act)}};
 const addBar=()=>{{const host=document.querySelector("header .header-actions")||document.querySelector("header")||document.body;if(!host||document.getElementById("fleetBar"))return;
 const bar=document.createElement("div");bar.id="fleetBar";bar.style.cssText="display:flex;align-items:center;gap:8px";
 const select=document.createElement("select");select.setAttribute("aria-label","Hodiny");select.style.cssText="min-height:48px;padding:0 12px;border:1px solid var(--line,#3b444b);border-radius:12px;background:var(--surface,#171c20);color:var(--text,#f3f6f8);font-size:16px;font-weight:700";
@@ -592,9 +597,24 @@ class Handler(BaseHTTPRequestHandler):
         host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
         return origin in (f"https://{host}", f"http://{host}")
 
-    def _csrf_ok(self, session: Session, submitted: str | None = None) -> bool:
+    def _csrf_problem(self, session: Session, submitted: str | None = None) -> str:
+        """Prazdny retezec, kdyz token proti CSRF sedi; jinak duvod do journalu."""
         value = submitted if submitted is not None else self.headers.get("X-Fleet-Csrf", "")
-        return self._same_origin() and hmac.compare_digest(value.encode(), session.csrf.encode())
+        if not self._same_origin():
+            return "foreign origin"
+        if not value:
+            return "missing token"
+        if not hmac.compare_digest(value.encode(), session.csrf.encode()):
+            # Typicky stranka vykreslena pro starsi relaci (druhe prihlaseni,
+            # jina karta, obnovena karta prohlizece).
+            return "stale token"
+        return ""
+
+    def _csrf_ok(self, session: Session, submitted: str | None = None) -> bool:
+        problem = self._csrf_problem(session, submitted)
+        if problem:
+            log(f"fleet: csrf rejected ({problem}) {self.command} {self.path.partition('?')[0]}")
+        return not problem
 
     # -- smerovani --
 
@@ -703,6 +723,7 @@ class Handler(BaseHTTPRequestHandler):
         form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
         if session is not None and self._csrf_ok(session, form.get("csrf", [""])[0]):
             self.guard.logout(self._cookie())
+            log(f"fleet: logout from {self._client_ip()}")
         cookie = f"{COOKIE}=; Path={PREFIX}/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"
         self._redirect(f"{PREFIX}/", [("Set-Cookie", cookie)])
 
@@ -758,10 +779,21 @@ class Handler(BaseHTTPRequestHandler):
         if session is None:
             if is_page:
                 return self._redirect(f"{PREFIX}/")
-            return self._error(401, "Přihlášení na serveru vypršelo. Obnov stránku.")
+            # Stranka podle hlavicky presmeruje na prihlaseni (SHIM).
+            return self._json(401, {"ok": False, "message": "Přihlášení na serveru vypršelo."},
+                              security_headers() + [("X-Fleet-Action", "login")])
         # Stranky (navigace prohlizece) hlavicku nemaji; vse ostatni ano.
-        if not is_page and path != "/ui-language.js" and not self._csrf_ok(session):
-            return self._error(403, "Požadavek z cizí stránky byl odmítnut.")
+        if not is_page and path != "/ui-language.js":
+            problem = self._csrf_problem(session)
+            if problem:
+                log(f"fleet: csrf rejected ({problem}) {self.command} {path}")
+                extra = []
+                if problem == "stale token":
+                    # Relace plati, jen stranka nese token starsi relace:
+                    # znovu nactena dostane aktualni (SHIM).
+                    extra = [("X-Fleet-Action", "reload")]
+                return self._json(403, {"ok": False, "message": "Požadavek z cizí stránky byl odmítnut."},
+                                  security_headers() + extra)
         if self.command not in ("GET", "POST") or not RELAY_PATH.match(path) or \
                 any(path.startswith(blocked) or path == blocked.rstrip("/")
                     for blocked in RELAY_BLOCKED) or \

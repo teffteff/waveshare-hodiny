@@ -206,6 +206,27 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(response.status, 403)
         self.assertEqual(len(self.clock.seen), count)
 
+    def test_stale_page_reloads_and_expired_session_logs_in(self):
+        old_cookie, old_csrf = self.session()
+        self.guard.last_counter = 0  # druhe prihlaseni stejnym kodem
+        cookie, csrf = self.session()
+        self.start_clock()
+        # Stranka vykreslena pro starsi relaci, cookie uz je nova.
+        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config", headers={
+            "Cookie": cookie, "X-Fleet-Csrf": old_csrf})
+        self.assertEqual(response.status, 403)
+        self.assertEqual(response.getheader("X-Fleet-Action"), "reload")
+        # Chybejici token je utok nebo chyba, ne zastarala stranka.
+        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config",
+                                   headers={"Cookie": cookie})
+        self.assertEqual(response.status, 403)
+        self.assertIsNone(response.getheader("X-Fleet-Action"))
+        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config", headers={
+            "Cookie": "__Secure-fleet=neplatna", "X-Fleet-Csrf": csrf})
+        self.assertEqual(response.status, 401)
+        self.assertEqual(response.getheader("X-Fleet-Action"), "login")
+        self.assertEqual(self.clock.seen, [])
+
     def test_blocked_paths_never_reach_clock(self):
         cookie, csrf = self.session()
         self.start_clock()
