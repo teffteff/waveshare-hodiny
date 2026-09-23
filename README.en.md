@@ -969,7 +969,24 @@ arduino-cli lib install PNGdec@1.0.1 --config-file arduino-cli.yaml
 `WIFI_WORK_SSID` and `WIFI_WORK_PASSWORD` values. The optional
 `WIFI_FALLBACK_SSID` and `WIFI_FALLBACK_PASSWORD` apply to both profiles: when
 the main network does not connect, the clock alternates between it and the
-fallback every 15 seconds until one of them connects.
+fallback every 15 seconds until one of them connects. `WIFI_STATIC_IP` with
+`WIFI_STATIC_GATEWAY` (optionally `WIFI_STATIC_SUBNET`, default 255.255.255.0,
+and `WIFI_STATIC_DNS`, default the gateway) gives the home main network a fixed
+address instead of DHCP; the fallback and work networks stay on DHCP. Use it
+when a stray DHCP server on the LAN answers faster than the router. After
+connecting, the serial log prints the network, BSSID, address, gateway and DNS.
+
+**The clock shows an odd address and has no internet.** When the clock shows an
+address outside the home range (settings, page 4) and never syncs time, a second
+DHCP server on the LAN is usually answering faster than the router; the ESP32
+takes the first offer. In September 2026 it was a weather station (MAC
+`70:ee:50:90:70:ee`) stuck in setup mode with an open `Weather Station-9070ee`
+network: the development board got 192.168.0.16 with gateway 192.168.0.11, the
+other clocks did not, because the station only answered addresses it already
+knew. Restarting the station fixed it. To diagnose: the serial line
+`Wi-Fi … bssid=… gw=…` shows the access point and gateway; a DHCP DISCOVER sent
+from the Mac with the clock's MAC lists every server that answers. Until the
+cause is fixed, `WIFI_STATIC_IP` keeps a development build working.
 
 Pass a serial port explicitly when needed:
 
@@ -1013,6 +1030,10 @@ WIFI_WORK_SSID=
 WIFI_WORK_PASSWORD=
 WIFI_FALLBACK_SSID=
 WIFI_FALLBACK_PASSWORD=
+WIFI_STATIC_IP=
+WIFI_STATIC_GATEWAY=
+WIFI_STATIC_SUBNET=
+WIFI_STATIC_DNS=
 ```
 
 ### Release build
