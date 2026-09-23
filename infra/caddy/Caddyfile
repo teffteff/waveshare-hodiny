@@ -1,3 +1,12 @@
+{
+	# Jen HTTP/1.1 a HTTP/2. HTTP/3 (QUIC) potrebuje UDP 443, ktere firewall
+	# serveru nepousti; Caddy ho presto nabizel v Alt-Svc a Chrome se k nemu
+	# porad pokousel. Kdyby se UDP 443 nekdy otevrelo, staci radek smazat.
+	servers {
+		protocols h1 h2
+	}
+}
+
 {{DOMAIN}} {
 	# Vsechno na tomhle jmene jde jen pres HTTPS (port 80 jen presmerovava),
 	# takze prohlizec, ktery tu jednou byl, uz se na http:// nezepta a heslo
