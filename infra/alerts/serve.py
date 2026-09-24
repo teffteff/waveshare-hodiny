@@ -50,6 +50,9 @@ Kazdy push na letadlo se navic zapise jako radek do state/events.jsonl:
 co server videl, co predpovidal a jestli push odesel. GET /alerts/events?since=
 (unixovy cas) je vraci sberaci statistik (repozitar radar), ktery z nahrane
 drahy pozna, jestli nizky prelet opravdu nastal. Ven pres Caddy taky nevede.
+Totez plati pro push na dest (kinds ["rain"], bez "hex"), vcetne toho, ktery
+podrzel nocni klid: ten cte repozitar hodiny-stats a porovnava ho se
+srazkomerem doma.
 """
 from __future__ import annotations
 
@@ -244,6 +247,8 @@ class RainWatch:
         self.armed = True
         self.last_wet = 0.0
         self.last_state = "unknown"
+        # Push podrzeny nocnim klidem uz je v events.jsonl (jednou za nabiti).
+        self.held_recorded = False
 
     def update(self, state: str, now: float) -> bool:
         """Vrati True, kdyz ma odejit push."""
@@ -255,6 +260,7 @@ class RainWatch:
             return fire
         if state == "dry" and not self.armed and now - self.last_wet >= RAIN_REARM_MINUTES * 60:
             self.armed = True
+            self.held_recorded = False
         return False
 
 
@@ -538,14 +544,33 @@ class Watcher:
             # porad na ceste i po jeho konci, prijde tehdy.
             if state == "coming" and watch.armed and is_quiet(config, local):
                 watch.last_state = state
+                if not watch.held_recorded:
+                    watch.held_recorded = True
+                    self._record_rain_event(config, forecast, minutes, dbz, False, True, now)
                 continue
             if watch.update(state, now):
-                self.pushes += send_push(
+                sent = send_push(
                     f"Déšť za {minutes} min",
                     f"Radar ČHMÚ čeká {rain_word(dbz)} ({dbz} dBZ) do {rain['radius']} km "
                     f"od {config['name'] or 'hodin'}. Teď ještě neprší.",
                     ["umbrella"], 4)
+                self.pushes += sent
+                self._record_rain_event(config, forecast, minutes, dbz, sent, False, now)
         self.last_rain = now
+
+    def _record_rain_event(self, config: dict, forecast: dict, minutes: int, dbz: int,
+                           sent: bool, held: bool, now: float) -> None:
+        rain = config["rain"]
+        self._append_event({
+            "ts": round(now, 1), "kinds": ["rain"], "sent": sent, "held": held,
+            "rain": {
+                "home": [config["lat"], config["lon"]],
+                "radius": rain["radius"], "lead": rain["lead"], "dbz": rain["dbz"],
+                "minutes": minutes, "predicted_dbz": dbz,
+                "slot": forecast.get("slot"), "now": forecast.get("now"),
+                "step": forecast.get("step"), "steps": forecast.get("steps"),
+            },
+        })
 
     def _rain_forecast(self, lat: float, lon: float, radius: int, now: float) -> dict | None:
         query = urlencode({"lat": f"{lat:.4f}", "lon": f"{lon:.4f}", "r": radius})
@@ -641,6 +666,9 @@ class Watcher:
                 "distance_m": round(predicted["distance_m"]),
                 "height_m": round(predicted["height_m"]),
             }
+        self._append_event(event)
+
+    def _append_event(self, event: dict) -> None:
         path = self.state_dir / "events.jsonl"
         try:
             with path.open("a", encoding="utf-8") as handle:

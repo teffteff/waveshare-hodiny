@@ -30,7 +30,8 @@ set -eu
 # nepouzitelny. Hlidaci si v nich drzi, co uz videli.
 # radar.sqlite (repozitar radar) roste o ~10 MB denne a maze se az rucne;
 # az prekroci par set MB, patri sem jen tabulka letu, ne body drah.
-: "${BACKUP_SQLITE=/var/lib/watch/state.db /var/lib/ou-watch/state.db /var/lib/radar/radar.sqlite}"
+# stats.sqlite (repozitar hodiny-stats) roste o necely megabajt mesicne.
+: "${BACKUP_SQLITE=/var/lib/watch/state.db /var/lib/ou-watch/state.db /var/lib/radar/radar.sqlite /var/lib/hodiny-stats/stats.sqlite}"
 # Cokoli navic, oddelene mezerami. Svety Minecraftu sem patri jen tehdy, kdyz
 # je na ne dost mista - jsou radove GB a meni se porad.
 : "${BACKUP_EXTRA:=}"

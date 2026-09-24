@@ -179,6 +179,17 @@
 		uri strip_prefix /radar
 		reverse_proxy 127.0.0.1:8100
 	}
+	# Statistiky funkci hodin (repozitar hodiny-stats, stats-web.service):
+	# upozorneni na dest proti srazkomeru doma, pozdeji blesky, vystrahy a dalsi.
+	# Nese polohu domu a data z Home Assistanta, takze za stejne heslo jako radar.
+	redir /hodiny /hodiny/
+	handle /hodiny/* {
+		basic_auth {
+			hlidac {env.WATCHER_HASH}
+		}
+		uri strip_prefix /hodiny
+		reverse_proxy 127.0.0.1:8101
+	}
 	# Nastaveni vsech hodin pres server (infra/fleet, FLEET_PREFIX prazdny).
 	# Hodiny se sem pripojuji samy a server jim predava pozadavky z prohlizece,
 	# takze kdo je tu prihlaseny, nastavuje hodiny doma. Heslo a kod TOTP resi

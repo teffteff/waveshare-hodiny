@@ -212,6 +212,38 @@ class WatcherTest(unittest.TestCase):
         self.run_rain(forecast(0, [32, 0, 0, 0, 0, 0], slot=night), night + 180)
         self.assertEqual(self.pushes[0][0], "Déšť za 10 min")
 
+    def test_rain_push_is_recorded_with_forecast(self):
+        self.run_rain(forecast(0, [0, 32, 0, 0, 0, 0], slot=NOON - 300), NOON)
+        self.run_rain(forecast(0, [32, 32, 0, 0, 0, 0], slot=NOON), NOON + 150)
+        events = self.watcher.events(0)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["kinds"], ["rain"])
+        self.assertNotIn("hex", event)
+        self.assertTrue(event["sent"])
+        self.assertFalse(event["held"])
+        self.assertEqual(event["rain"]["home"], [HOME_LAT, HOME_LON])
+        self.assertEqual((event["rain"]["radius"], event["rain"]["lead"], event["rain"]["dbz"]),
+                         (5, 20, 28))
+        self.assertEqual((event["rain"]["minutes"], event["rain"]["predicted_dbz"]), (20, 32))
+        self.assertEqual(event["rain"]["slot"], NOON - 300)
+        self.assertEqual(event["rain"]["steps"], [0, 32, 0, 0, 0, 0])
+
+    def test_rain_held_by_quiet_hours_is_recorded_once(self):
+        night = datetime(2026, 9, 22, 6, 50, tzinfo=serve.TIMEZONE).timestamp()
+        self.run_rain(forecast(0, [0, 32, 0, 0, 0, 0], slot=night - 300), night)
+        self.run_rain(forecast(0, [32, 0, 0, 0, 0, 0], slot=night), night + 150)
+        held = self.watcher.events(0)
+        self.assertEqual(len(held), 1)
+        self.assertTrue(held[0]["held"])
+        self.assertFalse(held[0]["sent"])
+        # Po konci klidu push odejde a zapise se zvlast.
+        self.run_rain(forecast(0, [32, 0, 0, 0, 0, 0], slot=night + 600), night + 660)
+        events = self.watcher.events(0)
+        self.assertEqual(len(events), 2)
+        self.assertTrue(events[1]["sent"])
+        self.assertFalse(events[1]["held"])
+
     def test_stale_forecast_is_ignored(self):
         self.run_rain(forecast(0, [40] * 6, slot=NOON - 3600), NOON)
         self.assertEqual(self.pushes, [])
