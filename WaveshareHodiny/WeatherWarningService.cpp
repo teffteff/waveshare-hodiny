@@ -152,7 +152,15 @@ long download(const char *url, int &httpStatus) {
   return result;
 }
 
+// Síť držela jiná služba. To není chyba serveru: zkusí se to brzy znovu
+// a do počítání chyb pro prodlužování pauzy se to nepočítá. Dřív se to
+// počítalo a po uložení nastavení, kdy stahují všechny služby naráz, pak
+// služba čekala dvojnásobek periody (výstrahy 20 minut, déšť 10).
+constexpr uint32_t BUSY_RETRY_MS = 15000;
+bool networkBusy = false;
+
 bool fetchWarnings(const Request &current) {
+  networkBusy = false;
   char url[CLOCK_WARNINGS_URL_LENGTH + 64];
   if (!weatherWarningsBuildUrl(current.url, current.latitude, current.longitude,
                                current.english, url, sizeof(url))) {
@@ -163,6 +171,7 @@ bool fetchWarnings(const Request &current) {
   long length = -1;
   {
     NetworkOperationGuard guard(NETWORK_GUARD_MS);
+    networkBusy = !guard;
     if (!guard) {
       setStatus("Síť je zaneprázdněná");
       return false;
@@ -254,6 +263,8 @@ void weatherWarningTask(void *) {
     uint32_t wait = period;
     if (ok) {
       failures = 0;
+    } else if (networkBusy) {
+      wait = BUSY_RETRY_MS;
     } else {
       ++failures;
       wait = period << (failures < 4 ? failures : 4);
