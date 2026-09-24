@@ -318,6 +318,13 @@ class ServerTest(ServerBase):
         self.assertEqual(response.status, 503)
         self.assertIn("text/html", response.getheader("Content-Type"))
 
+    def test_never_seen_clock_is_offline_right_after_boot(self):
+        # monotonic() bezi od startu stroje; tesne po nem je mensi nez okno.
+        device = serve.Device("obyvak", "x")
+        self.assertFalse(device.online(serve.ONLINE_WINDOW_S / 2))
+        device.last_poll = 1.0
+        self.assertTrue(device.online(2.0))
+
     def test_agent_needs_token(self):
         response, _ = self.request("GET", "/fleet/agent/poll",
                                    headers={"Authorization": "Bearer spatny"})

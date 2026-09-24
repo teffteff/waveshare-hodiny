@@ -240,7 +240,9 @@ class Device:
     cache: dict = field(default_factory=dict)
 
     def online(self, now: float) -> bool:
-        return self.polling > 0 or now - self.last_poll < ONLINE_WINDOW_S
+        # last_poll 0 = jeste se neozvaly; monotonic() bezi od startu stroje,
+        # takze tesne po startu by jinak byly "online" i hodiny, co nikdy nebyly.
+        return self.polling > 0 or (self.last_poll > 0 and now - self.last_poll < ONLINE_WINDOW_S)
 
 
 class Relay:
