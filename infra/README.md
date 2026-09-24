@@ -100,6 +100,7 @@ serveru zkontrolovat nedají:
 | Hlášení poruch | — | `/opt/health/check.py`, `health.service` + `health.timer`, `notify-failure@.service`, `ha-update-check.sh` + `ha-update.timer` (nová verze HA), drop-in `on-failure.conf` u každé hlídané jednotky, téma ntfy v `/opt/health/health.env`, stav v `/var/lib/health/` | `health/` |
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
 | Statistiky letů (radar) | 8100, jen loopback | `/opt/radar` (kód), `/var/lib/radar` (databáze), `radar-collector.service` + `radar-web.service`, poloha domu v `/opt/radar/radar.env`; stránka `https://$FLEET_DOMAIN/radar/` za heslem novinek | vlastní soukromý repozitář `radar` |
+| Statistiky funkcí hodin | 8101, jen loopback | `/opt/hodiny-stats` (kód), `/var/lib/hodiny-stats` (databáze), `stats-collector.service` + `stats-web.service`, poloha domu a token do HA v `/opt/hodiny-stats/stats.env`; stránka `https://$FLEET_DOMAIN/hodiny/` za heslem novinek | vlastní soukromý repozitář `hodiny-stats` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
@@ -826,6 +827,10 @@ letadla, u nízkého přeletu i předpověď (vzdálenost, výška, za kolik sek
 a nastavený práh. `curl -s '127.0.0.1:8098/alerts/events?since=0'` vrací
 posledních 500; čte je sběrač statistik (soukromý repozitář `radar`), který
 z nahrané dráhy pozná, jestli přelet opravdu nastal. Ven taky nevede.
+Stejně se zapisuje i push na déšť (`"kinds":["rain"]`, bez `hex`): poloha,
+nastavení, za kolik minut a jaká odrazivost a celá předpověď, ze které vznikl.
+Zapíše se jednou i push, který podržel noční klid (`"held":true`). Ty čte
+sběrač z repozitáře `hodiny-stats` a porovnává je se srážkoměrem doma.
 
 Zavedení (jednou):
 

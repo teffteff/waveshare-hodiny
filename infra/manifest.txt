@@ -181,6 +181,8 @@ health     dropin    watch-web.service
 health     dropin    ou-watch.service
 health     dropin    radar-collector.service
 health     dropin    radar-web.service
+health     dropin    stats-collector.service
+health     dropin    stats-web.service
 health     dropin    docker.service
 health     enable    health.timer
 health     enable    ha-update.timer
