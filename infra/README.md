@@ -219,8 +219,9 @@ hned. Když selže celý řetěz, vrátí 503 a opakování po pauzách je věc 
 (zprávy: `RETRY_PAUSES_S`).
 
 **Kvóta Gemini platí na projekt Google Cloudu, ne na klíč.** V `llm.env` jsou
-proto klíče po projektech: `GEMINI_KEY_HODINY` (zprávy, hlídač obchodů) a
-`GEMINI_KEY_RADAR` (radar, statistiky hodin). Kterou službu vede do kterého
+proto klíče po projektech: `GEMINI_KEY_HODINY` (zprávy), `GEMINI_KEY_WATCH`
+(hlídač obchodů, vlastní klíč; jestli je to i vlastní projekt, ukáže AI Studio)
+a `GEMINI_KEY_RADAR` (radar, statistiky hodin). Kterou službu vede do kterého
 projektu a jaký má denní strop dotazů, říká `config.json`. Hlídač obchodů
 má navíc `gemini_safety_off`: čte inzeráty zbraní a výchozí filtry Gemini je
 občas zablokují, takže by jinak šly na placený OpenRouter.
