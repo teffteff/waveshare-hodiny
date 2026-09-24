@@ -12,14 +12,17 @@ size_t indexFor(NetworkDiagnosticKind kind) {
 }
 }  // namespace
 
-NetworkMemorySnapshot networkDiagnosticsCurrentMemory() {
+NetworkMemorySnapshot networkDiagnosticsCurrentMemory(
+    bool includePsramLargest) {
   NetworkMemorySnapshot snapshot;
   snapshot.internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   snapshot.internalLargest =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
   snapshot.psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-  snapshot.psramLargest =
-      heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  if (includePsramLargest) {
+    snapshot.psramLargest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  }
   return snapshot;
 }
 

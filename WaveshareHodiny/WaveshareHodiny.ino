@@ -2276,6 +2276,15 @@ void handleUsbCommands() {
       } else if (usbCommand == "SETTINGS5" && !screenshotTransferActive) {
         clockDashboardShowSettingsPage(4);
         Serial.println("SETTINGS_OPEN");
+      } else if (usbCommand == "LCDSLIP" && !screenshotTransferActive) {
+        // Napodobí zápis do flash: přerušení RGB panelu běží na tomto jádře,
+        // takže vypadne několik doplnění bounce bufferu a obraz se posune.
+        portDISABLE_INTERRUPTS();
+        esp_rom_delay_us(3000);
+        portENABLE_INTERRUPTS();
+        Serial.println("LCD_SLIP");
+      } else if (usbCommand == "LCDSYNC") {
+        Serial.printf("LCD_SYNC_REPAIRS=%" PRIu32 "\n", LCD_SyncRepairCount());
       } else if (usbCommand == "NIGHT" && !screenshotTransferActive) {
         clockDashboardSetNightMode(true);
         Serial.println("NIGHT_OPEN");
@@ -2450,6 +2459,7 @@ void streamScreenshot() {
 }
 
 void maintainDisplaySync() {
+  LCD_MaintainSync();
   if (displayResyncAt == 0 ||
       static_cast<long>(millis() - displayResyncAt) < 0) {
     return;
