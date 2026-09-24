@@ -210,7 +210,9 @@ modelu pošle úroveň:
 
 Proč: 24. 9. 2026 vrátil Google 503 („high demand“) všem modelům ve dvou
 bězích zpráv po sobě. OpenRouter jede mimo Google, takže při jeho výpadku
-odpoví. Brána každý model při 5xx zkusí dvakrát a jde dál; 429 s denní kvótou
+odpoví. Brána model při rychlé 5xx zkusí ještě jednou (pomalou, jako 36 s
+čekání na 503 Flashe 24. 9., ne), pak ho 2 min přeskakuje pro všechny služby;
+po 150 s od dotazu skočí rovnou na poslední model řetězu. 429 s denní kvótou
 zablokuje ten model **v celém projektu** do půlnoci tichomořského času (tabulka
 `blocks`, přežije restart), 429 za minutu na 65 s. Chybný dotaz (400) vrátí
 hned. Když selže celý řetěz, vrátí 503 a opakování po pauzách je věc služby

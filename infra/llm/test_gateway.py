@@ -105,6 +105,42 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(sent["response_format"]["json_schema"]["schema"], SCHEMA)
         self.assertEqual(gw.status()["openrouter_usd_today"], 0.001)
 
+    def test_overloaded_model_is_skipped_for_a_while(self):
+        gw = self.make({("openrouter", "openai/gpt-4.1-mini"): [openrouter_ok()]})
+        gw.complete("news", request())
+        self.upstream.calls.clear()
+        self.now += 60
+        gw.complete("news", request())
+        self.assertEqual([c[0][0] for c in self.upstream.calls], ["openrouter"])
+        self.upstream.calls.clear()
+        self.now += gateway.OVERLOAD_COOLDOWN_S
+        gw.complete("news", request())
+        self.assertEqual(self.upstream.calls[0][0], ("gemini", "gemini-flash-latest"))
+
+    def test_slow_overload_is_not_retried(self):
+        gw = self.make({("gemini", "gemini-flash-lite-latest"): [gemini_ok()]})
+
+        def slow(url, body, headers):
+            self.now += 40
+            return FakeUpstream.__call__(self.upstream, url, body, headers)
+        gw.post = slow
+        status, body = gw.complete("news", request())
+        self.assertEqual(body["model"], "gemini/gemini-flash-lite-latest")
+        self.assertEqual([c[0][1] for c in self.upstream.calls],
+                         ["gemini-flash-latest", "gemini-flash-lite-latest"])
+
+    def test_call_budget_skips_to_the_last_model(self):
+        gw = self.make({("openrouter", "openai/gpt-4.1-mini"): [openrouter_ok()]})
+
+        def very_slow(url, body, headers):
+            self.now += gateway.CALL_BUDGET_S + 1
+            return FakeUpstream.__call__(self.upstream, url, body, headers)
+        gw.post = very_slow
+        status, body = gw.complete("news", request())
+        self.assertEqual(status, 200)
+        self.assertEqual([c[0][1] for c in self.upstream.calls],
+                         ["gemini-flash-latest", "openai/gpt-4.1-mini"])
+
     def test_all_fail_is_503(self):
         gw = self.make({})
         status, body = gw.complete("news", request())

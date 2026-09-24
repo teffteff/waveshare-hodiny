@@ -62,10 +62,19 @@ from zoneinfo import ZoneInfo
 PACIFIC = ZoneInfo("America/Los_Angeles")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-UPSTREAM_TIMEOUT_S = float(os.environ.get("LLM_UPSTREAM_TIMEOUT", "90"))
-# Pretizeni (5xx) se u jednoho modelu zkusi jeste jednou po kratke pauze,
-# pak se jde na dalsi. Dlouhe cekani je vec sluzby (zpravy maji RETRY_PAUSES_S).
+UPSTREAM_TIMEOUT_S = float(os.environ.get("LLM_UPSTREAM_TIMEOUT", "60"))
+# Pretizeni (5xx) se u jednoho modelu zkusi jeste jednou po kratke pauze, ale
+# jen kdyz prislo rychle: 24. 9. 2026 trvalo Flashi 36 s, nez 503 vratil,
+# a druhy stejne dlouhy pokus by jen oddalil zalohu. Dlouhe cekani je vec
+# sluzby (zpravy maji RETRY_PAUSES_S).
 OVERLOAD_RETRY_PAUSE_S = 3.0
+FAST_FAILURE_S = 10.0
+# Pretizeny model se pak chvili preskakuje pro vsechny sluzby, aby hlidac
+# obchodu s tricet dotazy za beh necekal na kazdy 503 znovu.
+OVERLOAD_COOLDOWN_S = 120.0
+# Po tolika sekundach od prijeti dotazu se zbyle modely retezu preskoci a jde
+# se rovnou na posledni (zalohu). Zpravy cekaji na branu 360 s.
+CALL_BUDGET_S = 150.0
 # 429 bez denni kvoty je minutovy limit.
 MINUTE_BLOCK_S = 65.0
 KEEP_DAYS = 90
@@ -362,8 +371,12 @@ class Gateway:
         wants_json = (request.get("response_format") or {}).get("type") in ("json_object",
                                                                              "json_schema")
         errors = []
-        for step in self.tiers[tier]:
+        chain = self.tiers[tier]
+        for position, step in enumerate(chain):
             provider, model = step.split(":", 1)
+            if position < len(chain) - 1 and self.clock() - started > CALL_BUDGET_S:
+                errors.append(f"{provider}/{model}: preskoceno, dotaz uz trva prilis dlouho")
+                continue
             if provider == "gemini":
                 key = self.keys.get(("gemini", settings["project"]), "")
                 target = f"gemini:{settings['project']}:{model}"
@@ -397,13 +410,16 @@ class Gateway:
                         self._log_call(now, day, service, tier, "bad_request",
                                        f"{provider}/{model}", started)
                         return 400, error_body(f"{provider}/{model}: {failure}", "bad_request")
+                    if (failure.kind == "overload" and attempt == 0
+                            and self.clock() - attempt_start < FAST_FAILURE_S):
+                        self.sleep(OVERLOAD_RETRY_PAUSE_S)
+                        continue
+                    if failure.kind == "overload":
+                        failure.block_until = self.clock() + OVERLOAD_COOLDOWN_S
                     if failure.block_until:
                         self._write("INSERT OR REPLACE INTO blocks VALUES (?, ?, ?)",
                                     ("openrouter" if failure.whole_provider else target,
                                      failure.block_until, str(failure)[:200]))
-                    if failure.kind == "overload" and attempt == 0:
-                        self.sleep(OVERLOAD_RETRY_PAUSE_S)
-                        continue
                     errors.append(f"{provider}/{model}: {failure}")
                     print(f"{service} {tier}: {provider}/{model} selhal: {failure}", flush=True)
                     break

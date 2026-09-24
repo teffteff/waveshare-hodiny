@@ -92,8 +92,8 @@ MAX_TITLE_CHARS = 90
 # OpenRouter mimo Google; který model odpověděl, píše brána i tenhle skript.
 LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8102/v1/chat/completions")
 LLM_TIER = os.environ.get("NEWS_LLM_TIER", "smart")
-# Brána zkouší modely po řadě a každý může odpovídat desítky sekund.
-LLM_TIMEOUT_S = 300
+# Brána zkouší modely po řadě; po 150 s skočí rovnou na zálohu (CALL_BUDGET_S).
+LLM_TIMEOUT_S = 360
 # Brána vrací tyhle kódy, když selhaly všechny modely nebo když sama neběží
 # (0 = spojení se nepodařilo). Ostatní chyby (400 špatný dotaz, 401 token,
 # 429 denní strop služby) další kolo nespraví.
