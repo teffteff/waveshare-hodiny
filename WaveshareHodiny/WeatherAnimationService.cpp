@@ -211,12 +211,19 @@ void performDownload() {
   }
 }
 
+// One long-lived task that waits for a request. It used to be created per
+// download and delete itself with vTaskDeleteWithCaps(nullptr), which ESP-IDF
+// advises against; the helper task that does that deletion panicked on a clock
+// on 2026-09-24.
+TaskHandle_t downloadTaskHandle = nullptr;
+
 void downloadTask(void *) {
-  // Return from the C++ function before deleting the FreeRTOS task. Calling
-  // vTaskDelete() directly from performDownload() would skip stack unwinding
-  // and leak the HTTP/TLS objects after every animation change.
-  performDownload();
-  vTaskDeleteWithCaps(nullptr);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    // performDownload() returns before the next wait, so its HTTP/TLS objects
+    // are destroyed after every download.
+    performDownload();
+  }
 }
 }  // namespace
 
@@ -265,11 +272,15 @@ void weatherAnimationServiceLoop(int weatherCode, bool isDay, uint8_t style,
   }
   requestedAsset = desired;
   setState(DownloadState::Downloading);
-  if (xTaskCreatePinnedToCoreWithCaps(
-          downloadTask, "weather-animation", 8192, nullptr, 1, nullptr, 0,
-          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+  if (downloadTaskHandle == nullptr &&
+      xTaskCreatePinnedToCoreWithCaps(
+          downloadTask, "weather-animation", 8192, nullptr, 1,
+          &downloadTaskHandle, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    downloadTaskHandle = nullptr;
     setFailed();
+    return;
   }
+  xTaskNotifyGive(downloadTaskHandle);
 }
 
 void weatherAnimationServiceSetFirmwareUpdateActive(bool active) {

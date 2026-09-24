@@ -67,11 +67,29 @@ EOF
 FIRMWARE="$(sed -n 1p "$WORK/crash.txt")"
 ELF_SHA="$(sed -n 2p "$WORK/crash.txt")"
 if [[ -z "$ELF" ]]; then
-  ELF="$WORK/waveshare-hodiny.elf"
-  echo "Stahuji ELF k v$FIRMWARE z $REPO..." >&2
-  if ! curl -fsSL -m 300 -o "$ELF" \
-      "https://github.com/$REPO/releases/download/v$FIRMWARE/waveshare-hodiny.elf"; then
-    echo "Release v$FIRMWARE ELF nemá (starší než CrashLog?). Předej ho jako druhý argument." >&2
+  # Pád při OTA restartu patří předchozímu firmwaru, takže verze v záznamu
+  # (a od 2.2.16 prázdná verze) nemusí ukazovat na správný ELF. Zkusí se
+  # nejdřív ta, pak poslední releasy, a platí ten, jehož SHA sedí.
+  CANDIDATES=()
+  [[ -n "$FIRMWARE" ]] && CANDIDATES+=("v$FIRMWARE")
+  while IFS= read -r tag; do
+    [[ "$tag" == "v$FIRMWARE" ]] || CANDIDATES+=("$tag")
+  done < <(curl -fsSL -m 30 "https://api.github.com/repos/$REPO/releases?per_page=15" \
+             | python3 -c 'import json,sys; [print(r["tag_name"]) for r in json.load(sys.stdin)]' \
+             2>/dev/null || true)
+  for tag in "${CANDIDATES[@]}"; do
+    echo "Zkouším ELF z $tag..." >&2
+    curl -fsSL -m 300 -o "$WORK/candidate.elf" \
+      "https://github.com/$REPO/releases/download/$tag/waveshare-hodiny.elf" 2>/dev/null || continue
+    if [[ -z "$ELF_SHA" || "$(shasum -a 256 "$WORK/candidate.elf" | cut -c1-${#ELF_SHA})" == "$ELF_SHA" ]]; then
+      ELF="$WORK/waveshare-hodiny.elf"
+      mv "$WORK/candidate.elf" "$ELF"
+      echo "Pád je ze sestavení $tag." >&2
+      break
+    fi
+  done
+  if [[ -z "$ELF" ]]; then
+    echo "Žádný z posledních releasů nemá ELF se SHA $ELF_SHA. Předej ho jako druhý argument." >&2
     exit 1
   fi
 fi

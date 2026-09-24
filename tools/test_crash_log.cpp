@@ -111,9 +111,19 @@ void testUnknownRecordVersionIgnored() {
   assert(std::string(crashLogJson().c_str()) == "{\"count\":0,\"last\":null}");
 }
 
+void testFirmwareOnlyForSameBuild() {
+  const char *running = "8a523fcc7f892856aa11bb22cc33dd44ee55ff6600112233445566778899aabb";
+  assert(std::string(crashLogFirmwareFor("8a523fcc7f892856", running, "2.2.14")) == "2.2.14");
+  // Pad v predchozim sestaveni (OTA restart): verze bezici by lhala.
+  assert(std::string(crashLogFirmwareFor("88960743a89ad7f8", running, "2.2.15")).empty());
+  assert(std::string(crashLogFirmwareFor("", running, "2.2.15")).empty());
+  assert(std::string(crashLogFirmwareFor("8a523fcc7f892856", "", "2.2.15")).empty());
+}
+
 }  // namespace
 
 int main() {
+  testFirmwareOnlyForSameBuild();
   testAbnormalResets();
   testNothingToRecord();
   testWatchdogWithoutDump();

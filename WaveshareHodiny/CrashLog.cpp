@@ -8,6 +8,7 @@
 #include <cstring>
 
 #if __has_include(<esp_core_dump.h>)
+#include <esp_app_desc.h>
 #include <esp_core_dump.h>
 #include <esp_system.h>
 #include "FirmwareBuild.h"
@@ -91,6 +92,17 @@ bool crashLogAbnormalReset(uint8_t resetReason) {
   return resetReason == RESET_PANIC || resetReason == RESET_INT_WDT ||
          resetReason == RESET_TASK_WDT || resetReason == RESET_WDT ||
          resetReason == RESET_BROWNOUT;
+}
+
+const char *crashLogFirmwareFor(const char *dumpElfSha, const char *runningElfSha,
+                                const char *runningVersion) {
+  if (dumpElfSha == nullptr || runningElfSha == nullptr || dumpElfSha[0] == '\0')
+    return "";
+  const size_t length = strlen(dumpElfSha);
+  return strncmp(dumpElfSha, runningElfSha, length) == 0 &&
+                 strlen(runningElfSha) >= length
+             ? runningVersion
+             : "";
 }
 
 bool crashLogRecord(const CrashRecord *dump, uint8_t resetReason,
@@ -213,7 +225,11 @@ void crashLogBegin() {
   }
   // Výpis se smaže, jen když je souhrn bezpečně v NVS; jinak zůstane pro
   // esptool i pro další pokus při příštím startu.
-  if (crashLogRecord(&record, resetReason, FIRMWARE_VERSION)) {
+  char runningElfSha[65] = "";
+  esp_app_get_elf_sha256(runningElfSha, sizeof(runningElfSha));
+  if (crashLogRecord(&record, resetReason,
+                     crashLogFirmwareFor(record.elfSha, runningElfSha,
+                                         FIRMWARE_VERSION))) {
     esp_core_dump_image_erase();
   }
 }
