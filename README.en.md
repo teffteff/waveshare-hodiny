@@ -200,6 +200,13 @@ also define the center of local CHMI radar views. Each of the four slots can
 independently display 0–2 decimal places; the same setting also applies when a
 TMEP.cz value is selected.
 
+Instead of a searched city, **Device location** also takes **Exact
+coordinates**, for example of a house. The field accepts decimal degrees (also
+with a decimal comma), `49°54'14.2"N 14°46'15.8"E` with the compass letters in
+either order, or a whole Google Maps or Mapy.cz link. The **City** field is then
+only a label; editing it clears the coordinates, so change the label first. The
+exact spot matters most for low-pass alerts and the centre of the aircraft screen.
+
 ### TMEP.cz as an Open-Meteo extension
 
 Your own TMEP.cz sensors can be added to Open-Meteo mode. Paste the complete URL
