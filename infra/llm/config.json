@@ -51,5 +51,10 @@
       ]
     }
   },
-  "openrouter_usd_per_day": 0.5
+  "openrouter_usd_per_day": 0.5,
+  "gemini_free_per_day": {
+    "gemini-flash-latest": 20,
+    "gemini-flash-lite-latest": 500
+  },
+  "openrouter_usd_per_month": 2.0
 }
