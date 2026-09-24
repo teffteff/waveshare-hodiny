@@ -206,6 +206,14 @@ současně určují střed lokálních pohledů meteoradaru ČHMÚ. U každé ze
 pozic lze samostatně nastavit 0 až 2 desetinná místa; stejné nastavení platí
 i při výběru hodnoty TMEP.cz.
 
+Místo vyhledaného města jde v sekci **Poloha zařízení** zadat **Přesné
+souřadnice**, třeba domu. Pole vezme desetinné stupně (i s desetinnou čárkou),
+tvar `49°54'14.2"N 14°46'15.8"E` se světovými stranami v libovolném pořadí
+i celý odkaz z Map Google nebo Mapy.cz. Název v poli **Město** pak slouží jen
+jako popisek; jeho přepsání souřadnice smaže, takže popisek se mění dřív než
+souřadnice. Na přesném místě záleží hlavně u upozornění na nízký přelet
+a u středu obrazovky letadel.
+
 ### TMEP.cz jako doplněk Open-Meteo
 
 K režimu Open-Meteo lze přidat vlastní čidla z TMEP.cz. Vlož celou URL ze sekce
