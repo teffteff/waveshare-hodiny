@@ -166,6 +166,19 @@
 		uri strip_prefix /novinky
 		reverse_proxy 127.0.0.1:8091
 	}
+	# Statistiky letu kolem domu (repozitar radar, radar-web.service). Nese
+	# polohu domu a kdy tu co letelo, takze patri za heslo. Zamerne stejne jako
+	# novinky (uzivatel hlidac, WATCHER_HASH): prohlizec prihlaseny k novinkam
+	# se na radar uz nepta. Bez lomitka na konci by se relativni adresy api/
+	# a app.js skladaly proti korenu domeny.
+	redir /radar /radar/
+	handle /radar/* {
+		basic_auth {
+			hlidac {env.WATCHER_HASH}
+		}
+		uri strip_prefix /radar
+		reverse_proxy 127.0.0.1:8100
+	}
 	# Nastaveni vsech hodin pres server (infra/fleet, FLEET_PREFIX prazdny).
 	# Hodiny se sem pripojuji samy a server jim predava pozadavky z prohlizece,
 	# takze kdo je tu prihlaseny, nastavuje hodiny doma. Heslo a kod TOTP resi
