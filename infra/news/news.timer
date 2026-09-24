@@ -1,8 +1,12 @@
 [Unit]
-Description=Spousti vyber zprav dne nekolikrat denne
+Description=Spousti vyber zprav dne kazdou hodinu pres den
 
 [Timer]
-OnCalendar=06,08,10,12,14,16,18,20:05
+# Kazdou hodinu 06:05 az 22:05 prazskeho casu (17 behu, jedno volani modelu na
+# beh a polohu). Pasmo v zapisu je nutne: server bezi v GMT, takze drivejsi
+# "06,08,...,20:05" znamenalo v lete 08:05 az 22:05. Flash ma na free tieru 20 dotazu
+# denne, bez poloh tedy pokryje cely den; s polohami zbytek dne jede Lite.
+OnCalendar=*-*-* 06..22:05:00 Europe/Prague
 Persistent=true
 RandomizedDelaySec=90
 
