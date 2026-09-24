@@ -196,9 +196,13 @@ def call_gemini(model: str, key: str, request: dict, post, now: float) -> Answer
     candidates = payload.get("candidates") or []
     parts = (candidates[0].get("content") or {}).get("parts", []) if candidates else []
     text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    reason = candidates[0].get("finishReason") if candidates else payload.get("promptFeedback")
     if not text:
-        reason = candidates[0].get("finishReason") if candidates else payload.get("promptFeedback")
         raise Failure("other", f"prazdna odpoved ({reason})")
+    # Uriznuty text (MAX_TOKENS) nebo zastaveny filtrem neni odpoved; u JSONu
+    # by to chytil json.loads, u prostého textu (tydenni souhrn statistik) ne.
+    if reason not in (None, "STOP"):
+        raise Failure("other", f"neuplna odpoved ({reason})")
     usage = payload.get("usageMetadata") or {}
     return Answer(text, usage.get("promptTokenCount", 0), usage.get("candidatesTokenCount", 0))
 
@@ -212,9 +216,12 @@ def call_openrouter(model: str, key: str, request: dict, post, now: float) -> An
     status, payload = post(OPENROUTER_URL, body,
                            {"Authorization": f"Bearer {key}", "X-Title": "hodiny-llm"})
     if status == 200 and payload.get("choices"):
-        text = (payload["choices"][0].get("message") or {}).get("content") or ""
+        choice = payload["choices"][0]
+        text = (choice.get("message") or {}).get("content") or ""
         if not text:
             raise Failure("other", "prazdna odpoved")
+        if choice.get("finish_reason") in ("length", "content_filter"):
+            raise Failure("other", f"neuplna odpoved ({choice['finish_reason']})")
         usage = payload.get("usage") or {}
         return Answer(text, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
                       float(usage.get("cost") or 0.0))
