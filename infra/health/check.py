@@ -59,7 +59,7 @@ UNITS = os.environ.get(
     "lightning-web.service settings-web.service school-web.service "
     "satellites-web.service rain-web.service warnings-web.service "
     "alerts-web.service fleet-web.service watch-web.service radar-collector.service "
-    "radar-web.service stats-collector.service stats-web.service "
+    "radar-web.service stats-collector.service stats-web.service llm-gateway.service "
     "docker.service "
     "news.timer agenda.timer backup.timer watch.timer ou-watch.timer ha-update.timer",
 ).split()
@@ -117,6 +117,11 @@ def check_news() -> str | None:
     built = email.utils.parsedate_to_datetime(match.group(1).decode()).timestamp()
     hours = (time.time() - built) / 3600
     return f"kanal je stary {hours:.0f} h" if hours > 10 else None
+
+
+def check_llm() -> str | None:
+    # Brana sama rika, co ji chybi: klic, kredit OpenRouteru (402).
+    return fetch_json(local(8102, "/status")).get("problem") or None
 
 
 def check_agenda() -> str | None:
@@ -250,6 +255,7 @@ CHECKS = {
     "druzice": check_satellites,
     "upozorneni": check_alerts,
     "radar": check_radar,
+    "modely": check_llm,
     "zalohy-nastaveni": lambda: check_http(8092, "/settings/"),
     "hlidac-obchodu": lambda: check_http(8091, "/health"),
     "home-assistant": lambda: check_http(8123, "/"),

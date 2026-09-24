@@ -1,0 +1,31 @@
+[Unit]
+Description=Spolecna brana k jazykovym modelum (Gemini, zaloha OpenRouter)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Vlastni uzivatel, ne opc (sudo bez hesla, SSH klic). Zapisuje jen do
+# /opt/llm/state: denik dotazu a pamet vycerpanych kvot.
+User=llm
+Group=llm
+Environment=LLM_PORT=8102
+# Jen pro sluzby na tomto stroji; ven pres Caddy nevede.
+Environment=LLM_BIND=127.0.0.1
+Environment=LLM_STATE=/opt/llm/state
+Environment=LLM_CONFIG=/opt/llm/config.json
+# Klice Gemini, OpenRouteru a tokeny sluzeb; root:root 600, systemd ho nacte
+# pred prepnutim na uzivatele llm.
+EnvironmentFile=/opt/llm/llm.env
+# Zadny venv, jen standardni knihovna; /usr/bin/python3 je na OL8 3.6.
+ExecStart=/usr/bin/python3.11 /opt/llm/gateway.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/llm/state
+
+[Install]
+WantedBy=multi-user.target
