@@ -259,6 +259,54 @@ class GatewayTest(unittest.TestCase):
         # the cap is per tier: radar's other tiers still work
         self.assertEqual(gw.complete("radar", request("cheap", schema=False))[0], 200)
 
+    def test_stats(self):
+        config = json.loads(json.dumps(CONFIG))
+        config["services"]["news"]["daily_cap"] = 3
+        gw = self.make({("gemini", "gemini-flash-latest"): [OVERLOAD, OVERLOAD, gemini_ok()],
+                        ("gemini", "gemini-flash-lite-latest"): [OVERLOAD],
+                        ("openrouter", "openai/gpt-4.1-mini"): [openrouter_ok(cost=0.003)],
+                        ("openrouter", "openai/gpt-4.1-nano"): [(200, {
+                            "choices": [{"message": {"content": "x"}}],
+                            "usage": {"prompt_tokens": 50, "completion_tokens": 5,
+                                      "cost": 0.0075}})]}, config=config)
+        gw.complete("news", request())          # Flash 2x 503, Lite 2x 503, OpenRouter
+        self.now += gateway.OVERLOAD_COOLDOWN_S + 1
+        gw.complete("news", request())          # Flash answers
+        gw.complete("radar", {"model": "search", "messages": [{"role": "user", "content": "q"}]})
+        gw.complete("news", request())
+        gw.complete("news", request())          # over news' cap of 3
+        st = gw.stats(7)
+
+        self.assertEqual(len(st["daily"]), 7)
+        today = st["daily"][-1]
+        self.assertEqual(today["answered"]["openrouter/openai/gpt-4.1-mini"], 1)
+        self.assertEqual(today["answered"]["gemini/gemini-flash-latest"], 2)
+        self.assertEqual(today["capped"], 1)
+        self.assertAlmostEqual(today["cost"], 0.0105)
+
+        by = {(e["service"], e["tier"]): e for e in st["services"]}
+        news = by[("news", "smart")]
+        self.assertEqual((news["calls"], news["ok"], news["fallback"], news["capped"]), (4, 3, 1, 1))
+        self.assertAlmostEqual(news["cost"], 0.003)
+        search = by[("radar", "search")]
+        self.assertEqual((search["ok"], search["prompt_tokens"], search["cost"]), (1, 50, 0.0075))
+
+        models = {(m["provider"], m["model"]): m for m in st["models"]}
+        self.assertEqual(models[("gemini", "gemini-flash-latest")]["overload"], 2)
+        self.assertEqual(models[("gemini", "gemini-flash-latest")]["ok"], 2)
+
+        quota = {(q["project"], q["model"]): q for q in st["quotaToday"]}
+        self.assertEqual(quota[("hodiny", "gemini-flash-latest")], {
+            "project": "hodiny", "model": "gemini-flash-latest", "used": 4, "limit": 20})
+        self.assertEqual(quota[("radar", "gemini-flash-lite-latest")]["used"], 0)
+
+        self.assertEqual(sum(h["overload"] for h in st["hours"]), 4)
+        self.assertEqual(st["recentFailures"][0]["outcome"], "overload")
+        self.assertAlmostEqual(st["month"]["openrouter_usd"], 0.0105)
+        self.assertEqual(st["config"]["tiers"]["search"]["services"], {"radar": 3})
+        self.assertTrue(st["config"]["tiers"]["search"]["search"])
+        self.assertEqual(st["status"]["day"], st["daily"][-1]["day"])
+
     def test_parse_request(self):
         tiers = CONFIG["tiers"]
         gateway.parse_request(request(), tiers)

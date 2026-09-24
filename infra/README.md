@@ -245,7 +245,12 @@ denně. Dojde-li kredit (402), OpenRouter se do půlnoci tichomořského času
 nezkouší a `/status` hlásí `problem`, který pošle health jako push.
 
 **Přehled:** `curl -s 127.0.0.1:8102/status` na serveru: dnešní dotazy po
-službách a kdo na ně odpověděl, blokované modely, útrata OpenRouteru. Deník je
+službách a kdo na ně odpověděl, blokované modely, útrata OpenRouteru.
+`GET /stats?days=N` (nejvýš 90) vrací historii pro stránku
+`https://$FLEET_DOMAIN/hodiny/modely/` (repozitář hodiny-stats): dny, služby,
+modely, dnešní kvótu Gemini po projektech proti `gemini_free_per_day`,
+přetížení Googlu po hodinách a útratu OpenRouteru za měsíc proti
+`openrouter_usd_per_month` (jen pro stránku, limit sám hlídá OpenRouter). Deník je
 v `/opt/llm/state/usage.sqlite` (tabulky `calls` a `attempts`, 90 dní).
 
 **Nová služba:** vygenerovat token (`python3 -c "import secrets;

@@ -36,7 +36,8 @@ kvoty. Tady je to na jednom miste:
 - Denni strop dotazu na sluzbu (pojistka proti zacyklene sluzbe) a strop
   utraty OpenRouteru za den, navic k mesicnimu limitu na klici.
 - Kazdy dotaz a kazdy pokus se zapise do state/usage.sqlite. GET /status
-  vraci dnesni prehled pro health a check-stack.
+  vraci dnesni prehled pro health a check-stack, GET /stats?days=N historii
+  pro stranku Statistiky hodin (repozitar hodiny-stats, /hodiny/modely/).
 
 Odpoved s JSON formatem se pred vracenim zkontroluje (json.loads); nevalidni
 JSON je selhani modelu a jde se na dalsi. Chybny dotaz (400) se vraci hned:
@@ -58,7 +59,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -66,6 +67,9 @@ from zoneinfo import ZoneInfo
 # Google nuluje denni kvotu free tieru o pulnoci tichomorskeho casu; dny
 # v tabulkach a denni stropy se pocitaji stejne, aby sedely s AI Studiem.
 PACIFIC = ZoneInfo("America/Los_Angeles")
+PRAGUE = ZoneInfo("Europe/Prague")
+STATS_MAX_DAYS = 90  # jako KEEP_DAYS
+RECENT_FAILURES = 20
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 UPSTREAM_TIMEOUT_S = float(os.environ.get("LLM_UPSTREAM_TIMEOUT", "60"))
@@ -329,6 +333,7 @@ class Gateway:
         self.tiers = config["tiers"]
         self.services = config["services"]
         self.usd_per_day = float(config.get("openrouter_usd_per_day", 0.5))
+        self.config = config
         self.keys = {("gemini", project): env.get(var, "").strip()
                      for project, var in config["projects"].items()}
         self.openrouter_key = env.get("OPENROUTER_API_KEY", "").strip()
@@ -354,6 +359,14 @@ class Gateway:
                 CREATE TABLE IF NOT EXISTS blocks (
                     target TEXT PRIMARY KEY, until REAL NOT NULL, reason TEXT);
             """)
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(attempts)")}
+            if "tier" not in columns:
+                # Pokusy z 24. 9. 2026, nez se uroven zapisovala: kazda sluzba mela
+                # tehdy jednu, jen radar navic jedno hledani (nano pres OpenRouter).
+                self.db.execute("ALTER TABLE attempts ADD COLUMN tier TEXT")
+                self.db.execute("""UPDATE attempts SET tier = CASE
+                    WHEN service = 'radar' AND provider = 'openrouter' THEN 'search'
+                    WHEN service IN ('radar', 'watch') THEN 'cheap' ELSE 'smart' END""")
 
     # -- databaze
     def _query(self, sql: str, args=()) -> list:
@@ -454,10 +467,10 @@ class Gateway:
                         except ValueError:
                             raise Failure("other", "odpoved neni platny JSON") from None
                 except Failure as failure:
-                    self._write("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)",
+                    self._write("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)",
                                 (self.clock(), day, service, provider, model, failure.kind,
                                  str(failure)[:300],
-                                 round((self.clock() - attempt_start) * 1000)))
+                                 round((self.clock() - attempt_start) * 1000), tier))
                     if failure.kind == "bad_request":
                         self._log_call(now, day, service, tier, "bad_request",
                                        f"{provider}/{model}", started)
@@ -475,10 +488,10 @@ class Gateway:
                     errors.append(f"{provider}/{model}: {failure}")
                     print(f"{service} {tier}: {provider}/{model} selhal: {failure}", flush=True)
                     break
-                self._write("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, 'ok', NULL, ?, ?, ?, ?)",
+                self._write("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, 'ok', NULL, ?, ?, ?, ?, ?)",
                             (self.clock(), day, service, provider, model,
                              round((self.clock() - attempt_start) * 1000),
-                             answer.prompt_tokens, answer.completion_tokens, answer.cost))
+                             answer.prompt_tokens, answer.completion_tokens, answer.cost, tier))
                 answered_by = f"{provider}/{model}"
                 self._log_call(now, day, service, tier, "ok", answered_by, started)
                 return 200, {
@@ -534,6 +547,141 @@ class Gateway:
                 "problem": "; ".join(problems)}
 
 
+    # -- historie pro stranku
+    def stats(self, days: int) -> dict:
+        """Prehled za poslednich `days` tichomorskych dni (vcetne dneska)."""
+        now = self.clock()
+        days = max(1, min(STATS_MAX_DAYS, days))
+        today = datetime.fromtimestamp(now, PACIFIC).date()
+        day_list = [(today - timedelta(days=n)).isoformat() for n in range(days - 1, -1, -1)]
+        first = day_list[0]
+
+        daily = {d: {"day": d, "answered": {}, "failed": 0, "capped": 0, "cost": 0.0}
+                 for d in day_list}
+        for day, outcome, answered_by, count in self._query(
+                "SELECT day, outcome, answered_by, COUNT(*) FROM calls WHERE day >= ? "
+                "GROUP BY 1, 2, 3", (first,)):
+            entry = daily.get(day)
+            if entry is None:
+                continue
+            if outcome == "ok":
+                entry["answered"][answered_by] = entry["answered"].get(answered_by, 0) + count
+            elif outcome == "capped":
+                entry["capped"] += count
+            else:
+                entry["failed"] += count
+        for day, cost in self._query(
+                "SELECT day, SUM(cost) FROM attempts WHERE day >= ? GROUP BY 1", (first,)):
+            if day in daily:
+                daily[day]["cost"] = round(cost or 0.0, 6)
+
+        services: dict = {}
+        for service, tier, outcome, answered_by, count, ms in self._query(
+                "SELECT service, tier, outcome, answered_by, COUNT(*), SUM(ms) FROM calls "
+                "WHERE day >= ? GROUP BY 1, 2, 3, 4", (first,)):
+            entry = services.setdefault((service, tier), {
+                "service": service, "tier": tier, "calls": 0, "ok": 0, "failed": 0,
+                "capped": 0, "fallback": 0, "ms_ok": 0, "prompt_tokens": 0,
+                "completion_tokens": 0, "cost": 0.0})
+            entry["calls"] += count
+            if outcome == "ok":
+                entry["ok"] += count
+                entry["ms_ok"] += ms or 0
+                if (answered_by or "").startswith("openrouter/"):
+                    entry["fallback"] += count
+            elif outcome == "capped":
+                entry["capped"] += count
+            else:
+                entry["failed"] += count
+        for service, tier, pt, ct, cost in self._query(
+                "SELECT service, tier, SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) "
+                "FROM attempts WHERE day >= ? AND outcome = 'ok' GROUP BY 1, 2", (first,)):
+            entry = services.get((service, tier))
+            if entry is not None:
+                entry["prompt_tokens"] += pt or 0
+                entry["completion_tokens"] += ct or 0
+                entry["cost"] = round(entry["cost"] + (cost or 0.0), 6)
+        for entry in services.values():
+            entry["ms_avg"] = round(entry.pop("ms_ok") / entry["ok"]) if entry["ok"] else None
+
+        models: dict = {}
+        for provider, model, outcome, count, ms, pt, ct, cost in self._query(
+                "SELECT provider, model, outcome, COUNT(*), SUM(ms), SUM(prompt_tokens), "
+                "SUM(completion_tokens), SUM(cost) FROM attempts WHERE day >= ? "
+                "GROUP BY 1, 2, 3", (first,)):
+            entry = models.setdefault((provider, model), {
+                "provider": provider, "model": model, "ok": 0, "overload": 0, "quota": 0,
+                "bad_request": 0, "other": 0, "ms_ok": 0, "prompt_tokens": 0,
+                "completion_tokens": 0, "cost": 0.0})
+            entry[outcome if outcome in entry else "other"] += count
+            if outcome == "ok":
+                entry["ms_ok"] += ms or 0
+                entry["prompt_tokens"] += pt or 0
+                entry["completion_tokens"] += ct or 0
+                entry["cost"] = round(entry["cost"] + (cost or 0.0), 6)
+        for entry in models.values():
+            entry["ms_avg"] = round(entry.pop("ms_ok") / entry["ok"]) if entry["ok"] else None
+
+        # Denni kvota Gemini na projekt: kazdy odeslany pokus, i neuspesny.
+        free = self.config.get("gemini_free_per_day", {})
+        project_of = {name: s["project"] for name, s in self.services.items()}
+        used: dict = {}
+        for service, model, count in self._query(
+                "SELECT service, model, COUNT(*) FROM attempts WHERE day = ? "
+                "AND provider = 'gemini' GROUP BY 1, 2", (today.isoformat(),)):
+            key = (project_of.get(service, "?"), model)
+            used[key] = used.get(key, 0) + count
+        quota = [{"project": project, "model": model, "used": used.get((project, model), 0),
+                  "limit": limit}
+                 for project in sorted(set(project_of.values()))
+                 for model, limit in free.items()]
+
+        hours = [{"hour": h, "attempts": 0, "overload": 0} for h in range(24)]
+        for ts, outcome in self._query(
+                "SELECT ts, outcome FROM attempts WHERE day >= ? AND provider = 'gemini'",
+                (first,)):
+            hour = datetime.fromtimestamp(ts, PRAGUE).hour
+            hours[hour]["attempts"] += 1
+            if outcome == "overload":
+                hours[hour]["overload"] += 1
+
+        failures = [{"ts": ts, "service": service, "provider": provider, "model": model,
+                     "outcome": outcome, "detail": detail}
+                    for ts, service, provider, model, outcome, detail in self._query(
+                        "SELECT ts, service, provider, model, outcome, detail FROM attempts "
+                        "WHERE outcome != 'ok' ORDER BY ts DESC LIMIT ?", (RECENT_FAILURES,))]
+
+        month_start = datetime.fromtimestamp(now, timezone.utc).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        month_cost = self._query("SELECT COALESCE(SUM(cost), 0) FROM attempts "
+                                 "WHERE ts >= ? AND provider = 'openrouter'", (month_start,))[0][0]
+        since = self._query("SELECT MIN(ts) FROM calls")[0][0]
+
+        tiers = {name: {"steps": [s["step"] for s in tier_steps(tier)],
+                        "search": any(s.get("plugins") for s in tier_steps(tier)),
+                        "services": tier.get("services") if isinstance(tier, dict) else None}
+                 for name, tier in self.tiers.items()}
+        return {
+            "now": now, "days": days, "from": first, "collectingSince": since,
+            "status": self.status(),
+            "config": {"tiers": tiers,
+                       "services": {name: {"project": s["project"], "daily_cap": s["daily_cap"],
+                                           "safety_off": bool(s.get("gemini_safety_off"))}
+                                    for name, s in self.services.items()},
+                       "gemini_free_per_day": free,
+                       "openrouter_usd_per_day": self.usd_per_day,
+                       "openrouter_usd_per_month": self.config.get("openrouter_usd_per_month")},
+            "daily": list(daily.values()),
+            "services": sorted(services.values(), key=lambda e: (e["service"], e["tier"])),
+            "models": sorted(models.values(), key=lambda e: -(e["ok"] + e["overload"] + e["quota"]
+                                                               + e["other"] + e["bad_request"])),
+            "quotaToday": quota,
+            "hours": hours,
+            "recentFailures": failures,
+            "month": {"since": month_start, "openrouter_usd": round(month_cost, 6)},
+        }
+
+
 # --- HTTP ------------------------------------------------------------------------
 
 def make_handler(gateway: Gateway):
@@ -549,8 +697,17 @@ def make_handler(gateway: Gateway):
             self.wfile.write(data)
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/status":
+            path, _, query = self.path.partition("?")
+            if path == "/status":
                 self._json(200, gateway.status())
+            elif path == "/stats":
+                params = dict(p.partition("=")[::2] for p in query.split("&") if p)
+                try:
+                    days = int(params.get("days", "30"))
+                except ValueError:
+                    self._json(400, error_body("days musi byt cele cislo", "bad_request"))
+                    return
+                self._json(200, gateway.stats(days))
             else:
                 self._json(404, error_body("nenalezeno", "not_found"))
 
