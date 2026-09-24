@@ -22,6 +22,7 @@
 #include "RainAlertService.h"
 #include "WeatherWarningService.h"
 #include "SatelliteService.h"
+#include "SharedFrames.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
 #include "Astronomy.h"
@@ -1326,10 +1327,12 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
   }
   if (screen == ROTATION_SCREEN_PLANES) {
     // Prázdná obloha je platný stav, takže se čeká jen na první vykreslený
-    // snímek - ne na to, až nějaké letadlo přiletí.
+    // snímek - ne na to, až nějaké letadlo přiletí. Snímek samotný tu být
+    // nemusí: schovaná obrazovka ho mohla přenechat družicím (SharedFrames)
+    // a po otevření se nakreslí hned.
     PlaneRadarSnapshot snapshot;
     planeRadarServiceSnapshot(snapshot);
-    return snapshot.ready && snapshot.pixels != nullptr;
+    return snapshot.ready;
   }
   return true;
 }
@@ -3869,6 +3872,13 @@ void setup() {
   clockDashboardSetSatellitesVisibilityCallback(handleSatellitesVisibility);
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
+  // Snímky letadel a družic se berou hned, dokud je PSRAM celá: později ji
+  // rozdrobí radar ČHMÚ a dva bloky po 461 kB by se už nemusely najít.
+  if (clockConfigPlanesAvailable(runtimeConfig) ||
+      clockConfigSatellitesAvailable(runtimeConfig) ||
+      clockConfigNightSkyAvailable(runtimeConfig)) {
+    sharedFramesReserve();
+  }
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
   satelliteServiceBegin();

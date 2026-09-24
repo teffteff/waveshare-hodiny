@@ -21,6 +21,7 @@
 #include "NetworkCoordinator.h"
 #include "PlaneFeedUrl.h"
 #include "PushAlertsService.h"
+#include "SharedFrames.h"
 
 // Kořenové certifikáty Mozilly slinkované v mbedTLS. adsb.fi ani adsb.lol
 // nejsou naše servery a jejich certifikát se může kdykoli přepnout na jiný
@@ -60,6 +61,9 @@ constexpr int RADAR_RADIUS = 230;
 
 constexpr size_t PIXEL_COUNT =
     static_cast<size_t>(PLANE_RADAR_WIDTH) * PLANE_RADAR_HEIGHT;
+static_assert(PLANE_RADAR_WIDTH == SHARED_FRAME_WIDTH &&
+                  PLANE_RADAR_HEIGHT == SHARED_FRAME_HEIGHT,
+              "Radar letadel se kreslí do sdílených snímků");
 
 // Kolik po sobě jdoucích stahování smí letadlo v datech chybět, než se detail
 // zavře. adsb.fi občas jedno vynechá a v dalším ho pošle zas; zavírat panel
@@ -89,11 +93,14 @@ constexpr float LOW_PASS_LOOKAHEAD_SECONDS = 180.0f;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t taskHandle = nullptr;
 
-// Dva snímkové buffery. Kreslí se vždy do toho, který zrovna není na displeji:
-// renderFrame() buffer nejdřív přemaže černou a při kreslení uvolňuje procesor,
-// takže by LVGL jinak vykreslil rozdělanou mapu.
-constexpr size_t DISPLAY_BUFFER_COUNT = 2;
-uint16_t *displayBuffers[DISPLAY_BUFFER_COUNT] = {};
+// Dva snímkové buffery, půjčené ze SharedFrames (dělí se o ně s družicemi).
+// Kreslí se vždy do toho, který zrovna není na displeji: renderFrame() buffer
+// nejdřív přemaže černou a při kreslení uvolňuje procesor, takže by LVGL jinak
+// vykreslil rozdělanou mapu.
+constexpr size_t DISPLAY_BUFFER_COUNT = SHARED_FRAME_COUNT;
+// Zápůjčka, pod kterou platí displayedBuffer a handedOutBuffer. Po předání
+// páru družicím v bufferech leží jejich obloha.
+uint32_t frameLease = 0;
 // Index bufferu, který je hotový a smí se zobrazit; -1 dokud nic nakresleno není.
 int displayedBuffer = -1;
 // Index bufferu, který si naposledy odnesla obrazovka. LVGL si ukazatel drží,
@@ -272,13 +279,7 @@ void setStatusMessage(const char *text) {
 }
 
 bool ensureStorage() {
-  for (uint16_t *&buffer : displayBuffers) {
-    if (buffer != nullptr) continue;
-    buffer = static_cast<uint16_t *>(heap_caps_malloc(
-        PIXEL_COUNT * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (buffer == nullptr) return false;
-    memset(buffer, 0, PIXEL_COUNT * sizeof(uint16_t));
-  }
+  if (!sharedFramesReserve()) return false;
   if (liveList == nullptr) {
     liveList = static_cast<AdsbAircraft *>(
         heap_caps_calloc(ADSB_MAX_AIRCRAFT, sizeof(AdsbAircraft),
@@ -298,11 +299,7 @@ bool ensureStorage() {
 }
 
 void releaseStorage() {
-  for (uint16_t *&buffer : displayBuffers) {
-    if (buffer == nullptr) continue;
-    heap_caps_free(buffer);
-    buffer = nullptr;
-  }
+  // Snímky patří SharedFrames a zůstávají; uvolňují se jen vlastní data.
   displayedBuffer = -1;
   handedOutBuffer = -1;
   pixels = nullptr;
@@ -772,12 +769,9 @@ void reserveChromeBands(MapLabelPlacer &placer) {
 // --- Vykreslení snímku ------------------------------------------------------
 // Kreslí se z úlohy radaru do bufferu v PSRAM; obrazovka si ho pak jen podloží
 // pod canvas. Volá se se zkopírovaným požadavkem, ne pod zámkem.
-void renderFrame(const ClockPlanesConfig &planes, float latitude,
-                 float longitude, bool night) {
-  if (displayBuffers[0] == nullptr || displayBuffers[1] == nullptr ||
-      liveList == nullptr) {
-    return;
-  }
+void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
+               bool night, uint32_t lease) {
+  if (liveList == nullptr) return;
   // Kreslí se do toho bufferu, který zrovna není na displeji. Buffer se nejdřív
   // celý přemaže černou a kreslení mezitím uvolňuje procesor, takže by LVGL nad
   // sdíleným bufferem ukázal rozdělanou mapu.
@@ -786,6 +780,13 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   // nevyzvedla - snímek se přeskočí a zkusí se hned v dalším průchodu; jinak by
   // se přemazal buffer, který si za chvíli odnese LVGL.
   portENTER_CRITICAL(&stateMux);
+  // Pár mezitím kreslil někdo jiný: staré indexy už nic neznamenají a canvas
+  // se po návratu na obrazovku odkryje až s novým snímkem.
+  if (frameLease != lease) {
+    frameLease = lease;
+    displayedBuffer = -1;
+    handedOutBuffer = -1;
+  }
   int target = -1;
   for (int index = 0; index < static_cast<int>(DISPLAY_BUFFER_COUNT); ++index) {
     if (index == displayedBuffer || index == handedOutBuffer) continue;
@@ -795,7 +796,7 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   if (target < 0) redrawRequested = true;
   portEXIT_CRITICAL(&stateMux);
   if (target < 0) return;
-  pixels = displayBuffers[target];
+  pixels = sharedFrame(target);
   nightPalette = night;
   setRotation(planes.topBearingDeg);
 
@@ -1010,6 +1011,13 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   drawRangeDots(planes.rangeIndex);
 
   portENTER_CRITICAL(&stateMux);
+  // Pár se během kreslení předal družicím; snímek se nezveřejní a po návratu
+  // se nakreslí znovu.
+  if (!sharedFramesLeaseValid(SharedFrameUser::Planes, lease)) {
+    redrawRequested = true;
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
   memcpy(planePoints, points, sizeof(PlanePoint) * pointCount);
   planePointCount = pointCount;
   shownCount = drawn;
@@ -1023,6 +1031,28 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
   ready = true;
   if (haveAircraftData) dataFrameReady = true;
   portEXIT_CRITICAL(&stateMux);
+}
+
+void renderFrame(const ClockPlanesConfig &planes, float latitude,
+                 float longitude, bool night) {
+  const uint32_t lease = sharedFramesBeginRender(SharedFrameUser::Planes);
+  if (lease == 0) {
+    portENTER_CRITICAL(&stateMux);
+    if (visible) {
+      // Družice ještě dokreslují; pár převezmeme v dalším průchodu.
+      redrawRequested = true;
+    } else {
+      // Snímky teď patří družicím a schovaná obrazovka se nekreslí. Rotaci
+      // stačí vědět, že by se snímek nakreslit dal: po otevření se nakreslí
+      // hned a letadla se stejně stahují znovu.
+      ready = true;
+      if (haveAircraftData) dataFrameReady = true;
+    }
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
+  drawFrame(planes, latitude, longitude, night, lease);
+  sharedFramesEndRender(SharedFrameUser::Planes);
 }
 
 // --- Stahování --------------------------------------------------------------
@@ -1436,6 +1466,9 @@ void planeRadarServicePrepareForFirmwareUpdate() {
     vTaskDeleteWithCaps(taskHandle);
     taskHandle = nullptr;
   }
+  // Úloha mohla skončit uprostřed kreslení; bez tohohle by družice po
+  // přerušené aktualizaci do snímků už nikdy nesměly.
+  sharedFramesEndRender(SharedFrameUser::Planes);
   // Snímek se odhlásí dřív, než se uvolní jeho paměť: obrazovka ho čte z jiné
   // úlohy a mezi uvolněním a nulováním by sáhla do vráceného bufferu.
   portENTER_CRITICAL(&stateMux);
@@ -1511,6 +1544,8 @@ void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
     notify = true;
   }
   portEXIT_CRITICAL(&stateMux);
+  // Otevřená obrazovka si bere snímky, které mohly naposledy patřit družicím.
+  if (nowVisible && !wasVisible) sharedFramesClaim(SharedFrameUser::Planes);
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
@@ -1529,9 +1564,11 @@ void planeRadarServiceSetRedNightMode(bool enabled) {
 
 void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
   portENTER_CRITICAL(&stateMux);
-  snapshot.pixels = displayedBuffer >= 0 && !staleFrameDisplayed
-                        ? displayBuffers[displayedBuffer]
-                        : nullptr;
+  snapshot.pixels =
+      displayedBuffer >= 0 && !staleFrameDisplayed &&
+              sharedFramesLeaseValid(SharedFrameUser::Planes, frameLease)
+          ? sharedFrame(displayedBuffer)
+          : nullptr;
   // Obrazovka si ukazatel odnáší; od téhle chvíle se do toho bufferu nekreslí.
   // Platí to i pro zadržený starý snímek: canvas si ho mohl vzít ještě před
   // schováním obrazovky a drží ho, dokud nedostane jiný.
