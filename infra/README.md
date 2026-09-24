@@ -99,6 +99,7 @@ serveru zkontrolovat nedají:
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/`, zašifrovaná kopie do OCI Object Storage (`offsite-key.asc`, adresa v `backup.env`) | `backup/` |
 | Hlášení poruch | — | `/opt/health/check.py`, `health.service` + `health.timer`, `notify-failure@.service`, `ha-update-check.sh` + `ha-update.timer` (nová verze HA), drop-in `on-failure.conf` u každé hlídané jednotky, téma ntfy v `/opt/health/health.env`, stav v `/var/lib/health/` | `health/` |
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
+| Statistiky letů (radar) | 8100, jen loopback | `/opt/radar` (kód), `/var/lib/radar` (databáze), `radar-collector.service` + `radar-web.service`, poloha domu v `/opt/radar/radar.env`; stránka `https://$FLEET_DOMAIN/radar/` za heslem novinek | vlastní soukromý repozitář `radar` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
