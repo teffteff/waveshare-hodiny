@@ -206,7 +206,7 @@ modelu pošle úroveň:
 | Úroveň | Řetěz modelů (`llm/config.json`) |
 |:--|:--|
 | `smart` | `gemini-flash-latest` → `gemini-flash-lite-latest` → OpenRouter `openai/gpt-4.1-mini` |
-| `cheap` | `gemini-flash-lite-latest` → OpenRouter `mistralai/mistral-small-3.2-24b-instruct` |
+| `cheap` | `gemini-flash-lite-latest` → OpenRouter `openai/gpt-4.1-nano` |
 
 Proč: 24. 9. 2026 vrátil Google 503 („high demand“) všem modelům ve dvou
 bězích zpráv po sobě. OpenRouter jede mimo Google, takže při jeho výpadku
@@ -221,7 +221,13 @@ hned. Když selže celý řetěz, vrátí 503 a opakování po pauzách je věc 
 **Kvóta Gemini platí na projekt Google Cloudu, ne na klíč.** V `llm.env` jsou
 proto klíče po projektech: `GEMINI_KEY_HODINY` (zprávy, hlídač obchodů) a
 `GEMINI_KEY_RADAR` (radar, statistiky hodin). Kterou službu vede do kterého
-projektu a jaký má denní strop dotazů, říká `config.json`.
+projektu a jaký má denní strop dotazů, říká `config.json`. Hlídač obchodů
+má navíc `gemini_safety_off`: čte inzeráty zbraní a výchozí filtry Gemini je
+občas zablokují, takže by jinak šly na placený OpenRouter.
+
+**Proč nano, ne Mistral:** 24. 9. 2026 na třech inzerátech hlídače vrátil
+`mistral-small-3.2` jednou 504 a jinak odpovídal 8–21 s; `gpt-4.1-nano`
+odpověděl vždy do 2,2 s se stejným výsledkem, asi 0,0002 USD za inzerát.
 
 **Peníze:** OpenRouter je předplacený kredit a klíč má v OpenRouteru limit
 2 USD za měsíc. Brána navíc nepustí víc než `openrouter_usd_per_day` (0,5 USD)

@@ -167,7 +167,15 @@ def inline_refs(schema, defs=None):
     return schema
 
 
-def gemini_body(request: dict) -> dict:
+# Vypnute filtry pro sluzby s gemini_safety_off v config.json: hlidac obchodu
+# cte inzeraty zbrani a vychozi filtry je obcas zablokuji. Brana nic nepise,
+# jen cte verejne inzeraty; bez tohohle by blokovane inzeraty sly na placeny
+# OpenRouter.
+GEMINI_SAFETY_CATEGORIES = ("HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+                            "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")
+
+
+def gemini_body(request: dict, safety_off: bool = False) -> dict:
     system = [m["content"] for m in request["messages"] if m["role"] == "system"]
     contents = [{"role": "model" if m["role"] == "assistant" else "user",
                  "parts": [{"text": m["content"]}]}
@@ -185,12 +193,16 @@ def gemini_body(request: dict) -> dict:
     body = {"contents": contents, "generationConfig": config}
     if system:
         body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system)}]}
+    if safety_off:
+        body["safetySettings"] = [{"category": c, "threshold": "BLOCK_NONE"}
+                                  for c in GEMINI_SAFETY_CATEGORIES]
     return body
 
 
-def call_gemini(model: str, key: str, request: dict, post, now: float) -> Answer:
-    status, payload = post(GEMINI_URL.format(model=model), gemini_body(request),
-                           {"x-goog-api-key": key})
+def call_gemini(model: str, key: str, request: dict, post, now: float,
+                settings: dict) -> Answer:
+    body = gemini_body(request, bool(settings.get("gemini_safety_off")))
+    status, payload = post(GEMINI_URL.format(model=model), body, {"x-goog-api-key": key})
     if status != 200:
         raise classify(status, payload, now)
     candidates = payload.get("candidates") or []
@@ -207,7 +219,8 @@ def call_gemini(model: str, key: str, request: dict, post, now: float) -> Answer
     return Answer(text, usage.get("promptTokenCount", 0), usage.get("candidatesTokenCount", 0))
 
 
-def call_openrouter(model: str, key: str, request: dict, post, now: float) -> Answer:
+def call_openrouter(model: str, key: str, request: dict, post, now: float,
+                    settings: dict) -> Answer:
     body = {k: v for k, v in request.items()
             if k in ("messages", "temperature", "max_tokens", "response_format")}
     # require_parameters: jen poskytovatele, kteri umi response_format, jinak
@@ -401,7 +414,8 @@ class Gateway:
             for attempt in range(2):
                 attempt_start = self.clock()
                 try:
-                    answer = PROVIDERS[provider](model, key, request, self.post, self.clock())
+                    answer = PROVIDERS[provider](model, key, request, self.post, self.clock(),
+                                                 settings)
                     if wants_json:
                         answer.text = strip_fences(answer.text)
                         try:

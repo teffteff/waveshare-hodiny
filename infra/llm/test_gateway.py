@@ -87,6 +87,15 @@ class GatewayTest(unittest.TestCase):
         self.assertNotIn("$defs", json.dumps(config["responseJsonSchema"]))
         self.assertEqual(sent[1]["systemInstruction"]["parts"][0]["text"], "sys")
 
+    def test_safety_filters_off_only_for_watch(self):
+        gw = self.make({("gemini", "gemini-flash-lite-latest"): [gemini_ok()]})
+        gw.tokens["tok-watch"] = "watch"
+        gw.complete("watch", request("cheap"))
+        gw.complete("radar", request("cheap"))
+        watch, radar = (c[1] for c in self.upstream.calls)
+        self.assertEqual({s["threshold"] for s in watch["safetySettings"]}, {"BLOCK_NONE"})
+        self.assertNotIn("safetySettings", radar)
+
     def test_radar_uses_its_own_project_key(self):
         gw = self.make({("gemini", "gemini-flash-lite-latest"): [gemini_ok()]})
         gw.complete("radar", request("cheap"))
