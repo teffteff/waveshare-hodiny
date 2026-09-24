@@ -1,0 +1,24 @@
+{
+  "projects": {
+    "hodiny": "GEMINI_KEY_HODINY",
+    "radar": "GEMINI_KEY_RADAR"
+  },
+  "services": {
+    "news": {"project": "hodiny", "daily_cap": 150},
+    "watch": {"project": "hodiny", "daily_cap": 480},
+    "radar": {"project": "radar", "daily_cap": 40},
+    "stats": {"project": "radar", "daily_cap": 20}
+  },
+  "tiers": {
+    "smart": [
+      "gemini:gemini-flash-latest",
+      "gemini:gemini-flash-lite-latest",
+      "openrouter:openai/gpt-4.1-mini"
+    ],
+    "cheap": [
+      "gemini:gemini-flash-lite-latest",
+      "openrouter:mistralai/mistral-small-3.2-24b-instruct"
+    ]
+  },
+  "openrouter_usd_per_day": 0.5
+}

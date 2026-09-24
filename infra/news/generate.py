@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Vybere nejdůležitější zprávy dne a zapíše je jako RSS 2.0 pro hodiny.
 
-Používá Google Gemini se strukturovaným výstupem (JSON schema), takže model vrací
-přímo pole položek, ne volný text. Soubor se ukládá atomicky do webového kořene,
+Model se volá přes společnou bránu infra/llm (Gemini, při výpadku Googlu
+OpenRouter) se strukturovaným výstupem (JSON schema), takže model vrací přímo
+pole položek, ne volný text. Soubor se ukládá atomicky do webového kořene,
 odkud ho servíruje news-web.service na portu 8088. Při jakékoli chybě skript
 skončí nenulově a ponechá předchozí soubor, aby na hodinách nezůstal prázdný
 seznam.
@@ -18,20 +19,20 @@ nepodařilo obnovit, zůstane v předchozí podobě.
 from __future__ import annotations
 
 import html
+import json
 import os
 import socket
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import feedparser
-from google import genai
-from google.genai import types
-from google.genai import errors as genai_errors
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from locations import Location, active_locations, location_output
 
@@ -87,32 +88,22 @@ MAX_AGE_HOURS = float(os.environ.get("NEWS_MAX_AGE_HOURS", "24"))
 # Hodiny kreslí u tří až pěti zpráv tři řádky, u šesti dva; do dvou řádků se
 # vejde kolem sta znaků, delší titulek utne LVGL třemi tečkami.
 MAX_TITLE_CHARS = 90
-MODEL = os.environ.get("NEWS_MODEL", "gemini-flash-latest")
-# Když je hlavní model přetížený (503) nebo mu došla kvóta (429), zkusí se po
-# řadě další. Aliasy „latest“ se nezastarají, pinovaný 3.6 je záloha. Na free
-# tieru má Flash 20 dotazů denně a Flash Lite 500, takže po vyčerpání Flash
-# jede zbytek dne Lite.
-FALLBACK_MODELS = [
-    m.strip()
-    for m in os.environ.get(
-        "NEWS_FALLBACK_MODELS",
-        "gemini-flash-lite-latest,gemini-3.6-flash",
-    ).split(",")
-    if m.strip()
-]
-# Sport na hodinách být nemá. Instrukce v promptu na to nestačila: model
-# vybral zápas i start extraligy, protože iROZHLAS mísí sport do hlavního
-# kanálu. Proto tři pojistky: sportovní rubriky se modelu vůbec nenabídnou
-# (podle adresy článku a kategorie), prompt sport výslovně vylučuje a volby,
-# které model sám označí za sport, se zahodí.
-# Modely, kterým v tomhle běhu došla kvóta. Běh volá model jednou pro společný
-# výběr a jednou za každou polohu; bez paměti by každé volání znovu narazilo na
-# tentýž 429 a ubralo z limitu dotazů za minutu.
-EXHAUSTED_MODELS: set[str] = set()
+# Brána infra/llm. Úroveň "smart" je řetěz Gemini Flash -> Flash Lite ->
+# OpenRouter mimo Google; který model odpověděl, píše brána i tenhle skript.
+LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8102/v1/chat/completions")
+LLM_TIER = os.environ.get("NEWS_LLM_TIER", "smart")
+# Brána zkouší modely po řadě a každý může odpovídat desítky sekund.
+LLM_TIMEOUT_S = 300
+# Brána vrací tyhle kódy, když selhaly všechny modely nebo když sama neběží
+# (0 = spojení se nepodařilo). Ostatní chyby (400 špatný dotaz, 401 token,
+# 429 denní strop služby) další kolo nespraví.
+RETRYABLE_STATUSES = {0, 502, 503, 504}
+
 # Přetížení (503) trvá u Googlu minuty a zasáhne všechny modely najednou: 22.
-# i 24. 9. 2026 vrátily 503 všechny tři během 25 s. Proto se celá řada modelů
-# zkusí znovu po pauzách. Kdyby pořád nic, běh se přeskočí bez chyby: hodiny
-# dál ukazují předchozí výběr a dlouhý výpadek nahlásí health přes stáří kanálu.
+# i 24. 9. 2026 vrátily 503 všechny tři během 25 s. Brána pak zkusí
+# OpenRouter; když selže i ten, zkusí se celý dotaz znovu po pauzách. Kdyby
+# pořád nic, běh se přeskočí bez chyby: hodiny dál ukazují předchozí výběr
+# a dlouhý výpadek nahlásí health přes stáří kanálu.
 # 24. 9. 2026 přetížení přečkalo 30 i 90 s ve dvou bězích po sobě a kanál
 # zůstal přes čtyři hodiny starý. Kola po 5 a 10 minutách proto chytí konec
 # špičky ještě v tomtéž běhu (news.service má na to TimeoutStartSec).
@@ -126,6 +117,11 @@ class ModelUnavailable(RuntimeError):
 # Jakmile jsou modely v tomhle běhu nedostupné, další polohy už pauzy
 # nečekají znovu (TimeoutStartSec by jinak nestačil).
 MODELS_DOWN = False
+# Sport na hodinách být nemá. Instrukce v promptu na to nestačila: model
+# vybral zápas i start extraligy, protože iROZHLAS mísí sport do hlavního
+# kanálu. Proto tři pojistky: sportovní rubriky se modelu vůbec nenabídnou
+# (podle adresy článku a kategorie), prompt sport výslovně vylučuje a volby,
+# které model sám označí za sport, se zahodí.
 SPORT_PATH_SEGMENTS = {"sport", "sporty", "sports"}
 SPORT_CATEGORIES = {"sport", "sporty", "sports"}
 
@@ -136,6 +132,9 @@ CHANNEL_LINK = os.environ.get("NEWS_LINK", "http://localhost:8088/top.xml")
 
 
 class Pick(BaseModel):
+    # additionalProperties: false, jinak OpenAI (záloha přes OpenRouter)
+    # striktní schéma odmítne.
+    model_config = ConfigDict(extra="forbid")
     index: int = Field(description="Index vybrané zprávy ve vstupním seznamu")
     headline: str = Field(description=f"Úderný český titulek, max {MAX_TITLE_CHARS} znaků")
     # Až za titulkem, aby model o sportu rozhodoval nad hotovou volbou.
@@ -143,6 +142,52 @@ class Pick(BaseModel):
         description="true, pokud je zpráva o sportu: zápasy, výsledky, soutěže, "
         "přestupy, sportovci nebo sportovní kluby"
     )
+
+
+class Picks(BaseModel):
+    """Obálka: OpenAI chce jako kořen schématu objekt, ne pole."""
+    model_config = ConfigDict(extra="forbid")
+    picks: list[Pick]
+
+
+class GatewayError(RuntimeError):
+    def __init__(self, status: int, message: str):
+        super().__init__(f"HTTP {status}: {message}" if status else message)
+        self.status = status
+
+
+def ask_gateway(system_instruction: str, prompt: str) -> list[Pick]:
+    body = {
+        "model": LLM_TIER,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 8192,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "picks", "strict": True,
+                            "schema": Picks.model_json_schema()},
+        },
+    }
+    request = urllib.request.Request(
+        LLM_URL, data=json.dumps(body).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {os.environ.get('LLM_TOKEN', '')}"})
+    try:
+        with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_S) as response:
+            answer = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        try:
+            message = json.loads(error.read())["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = error.reason
+        raise GatewayError(error.code, message) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise GatewayError(0, f"brana neodpovida: {error}") from None
+    print(f"odpovedel {answer.get('model')}")
+    return Picks.model_validate_json(answer["choices"][0]["message"]["content"]).picks
 
 
 def is_sport_entry(entry) -> bool:
@@ -254,17 +299,6 @@ def choose(items: list[dict], location: Location | None = None) -> list[Pick]:
             "Položky označené „regionální“ jsou z regionálního zpravodajství "
             "z celé republiky, ne nutně z okolí čtenáře.\n\n"
         )
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    client = genai.Client(api_key=api_key)
-    config = types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        response_mime_type="application/json",
-        response_schema=list[Pick],
-        temperature=0.3,
-        max_output_tokens=8192,
-        # Bez nástrojů je AFC k ničemu a SDK kvůli němu jen píše varování do žurnálu.
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-    )
     prompt = location_note + (
         f"Vyber {REQUESTED} nejdůležitějších zpráv dne a ke každé napiš vlastní "
         f"úderný titulek v češtině, nejvýše {MAX_TITLE_CHARS} znaků, bez uvozovek "
@@ -274,46 +308,30 @@ def choose(items: list[dict], location: Location | None = None) -> list[Pick]:
         f"nejdůležitější, hodiny ukazují jen prvních několik. U každé vrať index "
         f"zprávy ze seznamu.\n\n{listing}"
     )
-    # Model bývá občas přetížený (503). Zkusí se hlavní model dvakrát, pak
-    # postupně záložní modely, takže výpadek jednoho fondu výběr nezastaví.
-    # Vyčerpaná kvóta (429) se neopakuje: do konce běhu (a u denního limitu do
-    # půlnoci tichomořského času) by stejně nepomohlo, jde se rovnou dál.
+    # Záložní modely a opakování po 503 řeší brána. Sem se vrátí 503, až když
+    # selhalo všechno včetně OpenRouteru; pak se celý dotaz zkusí po pauzách.
     global MODELS_DOWN
     if MODELS_DOWN:
         raise ModelUnavailable("model nedostupny uz drive v tomto behu")
-    last_error: Exception | None = None
+    last_error: GatewayError | None = None
     for pause in [0, *RETRY_PAUSES_S]:
         if pause:
-            print(f"vsechny modely pretizene, dalsi kolo za {pause} s")
+            print(f"vsechny modely selhaly, dalsi kolo za {pause} s")
             time.sleep(pause)
-        for model_name in [MODEL, *[m for m in FALLBACK_MODELS if m != MODEL]]:
-            if model_name in EXHAUSTED_MODELS:
-                continue
-            for attempt in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name, contents=prompt, config=config
-                    )
-                    picks = response.parsed
-                    if not picks:
-                        raise RuntimeError("prazdna strukturovana odpoved")
-                    return picks
-                except genai_errors.ServerError as error:  # 5xx včetně 503 UNAVAILABLE
-                    last_error = error
-                    time.sleep(4)
-                except genai_errors.ClientError as error:
-                    if error.code != 429:  # špatný klíč nebo dotaz: jiný model nepomůže
-                        raise
-                    print(f"{model_name}: kvota vycerpana, zkousim dalsi model")
-                    EXHAUSTED_MODELS.add(model_name)
-                    last_error = error
-                    break
-        if not isinstance(last_error, genai_errors.ServerError):
-            break  # jen vyčerpané kvóty: pauza nepomůže
-    if isinstance(last_error, genai_errors.ServerError):
-        MODELS_DOWN = True
-        raise ModelUnavailable(f"Model nedostupny po nekolika pokusech: {last_error}")
-    raise RuntimeError(f"Model nedostupny po nekolika pokusech: {last_error}")
+        try:
+            picks = ask_gateway(system_instruction, prompt)
+        except GatewayError as error:
+            if error.status not in RETRYABLE_STATUSES:
+                raise
+            last_error = error
+            continue
+        if not picks:
+            raise RuntimeError("prazdna strukturovana odpoved")
+        return picks
+    if last_error is not None and last_error.status == 0:
+        raise RuntimeError(str(last_error))  # brána neběží: porucha stroje, ať přijde push
+    MODELS_DOWN = True
+    raise ModelUnavailable(f"Model nedostupny po nekolika pokusech: {last_error}")
 
 
 def render(picks: list[Pick], items: list[dict]) -> str:

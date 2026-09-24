@@ -98,14 +98,15 @@ serveru zkontrolovat nedají:
 | Nastavení všech hodin | 8099, jen loopback | `/opt/fleet/serve.py`, `fleet-web.service`, heslo a TOTP v `/opt/fleet/fleet.env`, registrované hodiny v `/opt/fleet/state/` | `fleet/` |
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/`, zašifrovaná kopie do OCI Object Storage (`offsite-key.asc`, adresa v `backup.env`) | `backup/` |
 | Hlášení poruch | — | `/opt/health/check.py`, `health.service` + `health.timer`, `notify-failure@.service`, `ha-update-check.sh` + `ha-update.timer` (nová verze HA), drop-in `on-failure.conf` u každé hlídané jednotky, téma ntfy v `/opt/health/health.env`, stav v `/var/lib/health/` | `health/` |
+| Brána k jazykovým modelům | 8102, jen loopback | `/opt/llm` (kód, `config.json`, klíče v `llm.env`), `/opt/llm/state/usage.sqlite` (deník dotazů, vyčerpané kvóty), `llm-gateway.service` | `llm/` |
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
 | Statistiky letů (radar) | 8100, jen loopback | `/opt/radar` (kód), `/var/lib/radar` (databáze), `radar-collector.service` + `radar-web.service`, poloha domu v `/opt/radar/radar.env`; stránka `https://$FLEET_DOMAIN/radar/` za heslem novinek | vlastní soukromý repozitář `radar` |
 | Statistiky funkcí hodin | 8101, jen loopback | `/opt/hodiny-stats` (kód), `/var/lib/hodiny-stats` (databáze), `stats-collector.service` + `stats-web.service`, poloha domu a token do HA v `/opt/hodiny-stats/stats.env`; stránka `https://$FLEET_DOMAIN/hodiny/` za heslem novinek | vlastní soukromý repozitář `hodiny-stats` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
-Generátor jede na **Google Gemini**, ne na Claude: `.venv` s `google-genai`,
-klíč `GEMINI_API_KEY` v `/opt/news/news.env` (práva 600). Timer pouští výběr
+Generátor volá model přes **bránu** (viz „Brána k jazykovým modelům“), úroveň
+`smart`; v `/opt/news/news.env` (práva 600) je jen `LLM_TOKEN`. Timer pouští výběr
 každou hodinu 06:05 až 22:05 pražského času (pásmo je v `OnCalendar`, server běží v GMT). Když cokoli selže, skript skončí nenulově a
 **nechá předchozí soubor být** — na hodinách zůstanou starší zprávy místo
 prázdna. Stará stopa v repu: `news/news.env.example` je oproti serveru
@@ -184,8 +185,8 @@ problem)“, jedno z těch dvou je zavřené.
 - 25565/tcp+udp, 24454/udp — Minecraft, s hodinami nesouvisí, ale mají zůstat
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
-8090, 8092, 8093, 8094, 8095, 8096, 8097, 8098 a 8099 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami, upozorněními a vzdálenou správou poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+8090, 8092, 8093, 8094, 8095, 8096, 8097, 8098, 8099 a 8102 mezi ně nepatří**: servery se zprávami, agendou, letadly,
+blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami, upozorněními, vzdálenou správou a branou k modelům poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -193,6 +194,46 @@ ve `firewalld` otevřený není; ven chodí jen přes Caddy.
 Certifikát vydává Let's Encrypt přes tls-alpn-01, obnovuje ho Caddy sám.
 Neúspěšné pokusy jsou limitované (~5/h), takže **restartovat Caddy kvůli
 opakování nemá smysl** — sám si počká.
+
+## Brána k jazykovým modelům
+
+`llm/gateway.py` (`llm-gateway.service`, port 8102 jen na loopbacku, žádný venv)
+je jediné místo, odkud služby na stroji volají jazykový model. Mluví formátem
+OpenAI `POST /v1/chat/completions`; služba se prokáže svým tokenem
+(`Authorization: Bearer`, proměnná `LLM_TOKEN` v jejím `.env`) a místo jména
+modelu pošle úroveň:
+
+| Úroveň | Řetěz modelů (`llm/config.json`) |
+|:--|:--|
+| `smart` | `gemini-flash-latest` → `gemini-flash-lite-latest` → OpenRouter `openai/gpt-4.1-mini` |
+| `cheap` | `gemini-flash-lite-latest` → OpenRouter `mistralai/mistral-small-3.2-24b-instruct` |
+
+Proč: 24. 9. 2026 vrátil Google 503 („high demand“) všem modelům ve dvou
+bězích zpráv po sobě. OpenRouter jede mimo Google, takže při jeho výpadku
+odpoví. Brána každý model při 5xx zkusí dvakrát a jde dál; 429 s denní kvótou
+zablokuje ten model **v celém projektu** do půlnoci tichomořského času (tabulka
+`blocks`, přežije restart), 429 za minutu na 65 s. Chybný dotaz (400) vrátí
+hned. Když selže celý řetěz, vrátí 503 a opakování po pauzách je věc služby
+(zprávy: `RETRY_PAUSES_S`).
+
+**Kvóta Gemini platí na projekt Google Cloudu, ne na klíč.** V `llm.env` jsou
+proto klíče po projektech: `GEMINI_KEY_HODINY` (zprávy, hlídač obchodů) a
+`GEMINI_KEY_RADAR` (radar, statistiky hodin). Kterou službu vede do kterého
+projektu a jaký má denní strop dotazů, říká `config.json`.
+
+**Peníze:** OpenRouter je předplacený kredit a klíč má v OpenRouteru limit
+2 USD za měsíc. Brána navíc nepustí víc než `openrouter_usd_per_day` (0,5 USD)
+denně. Dojde-li kredit (402), OpenRouter se do půlnoci tichomořského času
+nezkouší a `/status` hlásí `problem`, který pošle health jako push.
+
+**Přehled:** `curl -s 127.0.0.1:8102/status` na serveru: dnešní dotazy po
+službách a kdo na ně odpověděl, blokované modely, útrata OpenRouteru. Deník je
+v `/opt/llm/state/usage.sqlite` (tabulky `calls` a `attempts`, 90 dní).
+
+**Nová služba:** vygenerovat token (`python3 -c "import secrets;
+print(secrets.token_urlsafe(24))"`), přidat `sluzba:token` do `LLM_TOKENS`
+v `/opt/llm/llm.env`, službu s projektem a stropem do `config.json`, nasadit
+`tools/deploy.sh llm` a token dát službě jako `LLM_TOKEN`.
 
 ## Agenda z Google Kalendáře
 
@@ -1612,12 +1653,10 @@ odmítne spustit s `203/EXEC Permission denied`. Léčí to `restorecon -v
 **Modely Gemini:** pinované `gemini-2.5-flash` a `-flash-lite` vracejí 404 („no
 longer available to new users“), Gemini 3.x odmítá `thinking_config.
 thinking_budget=0` s 400. Proto se používá alias `gemini-flash-latest` a žádná
-konfigurace thinkingu se neposílá. Přetížení (503) je běžné, každý model se
-zkouší dvakrát a pak se jde na záložní. Vyčerpaná kvóta (429) se neopakuje
-a jde se rovnou na další model; ten si běh pamatuje a na zbylé polohy ho už
-nezkouší. Když přetížení trefí všechny modely najednou (22. a 24. 9. 2026
-vrátily 503 všechny tři během 25 s), zkusí se celá řada znovu po 30 s, 90 s, 5 a 10 min
-(`RETRY_PAUSES_S`; 24. 9. nestačilo 30 a 90 s ve dvou bězích po sobě), proto
+konfigurace thinkingu se neposílá (brána ji neposílá nikomu). Záložní modely
+a vyčerpanou kvótu řeší brána. Když selže celý její řetěz včetně OpenRouteru,
+zkusí generátor dotaz znovu po 30 s, 90 s, 5 a 10 min (`RETRY_PAUSES_S`;
+24. 9. nestačilo 30 a 90 s ve dvou bězích po sobě), proto
 `TimeoutStartSec=1800`. Pak se běh přeskočí **bez chyby**: předchozí soubory zůstanou, `news.service`
 skončí úspěšně a `OnFailure=` kvůli výpadku Googlu nepošle push. Dlouhý
 výpadek nahlásí hodinová kontrola přes stáří kanálu (10 h). Free tier má u `gemini-flash-latest` jen **20 dotazů denně** (běh

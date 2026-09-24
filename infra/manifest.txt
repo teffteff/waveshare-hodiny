@@ -35,6 +35,19 @@ caddy      caddyfile infra/caddy/Caddyfile              /etc/caddy/Caddyfile
 caddy      sysunit   infra/caddy/caddy.service          /etc/systemd/system/caddy.service
 caddy      dropin    caddy.service
 
+# Brana k jazykovym modelum pro zpravy, hlidac obchodu, radar a statistiky
+# (ty dva posledni a hlidac maji vlastni repozitare, sem jen token v llm.env).
+llm        user      llm /opt/llm
+llm        dir       /opt/llm root:llm 750
+llm        dir       /opt/llm/state llm:llm 700
+llm        secret    /opt/llm/llm.env root:root 600
+llm        file      infra/llm/gateway.py               /opt/llm/gateway.py
+llm        file      infra/llm/config.json              /opt/llm/config.json
+llm        unit      infra/llm/llm-gateway.service      /opt/llm/llm-gateway.service
+llm        dropin    llm-gateway.service
+llm        enable    llm-gateway.service
+llm        restart   llm-gateway.service
+
 news       user      news /opt/news
 news       dir       /opt/news root:news 750
 news       dir       /opt/news/www news:news 775
