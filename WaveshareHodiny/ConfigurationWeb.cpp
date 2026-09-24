@@ -4521,6 +4521,10 @@ void handleControlRequest() {
 void handleRestart() {
   sendJson(200, F("{\"ok\":true}"));
   delay(250);
+  // Restart z jádra 1 resetuje periferie i pod úlohami na jádře 0. Dokud je
+  // síť zamčená tady, žádná z nich není uprostřed TLS (hardwarové SHA/AES).
+  // Když se zámek do pěti sekund neuvolní, restartuje se i tak.
+  NetworkOperationGuard networkGuard(5000);
   ESP.restart();
 }
 

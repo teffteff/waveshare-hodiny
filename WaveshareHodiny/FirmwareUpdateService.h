@@ -28,5 +28,11 @@ using FirmwareUpdateLifecycleCallback = void (*)(bool updating);
 
 void firmwareUpdateServiceBegin(FirmwareUpdateLifecycleCallback callback);
 bool firmwareUpdateServiceRequestCheck(bool installWhenAvailable);
+// Volá se úplně na začátku loop(). Když se po OTA chystá restart, hlavní
+// smyčka tu zůstane stát, tedy mezi požadavky webu, a restart počká, až tu je.
+// 24. 9. 2026 spadly pracovna i barvlevo, protože restart z jádra 0
+// resetoval periferie ve chvíli, kdy loopTask na jádře 1 ověřoval heslo webu
+// přes hardwarové SHA (clock-sync.py se během aktualizace přihlašuje).
+void firmwareUpdateServiceParkLoopBeforeRestart();
 FirmwareUpdateSnapshot firmwareUpdateServiceSnapshot();
 const char *firmwareUpdateStateName(FirmwareUpdateState state);

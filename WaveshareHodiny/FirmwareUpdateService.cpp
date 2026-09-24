@@ -1,6 +1,7 @@
 #include "FirmwareUpdateService.h"
 
 #include <HTTPClient.h>
+#include <atomic>
 #include <Update.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -28,6 +29,11 @@ FirmwareUpdateLifecycleCallback lifecycleCallback = nullptr;
 // a pomocná úloha prvTaskDeleteWithCapsTask při tom 24. 9. 2026 na barvpravo
 // spadla (panika po `clock-sync.py check`).
 TaskHandle_t checkTaskHandle = nullptr;
+std::atomic<bool> restartPending{false};
+std::atomic<bool> loopParked{false};
+// Nejdéle, kolik se čeká na hlavní smyčku. Ověření hesla webu (PBKDF2) trvá
+// zlomek sekundy; kdyby smyčka visela jinde, restart proběhne i tak.
+constexpr uint32_t LOOP_PARK_TIMEOUT_MS = 3000;
 bool checkInstallRequested = false;  // pod statusMutex
 
 struct PendingFirmwareInstall {
@@ -266,6 +272,9 @@ bool installFirmware(const String &url, uint32_t expectedSize,
   setMessage(FirmwareUpdateState::Restarting,
              "Aktualizace je ověřená, zařízení se restartuje…", true);
   delay(750);
+  restartPending = true;
+  const unsigned long parkStarted = millis();
+  while (!loopParked && millis() - parkStarted < LOOP_PARK_TIMEOUT_MS) delay(5);
   ESP.restart();
   return true;
 }
@@ -427,6 +436,12 @@ void updateCheckTask(void *) {
   }
 }
 }  // namespace
+
+void firmwareUpdateServiceParkLoopBeforeRestart() {
+  if (!restartPending) return;
+  loopParked = true;
+  for (;;) delay(10);
+}
 
 void firmwareUpdateServiceBegin(FirmwareUpdateLifecycleCallback callback) {
   lifecycleCallback = callback;

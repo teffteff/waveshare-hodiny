@@ -3964,6 +3964,7 @@ void setup() {
 }
 
 void loop() {
+  firmwareUpdateServiceParkLoopBeforeRestart();
 #if FIRMWARE_RELEASE
   improvSerialServiceLoop();
 #else
