@@ -48,4 +48,8 @@ void networkDiagnosticsSetDetail(NetworkDiagnosticKind kind,
 void networkDiagnosticsReset(NetworkDiagnosticKind kind);
 NetworkDiagnosticSnapshot networkDiagnosticsSnapshot(
     NetworkDiagnosticKind kind);
-NetworkMemorySnapshot networkDiagnosticsCurrentMemory();
+// Největší volný blok PSRAM se hledá průchodem celé haldy se zakázanými
+// přerušeními (~2 ms), což rozhodí RGB panel. Běžné snímky kolem stahování
+// jej proto vynechávají a psramLargest v nich zůstává nulové.
+NetworkMemorySnapshot networkDiagnosticsCurrentMemory(
+    bool includePsramLargest = false);

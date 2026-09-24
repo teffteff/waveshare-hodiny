@@ -4162,6 +4162,8 @@ void handleDiagnostics() {
   result += ESP.getCpuFreqMHz();
   result += F(",\"displayPixelClockHz\":");
   result += LCD_GetPixelClock();
+  result += F(",\"displaySyncRepairs\":");
+  result += LCD_SyncRepairCount();
   result += F(",\"resetReason\":");
   result += static_cast<int>(esp_reset_reason());
   result += F(",\"crashes\":");
@@ -4198,7 +4200,9 @@ void handleDiagnostics() {
   result += F(",\"uptimeMs\":");
   result += millis();
   result += F(",\"currentMemory\":");
-  appendMemoryJson(result, networkDiagnosticsCurrentMemory());
+  appendMemoryJson(result, networkDiagnosticsCurrentMemory(true));
+  // Průchod haldou PSRAM mohl posunout obraz; srovnáme panel hned.
+  LCD_Resync();
   result += F(",\"taskStacks\":{\"loop\":");
   result += static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   result += F(",\"homeAssistant\":");

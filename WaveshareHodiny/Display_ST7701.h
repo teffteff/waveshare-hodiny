@@ -82,6 +82,10 @@ void ST7701_Init();
 
 void LCD_Init();
 void LCD_Resync();
+// Pozná trvalý posun obrazu po vypadlém přerušení bounce bufferu a panel
+// resynchronizuje. Volat průběžně z hlavní smyčky; vrací true při opravě.
+bool LCD_MaintainSync();
+uint32_t LCD_SyncRepairCount();
 bool LCD_SetPixelClock(uint32_t frequencyHz);
 uint32_t LCD_GetPixelClock();
 void LCD_Sleep();
