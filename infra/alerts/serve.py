@@ -53,6 +53,12 @@ drahy pozna, jestli nizky prelet opravdu nastal. Ven pres Caddy taky nevede.
 Totez plati pro push na dest (kinds ["rain"], bez "hex"), vcetne toho, ktery
 podrzel nocni klid: ten cte repozitar hodiny-stats a porovnava ho se
 srazkomerem doma.
+
+POST /alerts/notify posle hotovy push od jine sluzby na tomto stroji
+(repozitar radar: vrtulnik nebo vojak, ktery krouzi blizko domu). Telo viz
+parse_notice(). Odejde stejnym tematem a jen kdyz ho aspon jedny hodiny
+chteji: maji zapnute upozorneni na letadla, misto je v jejich okruhu a nemaji
+zrovna nocni klid. Ven pres Caddy nevede.
 """
 from __future__ import annotations
 
@@ -127,6 +133,7 @@ EVENT_AIRCRAFT_KEYS = ("flight", "r", "t", "lat", "lon", "alt_baro", "alt_geom",
 
 MAX_CONFIGS = 16
 MAX_BODY_BYTES = 4096
+NOTICE_TAG = re.compile(r"^[a-z0-9_+-]{1,32}$")
 CONFIG_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 FT_TO_M = 0.3048
@@ -187,6 +194,34 @@ def parse_config(payload: object) -> dict:
             "from": _number(quiet.get("from"), 0, 23, int),
             "to": _number(quiet.get("to"), 0, 23, int),
         },
+    }
+
+
+def _text(value, limit: int, required: bool = True) -> str:
+    if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
+        raise ValueError(f"expected a string of at most {limit} characters")
+    return value.strip()
+
+
+def parse_notice(payload: object) -> dict:
+    """Overi push od jine sluzby (POST /alerts/notify)."""
+    if not isinstance(payload, dict):
+        raise ValueError("expected an object")
+    tags = payload.get("tags", [])
+    if not isinstance(tags, list) or len(tags) > 4 \
+            or not all(isinstance(t, str) and NOTICE_TAG.match(t) for t in tags):
+        raise ValueError("tags must be up to 4 ntfy tag names")
+    click = _text(payload.get("click", ""), 300, required=False)
+    if click and not click.startswith("https://"):
+        raise ValueError("click must be an https:// address")
+    return {
+        "title": _text(payload.get("title"), 80),
+        "message": _text(payload.get("message"), 600),
+        "tags": tags,
+        "priority": _number(payload.get("priority", 3), 1, 5, int),
+        "click": click,
+        "lat": _number(payload.get("lat"), -90, 90),
+        "lon": _number(payload.get("lon"), -180, 180),
     }
 
 
@@ -651,6 +686,26 @@ class Watcher:
         for kind in fresh:
             self.plane_sent[f"{kind}:{hex_code}:{place}"] = now
 
+    def notify(self, notice: dict, now: float | None = None) -> dict:
+        """Push od jine sluzby, kdyz ho nektere hodiny chteji. Vraci, co se stalo."""
+        now = time.time() if now is None else now
+        local = datetime.fromtimestamp(now, TIMEZONE)
+        wanting = [c for c in self.snapshot()
+                   if c["planes"]["military"] or c["planes"]["rare"] or c["planes"]["low"]]
+        if not wanting:
+            return {"sent": False, "reason": "off"}
+        near = [c for c in wanting
+                if math.hypot(*local_xy_km(c["lat"], c["lon"], notice["lat"], notice["lon"]))
+                <= c["planes"]["radius"]]
+        if not near:
+            return {"sent": False, "reason": "far"}
+        if all(is_quiet(c, local) for c in near):
+            return {"sent": False, "reason": "quiet"}
+        sent = send_push(notice["title"], notice["message"], notice["tags"],
+                         notice["priority"], notice["click"])
+        self.pushes += sent
+        return {"sent": sent, "reason": "" if sent else "ntfy"}
+
     def _record_event(self, plane: dict, hex_code: str, kinds: list[str], sent: bool,
                       low_config: dict | None, elevation: float | None, now: float) -> None:
         event = {"ts": round(now, 1), "hex": hex_code, "kinds": kinds, "sent": sent,
@@ -814,6 +869,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         elevation = WATCHER.elevation_for(config)
         self._send(200, json.dumps({"elevation": elevation}).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/alerts/notify":
+            self._send(404, b"not found\n")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= MAX_BODY_BYTES:
+            self._send(413 if length > MAX_BODY_BYTES else 400, b"bad body length\n")
+            return
+        try:
+            notice = parse_notice(json.loads(self.rfile.read(length)))
+        except (ValueError, UnicodeDecodeError) as error:
+            self._send(400, f"{error}\n".encode("utf-8"))
+            return
+        self._send(200, json.dumps(WATCHER.notify(notice)).encode("utf-8"),
                    "application/json; charset=utf-8")
 
     def log_message(self, *args):

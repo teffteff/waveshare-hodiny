@@ -342,6 +342,65 @@ class WatcherTest(unittest.TestCase):
             handle.write('{"ts": 17')
         self.assertEqual(len(self.watcher.events(0)), 1)
 
+    def notice(self, **overrides):
+        payload = {"title": "Vrtulník krouží 3 km od domu", "message": "OK-BYI · EC35",
+                   "tags": ["helicopter"], "priority": 3,
+                   "click": "https://globe.adsb.fi/?icao=49d3b1",
+                   "lat": HOME_LAT + 0.03, "lon": HOME_LON}
+        payload.update(overrides)
+        return serve.parse_notice(payload)
+
+    def test_notify_sends_when_a_clock_wants_it(self):
+        self.assertEqual(self.watcher.notify(self.notice(), NOON), {"sent": True, "reason": ""})
+        self.assertEqual(self.pushes[0][0], "Vrtulník krouží 3 km od domu")
+        self.assertEqual(self.pushes[0][4], "https://globe.adsb.fi/?icao=49d3b1")
+
+    def test_notify_respects_quiet_hours_radius_and_switches(self):
+        night = datetime(2026, 9, 22, 23, 0, tzinfo=serve.TIMEZONE).timestamp()
+        self.assertEqual(self.watcher.notify(self.notice(), night)["reason"], "quiet")
+        self.assertEqual(self.watcher.notify(self.notice(lat=HOME_LAT + 1), NOON)["reason"],
+                         "far")
+        self.watcher.store_config("aabbccddeeff", serve.parse_config(clock_payload(
+            planes={"military": False, "rare": False, "low": False, "radius": 30,
+                    "lowRadius": 1500, "lowHeight": 500})))
+        self.assertEqual(self.watcher.notify(self.notice(), NOON)["reason"], "off")
+        self.assertEqual(self.pushes, [])
+
+    def test_notice_is_validated(self):
+        for bad in ({"title": ""}, {"message": "x" * 601}, {"tags": ["Bad Tag"]},
+                    {"click": "http://x"}, {"priority": 9}, {"lat": None}):
+            with self.assertRaises(ValueError):
+                self.notice(**bad)
+
+    def test_notify_over_http(self):
+        import json
+        import threading
+        import urllib.error
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+
+        def post(path, payload):
+            request = urllib.request.Request(base + path, method="POST",
+                                             data=json.dumps(payload).encode("utf-8"),
+                                             headers={"Content-Type": "application/json"})
+            return urllib.request.urlopen(request, timeout=5)
+        payload = {"title": "Vrtulník krouží", "message": "OK-BYI", "lat": HOME_LAT,
+                   "lon": HOME_LON}
+        with mock.patch.object(serve, "WATCHER", self.watcher), \
+                mock.patch.object(serve.time, "time", return_value=NOON):
+            with post("/alerts/notify", payload) as response:
+                self.assertEqual(json.loads(response.read())["sent"], True)
+            for path, body, code in (("/alerts/notify", {"title": 1}, 400),
+                                     ("/alerts/other", payload, 404)):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    post(path, body)
+                self.assertEqual(caught.exception.code, code)
+
     def test_config_survives_restart(self):
         reloaded = serve.Watcher(Path(self.directory.name))
         self.assertIn("aabbccddeeff", reloaded.configs)
