@@ -234,6 +234,31 @@ class GatewayTest(unittest.TestCase):
         env = {k: v for k, v in ENV.items() if k != "OPENROUTER_API_KEY"}
         self.assertIn("OPENROUTER_API_KEY", self.make({}, env=env).status()["problem"])
 
+    def search_request(self):
+        return {"model": "search", "messages": [{"role": "user", "content": "najdi"}]}
+
+    def test_search_tier_sends_the_web_plugin_and_returns_citations(self):
+        cites = [{"type": "url_citation", "url_citation": {"url": "https://a", "title": "A"}}]
+        gw = self.make({("openrouter", "openai/gpt-4.1-nano"): [(200, {
+            "choices": [{"message": {"content": "Nalezeno.", "annotations": cites}}],
+            "usage": {"cost": 0.0075}})]})
+        status, body = gw.complete("radar", self.search_request())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["choices"][0]["message"]["annotations"], cites)
+        sent = self.upstream.calls[0][1]
+        self.assertEqual(sent["plugins"][0]["id"], "web")
+        self.assertNotIn("response_format", sent)
+        self.assertEqual([c[0][0] for c in self.upstream.calls], ["openrouter"])
+
+    def test_search_tier_only_for_listed_services_and_capped(self):
+        gw = self.make({("openrouter", "openai/gpt-4.1-nano"): [openrouter_ok("x")]})
+        self.assertEqual(gw.complete("news", self.search_request())[0], 403)
+        for _ in range(3):
+            self.assertEqual(gw.complete("radar", self.search_request())[0], 200)
+        self.assertEqual(gw.complete("radar", self.search_request())[0], 429)
+        # the cap is per tier: radar's other tiers still work
+        self.assertEqual(gw.complete("radar", request("cheap", schema=False))[0], 200)
+
     def test_parse_request(self):
         tiers = CONFIG["tiers"]
         gateway.parse_request(request(), tiers)

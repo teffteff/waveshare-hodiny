@@ -32,7 +32,24 @@
     "cheap": [
       "gemini:gemini-flash-lite-latest",
       "openrouter:openai/gpt-4.1-nano"
-    ]
+    ],
+    "search": {
+      "services": {
+        "radar": 3
+      },
+      "steps": [
+        {
+          "step": "openrouter:openai/gpt-4.1-nano",
+          "plugins": [
+            {
+              "id": "web",
+              "engine": "exa",
+              "max_results": 8
+            }
+          ]
+        }
+      ]
+    }
   },
   "openrouter_usd_per_day": 0.5
 }

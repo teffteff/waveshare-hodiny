@@ -207,6 +207,7 @@ modelu pošle úroveň:
 |:--|:--|
 | `smart` | `gemini-flash-latest` → `gemini-flash-lite-latest` → OpenRouter `openai/gpt-4.1-mini` |
 | `cheap` | `gemini-flash-lite-latest` → OpenRouter `openai/gpt-4.1-nano` |
+| `search` | OpenRouter `openai/gpt-4.1-nano` s hledáním na webu (Exa, 8 výsledků), jen radar, nejvýš 3× denně |
 
 Proč: 24. 9. 2026 vrátil Google 503 („high demand“) všem modelům ve dvou
 bězích zpráv po sobě. OpenRouter jede mimo Google, takže při jeho výpadku
@@ -225,6 +226,14 @@ proto klíče po projektech, tři projekty v AI Studiu (ověřeno 24. 9. 2026):
 projektu a jaký má denní strop dotazů, říká `config.json`. Hlídač obchodů
 má navíc `gemini_safety_off`: čte inzeráty zbraní a výchozí filtry Gemini je
 občas zablokují, takže by jinak šly na placený OpenRouter.
+
+**Hledání na webu (`search`)** stojí asi 0,0075 USD za dotaz, proto ho smí
+jen služby uvedené u úrovně v `config.json` (`"services": {"radar": 3}`) a jen
+tolikrát denně; ostatní dostanou 403. Odkazy, ze kterých model vycházel, vrací
+brána v `message.annotations`. Radar z nich bere jen odkazy a titulky jako
+kandidáty pro svého soudce, větu modelu nepoužívá: v testu 24. 9. 2026 našlo
+hledání správný článek, ale model k němu přidal smyšlený konec a špatné datum.
+S vynuceným JSON formátem výsledky hledání skoro nepoužil, proto se neposílá.
 
 **Proč nano, ne Mistral:** 24. 9. 2026 na třech inzerátech hlídače vrátil
 `mistral-small-3.2` jednou 504 a jinak odpovídal 8–21 s; `gpt-4.1-nano`
