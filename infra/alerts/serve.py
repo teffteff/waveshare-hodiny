@@ -45,6 +45,11 @@ Push jde na ntfy, stejne jako u hlidani obchodu (/opt/watch): JSON POST na
 NTFY_URL, tema je jedine tajemstvi. Nerusit od-do plati pro vsechno.
 
 GET /alerts/status vraci prehled pro check-stack; ven pres Caddy nevede.
+
+Kazdy push na letadlo se navic zapise jako radek do state/events.jsonl:
+co server videl, co predpovidal a jestli push odesel. GET /alerts/events?since=
+(unixovy cas) je vraci sberaci statistik (repozitar radar), ktery z nahrane
+drahy pozna, jestli nizky prelet opravdu nastal. Ven pres Caddy taky nevede.
 """
 from __future__ import annotations
 
@@ -62,7 +67,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 PORT = int(os.environ.get("ALERTS_PORT", "8098"))
@@ -109,6 +114,13 @@ RARE_WINDOW_DAYS = 30
 RARE_MAX_DAYS = 3
 RARE_WARMUP_DAYS = 14
 TYPE_HISTORY_DAYS = 60
+
+# Kolik poslednich zaznamu o pushich vraci /alerts/events. Pushu je par
+# denne, takze tohle pokryje mesice; sberac se pta kazdych par minut.
+MAX_EVENTS_RETURNED = 500
+# Stav letadla, ktery se k zaznamu uklada: presne to, z ceho predpoved vznikla.
+EVENT_AIRCRAFT_KEYS = ("flight", "r", "t", "lat", "lon", "alt_baro", "alt_geom",
+                       "gs", "track", "true_heading", "baro_rate", "dbFlags")
 
 MAX_CONFIGS = 16
 MAX_BODY_BYTES = 4096
@@ -586,11 +598,14 @@ class Watcher:
         if not hex_code:
             return
         reasons: dict[str, str] = {}
+        low_config: dict | None = None
         for config in group:
             if is_quiet(config, local):
                 continue
             for kind, line in plane_reasons(plane, config, elevation, self.history, today).items():
                 reasons.setdefault(kind, line)
+                if kind == "low" and low_config is None:
+                    low_config = config
         fresh = {kind: line for kind, line in reasons.items()
                  if now - self.plane_sent.get(f"{kind}:{hex_code}:{place}", 0)
                  >= PLANE_REPEAT_SECONDS[kind]}
@@ -605,10 +620,50 @@ class Watcher:
                          [tags[kind] for kind in order], 4 if "low" in fresh else 3,
                          f"https://globe.adsb.fi/?icao={hex_code}")
         self.pushes += sent
+        self._record_event(plane, hex_code, order, sent, low_config, elevation, now)
         # I neodeslany push se pamatuje: ntfy, ktere zrovna nejde, by jinak
         # dostalo tentyz prelet kazdych deset sekund, az se probere.
         for kind in fresh:
             self.plane_sent[f"{kind}:{hex_code}:{place}"] = now
+
+    def _record_event(self, plane: dict, hex_code: str, kinds: list[str], sent: bool,
+                      low_config: dict | None, elevation: float | None, now: float) -> None:
+        event = {"ts": round(now, 1), "hex": hex_code, "kinds": kinds, "sent": sent,
+                 "aircraft": {k: plane[k] for k in EVENT_AIRCRAFT_KEYS if k in plane}}
+        if "low" in kinds and low_config is not None and elevation is not None:
+            predicted = predict_pass(plane, low_config["lat"], low_config["lon"], elevation)
+            event["low"] = {
+                "home": [low_config["lat"], low_config["lon"]],
+                "elevation": elevation,
+                "radius": low_config["planes"]["lowRadius"],
+                "height": low_config["planes"]["lowHeight"],
+                "seconds": round(predicted["seconds"], 1),
+                "distance_m": round(predicted["distance_m"]),
+                "height_m": round(predicted["height_m"]),
+            }
+        path = self.state_dir / "events.jsonl"
+        try:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+            os.chmod(path, 0o600)
+        except OSError as error:
+            # Zaznam je pro statistiky; push kvuli nemu selhat nesmi.
+            self.last_error = f"events: {error}"
+
+    def events(self, since: float) -> list[dict]:
+        try:
+            lines = (self.state_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        found = []
+        for line in lines[-MAX_EVENTS_RETURNED:]:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # utrzeny radek po padu uprostred zapisu
+            if isinstance(event, dict) and event.get("ts", 0) > since:
+                found.append(event)
+        return found
 
     def _aircraft(self, lat: float, lon: float, reach_km: float) -> list[dict] | None:
         query = urlencode({"lat": f"{lat:.4f}", "lon": f"{lon:.4f}",
@@ -691,10 +746,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if urlparse(self.path).path != "/alerts/status":
+        parsed = urlparse(self.path)
+        if parsed.path == "/alerts/status":
+            body = json.dumps(WATCHER.status(), ensure_ascii=False, indent=1).encode("utf-8")
+        elif parsed.path == "/alerts/events":
+            try:
+                since = float(parse_qs(parsed.query).get("since", ["0"])[0])
+            except ValueError:
+                self._send(400, b"since must be a unix time\n")
+                return
+            body = json.dumps({"events": WATCHER.events(since)}, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")
+        else:
             self._send(404, b"not found\n")
             return
-        body = json.dumps(WATCHER.status(), ensure_ascii=False, indent=1).encode("utf-8")
         self._send(200, body, "application/json; charset=utf-8")
 
     def do_PUT(self):
