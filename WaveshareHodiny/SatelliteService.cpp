@@ -19,6 +19,7 @@
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
 #include "SkyCanvas.h"
+#include "SharedFrames.h"
 #include "SkyRender.h"
 
 // Adresu serveru zadává uživatel, takže se ověřuje proti svazku kořenů Mozilly,
@@ -78,8 +79,9 @@ constexpr float DARK_SUN_ELEVATION = -6.0f;
 constexpr int TRACK_AHEAD_SECONDS = 120;
 constexpr int TRACK_STEP_SECONDS = 10;
 
-constexpr size_t PIXEL_COUNT =
-    static_cast<size_t>(SATELLITE_SKY_WIDTH) * SATELLITE_SKY_HEIGHT;
+static_assert(SATELLITE_SKY_WIDTH == SHARED_FRAME_WIDTH &&
+                  SATELLITE_SKY_HEIGHT == SHARED_FRAME_HEIGHT,
+              "Obloha se kreslí do sdílených snímků");
 
 constexpr uint16_t COLOR_WHITE = 0xffff;
 // Barvy skupin v pořadí SatelliteGroup. Webová stránka ukazuje tytéž.
@@ -97,8 +99,11 @@ constexpr uint16_t GROUP_COLORS[SATELLITE_GROUP_COUNT] = {
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t taskHandle = nullptr;
 
-constexpr size_t DISPLAY_BUFFER_COUNT = 2;
-uint16_t *displayBuffers[DISPLAY_BUFFER_COUNT] = {};
+// Snímky jsou půjčené ze SharedFrames; dělí se o ně s radarem letadel.
+constexpr size_t DISPLAY_BUFFER_COUNT = SHARED_FRAME_COUNT;
+// Zápůjčka, pod kterou platí displayedBuffer a handedOutBuffer. Po předání
+// páru letadlům v bufferech leží jejich mapa.
+uint32_t frameLease = 0;
 int displayedBuffer = -1;
 int handedOutBuffer = -1;
 uint16_t *pixels = nullptr;
@@ -204,13 +209,7 @@ void setStatusMessage(const char *text) {
 }
 
 bool ensureStorage() {
-  for (uint16_t *&buffer : displayBuffers) {
-    if (buffer != nullptr) continue;
-    buffer = static_cast<uint16_t *>(heap_caps_malloc(
-        PIXEL_COUNT * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (buffer == nullptr) return false;
-    memset(buffer, 0, PIXEL_COUNT * sizeof(uint16_t));
-  }
+  if (!sharedFramesReserve()) return false;
   if (liveTracks == nullptr) {
     liveTracks = static_cast<SatelliteTrack *>(
         heap_caps_calloc(SATELLITE_MAX_TRACKS, sizeof(SatelliteTrack),
@@ -230,11 +229,7 @@ bool ensureStorage() {
 }
 
 void releaseStorage() {
-  for (uint16_t *&buffer : displayBuffers) {
-    if (buffer == nullptr) continue;
-    heap_caps_free(buffer);
-    buffer = nullptr;
-  }
+  // Snímky patří SharedFrames a zůstávají; uvolňují se jen vlastní data.
   pixels = nullptr;
   for (SatelliteTrack **list : {&liveTracks, &scratchTracks}) {
     if (*list == nullptr) continue;
@@ -482,12 +477,20 @@ struct PlannedSatellite {
   SatelliteSkyPoint point;
 };
 
-void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
-                 double epoch, bool haveEpoch) {
-  if (displayBuffers[0] == nullptr || displayBuffers[1] == nullptr ||
-      liveTracks == nullptr || skyPoints == nullptr)
-    return;
+// Pár mezitím kreslila letadla: staré indexy už nic neznamenají a canvas se
+// odkryje až s novým snímkem. Volá se pod stateMux.
+void adoptLease(uint32_t lease) {
+  if (frameLease == lease) return;
+  frameLease = lease;
+  displayedBuffer = -1;
+  handedOutBuffer = -1;
+}
+
+void drawFrame(const ClockSatellitesConfig &config, bool night, bool english,
+               double epoch, bool haveEpoch, uint32_t lease) {
+  if (liveTracks == nullptr || skyPoints == nullptr) return;
   portENTER_CRITICAL(&stateMux);
+  adoptLease(lease);
   int target = -1;
   for (int index = 0; index < static_cast<int>(DISPLAY_BUFFER_COUNT); ++index) {
     if (index == displayedBuffer || index == handedOutBuffer) continue;
@@ -502,7 +505,7 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
   const bool tracksKnown = haveTracks;
   portEXIT_CRITICAL(&stateMux);
   if (target < 0) return;
-  pixels = displayBuffers[target];
+  pixels = sharedFrame(target);
   const SkyCanvas canvas(pixels, config.topBearingDeg, night);
   canvas.clear();
   canvas.drawGrid(config.minElevationDeg, english);
@@ -641,6 +644,12 @@ void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
   }
 
   portENTER_CRITICAL(&stateMux);
+  // Pár se během kreslení předal letadlům; snímek se nezveřejní.
+  if (!sharedFramesLeaseValid(SharedFrameUser::Satellites, lease)) {
+    redrawRequested = true;
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
   skyPointCount = 0;
   for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
     skyPoints[skyPointCount].x = plan[planIndex].x;
@@ -753,13 +762,13 @@ void maintainSkyFetch(const ClockSatellitesConfig &config, float latitude,
   portEXIT_CRITICAL(&stateMux);
 }
 
-void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
-                    float longitude, bool night, bool english, double epoch,
-                    bool haveEpoch) {
-  if (displayBuffers[0] == nullptr || displayBuffers[1] == nullptr ||
-      skyLive == nullptr || skyLabels == nullptr || skyTapPoints == nullptr)
+void drawSkyFrame(const ClockSatellitesConfig &config, float latitude,
+                  float longitude, bool night, bool english, double epoch,
+                  bool haveEpoch, uint32_t lease) {
+  if (skyLive == nullptr || skyLabels == nullptr || skyTapPoints == nullptr)
     return;
   portENTER_CRITICAL(&stateMux);
+  adoptLease(lease);
   int target = -1;
   for (int index = 0; index < static_cast<int>(DISPLAY_BUFFER_COUNT); ++index) {
     if (index == displayedBuffer || index == handedOutBuffer) continue;
@@ -773,7 +782,7 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   const bool dataCurrent = skyDataFresh(millis()) && haveEpoch;
   portEXIT_CRITICAL(&stateMux);
   if (target < 0) return;
-  pixels = displayBuffers[target];
+  pixels = sharedFrame(target);
 
   // Data mění jen tahle úloha, takže se čtou bez zámku. Výsledek (kolem tří
   // kilobajtů) leží na zásobníku úlohy, tedy v PSRAM.
@@ -787,6 +796,11 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   }
 
   portENTER_CRITICAL(&stateMux);
+  if (!sharedFramesLeaseValid(SharedFrameUser::Satellites, lease)) {
+    skyRedrawRequested = true;
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
   for (uint8_t index = 0; index < result.labelCount; ++index)
     skyLabels[index] = result.labels[index];
   skyLabelCount = result.labelCount;
@@ -802,6 +816,36 @@ void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
   ++generation;
   skyFrameReady = dataCurrent;
   portEXIT_CRITICAL(&stateMux);
+}
+
+// Obě stránky kreslí jen viditelné, takže se nula (pár má jiná obrazovka,
+// nebo ho ještě dokresluje) řeší jen dalším pokusem.
+void renderFrame(const ClockSatellitesConfig &config, bool night, bool english,
+                 double epoch, bool haveEpoch) {
+  const uint32_t lease = sharedFramesBeginRender(SharedFrameUser::Satellites);
+  if (lease == 0) {
+    portENTER_CRITICAL(&stateMux);
+    redrawRequested = true;
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
+  drawFrame(config, night, english, epoch, haveEpoch, lease);
+  sharedFramesEndRender(SharedFrameUser::Satellites);
+}
+
+void renderSkyFrame(const ClockSatellitesConfig &config, float latitude,
+                    float longitude, bool night, bool english, double epoch,
+                    bool haveEpoch) {
+  const uint32_t lease = sharedFramesBeginRender(SharedFrameUser::Satellites);
+  if (lease == 0) {
+    portENTER_CRITICAL(&stateMux);
+    skyRedrawRequested = true;
+    portEXIT_CRITICAL(&stateMux);
+    return;
+  }
+  drawSkyFrame(config, latitude, longitude, night, english, epoch, haveEpoch,
+               lease);
+  sharedFramesEndRender(SharedFrameUser::Satellites);
 }
 
 // --- Zkouška adresy ---------------------------------------------------------
@@ -1116,6 +1160,9 @@ void satelliteServicePrepareForFirmwareUpdate() {
     vTaskDeleteWithCaps(taskHandle);
     taskHandle = nullptr;
   }
+  // Úloha mohla skončit uprostřed kreslení; bez tohohle by letadla po
+  // přerušené aktualizaci do snímků už nikdy nesměla.
+  sharedFramesEndRender(SharedFrameUser::Satellites);
   portENTER_CRITICAL(&stateMux);
   displayedBuffer = -1;
   handedOutBuffer = -1;
@@ -1201,6 +1248,8 @@ void satelliteServiceSetActive(bool nowVisible, bool backgroundRefresh,
   }
   if (!nowVisible) selectedId = 0;
   portEXIT_CRITICAL(&stateMux);
+  // Otevřená obrazovka si bere snímky, které mohly naposledy patřit letadlům.
+  if (nowVisible && !wasVisible) sharedFramesClaim(SharedFrameUser::Satellites);
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
@@ -1219,9 +1268,11 @@ void satelliteServiceSnapshot(SatelliteSnapshot &snapshot) {
   const bool haveEpoch = currentEpoch(epoch);
   portENTER_CRITICAL(&stateMux);
   snapshot.skyPage = skyEnabled && skyShown;
-  snapshot.pixels = displayedBuffer >= 0 && displayedSky == snapshot.skyPage
-                        ? displayBuffers[displayedBuffer]
-                        : nullptr;
+  snapshot.pixels =
+      displayedBuffer >= 0 && displayedSky == snapshot.skyPage &&
+              sharedFramesLeaseValid(SharedFrameUser::Satellites, frameLease)
+          ? sharedFrame(displayedBuffer)
+          : nullptr;
   handedOutBuffer = displayedBuffer;
   snapshot.generation = generation;
   snapshot.loading = loading || fetchNowRequested;
@@ -1422,6 +1473,7 @@ void satelliteServiceSetNightSky(bool enabled, bool shown, bool hideEvents) {
     notify = true;
   }
   const bool nowShown = enabled && shown;
+  const bool opening = nowShown && !skyShown;
   if (nowShown != skyShown) {
     skyShown = nowShown;
     skyRedrawRequested = true;
@@ -1434,6 +1486,7 @@ void satelliteServiceSetNightSky(bool enabled, bool shown, bool hideEvents) {
     notify = true;
   }
   portEXIT_CRITICAL(&stateMux);
+  if (opening) sharedFramesClaim(SharedFrameUser::Satellites);
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
