@@ -109,6 +109,20 @@ FALLBACK_MODELS = [
 # výběr a jednou za každou polohu; bez paměti by každé volání znovu narazilo na
 # tentýž 429 a ubralo z limitu dotazů za minutu.
 EXHAUSTED_MODELS: set[str] = set()
+# Přetížení (503) trvá u Googlu minuty a zasáhne všechny modely najednou: 22.
+# i 24. 9. 2026 vrátily 503 všechny tři během 25 s. Proto se celá řada modelů
+# zkusí znovu po pauzách. Kdyby pořád nic, běh se přeskočí bez chyby: hodiny
+# dál ukazují předchozí výběr a dlouhý výpadek nahlásí health přes stáří kanálu.
+RETRY_PAUSES_S = [30, 90]
+
+
+class ModelUnavailable(RuntimeError):
+    """Všechny modely vrátily 5xx i po pauzách; nejde o chybu tohoto běhu."""
+
+
+# Jakmile jsou modely v tomhle běhu nedostupné, další polohy už pauzy
+# nečekají znovu (TimeoutStartSec by jinak nestačil).
+MODELS_DOWN = False
 SPORT_PATH_SEGMENTS = {"sport", "sporty", "sports"}
 SPORT_CATEGORIES = {"sport", "sporty", "sports"}
 
@@ -245,6 +259,8 @@ def choose(items: list[dict], location: Location | None = None) -> list[Pick]:
         response_schema=list[Pick],
         temperature=0.3,
         max_output_tokens=8192,
+        # Bez nástrojů je AFC k ničemu a SDK kvůli němu jen píše varování do žurnálu.
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
     prompt = location_note + (
         f"Vyber {REQUESTED} nejdůležitějších zpráv dne a ke každé napiš vlastní "
@@ -259,29 +275,41 @@ def choose(items: list[dict], location: Location | None = None) -> list[Pick]:
     # postupně záložní modely, takže výpadek jednoho fondu výběr nezastaví.
     # Vyčerpaná kvóta (429) se neopakuje: do konce běhu (a u denního limitu do
     # půlnoci tichomořského času) by stejně nepomohlo, jde se rovnou dál.
+    global MODELS_DOWN
+    if MODELS_DOWN:
+        raise ModelUnavailable("model nedostupny uz drive v tomto behu")
     last_error: Exception | None = None
-    for model_name in [MODEL, *[m for m in FALLBACK_MODELS if m != MODEL]]:
-        if model_name in EXHAUSTED_MODELS:
-            continue
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=model_name, contents=prompt, config=config
-                )
-                picks = response.parsed
-                if not picks:
-                    raise RuntimeError("prazdna strukturovana odpoved")
-                return picks
-            except genai_errors.ServerError as error:  # 5xx včetně 503 UNAVAILABLE
-                last_error = error
-                time.sleep(4)
-            except genai_errors.ClientError as error:
-                if error.code != 429:  # špatný klíč nebo dotaz: jiný model nepomůže
-                    raise
-                print(f"{model_name}: kvota vycerpana, zkousim dalsi model")
-                EXHAUSTED_MODELS.add(model_name)
-                last_error = error
-                break
+    for pause in [0, *RETRY_PAUSES_S]:
+        if pause:
+            print(f"vsechny modely pretizene, dalsi kolo za {pause} s")
+            time.sleep(pause)
+        for model_name in [MODEL, *[m for m in FALLBACK_MODELS if m != MODEL]]:
+            if model_name in EXHAUSTED_MODELS:
+                continue
+            for attempt in range(2):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name, contents=prompt, config=config
+                    )
+                    picks = response.parsed
+                    if not picks:
+                        raise RuntimeError("prazdna strukturovana odpoved")
+                    return picks
+                except genai_errors.ServerError as error:  # 5xx včetně 503 UNAVAILABLE
+                    last_error = error
+                    time.sleep(4)
+                except genai_errors.ClientError as error:
+                    if error.code != 429:  # špatný klíč nebo dotaz: jiný model nepomůže
+                        raise
+                    print(f"{model_name}: kvota vycerpana, zkousim dalsi model")
+                    EXHAUSTED_MODELS.add(model_name)
+                    last_error = error
+                    break
+        if not isinstance(last_error, genai_errors.ServerError):
+            break  # jen vyčerpané kvóty: pauza nepomůže
+    if isinstance(last_error, genai_errors.ServerError):
+        MODELS_DOWN = True
+        raise ModelUnavailable(f"Model nedostupny po nekolika pokusech: {last_error}")
     raise RuntimeError(f"Model nedostupny po nekolika pokusech: {last_error}")
 
 
@@ -352,9 +380,12 @@ def publish(items: list[dict], output: Path, location: Location | None = None) -
 
 def main() -> None:
     failures: list[str] = []
+    skipped: list[str] = []
     items = collect(FEEDS, CANDIDATES_PER_FEED, MAX_AGE_HOURS)
     try:
         publish(items, OUTPUT)
+    except ModelUnavailable as error:
+        skipped.append(str(error))
     except Exception as error:  # noqa: BLE001 - polohy mají dostat svou šanci
         failures.append(str(error))
 
@@ -367,9 +398,13 @@ def main() -> None:
         for location in locations:
             try:
                 publish(local_items, location_output(OUTPUT.parent, location), location)
+            except ModelUnavailable as error:
+                skipped.append(f"{location.describe()}: {error}")
             except Exception as error:  # noqa: BLE001 - jedna poloha nesmí shodit ostatní
                 failures.append(f"{location.describe()}: {error}")
 
+    if skipped:
+        print("preskoceno, ponechavam predchozi soubory:\n" + "\n".join(skipped))
     if failures:
         sys.exit("\n".join(failures))
 
