@@ -184,6 +184,17 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["choices"][0]["message"]["content"], '{"a": 1}')
 
+    def test_truncated_answer_goes_to_next_model(self):
+        cut = (200, {"candidates": [{"content": {"parts": [{"text": "Za tyden napr"}]},
+                                     "finishReason": "MAX_TOKENS"}]})
+        gw = self.make({("gemini", "gemini-flash-latest"): [cut],
+                        ("gemini", "gemini-flash-lite-latest"): [gemini_ok("Hotovo.")]})
+        status, body = gw.complete("news", request(schema=False))
+        self.assertEqual(body["model"], "gemini/gemini-flash-lite-latest")
+        long = (200, {"choices": [{"message": {"content": "Za"}, "finish_reason": "length"}]})
+        gw = self.make({("openrouter", "openai/gpt-4.1-mini"): [long]})
+        self.assertEqual(gw.complete("news", request(schema=False))[0], 503)
+
     def test_openrouter_daily_spend_cap(self):
         gw = self.make({("openrouter", "openai/gpt-4.1-mini"): [openrouter_ok(cost=0.6)]})
         self.assertEqual(gw.complete("news", request())[0], 200)
