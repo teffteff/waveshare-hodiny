@@ -17,7 +17,9 @@ Nice=10
 # jinak drzel jednotku napored a timer by dalsi spousteni preskakoval.
 # Kazda poloha z registru (locations.py) pridava jedno volani modelu i s jeho
 # opakovanimi pokusy, proto vic nez puvodnich pet minut pro jediny vyber.
-TimeoutStartSec=900
+# Pri pretizeni Googlu (503) ceka generate.py mezi koly az 17 minut
+# (RETRY_PAUSES_S), takze strop je pul hodiny; dalsi hodinovy beh se nekryje.
+TimeoutStartSec=1800
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

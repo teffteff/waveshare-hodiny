@@ -113,7 +113,10 @@ EXHAUSTED_MODELS: set[str] = set()
 # i 24. 9. 2026 vrátily 503 všechny tři během 25 s. Proto se celá řada modelů
 # zkusí znovu po pauzách. Kdyby pořád nic, běh se přeskočí bez chyby: hodiny
 # dál ukazují předchozí výběr a dlouhý výpadek nahlásí health přes stáří kanálu.
-RETRY_PAUSES_S = [30, 90]
+# 24. 9. 2026 přetížení přečkalo 30 i 90 s ve dvou bězích po sobě a kanál
+# zůstal přes čtyři hodiny starý. Kola po 5 a 10 minutách proto chytí konec
+# špičky ještě v tomtéž běhu (news.service má na to TimeoutStartSec).
+RETRY_PAUSES_S = [30, 90, 300, 600]
 
 
 class ModelUnavailable(RuntimeError):

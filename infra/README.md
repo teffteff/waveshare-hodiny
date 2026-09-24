@@ -106,7 +106,7 @@ serveru zkontrolovat nedají:
 
 Generátor jede na **Google Gemini**, ne na Claude: `.venv` s `google-genai`,
 klíč `GEMINI_API_KEY` v `/opt/news/news.env` (práva 600). Timer pouští výběr
-8× denně mezi 06:05 a 20:05. Když cokoli selže, skript skončí nenulově a
+každou hodinu 06:05 až 22:05 pražského času (pásmo je v `OnCalendar`, server běží v GMT). Když cokoli selže, skript skončí nenulově a
 **nechá předchozí soubor být** — na hodinách zůstanou starší zprávy místo
 prázdna. Stará stopa v repu: `news/news.env.example` je oproti serveru
 opravená (server má pořád původní variantu s `ANTHROPIC_API_KEY` z doby, kdy
@@ -1542,7 +1542,7 @@ Dvě cesty, obě v `infra/health/`:
   tomu neměnily. Dlouhoběžící služba s `Restart=on-failure` se do stavu failed
   dostane až po vyčerpání restartů; jednotlivé pády zachytí hodinová kontrola.
 - **Hodinová kontrola** (`health.timer`, v :52) se po loopbacku, bez Caddy
-  a bez hesel, zeptá každé služby na její stav: stáří zpráv (14 h) a agendy
+  a bez hesel, zeptá každé služby na její stav: stáří zpráv (10 h) a agendy
   (1 h), `problem` u školy, `/status` srážek, výstrah, družic a upozornění,
   odpověď úložiště záloh, hlídače obchodů a HA. Dál projde `systemctl --failed`,
   jestli jednotky z `HEALTH_UNITS` běží, kdy naposledy spustily timery,
@@ -1616,10 +1616,11 @@ konfigurace thinkingu se neposílá. Přetížení (503) je běžné, každý mo
 zkouší dvakrát a pak se jde na záložní. Vyčerpaná kvóta (429) se neopakuje
 a jde se rovnou na další model; ten si běh pamatuje a na zbylé polohy ho už
 nezkouší. Když přetížení trefí všechny modely najednou (22. a 24. 9. 2026
-vrátily 503 všechny tři během 25 s), zkusí se celá řada znovu po 30 a 90 s.
-Pak se běh přeskočí **bez chyby**: předchozí soubory zůstanou, `news.service`
+vrátily 503 všechny tři během 25 s), zkusí se celá řada znovu po 30 s, 90 s, 5 a 10 min
+(`RETRY_PAUSES_S`; 24. 9. nestačilo 30 a 90 s ve dvou bězích po sobě), proto
+`TimeoutStartSec=1800`. Pak se běh přeskočí **bez chyby**: předchozí soubory zůstanou, `news.service`
 skončí úspěšně a `OnFailure=` kvůli výpadku Googlu nepošle push. Dlouhý
-výpadek nahlásí hodinová kontrola přes stáří kanálu (14 h). Free tier má u `gemini-flash-latest` jen **20 dotazů denně** (běh
-je jeden společný výběr plus jeden za polohu, osm běhů denně to přečerpá
-kolem poledne), `gemini-flash-lite-latest` 500. Ráno proto vybírá Flash
-a zbytek dne Lite. Limity jsou vidět v AI Studiu na stránce Usage.
+výpadek nahlásí hodinová kontrola přes stáří kanálu (10 h). Free tier má u `gemini-flash-latest` jen **20 dotazů denně** (běh
+je jeden společný výběr plus jeden za polohu; 17 hodinových běhů bez poloh
+se do limitu vejde, s polohami ho přečerpají dopoledne), `gemini-flash-lite-latest`
+500. Ráno proto vybírá Flash a po vyčerpání Lite. Limity jsou vidět v AI Studiu na stránce Usage.

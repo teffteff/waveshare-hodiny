@@ -64,10 +64,11 @@ UNITS = os.environ.get(
     "news.timer agenda.timer backup.timer watch.timer ou-watch.timer ha-update.timer",
 ).split()
 # timer:hodiny - nejdelsi povolena doba od posledniho spusteni. news.timer
-# jede 06:05 az 20:05, takze rano je legitimne deset hodin stary.
+# jede kazdou hodinu 06:05 az 22:05 prazskeho casu, takze rano je legitimne
+# osm hodin stary (devet v noci po zmene casu).
 TIMERS = os.environ.get(
     "HEALTH_TIMERS",
-    "news.timer:14 agenda.timer:1 backup.timer:26 watch.timer:1 ou-watch.timer:1 "
+    "news.timer:10 agenda.timer:1 backup.timer:26 watch.timer:1 ou-watch.timer:1 "
     "ha-update.timer:170",
 ).split()
 HTTP_TIMEOUT_SECONDS = 10
@@ -115,7 +116,7 @@ def check_news() -> str | None:
         return "kanal nema lastBuildDate"
     built = email.utils.parsedate_to_datetime(match.group(1).decode()).timestamp()
     hours = (time.time() - built) / 3600
-    return f"kanal je stary {hours:.0f} h" if hours > 14 else None
+    return f"kanal je stary {hours:.0f} h" if hours > 10 else None
 
 
 def check_agenda() -> str | None:
@@ -225,7 +226,8 @@ def unit_problems() -> dict[str, str]:
         unit, _, hours = item.partition(":")
         last = systemctl("show", unit, "-p", "LastTriggerUSec", "--value")
         # "n/a" = od startu stroje jeste nebezel. U news.timer po nocnim
-        # restartu legitimni az do 06:05; neaktivni timer hlasi UNITS vys.
+        # restartu legitimni az do 06:05 prazskeho casu; neaktivni timer
+        # hlasi UNITS vys.
         if not last or last in ("n/a", "0"):
             continue
         # LastTriggerUSec je text ("Tue 2026-09-22 06:30:20 GMT"); systemd 239
