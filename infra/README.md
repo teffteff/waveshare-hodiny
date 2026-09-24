@@ -102,6 +102,7 @@ serveru zkontrolovat nedají:
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
 | Statistiky letů (radar) | 8100, jen loopback | `/opt/radar` (kód), `/var/lib/radar` (databáze), `radar-collector.service` + `radar-web.service`, poloha domu v `/opt/radar/radar.env`; stránka `https://$FLEET_DOMAIN/radar/` za heslem novinek | vlastní soukromý repozitář `radar` |
 | Statistiky funkcí hodin | 8101, jen loopback | `/opt/hodiny-stats` (kód), `/var/lib/hodiny-stats` (databáze), `stats-collector.service` + `stats-web.service`, poloha domu a token do HA v `/opt/hodiny-stats/stats.env`; stránka `https://$FLEET_DOMAIN/hodiny/` za heslem novinek | vlastní soukromý repozitář `hodiny-stats` |
+| Mapa autobusů | 8103, jen loopback | `/opt/bus` (kód, nic neukládá), `bus-web.service`, polohy z otevřených dat PID (Golemio); stránka `https://$FLEET_DOMAIN/bus/` bez hesla | vlastní repozitář `bus` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 

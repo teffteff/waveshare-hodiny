@@ -60,6 +60,7 @@ UNITS = os.environ.get(
     "satellites-web.service rain-web.service warnings-web.service "
     "alerts-web.service fleet-web.service watch-web.service radar-collector.service "
     "radar-web.service stats-collector.service stats-web.service llm-gateway.service "
+    "bus-web.service "
     "docker.service "
     "news.timer agenda.timer backup.timer watch.timer ou-watch.timer ha-update.timer",
 ).split()

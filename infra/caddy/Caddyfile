@@ -190,6 +190,17 @@
 		uri strip_prefix /hodiny
 		reverse_proxy 127.0.0.1:8101
 	}
+	# Mapa autobusu PID kolem Ondrejova (repozitar bus, bus-web.service).
+	# Polohy jsou verejna data PID z Golemia a server je stahuje nejvys jednou
+	# za 15 s pro vsechny, at se diva kdokoli, takze heslo nechrani obsah ani
+	# stroj a stranka je bez nej (i pro telefon, ktery se k novinkam
+	# neprihlasuje). Bez lomitka na konci by se relativni adresy api/ a app.js
+	# skladaly proti korenu domeny.
+	redir /bus /bus/
+	handle /bus/* {
+		uri strip_prefix /bus
+		reverse_proxy 127.0.0.1:8103
+	}
 	# Nastaveni vsech hodin pres server (infra/fleet, FLEET_PREFIX prazdny).
 	# Hodiny se sem pripojuji samy a server jim predava pozadavky z prohlizece,
 	# takze kdo je tu prihlaseny, nastavuje hodiny doma. Heslo a kod TOTP resi
