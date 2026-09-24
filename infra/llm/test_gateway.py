@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gateway  # noqa: E402
 
 CONFIG = json.loads((Path(__file__).resolve().parent / "config.json").read_text())
-ENV = {"GEMINI_KEY_HODINY": "g-hodiny", "GEMINI_KEY_RADAR": "g-radar", "GEMINI_KEY_WATCH": "g-watch",
+ENV = {"GEMINI_KEY_HODINY": "g-hodiny", "GEMINI_KEY_RADAR": "g-radar",
        "OPENROUTER_API_KEY": "or-key", "LLM_TOKENS": "news:tok-news,radar:tok-radar"}
 NOON = datetime(2026, 9, 24, 12, 0, tzinfo=gateway.PACIFIC).timestamp()
 SCHEMA = {"type": "object", "properties": {"picks": {"type": "array",
@@ -94,7 +94,7 @@ class GatewayTest(unittest.TestCase):
         gw.complete("radar", request("cheap"))
         watch, radar = (c[1] for c in self.upstream.calls)
         self.assertEqual({s["threshold"] for s in watch["safetySettings"]}, {"BLOCK_NONE"})
-        self.assertEqual(self.upstream.calls[0][2]["x-goog-api-key"], "g-watch")
+        self.assertEqual(self.upstream.calls[0][2]["x-goog-api-key"], "g-hodiny")
         self.assertNotIn("safetySettings", radar)
 
     def test_radar_uses_its_own_project_key(self):
@@ -172,6 +172,15 @@ class GatewayTest(unittest.TestCase):
         self.now = NOON + 13 * 3600
         self.assertEqual(gw.complete("news", request())[1]["model"],
                          "gemini/gemini-flash-latest")
+
+    def test_quota_learned_by_one_service_holds_for_its_whole_project(self):
+        gw = self.make({("gemini", "gemini-flash-lite-latest"): [GEMINI_DAY_QUOTA],
+                        ("openrouter", "openai/gpt-4.1-nano"): [openrouter_ok()]})
+        gw.tokens["tok-watch"] = "watch"
+        gw.complete("watch", request("cheap"))
+        self.upstream.calls.clear()
+        gw.complete("news", request("cheap"))
+        self.assertEqual([c[0][0] for c in self.upstream.calls], ["openrouter"])
 
     def test_quota_block_survives_restart(self):
         gw = self.make({("gemini", "gemini-flash-latest"): [GEMINI_DAY_QUOTA],
