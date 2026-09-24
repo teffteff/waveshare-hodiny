@@ -1,8 +1,7 @@
 {
   "projects": {
     "hodiny": "GEMINI_KEY_HODINY",
-    "radar": "GEMINI_KEY_RADAR",
-    "watch": "GEMINI_KEY_WATCH"
+    "radar": "GEMINI_KEY_RADAR"
   },
   "services": {
     "news": {
@@ -10,7 +9,7 @@
       "daily_cap": 150
     },
     "watch": {
-      "project": "watch",
+      "project": "hodiny",
       "daily_cap": 480,
       "gemini_safety_off": true
     },
