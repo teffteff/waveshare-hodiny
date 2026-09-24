@@ -142,6 +142,16 @@ alerts     dropin    alerts-web.service
 alerts     enable    alerts-web.service
 alerts     restart   alerts-web.service
 
+fleet      user      fleet /opt/fleet
+fleet      dir       /opt/fleet root:fleet 750
+fleet      dir       /opt/fleet/state fleet:fleet 700
+fleet      secret    /opt/fleet/fleet.env root:root 600
+fleet      file      infra/fleet/serve.py               /opt/fleet/serve.py
+fleet      unit      infra/fleet/fleet-web.service      /opt/fleet/fleet-web.service
+fleet      dropin    fleet-web.service
+fleet      enable    fleet-web.service
+fleet      restart   fleet-web.service
+
 backup     dir       /opt/backup root:root 700
 backup     dir       /opt/backup/data root:root 700
 backup     exec      infra/backup/backup.sh             /opt/backup/backup.sh

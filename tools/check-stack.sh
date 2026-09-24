@@ -24,12 +24,12 @@ REPO_ROOT_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "$REPO_ROOT_EARLY/.env" ]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD|RAIN_PASSWORD|ALERTS_PASSWORD)
+      CLOCK_HOST|FLEET_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD|RAIN_PASSWORD|ALERTS_PASSWORD)
         # eval kvůli $HOME v cestě ke klíči; hodnoty pocházejí z vlastního .env.
         [ -z "${!key:-}" ] && eval "$key=\"$value\""
         ;;
     esac
-  done < <(grep -E '^(CLOCK_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD|RAIN_PASSWORD|ALERTS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
+  done < <(grep -E '^(CLOCK_HOST|FLEET_HOST|CLOCK_SSH|CLOCK_SSH_KEY|AGENDA_PASSWORD|SETTINGS_PASSWORD|PLANES_PASSWORD|LIGHTNING_PASSWORD|SCHOOL_PASSWORD|SATELLITES_PASSWORD|WARNINGS_PASSWORD|RAIN_PASSWORD|ALERTS_PASSWORD)=' "$REPO_ROOT_EARLY/.env")
 fi
 
 HOST="${CLOCK_HOST:-}"
@@ -646,7 +646,7 @@ if [ "$MODE" = "--deep" ]; then
     # Hlídače obchodů a obce mají vlastní repozitáře (hlidac-novinek,
     # hlidac-ondrejov) i nasazení, ale stejný stroj, Caddy a ntfy: hlídá se
     # tady, že běží, obsah a shodu kódu si kontrolují samy (tools/check-deploy.sh).
-    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service alerts-web.service caddy.service backup.timer health.timer ha-update.timer watch.timer watch-web.service ou-watch.timer; do
+    for unit in news-web.service news.timer agenda-web.service agenda.timer planes-web.service lightning-web.service settings-web.service school-web.service satellites-web.service rain-web.service warnings-web.service alerts-web.service fleet-web.service caddy.service backup.timer health.timer ha-update.timer watch.timer watch-web.service ou-watch.timer; do
       state="$(ssh_run "systemctl is-active $unit")"
       if [ "$state" = "active" ]; then
         ok "$unit je active"

@@ -46,6 +46,7 @@
 #include "TmepService.h"
 #include "WeatherWarningService.h"
 #include "PushAlertsService.h"
+#include "RemoteAdminService.h"
 
 namespace {
 // Nastavení se dvěma sadami po devíti hodnotách, s plnými barevnými škálami a
@@ -531,8 +532,26 @@ String requestCookie(const char *name) {
   return String();
 }
 
+// Požadavky vzdálené správy (RemoteAdminService) přicházejí z úlohy v týchž
+// hodinách přes loopback a nesou klíč, který se vygeneruje při každém startu
+// a nikdy neopustí RAM. Kdo je poslal, se přihlásil na serveru heslem a TOTP;
+// heslo webu hodin se po nich proto nechce. Zvenku se na 127.0.0.1 nedostane
+// nikdo, klíč je pojistka navíc.
+char loopbackKey[33] = "";
+
+bool relayedRequest() {
+  if (loopbackKey[0] == '\0' ||
+      server.client().remoteIP() != IPAddress(127, 0, 0, 1))
+    return false;
+  const String key = server.header("X-Remote-Admin");
+  return key.length() == 32 &&
+         constantTimeEqual(reinterpret_cast<const uint8_t *>(key.c_str()),
+                           reinterpret_cast<const uint8_t *>(loopbackKey), 32);
+}
+
 bool webSessionAuthenticated() {
   if (!webPasswordEnabled) return true;
+  if (relayedRequest()) return true;
   const String token = requestCookie(WEB_SESSION_COOKIE);
   if (token.length() != 64) return false;
   for (WebSession &session : webSessions) {
@@ -1437,6 +1456,10 @@ void handleWebLogin() {
 }
 
 void handleWebPassword() {
+  if (relayedRequest()) {
+    sendError(403, F("Heslo webu jde změnit jen v domácí síti přímo na hodinách."));
+    return;
+  }
   const String action = server.arg("action");
   const bool expectedAction =
       (!webPasswordEnabled && action == "set") ||
@@ -5211,6 +5234,70 @@ void handleSettingsShareDelete() {
   sendJson(200, payload);
 }
 
+void sendRemoteAdminState() {
+  RemoteAdminSettings settings;
+  remoteAdminServiceSettings(settings);
+  RemoteAdminStatus status;
+  remoteAdminServiceStatus(status);
+  String payload = F("{\"ok\":true,\"enabled\":");
+  payload += settings.enabled ? F("true") : F("false");
+  payload += F(",\"url\":\"");
+  payload += jsonEscape(settings.url);
+  payload += F("\",\"tokenSet\":");
+  payload += settings.tokenSet ? F("true") : F("false");
+  payload += F(",\"connected\":");
+  payload += status.connected ? F("true") : F("false");
+  payload += F(",\"status\":\"");
+  payload += jsonEscape(status.message);
+  payload += F("\",\"secondsSinceContact\":");
+  if (status.secondsSinceContact == UINT32_MAX)
+    payload += F("null");
+  else
+    payload += status.secondsSinceContact;
+  payload += F(",\"requestsServed\":");
+  payload += status.requestsServed;
+  // Stránka otevřená přes server nastavení správy jen ukáže.
+  payload += F(",\"viaServer\":");
+  payload += relayedRequest() ? F("true") : F("false");
+  payload += '}';
+  sendJson(200, payload);
+}
+
+void handleRemoteAdminSave() {
+  if (relayedRequest()) {
+    sendError(403, F("Vzdálenou správu jde nastavit jen v domácí síti přímo na hodinách."));
+    return;
+  }
+  if (server.arg("action") == "forget") {
+    if (!remoteAdminServiceForget()) {
+      sendError(500, F("Nastavení vzdálené správy se nepodařilo smazat."));
+      return;
+    }
+    sendRemoteAdminState();
+    return;
+  }
+  const String url = server.arg("url");
+  const String token = server.arg("token");
+  switch (remoteAdminServiceSave(server.arg("enabled") == "1", url.c_str(),
+                                 token.c_str())) {
+    case RemoteAdminSaveResult::Ok:
+      sendRemoteAdminState();
+      return;
+    case RemoteAdminSaveResult::InvalidUrl:
+      sendError(400, F("Adresa serveru musí začínat https:// a nesmí obsahovat jméno, heslo, dotaz ani mezery."));
+      return;
+    case RemoteAdminSaveResult::InvalidToken:
+      sendError(400, F("Token není platný. Opiš ho celý z výpisu serve.py add-device."));
+      return;
+    case RemoteAdminSaveResult::MissingToken:
+      sendError(400, F("Pro zapnutí vzdálené správy doplň token hodin."));
+      return;
+    case RemoteAdminSaveResult::StorageFailed:
+      sendError(500, F("Nastavení vzdálené správy se nepodařilo uložit."));
+      return;
+  }
+}
+
 void handleSettingsShareForget() {
   if (!persistSettingsShareUrl("")) {
     sendError(500, F("Adresu serveru pro zálohy se nepodařilo smazat."));
@@ -5326,9 +5413,19 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
         static_cast<uint8_t>(CONFIGURATION_WEB_DISABLED)));
     preferences.end();
   }
+  {
+    uint8_t random[16];
+    esp_fill_random(random, sizeof(random));
+    static constexpr char HEX_DIGITS[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(random); ++i) {
+      loopbackKey[i * 2] = HEX_DIGITS[random[i] >> 4];
+      loopbackKey[i * 2 + 1] = HEX_DIGITS[random[i] & 0x0F];
+    }
+    loopbackKey[32] = '\0';
+  }
   const char *collectedHeaders[] = {"Cookie", "Origin", "Content-Type",
-                                    "Accept-Language"};
-  server.collectHeaders(collectedHeaders, 4);
+                                    "Accept-Language", "X-Remote-Admin"};
+  server.collectHeaders(collectedHeaders, 5);
   server.on("/", HTTP_GET, handleRoot);
   server.on("/ui-language.js", HTTP_GET, []() {
     addSecurityHeaders();
@@ -5394,6 +5491,12 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   });
   registerBoundedPost("/api/backup/share/forget", []() {
     if (requireConfigurationAccess()) handleSettingsShareForget();
+  });
+  server.on("/api/remote-admin", HTTP_GET, []() {
+    if (requireConfigurationAccess()) sendRemoteAdminState();
+  });
+  registerBoundedPost("/api/remote-admin", []() {
+    if (requireConfigurationAccess()) handleRemoteAdminSave();
   });
   registerBoundedPost("/api/tmep/remove", []() {
     if (requireConfigurationAccess()) handleTmepRemove();
@@ -5540,6 +5643,8 @@ bool configurationWebClearPassword() {
 }
 
 void configurationWebLockForTest() { lockConfiguration(); }
+
+const char *configurationWebLoopbackKey() { return loopbackKey; }
 
 void configurationWebUnlockForTest() {
   if (selectedWebMode != CONFIGURATION_WEB_DISABLED)

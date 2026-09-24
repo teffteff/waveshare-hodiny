@@ -1,3 +1,12 @@
+{
+	# Jen HTTP/1.1 a HTTP/2. HTTP/3 (QUIC) potrebuje UDP 443, ktere firewall
+	# serveru nepousti; Caddy ho presto nabizel v Alt-Svc a Chrome se k nemu
+	# porad pokousel. Kdyby se UDP 443 nekdy otevrelo, staci radek smazat.
+	servers {
+		protocols h1 h2
+	}
+}
+
 {{DOMAIN}} {
 	# Vsechno na tomhle jmene jde jen pres HTTPS (port 80 jen presmerovava),
 	# takze prohlizec, ktery tu jednou byl, uz se na http:// nezepta a heslo
@@ -5,6 +14,9 @@
 	# Bez includeSubDomains: nadrazena domena patri poskytovateli dynamicke DNS,
 	# jeji dalsi poddomeny nejsou nase.
 	header Strict-Transport-Security "max-age=31536000"
+	# Prohlizece si HTTP/3 z drivejsiho Alt-Svc pamatuji az mesic (Chrome ho
+	# mel ulozeny i s 155 neuspesnymi pokusy); "clear" je prinuti zapomenout.
+	header Alt-Svc "clear"
 	handle /top.xml {
 		reverse_proxy 127.0.0.1:8088
 	}
@@ -122,6 +134,26 @@
 		}
 		reverse_proxy 127.0.0.1:8098
 	}
+	# Stranky pro prohlizec (nastaveni hodin, novinky) bydli na vlastnim jmenu
+	# {{FLEET_DOMAIN}}. Tady by je obsluhoval service worker Home Assistanta
+	# (scope /): ukazoval by stranky z mezipameti o navsteva pozde (prihlaseni
+	# bez zmeny, stary token proti CSRF) a sdilely by s HA uloziste prohlizece.
+	# Stare adresy presmeruji i s cestou.
+	redir /fleet https://{{FLEET_DOMAIN}}/ permanent
+	handle_path /fleet/* {
+		redir https://{{FLEET_DOMAIN}}{uri} permanent
+	}
+	redir /novinky https://{{FLEET_DOMAIN}}/novinky/ permanent
+	handle_path /novinky/* {
+		redir https://{{FLEET_DOMAIN}}/novinky{uri} permanent
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8123
+	}
+}
+
+{{FLEET_DOMAIN}} {
+	header Strict-Transport-Security "max-age=31536000"
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
 	# heslo; hash je v /etc/caddy/caddy.env, ne tady. Bez lomitka na konci by
@@ -134,7 +166,16 @@
 		uri strip_prefix /novinky
 		reverse_proxy 127.0.0.1:8091
 	}
+	# Nastaveni vsech hodin pres server (infra/fleet, FLEET_PREFIX prazdny).
+	# Hodiny se sem pripojuji samy a server jim predava pozadavky z prohlizece,
+	# takze kdo je tu prihlaseny, nastavuje hodiny doma. Heslo a kod TOTP resi
+	# sama sluzba (basic_auth by kolidoval s tokenem hodin v Authorization).
+	# Odpoved hodin nese stranku nastaveni (kolem 80 kB gzipem).
+	respond /fleet-status 404
 	handle {
-		reverse_proxy 127.0.0.1:8123
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy 127.0.0.1:8099
 	}
 }

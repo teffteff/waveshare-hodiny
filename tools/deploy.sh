@@ -54,6 +54,7 @@ if [ -f .env ]; then
   set -a; . ./.env; set +a
 fi
 : "${CLOCK_HOST:?Chybí CLOCK_HOST v .env}"
+: "${FLEET_HOST:?Chybí FLEET_HOST v .env (vlastní jméno pro nastavení hodin a novinky)}"
 : "${CLOCK_SSH:?Chybí CLOCK_SSH v .env}"
 : "${CLOCK_SSH_KEY:?Chybí CLOCK_SSH_KEY v .env}"
 
@@ -203,7 +204,7 @@ step "Nahrání do ~/deploy-stage"
 manifest_files "${SERVICES[@]}" | while read -r repo _; do
   mkdir -p "$stage/$(dirname "$repo")"
   if [ "$repo" = "infra/caddy/Caddyfile" ]; then
-    sed "s/{{DOMAIN}}/$CLOCK_HOST/g" "$repo" > "$stage/$repo"
+    sed -e "s/{{DOMAIN}}/$CLOCK_HOST/g" -e "s/{{FLEET_DOMAIN}}/$FLEET_HOST/g" "$repo" > "$stage/$repo"
   else
     cp "$repo" "$stage/$repo"
   fi
