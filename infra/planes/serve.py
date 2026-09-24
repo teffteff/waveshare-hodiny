@@ -10,6 +10,11 @@ Tvar odpovedi zustava zamerne stejny jako u adsb.fi ({"ac":[...]}), takze
 firmware nepotrebuje druhy parser a da se prepnout zpatky na primy zdroj
 pouhym vymazanim adresy v nastaveni.
 
+S ?full=1 jde odpoved adsb.fi dal cela, i s letadly na zemi a bez stropu
+stovky a pul. Tu cte sberac statistik (samostatny repozitar radar): potrebuje
+i zataceni, zvolenou vysku, kategorii a vitr, ktere hodinam k nicemu nejsou.
+Obe varianty se delaji z tehoz stazeni, takze adsb.fi o nich nevi.
+
 Odpovedi se kratce drzi v pameti. Vic hodin v jedne domacnosti tak sdili jedno
 stazeni a adsb.fi (verejne API zdarma) dostane min dotazu, ne vic. Nic se
 nestahuje dopredu: kdyz se nikdo neptá, server mlci.
@@ -89,7 +94,7 @@ KEPT_KEYS = (
     "alt_geom",
 )
 
-_cache: dict[tuple[float, float, float], tuple[float, bytes]] = {}
+_cache: dict[tuple[float, float, float], tuple[float, dict]] = {}
 _cache_lock = Lock()
 _route_cache: dict[tuple[str, float, float], tuple[float, bytes | None]] = {}
 _route_lock = Lock()
@@ -123,15 +128,23 @@ def _trim(payload: dict) -> bytes:
     return json.dumps(body, separators=(",", ":")).encode("utf-8")
 
 
-def _fetch(latitude: float, longitude: float, distance: float) -> bytes:
+def _full(payload: dict) -> bytes:
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
+def _fetch(latitude: float, longitude: float, distance: float) -> dict:
     url = f"{UPSTREAM}/lat/{latitude:.5f}/lon/{longitude:.5f}/dist/{distance:.1f}"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT_SECONDS) as response:
         payload = json.loads(response.read())
-    return _trim(payload)
+    if not isinstance(payload, dict):
+        raise ValueError("expected a JSON object")
+    return payload
 
 
-def _cached(latitude: float, longitude: float, distance: float) -> tuple[bytes | None, str]:
+def _cached(latitude: float, longitude: float, distance: float) -> tuple[dict | None, str]:
+    # V pameti je cela odpoved, oriznuti az pri odeslani: hodiny i sberac
+    # statistik se stejnym dotazem pak sdileji jedno stazeni.
     # Klic se zaokrouhluje na dve desetinna mista, tedy zhruba kilometr. Hodiny
     # posilaji porad tutez polohu, takze presnejsi klic by jen tristil cache.
     key = (round(latitude, 2), round(longitude, 2), distance)
@@ -141,20 +154,20 @@ def _cached(latitude: float, longitude: float, distance: float) -> tuple[bytes |
     if entry is not None and now - entry[0] < CACHE_SECONDS:
         return entry[1], "cache"
     try:
-        body = _fetch(latitude, longitude, distance)
+        payload = _fetch(latitude, longitude, distance)
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         if entry is not None and now - entry[0] < STALE_SECONDS:
             return entry[1], "stale"
         return None, "error"
     with _cache_lock:
-        _cache[key] = (now, body)
+        _cache[key] = (now, payload)
         # Hodiny maji ctyri dosahy a jednu polohu; vic nez hrst klicu znamena,
         # ze se na server dobyva nekdo jiny, a pamet mu patrit nema.
         if len(_cache) > 32:
             oldest = sorted(_cache.items(), key=lambda item: item[1][0])
             for stale_key, _ in oldest[: len(_cache) - 32]:
                 _cache.pop(stale_key, None)
-    return body, "fresh"
+    return payload, "fresh"
 
 
 def _trim_route(payload: dict) -> bytes:
@@ -262,10 +275,12 @@ class Handler(BaseHTTPRequestHandler):
         # vraci megabajty a tenhle server nema byt cesta, jak ho o ne pripravit.
         distance = min(distance, MAX_DISTANCE_NM)
 
-        body, source = _cached(latitude, longitude, distance)
-        if body is None:
+        payload, source = _cached(latitude, longitude, distance)
+        if payload is None:
             self._send(502, b"upstream unavailable\n")
             return
+        full = query.get("full", [""])[0] == "1"
+        body = _full(payload) if full else _trim(payload)
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

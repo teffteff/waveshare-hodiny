@@ -464,6 +464,13 @@ V hodinách je pole **Vlastní zdroj letadel** na záložce Letadla. Prázdné
 znamená ptát se adsb.fi přímo, takže obrazovka funguje i bez serveru — a po
 povýšení firmwaru zůstane prázdné, aby se radar sám od sebe nepřesměroval.
 
+### Celá data pro statistiky
+
+`/planes.json?…&full=1` vrátí odpověď adsb.fi celou — i letadla na zemi, bez
+stropu 150 a se všemi klíči (zatáčení, zvolená výška, kategorie, vítr). Čte ji
+sběrač statistik z repozitáře `radar` po loopbacku. Obě varianty se dělají
+z téhož stažení v cache, takže adsb.fi nevidí dotaz navíc.
+
 ### Heslo k letadlům
 
 Od 13. 9. 2026 je `/planes.json` za `basic_auth` s **vlastním heslem**
@@ -812,6 +819,12 @@ Push jde na ntfy JSONem na `NTFY_URL`, stejně jako u hlídání obchodů
 letadla dala v aplikaci ztlumit zvlášť. **Stav**:
 `curl -s 127.0.0.1:8098/alerts/status` (hodiny, stav deště, počet známých
 typů, poslední chyba); ven nevede.
+
+Každý push na letadlo se zapíše jako řádek do `state/events.jsonl`: stav
+letadla, u nízkého přeletu i předpověď (vzdálenost, výška, za kolik sekund)
+a nastavený práh. `curl -s '127.0.0.1:8098/alerts/events?since=0'` vrací
+posledních 500; čte je sběrač statistik (soukromý repozitář `radar`), který
+z nahrané dráhy pozná, jestli přelet opravdu nastal. Ven taky nevede.
 
 Zavedení (jednou):
 

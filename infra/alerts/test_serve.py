@@ -280,6 +280,36 @@ class WatcherTest(unittest.TestCase):
         with mock.patch.object(serve, "get_json", side_effect=OSError("offline")):
             self.assertIsNone(self.watcher.elevation_for(failing))
 
+    def test_low_pass_is_recorded_with_prediction(self):
+        plane = plane_at(-3, 0, gs=120, track=0, flight="OKABC",
+                         alt_geom=(300 + 45 + 400) / 0.3048)
+        self.run_planes([plane], NOON)
+        self.run_planes([plane], NOON + 10)
+        events = self.watcher.events(0)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["kinds"], ["low"])
+        self.assertTrue(event["sent"])
+        self.assertEqual(event["aircraft"]["flight"], "OKABC")
+        self.assertEqual(event["low"]["radius"], 1500)
+        self.assertEqual(event["low"]["height"], 500)
+        self.assertLess(event["low"]["distance_m"], 100)
+        self.assertAlmostEqual(event["low"]["height_m"], 300, delta=2)
+        self.assertAlmostEqual(event["low"]["seconds"], 3000 / (120 * serve.KNOT_TO_MS), delta=1)
+        self.assertEqual(self.watcher.events(NOON), [])
+
+    def test_military_event_has_no_prediction(self):
+        self.run_planes([plane_at(10, 0, dbFlags=1, alt_geom=20000)], NOON)
+        event = self.watcher.events(0)[0]
+        self.assertEqual(event["kinds"], ["military"])
+        self.assertNotIn("low", event)
+
+    def test_events_skip_torn_line(self):
+        self.run_planes([plane_at(10, 0, dbFlags=1, alt_geom=20000)], NOON)
+        with (Path(self.directory.name) / "events.jsonl").open("a") as handle:
+            handle.write('{"ts": 17')
+        self.assertEqual(len(self.watcher.events(0)), 1)
+
     def test_config_survives_restart(self):
         reloaded = serve.Watcher(Path(self.directory.name))
         self.assertIn("aabbccddeeff", reloaded.configs)
