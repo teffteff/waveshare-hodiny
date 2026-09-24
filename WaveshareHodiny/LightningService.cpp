@@ -231,8 +231,16 @@ long download(const char *url, int &httpStatus) {
 }
 
 // Vrací true při úspěchu; cursor se pak posune na čas serveru.
+// Síť držela jiná služba. To není chyba serveru: zkusí se to brzy znovu
+// a do počítání chyb pro prodlužování pauzy se to nepočítá. Dřív se to
+// počítalo a po uložení nastavení, kdy stahují všechny služby naráz, pak
+// služba čekala dvojnásobek periody (výstrahy 20 minut, déšť 10).
+constexpr uint32_t BUSY_RETRY_MS = 15000;
+bool networkBusy = false;
+
 bool fetchStrokes(const char *baseUrl, float latitude, float longitude,
                   float radiusKm, double &cursor) {
+  networkBusy = false;
   char url[CLOCK_LIGHTNING_URL_LENGTH + 96];
   if (!lightningFeedBuildUrl(baseUrl, latitude, longitude, radiusKm, cursor, url,
                              sizeof(url))) {
@@ -243,6 +251,7 @@ bool fetchStrokes(const char *baseUrl, float latitude, float longitude,
   long length = -1;
   {
     NetworkOperationGuard guard(NETWORK_GUARD_MS);
+    networkBusy = !guard;
     if (!guard) {
       setStatus("Síť je zaneprázdněná");
       return false;
@@ -374,9 +383,13 @@ void lightningTask(void *) {
 
     const bool ok = fetchStrokes(current.url, latitude, longitude, radiusKm,
                                  cursor);
-    failures = ok ? 0 : failures + 1;
     uint32_t wait = period;
-    if (!ok) {
+    if (ok) {
+      failures = 0;
+    } else if (networkBusy) {
+      wait = BUSY_RETRY_MS;
+    } else {
+      ++failures;
       wait = period << (failures < 4 ? failures : 4);
       if (wait > MAX_BACKOFF_MS) wait = MAX_BACKOFF_MS;
     }
