@@ -15,6 +15,12 @@ Googlu primo, ale tady, a to ve formatu OpenAI chat/completions:
 Odpoved je chat.completion jako od OpenAI; "model" v ni rika, kdo opravdu
 odpovedel (gemini/gemini-flash-latest, openrouter/openai/gpt-4.1-mini).
 
+Uroven "search" hleda na webu (OpenRouter, plugin web s Exa). Je placena za
+kazde hledani, proto ji smi jen sluzby, ktere ma v config.json u sebe, a jen
+tolikrat denne. Odkazy, ze kterych model vychazel, vraci message.annotations
+(url_citation s url a title). JSON format se k ni neposila: s vynucenym
+schematem model 24. 9. 2026 vysledky hledani skoro nepouzil.
+
 Proc brana: 24. 9. 2026 vratil Google 503 ("high demand") vsem modelum ve dvou
 behech zprav po sobe a hodiny ukazovaly ctyri hodiny stare zpravy. Kazda
 sluzba mela vlastni opakovani, vlastni denni limit a vlastni pamet vycerpane
@@ -99,6 +105,7 @@ class Answer:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
+    annotations: list | None = None
 
 
 class Failure(Exception):
@@ -226,6 +233,8 @@ def call_openrouter(model: str, key: str, request: dict, post, now: float,
     # require_parameters: jen poskytovatele, kteri umi response_format, jinak
     # by OpenRouter schema potichu zahodil. usage.include vrati cenu dotazu.
     body.update(model=model, provider={"require_parameters": True}, usage={"include": True})
+    if settings.get("plugins"):
+        body["plugins"] = settings["plugins"]
     status, payload = post(OPENROUTER_URL, body,
                            {"Authorization": f"Bearer {key}", "X-Title": "hodiny-llm"})
     if status == 200 and payload.get("choices"):
@@ -237,7 +246,8 @@ def call_openrouter(model: str, key: str, request: dict, post, now: float,
             raise Failure("other", f"neuplna odpoved ({choice['finish_reason']})")
         usage = payload.get("usage") or {}
         return Answer(text, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
-                      float(usage.get("cost") or 0.0))
+                      float(usage.get("cost") or 0.0),
+                      (choice.get("message") or {}).get("annotations"))
     if status == 200:  # chyba poskytovatele za OpenRouterem prijde i s 200
         code = (payload.get("error") or {}).get("code")
         status = code if isinstance(code, int) else 502
@@ -271,6 +281,16 @@ def parse_tokens(value: str) -> dict[str, str]:
         if service and token:
             tokens[token] = service
     return tokens
+
+
+def tier_steps(tier) -> list:
+    """Kroky urovne: [{"step": "poskytovatel:model", "plugins": [...]}, ...].
+
+    V config.json je uroven bud seznam retezcu, nebo objekt {"steps": [...],
+    "services": {"sluzba": denni strop}}; krok muze byt retezec nebo objekt.
+    """
+    steps = tier["steps"] if isinstance(tier, dict) else tier
+    return [s if isinstance(s, dict) else {"step": s} for s in steps]
 
 
 def parse_request(body: dict, tiers: dict) -> dict:
@@ -382,6 +402,17 @@ class Gateway:
         self._prune(now, day)
         tier = request["model"]
         settings = self.services[service]
+        limits = (self.tiers[tier].get("services") if isinstance(self.tiers[tier], dict)
+                  else None)
+        if limits is not None and service not in limits:
+            self._log_call(now, day, service, tier, "forbidden", None, started)
+            return 403, error_body(f"uroven {tier} sluzba {service} nesmi", "forbidden")
+        if limits is not None and self._query(
+                "SELECT COUNT(*) FROM calls WHERE day = ? AND service = ? AND tier = ?",
+                (day, service, tier))[0][0] >= limits[service]:
+            self._log_call(now, day, service, tier, "capped", None, started)
+            return 429, error_body(f"sluzba {service} vycerpala denni strop urovne {tier} "
+                                   f"({limits[service]})", "daily_cap")
         calls = self._query("SELECT COUNT(*) FROM calls WHERE day = ? AND service = ?",
                             (day, service))[0][0]
         if calls >= settings["daily_cap"]:
@@ -391,9 +422,9 @@ class Gateway:
         wants_json = (request.get("response_format") or {}).get("type") in ("json_object",
                                                                              "json_schema")
         errors = []
-        chain = self.tiers[tier]
+        chain = tier_steps(self.tiers[tier])
         for position, step in enumerate(chain):
-            provider, model = step.split(":", 1)
+            provider, model = step["step"].split(":", 1)
             if position < len(chain) - 1 and self.clock() - started > CALL_BUDGET_S:
                 errors.append(f"{provider}/{model}: preskoceno, dotaz uz trva prilis dlouho")
                 continue
@@ -415,7 +446,7 @@ class Gateway:
                 attempt_start = self.clock()
                 try:
                     answer = PROVIDERS[provider](model, key, request, self.post, self.clock(),
-                                                 settings)
+                                                 {**settings, **step})
                     if wants_json:
                         answer.text = strip_fences(answer.text)
                         try:
@@ -456,7 +487,9 @@ class Gateway:
                     "created": int(now),
                     "model": answered_by,
                     "choices": [{"index": 0, "finish_reason": "stop",
-                                 "message": {"role": "assistant", "content": answer.text}}],
+                                 "message": {"role": "assistant", "content": answer.text,
+                                             **({"annotations": answer.annotations}
+                                                if answer.annotations else {})}}],
                     "usage": {"prompt_tokens": answer.prompt_tokens,
                               "completion_tokens": answer.completion_tokens,
                               "total_tokens": answer.prompt_tokens + answer.completion_tokens,
