@@ -178,6 +178,17 @@ def check_alerts() -> str | None:
     return f"smycka letadel stoji {age:.0f} s" if age > 120 else None
 
 
+def check_radar() -> str | None:
+    # Sberac letadel (repozitar radar) muze bezet a pritom nic nesbirat, treba
+    # kdyz planes-web vraci chyby. systemd to nepozna, stavovy soubor ano.
+    data = fetch_json(local(8100, "/api/status"))
+    collector = data.get("collector") or {}
+    age = time.time() - (collector.get("lastOk") or 0)
+    if age > 300:
+        return f"sber letadel stoji {age:.0f} s {collector.get('lastError', '')}".strip()
+    return None
+
+
 def check_http(port: int, path: str) -> str | None:
     status, _ = fetch(local(port, path))
     return None if status == 200 else f"{path} vraci {status}"
@@ -236,6 +247,7 @@ CHECKS = {
     "vystrahy": check_warnings,
     "druzice": check_satellites,
     "upozorneni": check_alerts,
+    "radar": check_radar,
     "zalohy-nastaveni": lambda: check_http(8092, "/settings/"),
     "hlidac-obchodu": lambda: check_http(8091, "/health"),
     "home-assistant": lambda: check_http(8123, "/"),
