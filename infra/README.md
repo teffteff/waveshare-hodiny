@@ -1615,7 +1615,11 @@ thinking_budget=0` s 400. Proto se používá alias `gemini-flash-latest` a žá
 konfigurace thinkingu se neposílá. Přetížení (503) je běžné, každý model se
 zkouší dvakrát a pak se jde na záložní. Vyčerpaná kvóta (429) se neopakuje
 a jde se rovnou na další model; ten si běh pamatuje a na zbylé polohy ho už
-nezkouší. Free tier má u `gemini-flash-latest` jen **20 dotazů denně** (běh
+nezkouší. Když přetížení trefí všechny modely najednou (22. a 24. 9. 2026
+vrátily 503 všechny tři během 25 s), zkusí se celá řada znovu po 30 a 90 s.
+Pak se běh přeskočí **bez chyby**: předchozí soubory zůstanou, `news.service`
+skončí úspěšně a `OnFailure=` kvůli výpadku Googlu nepošle push. Dlouhý
+výpadek nahlásí hodinová kontrola přes stáří kanálu (14 h). Free tier má u `gemini-flash-latest` jen **20 dotazů denně** (běh
 je jeden společný výběr plus jeden za polohu, osm běhů denně to přečerpá
 kolem poledne), `gemini-flash-lite-latest` 500. Ráno proto vybírá Flash
 a zbytek dne Lite. Limity jsou vidět v AI Studiu na stránce Usage.
