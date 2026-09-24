@@ -44,6 +44,13 @@ bool crashLogAbnormalReset(uint8_t resetReason);
 bool crashLogRecord(const CrashRecord *dump, uint8_t resetReason,
                     const char *firmwareVersion);
 
+// Verze, kterou zapsat k výpisu: běžící verze jen tehdy, když výpis pochází
+// z téhož sestavení (elfSha výpisu je začátkem SHA běžícího ELF). Pád těsně
+// před OTA restartem patří předchozímu firmwaru, a verze nového by pak
+// poslala tools/decode-crash.sh pro špatný ELF; proto prázdný text.
+const char *crashLogFirmwareFor(const char *dumpElfSha, const char *runningElfSha,
+                                const char *runningVersion);
+
 // {"count":N,"last":{...}} nebo {"count":0,"last":null}.
 String crashLogJson();
 

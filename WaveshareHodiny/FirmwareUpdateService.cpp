@@ -22,6 +22,13 @@ constexpr size_t DOWNLOAD_BUFFER_SIZE = 4096;
 SemaphoreHandle_t statusMutex = nullptr;
 FirmwareUpdateSnapshot status;
 FirmwareUpdateLifecycleCallback lifecycleCallback = nullptr;
+// Kontrola běží v jedné trvalé úloze, která čeká na požadavek. Dřív se pro
+// každou kontrolu zakládala nová úloha se zásobníkem v PSRAM a na konci se
+// sama smazala přes vTaskDeleteWithCaps(nullptr). ESP-IDF to nedoporučuje
+// a pomocná úloha prvTaskDeleteWithCapsTask při tom 24. 9. 2026 na barvpravo
+// spadla (panika po `clock-sync.py check`).
+TaskHandle_t checkTaskHandle = nullptr;
+bool checkInstallRequested = false;  // pod statusMutex
 
 struct PendingFirmwareInstall {
   char url[256] = "";
@@ -401,16 +408,23 @@ void installTask(void *) {
   vTaskDelete(nullptr);
 }
 
-void updateCheckTask(void *parameter) {
-  const bool installWhenAvailable = reinterpret_cast<uintptr_t>(parameter) != 0;
-  const bool installRequested = checkFirmware(installWhenAvailable);
-  if (installRequested &&
-      xTaskCreatePinnedToCore(installTask, "firmware-install", 12288, nullptr,
-                              1, nullptr, 0) != pdPASS) {
-    setMessage(FirmwareUpdateState::Failed,
-               "Instalační OTA úlohu se nepodařilo spustit.", false);
+void updateCheckTask(void *) {
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    lockStatus();
+    const bool installWhenAvailable = checkInstallRequested;
+    unlockStatus();
+    const bool installRequested = checkFirmware(installWhenAvailable);
+    // Instalace má vlastní úlohu se zásobníkem v interní RAM: zápis do flash
+    // ze zásobníku v PSRAM skončí assertem. Ta se maže obyčejným vTaskDelete,
+    // což u úlohy bez WithCaps nevadí.
+    if (installRequested &&
+        xTaskCreatePinnedToCore(installTask, "firmware-install", 12288, nullptr,
+                                1, nullptr, 0) != pdPASS) {
+      setMessage(FirmwareUpdateState::Failed,
+                 "Instalační OTA úlohu se nepodařilo spustit.", false);
+    }
   }
-  vTaskDeleteWithCaps(nullptr);
 }
 }  // namespace
 
@@ -441,18 +455,22 @@ bool firmwareUpdateServiceRequestCheck(bool installWhenAvailable) {
   strlcpy(status.message, "Kontroluji novou verzi…",
           sizeof(status.message));
   unlockStatus();
+  lockStatus();
+  checkInstallRequested = installWhenAvailable;
+  unlockStatus();
   // Kontrola metadat nezapisuje do flash, proto může mít zásobník v PSRAM a
   // ponechat interní RAM TLS handshaku. Samotnou instalaci po kontrole převezme
   // oddělený task s interním zásobníkem, který je bezpečný během zápisu flash.
-  const BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
-      updateCheckTask, "firmware-check", 12288,
-      reinterpret_cast<void *>(installWhenAvailable ? 1 : 0), 1, nullptr, 0,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (created != pdPASS) {
+  if (checkTaskHandle == nullptr &&
+      xTaskCreatePinnedToCoreWithCaps(updateCheckTask, "firmware-check", 12288,
+                                      nullptr, 1, &checkTaskHandle, 0,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    checkTaskHandle = nullptr;
     setMessage(FirmwareUpdateState::Failed,
                "OTA úlohu se nepodařilo spustit.", false);
     return false;
   }
+  xTaskNotifyGive(checkTaskHandle);
   return true;
 }
 
