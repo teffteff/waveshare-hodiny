@@ -1423,11 +1423,45 @@ věcí na serveru nemá kopii nikde jinde:
 | Konfigurace Home Assistanta | `/path/to/your/config` (bind-mount kontejneru) | `configuration.yaml`, `secrets.yaml`, automatizace a hlavně `.storage` — registr entit, uživatelé, tokeny a integrace naklikané v UI. Bez `.storage` je obnovené HA prázdné, i když YAML sedí. |
 | Historie senzorů | `home-assistant_v2.db` | Grafy a statistiky. Šablonové senzory na ní nestojí. |
 | Stav hlídačů | `/var/lib/watch/state.db`, `/var/lib/ou-watch/state.db` | Co už hlídač viděl. Bez toho přijde po restartu buď záplava „novinek“, nebo se dávka tiše ztratí. |
-| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě `watch.env`, `backup.env` (adresa PAR) | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
+| Statistiky | `/var/lib/radar/radar.sqlite`, `/var/lib/hodiny-stats/stats.sqlite`, `/opt/llm/state/usage.sqlite` | Sbírají se jen jednou; historie letů a funkcí hodin se znovu stáhnout nedá. Velké tabulky radaru viz „Trvalý archiv“. |
+| Malý stav služeb | `/opt/fleet/state` (registrované hodiny), `/opt/settings/data`, `/opt/alerts/state`, `/var/lib/school`, `/var/lib/health` | Bez `devices.json` by se musely znovu registrovat všechny hodiny. |
+| Fotky hlídačů | `/var/lib/watch/cache/images`, `/var/lib/ou-watch/cache/images` | E-shop fotku po prodeji smaže. Nejsou v nočním archivu, viz „Trvalý archiv“. |
+| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě `watch.env`, `backup.env` (adresa PAR), `fleet.env` (heslo a TOTP), `llm.env`, `radar.env`, `stats.env` a `ntfy.env` (hodiny-stats) | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
 
-Naopak se zálohovat nemusí: dráhy družic a registr poloh zpráv se stáhnou
-samy, certifikáty si Caddy vyžádá znovu přes ACME a kód služeb je v `infra/`
-a v repozitářích hlídačů (`hlidac-novinek`, `hlidac-ondrejov`).
+Naopak se zálohovat nemusí: dráhy družic, registr poloh zpráv a jízdní řád
+autobusů se stáhnou samy, certifikáty si Caddy vyžádá znovu přes ACME a kód
+služeb je v `infra/` a v repozitářích služeb. Seznam toho, co se vědomě
+vynechává, je `BACKUP_IGNORE` v `backup.sh`. Světy Minecraftu v `/home/opc`
+(jednotky GB) se nezálohují vůbec.
+
+### Nová služba nebo statistika: co udělat se zálohou
+
+Každá služba, která něco ukládá, musí být v některém seznamu v
+`infra/backup/backup.sh` — ne v `backup.env` na serveru, aby ho měl i obnovený
+stroj:
+
+| Co služba ukládá | Seznam |
+|---|---|
+| hesla, tokeny (`*.env`, klíče) | `BACKUP_SECRETS` |
+| sqlite databázi | `BACKUP_SQLITE` (nikdy ne kopií `cp`) |
+| tabulku, která roste bez konce (body, měření) | navíc `BACKUP_MONTHLY` jako `db:tabulka:sloupec_s_časem` |
+| malé JSON soubory, stav | `BACKUP_SERVICE_STATE` |
+| neměnné soubory, které jen přibývají (fotky) | `BACKUP_PHOTOS` |
+| nic, co by se nedalo stáhnout znovu | `BACKUP_IGNORE` |
+
+**Nemusí se na to pamatovat.** Každá noční záloha projde `/opt/<služba>/`
+(`*.env`, `key.json`, `*.sqlite`, `*.db`), `/opt/<služba>/state`,
+`/opt/<služba>/data` a `/var/lib/<služba>` a co nekryje žádný seznam, zapíše do
+`MANIFEST` („Bez zálohy“) — a `backup.service` skončí chybou, takže přijde
+push. Totéž na požádání:
+
+```sh
+ssh … 'sudo sh -c "set -a; . /opt/backup/backup.env; /opt/backup/backup.sh --audit"'
+```
+
+Databázi, kterou kryje jen kopie souborů, hlásí zvlášť (`[sqlite mimo
+BACKUP_SQLITE]`). Data mimo tyhle cesty (třeba v domovském adresáři) audit
+nevidí.
 
 **Na serveru** běží `backup.timer` každou noc ve 03:20 UTC — mimo okna
 `news.timer` i `agenda.timer`, aby se snímky sqlite nepraly o zámek.
@@ -1509,8 +1543,8 @@ zašifrovanou kopii do **OCI Object Storage** (Frankfurt, bucket
   PAR má datum vypršení — po něm nahrávání selže, `backup.service` skončí
   chybou a přijde push. Pak stačí v konzoli vydat nový a přepsat adresu.
 - **Mazání** obstarává pravidlo životního cyklu v bucketu (objekty starší než
-  30 dní). Jedna kopie má kolem 12 MB, měsíc tedy asi 360 MB; Always Free kryje
-  20 GB.
+  30 dní). Jedna kopie má kolem 20 MB, měsíc tedy asi 600 MB; Always Free kryje
+  20 GB. Co se mazat nesmí, jde do trvalého archivu (viz níž).
 - Když nahrání selže, místní záloha už je hotová a prořezaná; jednotka jen
   skončí chybou, aby o tom přišel push.
 
@@ -1520,6 +1554,51 @@ Create Rule** „Delete“, objekty starší než 30 dní; **Pre-Authenticated R
 Create**, cíl *Bucket*, *Permit object writes*, bez výpisu objektů, s dlouhým
 vypršením. Adresa se ukáže jen jednou; končí na `/o/` a patří do `.env` jako
 `BACKUP_OFFSITE_URL` a do `/opt/backup/backup.env`.
+
+### Trvalý archiv (měsíce radaru, fotky)
+
+Co roste bez konce, do nočního archivu nepatří: s radarem (~13 MB denně) by
+byl každý archiv o 5 MB větší než předchozí a za půl roku by 30 kopií v bucketu
+vyčerpalo Always Free. Proto:
+
+- **Uzavřený měsíc** tabulek z `BACKUP_MONTHLY` (radar: `points`,
+  `upper_air`) odejde den po svém konci **jednou** jako vlastní zašifrovaný
+  archiv `majnr/monthly/radar-points-2026-10-….tar.gz.gpg` do
+  `BACKUP_ARCHIVE_URL`, s `MANIFEST`em a příkazem k obnově. Kopie leží 90 dní
+  i v `/opt/backup/data/monthly/`, odkud si ji Mac stáhne do
+  `~/waveshare-zalohy/monthly/` (tam se nemaže).
+- Noční snímek databáze ten měsíc **vynechá teprve potom**, co nahrání prošlo
+  a počet řádků sedí s evidencí v `/opt/backup/ledger/monthly/`. Selhané
+  nahrání = měsíc zůstává v nočním archivu a jednotka skončí chybou. Když do
+  uzavřeného měsíce později něco přibude nebo ubude, odejde znovu pod novým
+  jménem a starší kopie zůstává.
+- **Fotky** odcházejí po jedné, každá jednou (jméno je otisk obsahu),
+  nešifrované — jsou to obrázky z e-shopů. Evidence v
+  `/opt/backup/ledger/photos/`. Hlídač fotky po 120 dnech maže, archiv ne.
+  Mac si je stahuje `rsync`em do `~/waveshare-zalohy/photos/`, bez mazání.
+- Ztráta `/opt/backup/ledger` nevadí, všechno jen odejde znovu.
+
+**Proč zvláštní bucket:** `hodiny-zalohy` maže všechno starší než 30 dní.
+Archiv je jediná kopie měsíců radaru mimo stroj, takže patří do bucketu
+**bez** pravidla životního cyklu. Zřízení (jednou): **Create Bucket**
+`hodiny-archiv` (Standard, soukromý, bez Lifecycle rules); **Pre-Authenticated
+Requests → Create**, cíl *Bucket*, *Permit object writes*, bez výpisu, dlouhé
+vypršení. Adresu (končí na `/o/`) dát do `/opt/backup/backup.env` a do
+kořenového `.env` jako `BACKUP_ARCHIVE_URL`. Dokud chybí, radar zůstává
+v nočním archivu celý a fotky se hlásí jako nezálohované.
+
+**Obnova radaru:** vrátit `radar.sqlite` z noční zálohy, pak každý měsíční
+archiv rozšifrovat (`tools/decrypt-backup.sh`), rozbalit a přidat řádky podle
+jeho `MANIFEST`u:
+
+```sh
+sqlite3 /var/lib/radar/radar.sqlite "ATTACH 'files/radar-points-2026-10.sqlite' AS m; INSERT OR IGNORE INTO points SELECT * FROM m.points;"
+```
+
+**Místo:** měsíc radaru je zabalený kolem 150 MB, fotek přibývá ~120 MB týdně
+— dohromady ~8 GB ročně. Always Free (20 GB na všechny buckety) tedy stačí
+zhruba na dva roky; pak buď placené úložiště (~0,03 USD za GB a měsíc), nebo
+probrat fotky.
 
 **Obnova z kopie:** v konzoli stáhnout objekt (`majnr/server-….tar.gz.gpg`), pak
 

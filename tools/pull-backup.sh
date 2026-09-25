@@ -11,6 +11,9 @@
 # Archiv nese hesla a klíče v otevřené podobě, takže nepatří do repozitáře
 # ani do sdílené složky; stahuje se s právy 600.
 #
+# Stáhne i měsíční archivy velkých tabulek (monthly/) a nové fotky hlídačů
+# (photos/); ty v nočním archivu nejsou.
+#
 # Návratový kód 0 = staženo a ověřeno, 1 = chyba.
 
 set -uo pipefail
@@ -126,3 +129,40 @@ ls -1t "$LOCAL_DIR"/server-*.tar.gz 2>/dev/null | while read -r old; do
     rm -f "$old"
   fi
 done
+
+status=0
+
+# Měsíční archivy velkých tabulek (radar). Noční záloha je nenese, takže se
+# tady nikdy neprořezávají - každý je jediný kus svého měsíce. Stahuje se
+# všechno, co tu ještě není; server je drží 90 dní.
+mkdir -p "$LOCAL_DIR/monthly"
+ssh_run "sudo sh -c 'ls -1 $REMOTE_DIR/monthly/*.tar.gz 2>/dev/null'" | while read -r remote; do
+  m="$LOCAL_DIR/monthly/$(basename "$remote")"
+  [ -f "$m" ] && continue
+  printf 'Stahuji měsíční archiv %s…\n' "$(basename "$remote")"
+  if ssh_run "sudo cat '$remote'" > "$m.part" && tar -tzf "$m.part" >/dev/null 2>&1; then
+    mv "$m.part" "$m"
+  else
+    printf 'POZOR: měsíční archiv %s se nestáhl celý.\n' "$(basename "$remote")" >&2
+    rm -f "$m.part"
+    exit 1
+  fi
+done || status=1
+
+# Fotky hlídačů: jen přibývají. --ignore-existing, bez --delete - fotka, kterou
+# hlídač po 120 dnech smaže, tady zůstane. Soubory patří uživateli watch,
+# proto rsync na druhé straně pod sudo.
+for dir in ${PULL_PHOTOS:-/var/lib/watch/cache/images /var/lib/ou-watch/cache/images}; do
+  slug="$(printf '%s' "${dir#/}" | tr '/' '_')"
+  mkdir -p "$LOCAL_DIR/photos/$slug"
+  if ! rsync -rt --ignore-existing --rsync-path="sudo rsync" \
+       -e "ssh -i $SSH_KEY -o ConnectTimeout=15" \
+       "$SSH_TARGET:$dir/" "$LOCAL_DIR/photos/$slug/"; then
+    printf 'POZOR: fotky z %s se nestáhly.\n' "$dir" >&2
+    status=1
+  fi
+done
+printf 'Fotky: %s souborů v %s/photos\n' \
+  "$(find "$LOCAL_DIR/photos" -type f | wc -l | tr -d ' ')" "$LOCAL_DIR"
+
+exit "$status"
