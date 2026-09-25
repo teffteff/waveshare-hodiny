@@ -190,6 +190,28 @@
 		uri strip_prefix /hodiny
 		reverse_proxy 127.0.0.1:8101
 	}
+	# Uceni pro deti (repozitar learning, learning-web.service): procvicovani na
+	# /uceni/, statistiky /hodiny/adam/. Heslo k /uceni/ resi sama sluzba (na
+	# zarizeni se zada jednou, pak si ho pamatuje cookie a zarizeni jdou zrusit
+	# na strance statistik), proto tu neni basic_auth. Statistiky jsou za
+	# stejnym heslem jako /hodiny/ a maji vlastni port, aby se na ne pres
+	# /uceni/ nedalo dostat. /hodiny/adam/* je delsi cesta nez /hodiny/*, takze
+	# ji Caddy vyhodnoti driv a do hodiny-stats nepropadne. /adam je puvodni
+	# adresa (ikona na plose telefonu), jen presmerovava.
+	redir /adam* /uceni/ permanent
+	redir /uceni /uceni/
+	handle /uceni/* {
+		uri strip_prefix /uceni
+		reverse_proxy 127.0.0.1:8104
+	}
+	redir /hodiny/adam /hodiny/adam/
+	handle /hodiny/adam/* {
+		basic_auth {
+			hlidac {env.WATCHER_HASH}
+		}
+		uri strip_prefix /hodiny/adam
+		reverse_proxy 127.0.0.1:8105
+	}
 	# Mapa autobusu PID kolem Ondrejova (repozitar bus, bus-web.service).
 	# Polohy jsou verejna data PID z Golemia a server je stahuje nejvys jednou
 	# za 15 s pro vsechny, at se diva kdokoli, takze heslo nechrani obsah ani
