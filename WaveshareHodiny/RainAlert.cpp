@@ -88,15 +88,18 @@ bool rainForecastParse(const char *begin, const char *end,
 }
 
 bool rainFeedBuildUrl(const char *baseUrl, float latitude, float longitude,
-                      uint8_t radiusKm, char *output, size_t capacity) {
+                      uint8_t radiusKm, uint8_t wideKm, char *output,
+                      size_t capacity) {
   if (baseUrl == nullptr || baseUrl[0] == '\0' || output == nullptr ||
       capacity == 0)
     return false;
   const char separator = strchr(baseUrl, '?') != nullptr ? '&' : '?';
-  const int written =
-      snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&r=%u&w=%u", baseUrl,
-               separator, latitude, longitude, static_cast<unsigned>(radiusKm),
-               static_cast<unsigned>(RAIN_WIDE_RADIUS_KM));
+  int written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&r=%u",
+                         baseUrl, separator, latitude, longitude,
+                         static_cast<unsigned>(radiusKm));
+  if (written > 0 && wideKm > 0 && static_cast<size_t>(written) < capacity)
+    written += snprintf(output + written, capacity - written, "&w=%u",
+                        static_cast<unsigned>(wideKm));
   return written > 0 && static_cast<size_t>(written) < capacity;
 }
 

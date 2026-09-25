@@ -33,6 +33,7 @@ struct Request {
   float latitude = 0.0f;
   float longitude = 0.0f;
   uint8_t radiusKm = 5;
+  uint8_t wideKm = 0;
   uint8_t refreshMinutes = 5;
   char url[CLOCK_RAIN_URL_LENGTH] = "";
 };
@@ -160,7 +161,7 @@ bool fetchForecast(const Request &current) {
   networkBusy = false;
   char url[CLOCK_RAIN_URL_LENGTH + 64];
   if (!rainFeedBuildUrl(current.url, current.latitude, current.longitude,
-                        current.radiusKm, url, sizeof(url))) {
+                        current.radiusKm, current.wideKm, url, sizeof(url))) {
     setStatus("Adresa serveru srážek je příliš dlouhá");
     return false;
   }
@@ -286,18 +287,21 @@ void rainAlertServicePrepareForFirmwareUpdate() {
 
 void rainAlertServiceSetActive(bool enabled, const char *feedUrl,
                                float latitude, float longitude,
-                               uint8_t radiusKm, uint8_t refreshMinutes) {
+                               uint8_t radiusKm, uint8_t wideKm,
+                               uint8_t refreshMinutes) {
   Request next;
   next.enabled = enabled;
   next.latitude = latitude;
   next.longitude = longitude;
   next.radiusKm = radiusKm;
+  next.wideKm = wideKm;
   next.refreshMinutes = refreshMinutes;
   if (feedUrl != nullptr) strlcpy(next.url, feedUrl, sizeof(next.url));
 
   bool changed = false;
   portENTER_CRITICAL(&stateMux);
   if (request.enabled != next.enabled || request.radiusKm != next.radiusKm ||
+      request.wideKm != next.wideKm ||
       request.refreshMinutes != next.refreshMinutes ||
       request.latitude != next.latitude ||
       request.longitude != next.longitude ||

@@ -177,7 +177,12 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // server watches and pushes through ntfy even while every clock is off. The
 // schema 50 record stays an exact prefix and the alerts start off without an
 // address.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 51;
+// Schema 52 appends what happens around an automatic switch to the radar:
+// lightning in the alarm circle can switch too (off after migration), and
+// after any alert the clock returns to the screen it left, keeping the radar
+// while it rains within a wider circle. The schema 51 record stays an exact
+// prefix.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 52;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -749,6 +754,38 @@ constexpr uint16_t CLOCK_PUSH_LOW_RADIUS_MAX_M = 10000;
 constexpr uint16_t CLOCK_PUSH_LOW_HEIGHT_MIN_M = 100;
 constexpr uint16_t CLOCK_PUSH_LOW_HEIGHT_MAX_M = 3000;
 
+// Přepnutí na radar kvůli počasí: blesky v okruhu výstrahy a co se děje po
+// každém takovém přepnutí (déšť, výstraha ČHMÚ, blesky).
+//
+// Upozornění na telefon mají 208 bajtů, takže tohle začíná na násobku čtyř.
+struct alignas(4) ClockRadarAlertsConfig {
+  // Přepnout na radar, když v okruhu výstrahy blesků blýská. Po migraci
+  // vypnuté: aktualizace sama od sebe obrazovky nepřepíná.
+  bool lightningSwitch = false;
+  uint8_t lightningHoldMinutes = 10;
+  // Nejkratší odstup dvou přepnutí; bouřka nad hlavou by jinak přepínala
+  // pokaždé, když se radar pustí.
+  uint8_t lightningCooldownMinutes = 30;
+  bool lightningQuietAtNight = false;
+  // Po skončení držení se vrátit na obrazovku, ze které upozornění přeplo
+  // (nebo na obrazovku plánu). Vypnuté: radar zůstane, dokud ho nevystřídá
+  // střídání, plán nebo prst - jako dřív.
+  bool returnToPrevious = true;
+  // Držet radar i po nastavené době, dokud do tolika kilometrů prší nebo
+  // podle předpovědi bude. 0 = nedržet. Potřebuje server srážek.
+  uint8_t keepWhileRainKm = 100;
+  uint8_t reserved[2] = {};
+};
+
+static_assert(sizeof(ClockRadarAlertsConfig) == 8,
+              "The radar alerts are part of the stored record.");
+
+constexpr uint8_t CLOCK_LIGHTNING_HOLD_MIN_MINUTES = 1;
+constexpr uint8_t CLOCK_LIGHTNING_HOLD_MAX_MINUTES = 120;
+constexpr uint8_t CLOCK_LIGHTNING_COOLDOWN_MAX_MINUTES = 240;
+// Server srážek vrací široké okolí nejvýš do 150 km (infra/rain MAX_WIDE_KM).
+constexpr uint8_t CLOCK_RADAR_KEEP_RAIN_MAX_KM = 150;
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -902,6 +939,8 @@ struct ClockConfig {
   // Pole schématu 51. Noční obloha končí na násobku čtyř, takže upozornění na
   // telefon začínají přesně na konci záznamu schématu 50.
   ClockPushAlertsConfig pushAlerts;
+  // Pole schématu 52; upozornění na telefon končí na násobku čtyř.
+  ClockRadarAlertsConfig radarAlerts;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1063,8 +1102,16 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_50_SIZE = offsetof(ClockConfig, pushAlerts)
 
 static_assert(CLOCK_CONFIG_SCHEMA_50_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_50_SIZE + sizeof(ClockPushAlertsConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, radarAlerts),
               "Schema 51 must preserve the complete schema 50 prefix.");
+
+// Schéma 51 končilo upozorněními na telefon: 208 bajtů, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_51_SIZE = offsetof(ClockConfig, radarAlerts);
+
+static_assert(CLOCK_CONFIG_SCHEMA_51_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_51_SIZE + sizeof(ClockRadarAlertsConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 52 must preserve the complete schema 51 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.

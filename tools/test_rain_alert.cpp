@@ -126,20 +126,24 @@ int main() {
   // --- adresa dotazu ---
   char url[128] = "";
   assert(rainFeedBuildUrl("https://hodiny:heslo@example.net/rain.json",
-                          49.90461f, 14.7842f, 5, url, sizeof(url)));
+                          49.90461f, 14.7842f, 5, 100, url, sizeof(url)));
   assert(strcmp(url, "https://hodiny:heslo@example.net/rain.json"
                      "?lat=49.90461&lon=14.78420&r=5&w=100") == 0);
+  // Bez širokého okolí se na něj hodiny neptají.
+  assert(rainFeedBuildUrl("https://example.net/rain.json", 1.0f, 2.0f, 5, 0,
+                          url, sizeof(url)));
+  assert(strstr(url, "&w=") == nullptr);
 
   // Adresa, která už dotaz má, dostane &.
-  assert(rainFeedBuildUrl("https://example.net/rain.json?x=1", 1.0f, 2.0f, 30,
+  assert(rainFeedBuildUrl("https://example.net/rain.json?x=1", 1.0f, 2.0f, 30, 0,
                           url, sizeof(url)));
   assert(strstr(url, "?x=1&lat=") != nullptr);
 
   // Prázdná adresa a malý buffer se odmítnou.
-  assert(!rainFeedBuildUrl("", 1.0f, 2.0f, 5, url, sizeof(url)));
-  assert(!rainFeedBuildUrl(nullptr, 1.0f, 2.0f, 5, url, sizeof(url)));
+  assert(!rainFeedBuildUrl("", 1.0f, 2.0f, 5, 0, url, sizeof(url)));
+  assert(!rainFeedBuildUrl(nullptr, 1.0f, 2.0f, 5, 0, url, sizeof(url)));
   char tiny[10] = "";
-  assert(!rainFeedBuildUrl("https://example.net/rain.json", 1.0f, 2.0f, 5, tiny,
+  assert(!rainFeedBuildUrl("https://example.net/rain.json", 1.0f, 2.0f, 5, 0, tiny,
                            sizeof(tiny)));
 
   printf("OK\n");

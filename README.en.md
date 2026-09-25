@@ -88,7 +88,10 @@ changes the system text and verbal date shown on the display.
   a watched flight and an aircraft detail with the flight route from adsb.lol,
 - realtime lightning from the Blitzortung network (LightningMaps.org) through
   your own server: strokes on the radar coloured by age and an alert on the
-  clock face when lightning strikes within a set radius (see `infra/README.md`),
+  clock face when lightning strikes within a set radius, optionally switching
+  to the radar (see `infra/README.md`); after any automatic switch to the radar
+  (rain, warning, lightning) the clock goes back to the previous screen once
+  the rain nearby has gone,
 - a satellite screen: the sky above the clock as a circle with the zenith in the
   middle, showing the ISS and bright, weather, navigation, amateur radio and
   Starlink satellites with their path two minutes ahead, which ones can be seen

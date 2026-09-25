@@ -39,7 +39,8 @@ void rainAlertServicePrepareForFirmwareUpdate();
 // smyčce - dotaz navíc vyvolá jen skutečná změna.
 void rainAlertServiceSetActive(bool enabled, const char *feedUrl,
                                float latitude, float longitude,
-                               uint8_t radiusKm, uint8_t refreshMinutes);
+                               uint8_t radiusKm, uint8_t wideKm,
+                               uint8_t refreshMinutes);
 
 // Zkopíruje poslední předpověď i s přehledem. Data starší než tři dotazy se
 // nevydávají: o současném stavu už nic neříkají.

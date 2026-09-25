@@ -1617,6 +1617,18 @@ void handleGetConfig() {
   result += config.lightning.alarmRadiusKm;
   result += F(",\"lightningAlarmMinutes\":");
   result += config.lightning.alarmMinutes;
+  result += F(",\"lightningSwitchToRadar\":");
+  result += config.radarAlerts.lightningSwitch ? F("true") : F("false");
+  result += F(",\"lightningHoldMinutes\":");
+  result += config.radarAlerts.lightningHoldMinutes;
+  result += F(",\"lightningCooldownMinutes\":");
+  result += config.radarAlerts.lightningCooldownMinutes;
+  result += F(",\"lightningQuietAtNight\":");
+  result += config.radarAlerts.lightningQuietAtNight ? F("true") : F("false");
+  result += F(",\"radarAlertReturn\":");
+  result += config.radarAlerts.returnToPrevious ? F("true") : F("false");
+  result += F(",\"radarAlertKeepRainKm\":");
+  result += config.radarAlerts.keepWhileRainKm;
   result += F(",\"rainAlertEnabled\":");
   result += config.rainAlert.enabled ? F("true") : F("false");
   result += F(",\"rainAlertUrl\":\"");
@@ -2348,6 +2360,20 @@ void handleSaveConfig() {
       sendError(400, F("Doba výstrahy před blesky musí být od 5 do 30 minut."));
       return;
     }
+    // Starší stránka přepnutí na radar neposílá; pak zůstane uložené.
+    const bool switchFields = server.hasArg("lightningHoldMinutes");
+    const int holdMinutes = server.arg("lightningHoldMinutes").toInt();
+    if (switchFields && (holdMinutes < CLOCK_LIGHTNING_HOLD_MIN_MINUTES ||
+                         holdMinutes > CLOCK_LIGHTNING_HOLD_MAX_MINUTES)) {
+      sendError(400, F("Držení radaru kvůli bleskům musí být od 1 do 120 minut."));
+      return;
+    }
+    const int cooldownMinutes = server.arg("lightningCooldownMinutes").toInt();
+    if (switchFields && (cooldownMinutes < 0 ||
+                         cooldownMinutes > CLOCK_LIGHTNING_COOLDOWN_MAX_MINUTES)) {
+      sendError(400, F("Prodleva mezi přepnutími kvůli bleskům musí být od 0 do 240 minut."));
+      return;
+    }
     config.lightning.enabled = lightningEnabled;
     clockConfigCopy(config.lightning.url, sizeof(config.lightning.url),
                     lightningUrl);
@@ -2355,6 +2381,26 @@ void handleSaveConfig() {
     config.lightning.clockAlert = server.arg("lightningClockAlert") == "1";
     config.lightning.alarmRadiusKm = static_cast<uint8_t>(alarmRadiusKm);
     config.lightning.alarmMinutes = static_cast<uint8_t>(alarmMinutes);
+    if (switchFields) {
+      config.radarAlerts.lightningSwitch =
+          server.arg("lightningSwitchToRadar") == "1";
+      config.radarAlerts.lightningHoldMinutes =
+          static_cast<uint8_t>(holdMinutes);
+      config.radarAlerts.lightningCooldownMinutes =
+          static_cast<uint8_t>(cooldownMinutes);
+      config.radarAlerts.lightningQuietAtNight =
+          server.arg("lightningQuietAtNight") == "1";
+    }
+  }
+
+  if (server.hasArg("radarAlertKeepRainKm")) {
+    const int keepKm = server.arg("radarAlertKeepRainKm").toInt();
+    if (keepKm < 0 || keepKm > CLOCK_RADAR_KEEP_RAIN_MAX_KM) {
+      sendError(400, F("Okruh deště, kvůli kterému radar zůstane, musí být od 0 do 150 km."));
+      return;
+    }
+    config.radarAlerts.returnToPrevious = server.arg("radarAlertReturn") == "1";
+    config.radarAlerts.keepWhileRainKm = static_cast<uint8_t>(keepKm);
   }
 
   if (server.hasArg("rainAlertEnabled")) {
