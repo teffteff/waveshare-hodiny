@@ -2279,10 +2279,13 @@ void maintainSkyData() {
     const AstronomyMoonPhase phase = astronomyMoonPhase(epoch);
     data.moonPhase = static_cast<float>(phase.phase);
     data.moonIllumination = static_cast<float>(phase.illuminationPercent);
+    // Hledá se od včerejška: den po úplňku nebo novu obrazovka ještě ukazuje
+    // jeho čas, teprve pak přejde na další.
     constexpr int64_t LUNATION_SEARCH_SECONDS = 31LL * 24 * 60 * 60;
-    if (astronomyFindMoonPhase(0.5, epoch, LUNATION_SEARCH_SECONDS, event))
+    const int64_t phaseFrom = epoch - SKY_PHASE_AFTER_SECONDS;
+    if (astronomyFindMoonPhase(0.5, phaseFrom, LUNATION_SEARCH_SECONDS, event))
       data.nextFullMoon = event;
-    if (astronomyFindMoonPhase(0.0, epoch, LUNATION_SEARCH_SECONDS, event))
+    if (astronomyFindMoonPhase(0.0, phaseFrom, LUNATION_SEARCH_SECONDS, event))
       data.nextNewMoon = event;
     data.southernHemisphere = latitude < 0.0;
     data.valid = true;

@@ -4382,7 +4382,26 @@ void updateSkyPage() {
   const bool fullFirst = skyData.nextFullMoon <= skyData.nextNewMoon;
   const char *fullName = english ? "full" : "úplněk";
   const char *newName = english ? "new" : "nov";
-  if (skyData.valid) {
+  const int64_t now = static_cast<int64_t>(time(nullptr));
+  const int64_t closest = fullFirst ? skyData.nextFullMoon : skyData.nextNewMoon;
+  const bool closeUp = closest > 0 &&
+                       closest - now <= SKY_PHASE_BEFORE_SECONDS &&
+                       now - closest <= SKY_PHASE_AFTER_SECONDS;
+  if (skyData.valid && closeUp) {
+    // Blízká fáze i s časem, ta druhá je daleko a jen by zabírala místo.
+    const time_t value = static_cast<time_t>(closest);
+    struct tm local;
+    localtime_r(&value, &local);
+    // Česky „ve“ před dvě, tři, čtyři, dvanáct až čtrnáct a dvacítkami.
+    const int hour = local.tm_hour;
+    const bool ve = (hour >= 2 && hour <= 4) || (hour >= 12 && hour <= 14) ||
+                    hour >= 20;
+    snprintf(text, sizeof(text), "%s %s %s %d:%02d",
+             english ? (fullFirst ? "full moon" : "new moon")
+                     : (fullFirst ? fullName : newName),
+             fullFirst ? fullMoon : newMoon,
+             english ? "at" : (ve ? "ve" : "v"), hour, local.tm_min);
+  } else if (skyData.valid) {
     snprintf(text, sizeof(text), "%s %s%s%s %s",
              fullFirst ? fullName : newName, fullFirst ? fullMoon : newMoon,
              SKY_SEPARATOR,
