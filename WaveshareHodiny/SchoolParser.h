@@ -26,6 +26,7 @@
 //                "text":"děti v budově mají střevní problémy…"}],
 //    "meals":[{"when":"DNES","today":true,"who":"ZŠ",
 //              "text":"Kuře na paprice, těstoviny"}],
+//    "newsUpdated":"9:05",
 //    "problem":""}
 //
 // Zprávy, známky a nástěnka (nasems.cz) jsou nepovinné: bez klíčů "messages",
@@ -71,6 +72,8 @@ constexpr size_t SCHOOL_MAX_NOTICES = 6;
 constexpr size_t SCHOOL_MAX_MEALS = 6;
 // Popisek jídelny před jídlem ("ZŠ", "MŠ").
 constexpr size_t SCHOOL_MEAL_WHO_LENGTH = 16;
+// "9:05", nebo "ČT 24.9. 20:53", když není dnešní.
+constexpr size_t SCHOOL_UPDATED_LENGTH = 32;
 
 // Stav hodiny, jak ho posílá server.
 enum class SchoolLessonState : uint8_t {
@@ -168,6 +171,9 @@ struct SchoolFeed {
   size_t noticeCount = 0;
   size_t noticeTotal = 0;
   SchoolNotice notices[SCHOOL_MAX_NOTICES];
+  // Kdy server naposled stáhl zprávy, známky a nástěnku (nejstarší z nich).
+  // Prázdné u staršího serveru.
+  char newsUpdated[SCHOOL_UPDATED_LENGTH] = "";
   // Server obědy stahuje; prázdné pole je víkend nebo den bez jídelníčku.
   bool hasMeals = false;
   size_t mealCount = 0;

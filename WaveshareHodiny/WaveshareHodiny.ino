@@ -1865,12 +1865,6 @@ void maintainSchoolDisplay() {
   // dřív, generace se nezapíše a data se předají, jakmile stránka vznikne.
   bool shown = false;
   if (status.ready) {
-    // Čas stažení, ne předání: stránka mohla vzniknout až po něm.
-    const time_t now = time(nullptr);
-    clockDashboardSetSchoolFetchedAt(
-        status.lastSuccessAvailable && now >= 1700000000
-            ? now - static_cast<time_t>(status.lastSuccessAgeMs / 1000)
-            : 0);
     // Když je mezipaměť právě zamčená, generace se nezapíše a zkusí se znovu.
     if (!schoolServiceVisit(pushSchoolToDashboard, &shown)) return;
   } else {

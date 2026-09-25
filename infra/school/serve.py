@@ -114,6 +114,8 @@ STATE_VERSION = 1
 MESSAGES_ENABLED = os.environ.get("SCHOOL_MESSAGES", "1") != "0"
 MARKS_ENABLED = os.environ.get("SCHOOL_MARKS", "1") != "0"
 MESSAGES_POLL_MINUTES = int(os.environ.get("SCHOOL_MESSAGES_POLL_MINUTES", "180"))
+# Zdroje druhe stranky obrazovky; jejich stari hodiny ukazuji v zapati.
+NEWS_SOURCES = ("messages", "marks", "notices")
 MARKS_POLL_MINUTES = int(os.environ.get("SCHOOL_MARKS_POLL_MINUTES", "180"))
 # Neprectene zpravy za dva tydny jsou mezi nejnovejsimi; tricet staci i pro
 # tridu, ktera pise casto.
@@ -513,6 +515,13 @@ class Poller:
             return self._retry_seconds()
         self._refresh_extras(snapshot["student"]["id"], now)
         snapshot.update(self.extras)
+        # Jak stara je druha stranka: nejstarsi z uspesnych stazeni jejich
+        # zdroju, at zapati nevypada cerstvejsi nez nejstarsi seznam.
+        news = [self.extras_ok[name] for name in NEWS_SOURCES
+                if name in self.extras and name in self.extras_ok]
+        if news:
+            snapshot["newsFetched"] = datetime.fromtimestamp(min(news), feed.TZ).isoformat(
+                timespec="seconds")
         with self.lock:
             self.snapshot = snapshot
             self.fetched_at = time.time()

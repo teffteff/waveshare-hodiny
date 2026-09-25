@@ -43,7 +43,7 @@ const char *const RESPONSE =
     "{\"when\":\"VČERA\",\"title\":\"Střevní problémy\","
     "\"text\":\"děti v budově mají střevní problémy…\"},"
     "{\"when\":\"DNES\",\"title\":\"\",\"text\":\"Bez titulku\"}"
-    "],\"problem\":\"\"}";
+    "],\"newsUpdated\":\"VČERA 20:53\",\"problem\":\"\"}";
 
 void testResponse() {
   SchoolFeed feed;
@@ -94,6 +94,7 @@ void testResponse() {
   assert(std::string(feed.marks[0].theme) == "Násobilka");
   // Oznámení bez titulku se přeskočí, celkový počet drží server.
   assert(feed.hasNotices && feed.noticeCount == 1 && feed.noticeTotal == 2);
+  assert(std::string(feed.newsUpdated) == "VČERA 20:53");
   assert(std::string(feed.notices[0].when) == "VČERA");
   assert(std::string(feed.notices[0].title) == "Střevní problémy");
   assert(std::string(feed.notices[0].text) ==
@@ -114,6 +115,7 @@ void testReparseReplacesLists() {
   assert(schoolParseFeed(withoutNotices, strlen(withoutNotices), feed) ==
          SchoolParseStatus::Ok);
   assert(!feed.hasNotices && feed.noticeCount == 0 && feed.noticeTotal == 0);
+  assert(feed.newsUpdated[0] == '\0');
 }
 
 void testMealsAndMissingHomework() {

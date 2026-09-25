@@ -134,9 +134,6 @@ void clockDashboardSetSchoolVisibilityCallback(RssVisibilityCallback visibility)
 // není založená; volající pak data předá znovu.
 struct SchoolFeed;
 bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message);
-// Kdy hodiny naposled stáhly rozvrh (0 = neznámo). Ukáže se pod seznamy
-// druhé stránky při příštím clockDashboardSetSchool.
-void clockDashboardSetSchoolFetchedAt(time_t fetchedAt);
 bool clockDashboardForecastVisible();
 void clockDashboardSetForecastVisible(bool visible);
 // Vypnutá obrazovka se do rotace ani pod gesto nepustí.
