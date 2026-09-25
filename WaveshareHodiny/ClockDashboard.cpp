@@ -3181,6 +3181,13 @@ lv_obj_t *schoolMarksHeading = nullptr;
 lv_obj_t *schoolMarkWhenLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolMarkTextLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolNoticesHeading = nullptr;
+// Pod seznamy druhé stránky, na místě legendy agendy: jak stará je kopie
+// zpráv, známek a nástěnky na serveru. Hodiny se serveru ptají po dvaceti
+// minutách, server škol jen po třech hodinách - rozhoduje to druhé.
+lv_obj_t *schoolUpdatedLabel = nullptr;
+char schoolNewsUpdated[SCHOOL_UPDATED_LENGTH] = "";
+constexpr int SCHOOL_UPDATED_Y = AGENDA_LEGEND_Y;
+constexpr int SCHOOL_UPDATED_WIDTH = AGENDA_LEGEND_MAX_WIDTH;
 lv_obj_t *schoolNoticeWhenLabels[SCHOOL_MAX_NOTICES] = {};
 lv_obj_t *schoolNoticeTextLabels[SCHOOL_MAX_NOTICES] = {};
 bool schoolFeatureAvailable = false;
@@ -3331,6 +3338,7 @@ void applySchoolColors() {
                schoolMessageTotal > 0 && !redNight ? COLOR_ROOM : muted);
   setTextColor(schoolMarksHeading, muted);
   setTextColor(schoolNoticesHeading, muted);
+  setTextColor(schoolUpdatedLabel, muted);
   const lv_color_t when = redNight ? COLOR_ERROR : COLOR_ROOM;
   const SchoolNewsLabels *sections = schoolNewsLabels();
   for (size_t section = 0; section < SCHOOL_LIST_SECTIONS; ++section) {
@@ -3476,6 +3484,14 @@ void layoutSchoolNewsPage(bool shown, bool english) {
                                    sections[section].text,
                                    sections[section].capacity, visible.rows,
                                    visible.ellipsis, cursorY);
+  }
+  const bool haveTime = shown && schoolNewsUpdated[0] != '\0';
+  setObjectVisible(schoolUpdatedLabel, haveTime);
+  if (haveTime) {
+    char text[SCHOOL_UPDATED_LENGTH + 24];
+    snprintf(text, sizeof(text), "%s %s",
+             english ? "School data as of" : "Stav ze školy", schoolNewsUpdated);
+    lv_label_set_text(schoolUpdatedLabel, text);
   }
 }
 
@@ -3782,6 +3798,13 @@ void createSchoolPage(lv_obj_t *screen) {
     schoolNoticeTextLabels[index] =
         makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
   }
+  schoolUpdatedLabel = makeLabel(schoolPage, &clock_czech_14, COLOR_MUTED);
+  lv_label_set_long_mode(schoolUpdatedLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(schoolUpdatedLabel, SCHOOL_UPDATED_WIDTH);
+  lv_obj_set_style_text_align(schoolUpdatedLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(schoolUpdatedLabel, "");
+  alignCenter(schoolUpdatedLabel, 0, SCHOOL_UPDATED_Y);
+  lv_obj_add_flag(schoolUpdatedLabel, LV_OBJ_FLAG_HIDDEN);
 
   makeChildrenTapThrough(schoolPage);
   lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_CLICKABLE);
@@ -8086,6 +8109,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
     schoolMessageCount = schoolMessageTotal = 0;
     schoolMarkCount = schoolMarkTotal = 0;
     schoolNoticeCount = schoolNoticeTotal = 0;
+    schoolNewsUpdated[0] = '\0';
     layoutSchoolPage();
     return true;
   }
@@ -8219,6 +8243,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   schoolHasNotices = feed->hasNotices;
   schoolNoticeCount = clampCount(feed->noticeCount);
   schoolNoticeTotal = clampCount(feed->noticeTotal);
+  strlcpy(schoolNewsUpdated, feed->newsUpdated, sizeof(schoolNewsUpdated));
   for (size_t index = 0; index < feed->noticeCount; ++index) {
     const SchoolNotice &notice = feed->notices[index];
     lv_label_set_text(schoolNoticeWhenLabels[index], notice.when);

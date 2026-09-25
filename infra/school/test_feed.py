@@ -206,6 +206,15 @@ class MessagesAndMarksTest(unittest.TestCase):
         old = [{key: value for key, value in mark.items() if key != "entered"} for mark in marks]
         self.assertEqual(feed.render({**snapshot(), "marks": old}, at("2026-09-25T12:00"))["markCount"], 2)
 
+    def test_news_updated_label(self):
+        snap = {**snapshot(), "marks": [], "newsFetched": "2026-09-25T09:05:00+02:00"}
+        self.assertEqual(feed.render(snap, at("2026-09-25T12:00"))["newsUpdated"], "9:05")
+        self.assertEqual(feed.render(snap, at("2026-09-26T07:00"))["newsUpdated"], "VČERA 9:05")
+        self.assertEqual(feed.render(snap, at("2026-09-28T07:00"))["newsUpdated"], "PÁ 25.9. 9:05")
+        # Bez druhe stranky neni co datovat.
+        bare = {**snapshot(), "newsFetched": "2026-09-25T09:05:00+02:00"}
+        self.assertNotIn("newsUpdated", feed.render(bare, at("2026-09-25T12:00")))
+
     def test_render_windows_labels_and_counts(self):
         snap = {**snapshot(), "messages": feed.normalize_messages(MESSAGES),
                 "marks": feed.normalize_marks(MARKS)}
@@ -776,6 +785,11 @@ class PollerTest(unittest.TestCase):
         self.assertEqual(len(poller.current()["messages"]), 3)
         # Rozvrh prisel o jitter driv nez po trech hodinach: zpravy se presto
         # obnovi, jinak by se novily jen kazde druhe stazeni.
+        # Zapati nese nejstarsi uspesne stazeni zdroju druhe stranky.
+        poller.extras_ok["notices"] -= 3600
+        poller.poll_once()
+        self.assertEqual(poller.current()["newsFetched"], datetime.fromtimestamp(
+            poller.extras_ok["notices"], feed.TZ).isoformat(timespec="seconds"))
         client.messages_fail = False
         poller.extras_tried["messages"] -= serve.MESSAGES_POLL_MINUTES * 60 * 0.95
         poller.poll_once()
@@ -839,6 +853,16 @@ class PollerTest(unittest.TestCase):
             self.assertEqual(len(after.current()["messages"]), 3)
             self.assertEqual(after.student["id"], "S1")
             self.assertEqual(after.extras_tried.keys(), before.extras_tried.keys())
+            # Stav ulozeny pred zapatim: cas druhe stranky se doplni hned
+            # pri nacteni, ne az po pristim stazeni.
+            with open(path, encoding="utf-8") as file:
+                state = json.load(file)
+            del state["snapshot"]["newsFetched"]
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(state, file)
+            older = serve.Poller(None, path)
+            self.assertTrue(older.load_state())
+            self.assertEqual(older.current()["newsFetched"], before.current()["newsFetched"])
             # Cerstva data: prvni dotaz az po intervalu, ne hned po startu.
             self.assertGreater(after.initial_wait(), 0)
 

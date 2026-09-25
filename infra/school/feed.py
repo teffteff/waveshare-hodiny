@@ -877,4 +877,11 @@ def render(snapshot: dict, now: datetime | None = None) -> dict:
             "title": notice.get("title", ""),
             "text": notice.get("text", ""),
         } for notice in recent[:MAX_NOTICES]]
+    # Kdy server naposled stahl zdroje druhe stranky; hodiny ho opisou do
+    # zapati. Dnes jen cas, jinak i den.
+    if "newsFetched" in snapshot and any(key in body for key in ("messages", "marks", "notices")):
+        fetched = datetime.fromisoformat(snapshot["newsFetched"]).astimezone(TZ)
+        clock = f"{fetched.hour}:{fetched.minute:02d}"
+        day = fetched.date()
+        body["newsUpdated"] = clock if day == today else f"{day_label(day, today)} {clock}"
     return body

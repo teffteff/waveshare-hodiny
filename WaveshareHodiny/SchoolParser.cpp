@@ -57,6 +57,7 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   feed.hasNotices = false;
   feed.noticeCount = 0;
   feed.noticeTotal = 0;
+  feed.newsUpdated[0] = '\0';
   feed.hasMeals = false;
   feed.mealCount = 0;
   if (payload == nullptr || length == 0) return SchoolParseStatus::NotJson;
@@ -68,6 +69,8 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   if (!days.isArray()) return SchoolParseStatus::MissingArray;
 
   copyMember(begin, end, "student", feed.student, sizeof(feed.student));
+  copyMember(begin, end, "newsUpdated", feed.newsUpdated,
+             sizeof(feed.newsUpdated));
 
   JsonArrayCursor dayCursor = jsonOpenArray(days);
   while (feed.dayCount < SCHOOL_MAX_DAYS && jsonNextItem(dayCursor)) {
