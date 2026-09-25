@@ -853,6 +853,16 @@ class PollerTest(unittest.TestCase):
             self.assertEqual(len(after.current()["messages"]), 3)
             self.assertEqual(after.student["id"], "S1")
             self.assertEqual(after.extras_tried.keys(), before.extras_tried.keys())
+            # Stav ulozeny pred zapatim: cas druhe stranky se doplni hned
+            # pri nacteni, ne az po pristim stazeni.
+            with open(path, encoding="utf-8") as file:
+                state = json.load(file)
+            del state["snapshot"]["newsFetched"]
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(state, file)
+            older = serve.Poller(None, path)
+            self.assertTrue(older.load_state())
+            self.assertEqual(older.current()["newsFetched"], before.current()["newsFetched"])
             # Cerstva data: prvni dotaz az po intervalu, ne hned po startu.
             self.assertGreater(after.initial_wait(), 0)
 
