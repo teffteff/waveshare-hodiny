@@ -187,6 +187,11 @@ lv_obj_t *rssTitleLabels[CLOCK_RSS_MAX_ITEMS] = {};
 // Jen položky s časem nesou recolor značku, kterou přebarvuje applyRssColors().
 bool rssItemHasTime[CLOCK_RSS_MAX_ITEMS] = {};
 uint8_t rssVisibleItemCount = 0;
+// Pod zprávami: kdy kanál vznikl. Popisek dne se skládá až při kreslení, aby
+// se o půlnoci sám přepsal na VČERA.
+lv_obj_t *rssUpdatedLabel = nullptr;
+int64_t rssUpdatedAt = 0;
+bool rssFooterShown = false;
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
 // Pás pod ukazatelem obrazovek: čas a venkovní teplota. Stejná informace na
@@ -583,6 +588,52 @@ void updateForecastHeaderLabel();
 void updateRssHeaderLabel();
 
 bool englishLanguage() { return language == CLOCK_LANGUAGE_ENGLISH; }
+
+const char *forecastWeekdayName(int weekday);
+
+// "aktualizováno VČERA 2:00" pod agendou, zprávami a na obou stránkách
+// školy. Agenda a škola dostávají popisek dne hotový ze serveru.
+void formatUpdatedText(const char *when, char *text, size_t capacity) {
+  snprintf(text, capacity, "%s %s",
+           englishLanguage() ? "updated" : "aktualizováno", when);
+}
+
+// Popisek dne pro čas, který server hotový neposílá: dnes jen čas, včera
+// "VČERA 22:10", jinak "PÁ 25.9. 9:05" - stejně jako servery agendy a školy.
+bool formatUpdatedMoment(int64_t epoch, char *text, size_t capacity) {
+  const time_t value = static_cast<time_t>(epoch);
+  const time_t now = time(nullptr);
+  struct tm moment;
+  struct tm today;
+  if (epoch <= 0 || localtime_r(&value, &moment) == nullptr ||
+      localtime_r(&now, &today) == nullptr)
+    return false;
+  const bool english = englishLanguage();
+  char when[24];
+  // Včerejšek se pozná podle data o den dřív, ne podle 24 hodin.
+  time_t dayBefore = now - 24 * 60 * 60;
+  struct tm yesterday;
+  localtime_r(&dayBefore, &yesterday);
+  const auto sameDay = [](const struct tm &a, const struct tm &b) {
+    return a.tm_year == b.tm_year && a.tm_yday == b.tm_yday;
+  };
+  if (sameDay(moment, today)) {
+    snprintf(when, sizeof(when), "%d:%02d", moment.tm_hour, moment.tm_min);
+  } else if (sameDay(moment, yesterday)) {
+    snprintf(when, sizeof(when), "%s %d:%02d", english ? "yesterday" : "VČERA",
+             moment.tm_hour, moment.tm_min);
+  } else if (english) {
+    snprintf(when, sizeof(when), "%s %d/%d %d:%02d",
+             forecastWeekdayName(moment.tm_wday), moment.tm_mon + 1,
+             moment.tm_mday, moment.tm_hour, moment.tm_min);
+  } else {
+    snprintf(when, sizeof(when), "%s %d.%d. %d:%02d",
+             forecastWeekdayName(moment.tm_wday), moment.tm_mday,
+             moment.tm_mon + 1, moment.tm_hour, moment.tm_min);
+  }
+  formatUpdatedText(when, text, capacity);
+  return true;
+}
 
 // Řádek s datem, časem a venkovní teplotou nahoře na celoobrazovkových
 // stránkách. Ukáže jen to, co zařízení už zná - část řádku je pořád lepší než
@@ -2644,6 +2695,13 @@ constexpr int RSS_BLOCK_CENTER_Y = 0;
 // Kam nejvýš smí sahat první zpráva, aby se nedotkla hlavičky.
 constexpr int RSS_BLOCK_TOP_LIMIT_Y = STATUS_LINE_Y + 14;
 constexpr int RSS_MIN_ROW_WIDTH = 140;
+// Řádek "aktualizováno" dole, na místě legendy agendy (AGENDA_LEGEND_Y).
+// Zprávy nad ním končí nejníž na RSS_FOOTER_TOP_Y; kvůli tomu se smí zúžit
+// mezera mezi nimi až na RSS_MIN_ROW_GAP.
+constexpr int RSS_FOOTER_Y = 186;
+constexpr int RSS_FOOTER_TOP_Y = RSS_FOOTER_Y - 13;
+constexpr int RSS_FOOTER_WIDTH = 210;
+constexpr int RSS_MIN_ROW_GAP = 10;
 // Mezera mezi časem a titulkem na prvním řádku.
 constexpr char RSS_TIME_SEPARATOR[] = "  ";
 // "#RRGGBB " před časem. Při přepnutí palety se přepisuje jen hex, proto se
@@ -2699,7 +2757,18 @@ void rssAppendEscaped(String &target, const char *text) {
 // Hlavička zpráv: čas a venkovní teplota, tentýž řádek jako na předpovědi a
 // agendě. Titulek kanálu tu stával, ale u jediného zdroje opakoval pořád totéž
 // a obrazovka zprávy pod sebou nemá čím doplnit čas.
+void updateRssUpdatedLabel() {
+  if (rssUpdatedLabel == nullptr) return;
+  char text[64];
+  const bool shown =
+      rssFooterShown && formatUpdatedMoment(rssUpdatedAt, text, sizeof(text));
+  setObjectVisible(rssUpdatedLabel, shown);
+  if (shown) lv_label_set_text(rssUpdatedLabel, text);
+}
+
 void updateRssHeaderLabel() {
+  // Volá se každou minutu, takže i popisek dne dole se o půlnoci přepíše.
+  updateRssUpdatedLabel();
   if (rssHeaderLabel == nullptr) return;
   char text[48];
   if (!composeStatusLineText(text, sizeof(text))) {
@@ -2716,6 +2785,7 @@ void applyRssColors() {
   const bool redNight = redNightVisualEnabled();
   updateRssHeaderLabel();
   setTextColor(rssStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
+  setTextColor(rssUpdatedLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
   char tag[RSS_COLOR_TAG_LENGTH + 1];
   rssBuildColorTag(tag, rssTimeColor());
   for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
@@ -2739,13 +2809,31 @@ void layoutRssItems(uint8_t count) {
   if (count > CLOCK_RSS_MAX_ITEMS) count = CLOCK_RSS_MAX_ITEMS;
   rssVisibleItemCount = count;
   const int lineHeight = rssLineHeight();
-  const int titleLines = rssTitleLines(count);
-  const int rowHeight = titleLines * lineHeight + RSS_ROW_GAP;
+  int titleLines = rssTitleLines(count);
+  int gap = RSS_ROW_GAP;
+  // S řádkem "aktualizováno" dole musí blok skončit nad ním. Nejdřív se
+  // zúží mezery; teprve když ani to nestačí, dostanou titulky dva řádky.
+  if (rssFooterShown && count > 0) {
+    const int room = RSS_FOOTER_TOP_Y - RSS_BLOCK_TOP_LIMIT_Y;
+    const auto height = [&](int lines, int rowGap) {
+      return count * lines * lineHeight + (count - 1) * rowGap;
+    };
+    while (gap > RSS_MIN_ROW_GAP && height(titleLines, gap) > room) --gap;
+    if (height(titleLines, gap) > room && titleLines > 2) {
+      titleLines = 2;
+      gap = RSS_ROW_GAP;
+    }
+  }
+  const int rowHeight = titleLines * lineHeight + gap;
   const int total = rowHeight * count;
   int top = RSS_BLOCK_CENTER_Y - total / 2;
   // Pět třířádkových zpráv na střed by dosáhlo až pod hlavičku. Blok se proto
   // o těch pár pixelů posune dolů; hlavička nese čas, takže ji schovat nejde.
   if (top < RSS_BLOCK_TOP_LIMIT_Y) top = RSS_BLOCK_TOP_LIMIT_Y;
+  if (rssFooterShown && count > 0) {
+    const int overflow = top + total - gap - RSS_FOOTER_TOP_Y;
+    if (overflow > 0) top -= overflow;
+  }
 
   for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
     lv_obj_t *title = rssTitleLabels[index];
@@ -2786,6 +2874,14 @@ void createRssPage(lv_obj_t *screen) {
   lv_label_set_text(rssStatusLabel, "");
   alignCenter(rssStatusLabel, 0, 0);
   lv_obj_add_flag(rssStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  rssUpdatedLabel = makeLabel(rssPage, &clock_czech_14, COLOR_MUTED);
+  lv_label_set_long_mode(rssUpdatedLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(rssUpdatedLabel, RSS_FOOTER_WIDTH);
+  lv_obj_set_style_text_align(rssUpdatedLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(rssUpdatedLabel, "");
+  alignCenter(rssUpdatedLabel, 0, RSS_FOOTER_Y);
+  lv_obj_add_flag(rssUpdatedLabel, LV_OBJ_FLAG_HIDDEN);
 
   for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
     lv_obj_t *title = makeLabel(rssPage, &clock_czech_16, COLOR_TEXT);
@@ -2982,13 +3078,6 @@ String composeAgendaLegend(bool abbreviate) {
     text += '#';
   }
   return text;
-}
-
-// "aktualizováno VČERA 2:00" pod agendou a na obou stránkách školy. Popisek
-// dne i čas skládá server.
-void formatUpdatedText(const char *when, char *text, size_t capacity) {
-  snprintf(text, capacity, "%s %s",
-           englishLanguage() ? "updated" : "aktualizováno", when);
 }
 
 void updateAgendaUpdatedLabel(bool belowLegend) {
@@ -7934,9 +8023,15 @@ void clockDashboardSetForecastFailed(bool failed) {
   if (!forecastDisplayedAvailable) updateForecastPage();
 }
 
-void clockDashboardSetRssStatus(const char *message, uint8_t count) {
+void clockDashboardSetRssStatus(const char *message, uint8_t count,
+                                int64_t updatedAt) {
   if (rssPage == nullptr) return;
-  if (count != rssVisibleItemCount) layoutRssItems(count);
+  rssUpdatedAt = updatedAt;
+  const bool footer = updatedAt > 0 && count > 0;
+  if (count != rssVisibleItemCount || footer != rssFooterShown) {
+    rssFooterShown = footer;
+    layoutRssItems(count);
+  }
   const bool showMessage = count == 0;
   setObjectVisible(rssStatusLabel, showMessage);
   if (showMessage) {

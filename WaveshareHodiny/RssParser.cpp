@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 
 namespace {
 
@@ -678,6 +679,18 @@ bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
     rssTransliterate(payload + channelTitle.begin,
                      channelTitle.end - channelTitle.begin, feed.channelTitle,
                      sizeof(feed.channelTitle));
+  }
+  // Čas kanálu, taky jen před první zprávou: <updated> a <pubDate> nesou
+  // i jednotlivé položky.
+  for (const char *tag : {"lastBuildDate", "updated", "pubDate"}) {
+    Range built;
+    size_t afterBuilt = 0;
+    if (!findElement(payload, channelLimit, start, tag, built, afterBuilt))
+      continue;
+    stripCdata(payload, built);
+    feed.updatedAvailable = rssParseDate(
+        payload + built.begin, built.end - built.begin, feed.updatedAt);
+    if (feed.updatedAvailable) break;
   }
 
   // Řadicí klíč. Zprávy s datem se řadí od nejnovější; zprávy bez data se drží

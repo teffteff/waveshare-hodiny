@@ -1898,7 +1898,8 @@ void maintainRssDisplay() {
   if (!rssServiceStatus(status)) return;
   if (status.generation == displayedRssGeneration) return;
   clockDashboardSetRssStatus(status.message,
-                             static_cast<uint8_t>(status.count));
+                             static_cast<uint8_t>(status.count),
+                             status.updatedAt);
   // Když je mezipaměť právě zamčená stahováním, generaci si nezapíšeme a
   // řádky doplníme při dalším průchodu.
   if (status.count > 0 &&
