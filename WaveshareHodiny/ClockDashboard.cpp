@@ -3181,6 +3181,12 @@ lv_obj_t *schoolMarksHeading = nullptr;
 lv_obj_t *schoolMarkWhenLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolMarkTextLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolNoticesHeading = nullptr;
+// Pod seznamy druhé stránky, na místě legendy agendy: kdy hodiny naposled
+// stáhly data ze serveru. 0 = neznámo (čas ještě nebyl synchronizovaný).
+lv_obj_t *schoolUpdatedLabel = nullptr;
+time_t schoolFetchedAt = 0;
+constexpr int SCHOOL_UPDATED_Y = AGENDA_LEGEND_Y;
+constexpr int SCHOOL_UPDATED_WIDTH = AGENDA_LEGEND_MAX_WIDTH;
 lv_obj_t *schoolNoticeWhenLabels[SCHOOL_MAX_NOTICES] = {};
 lv_obj_t *schoolNoticeTextLabels[SCHOOL_MAX_NOTICES] = {};
 bool schoolFeatureAvailable = false;
@@ -3331,6 +3337,7 @@ void applySchoolColors() {
                schoolMessageTotal > 0 && !redNight ? COLOR_ROOM : muted);
   setTextColor(schoolMarksHeading, muted);
   setTextColor(schoolNoticesHeading, muted);
+  setTextColor(schoolUpdatedLabel, muted);
   const lv_color_t when = redNight ? COLOR_ERROR : COLOR_ROOM;
   const SchoolNewsLabels *sections = schoolNewsLabels();
   for (size_t section = 0; section < SCHOOL_LIST_SECTIONS; ++section) {
@@ -3476,6 +3483,17 @@ void layoutSchoolNewsPage(bool shown, bool english) {
                                    sections[section].text,
                                    sections[section].capacity, visible.rows,
                                    visible.ellipsis, cursorY);
+  }
+  struct tm local;
+  const bool haveTime = shown && schoolFetchedAt != 0 &&
+                        localtime_r(&schoolFetchedAt, &local) != nullptr;
+  setObjectVisible(schoolUpdatedLabel, haveTime);
+  if (haveTime) {
+    char text[32];
+    snprintf(text, sizeof(text), "%s %d:%02d",
+             english ? "Downloaded at" : "Staženo v", local.tm_hour,
+             local.tm_min);
+    lv_label_set_text(schoolUpdatedLabel, text);
   }
 }
 
@@ -3782,6 +3800,13 @@ void createSchoolPage(lv_obj_t *screen) {
     schoolNoticeTextLabels[index] =
         makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
   }
+  schoolUpdatedLabel = makeLabel(schoolPage, &clock_czech_14, COLOR_MUTED);
+  lv_label_set_long_mode(schoolUpdatedLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(schoolUpdatedLabel, SCHOOL_UPDATED_WIDTH);
+  lv_obj_set_style_text_align(schoolUpdatedLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(schoolUpdatedLabel, "");
+  alignCenter(schoolUpdatedLabel, 0, SCHOOL_UPDATED_Y);
+  lv_obj_add_flag(schoolUpdatedLabel, LV_OBJ_FLAG_HIDDEN);
 
   makeChildrenTapThrough(schoolPage);
   lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_CLICKABLE);
@@ -8065,6 +8090,10 @@ void clockDashboardSetSchoolAvailable(bool available) {
     if (schoolVisibilityCallback != nullptr) schoolVisibilityCallback(false);
   }
   updateScreenDots();
+}
+
+void clockDashboardSetSchoolFetchedAt(time_t fetchedAt) {
+  schoolFetchedAt = fetchedAt;
 }
 
 bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
