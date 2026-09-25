@@ -1563,15 +1563,18 @@ vyčerpalo Always Free. Proto:
 
 - **Uzavřený měsíc** tabulek z `BACKUP_MONTHLY` (radar: `points`,
   `upper_air`) odejde den po svém konci **jednou** jako vlastní zašifrovaný
-  archiv `majnr/monthly/radar-points-2026-10-….tar.gz.gpg` do
+  archiv `majnr/monthly/radar-points-2026-10-….tar.xz.gpg` (xz) do
   `BACKUP_ARCHIVE_URL`, s `MANIFEST`em a příkazem k obnově. Kopie leží 90 dní
   i v `/opt/backup/data/monthly/`, odkud si ji Mac stáhne do
   `~/waveshare-zalohy/monthly/` (tam se nemaže).
 - Noční snímek databáze ten měsíc **vynechá teprve potom**, co nahrání prošlo
   a počet řádků sedí s evidencí v `/opt/backup/ledger/monthly/`. Selhané
   nahrání = měsíc zůstává v nočním archivu a jednotka skončí chybou. Když do
-  uzavřeného měsíce později něco přibude nebo ubude, odejde znovu pod novým
-  jménem a starší kopie zůstává.
+  uzavřeného měsíce později něco přibude, odejde znovu pod novým jménem
+  a starší kopie zůstává. Úbytek se znovu neposílá: radar sám maže body
+  starší než 90 dní (`RADAR_KEEP_DAYS`), archiv má měsíc celý. Selhané
+  nahrávání se proto musí spravit do dvou měsíců, jinak radar smaže data,
+  která v archivu nejsou.
 - **Fotky** odcházejí po jedné, každá jednou (jméno je otisk obsahu),
   nešifrované — jsou to obrázky z e-shopů. Evidence v
   `/opt/backup/ledger/photos/`. Hlídač fotky po 120 dnech maže, archiv ne.
