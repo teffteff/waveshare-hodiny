@@ -215,6 +215,12 @@ class MessagesAndMarksTest(unittest.TestCase):
         bare = {**snapshot(), "newsFetched": "2026-09-25T09:05:00+02:00"}
         self.assertNotIn("newsUpdated", feed.render(bare, at("2026-09-25T12:00")))
 
+    def test_timetable_updated_label(self):
+        snap = {**snapshot(), "timetableFetched": "2026-09-25T22:10:00+02:00"}
+        self.assertEqual(feed.render(snap, at("2026-09-26T07:00"))["timetableUpdated"],
+                         "VČERA 22:10")
+        self.assertNotIn("timetableUpdated", feed.render(snapshot(), at("2026-09-25T12:00")))
+
     def test_render_windows_labels_and_counts(self):
         snap = {**snapshot(), "messages": feed.normalize_messages(MESSAGES),
                 "marks": feed.normalize_marks(MARKS)}
@@ -790,6 +796,11 @@ class PollerTest(unittest.TestCase):
         poller.poll_once()
         self.assertEqual(poller.current()["newsFetched"], datetime.fromtimestamp(
             poller.extras_ok["notices"], feed.TZ).isoformat(timespec="seconds"))
+        # Prvni stranka: nejstarsi z rozvrhu a obedu.
+        self.assertEqual(poller.current()["timetableFetched"], datetime.fromtimestamp(
+            min([poller.fetched_at, *(poller.extras_ok[name] for name in serve.TIMETABLE_SOURCES
+                                      if name in poller.extras_ok)]),
+            feed.TZ).isoformat(timespec="seconds"))
         client.messages_fail = False
         poller.extras_tried["messages"] -= serve.MESSAGES_POLL_MINUTES * 60 * 0.95
         poller.poll_once()

@@ -260,6 +260,7 @@ AgendaParseOutcome agendaParseFeed(const char *payload, size_t length,
   feed.count = 0;
   feed.calendarCount = 0;
   feed.availableCount = 0;
+  feed.updated[0] = '\0';
   if (payload == nullptr || length == 0) return outcome;
 
   const char *begin = jsonSkipWhitespace(payload, payload + length);
@@ -288,6 +289,14 @@ AgendaParseOutcome agendaParseFeed(const char *payload, size_t length,
                      AGENDA_CALENDAR_NAME_LENGTH);
       ++feed.calendarCount;
     }
+  }
+
+  const JsonValue updated = jsonFindMember(begin, end, "updated");
+  if (updated.isString) {
+    agendaCopyText(updated.contentBegin(),
+                   static_cast<size_t>(updated.contentEnd() -
+                                       updated.contentBegin()),
+                   feed.updated, sizeof(feed.updated));
   }
 
   const JsonValue available = jsonFindMember(begin, end, "available");

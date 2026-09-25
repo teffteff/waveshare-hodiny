@@ -116,7 +116,9 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
 // Jména kalendářů do legendy, v pořadí, ve kterém je posílá server - index se
 // shoduje s parametrem calendar u události, takže legenda i časy dostanou
 // stejnou barvu. Bez jmen se legenda nekreslí.
-void clockDashboardSetAgendaCalendars(const char *const *names, size_t count);
+// updated: kdy server naposled stáhl kalendáře, ukazuje se pod legendou.
+void clockDashboardSetAgendaCalendars(const char *const *names, size_t count,
+                                      const char *updated);
 // --- Rozvrh a úkoly ---------------------------------------------------------
 bool clockDashboardSchoolVisible();
 // Tažení prstu na obrazovce Škola přepne mezi rozvrhem a stránkou se zprávami
@@ -149,6 +151,11 @@ void clockDashboardSetForecast(const WeatherForecastData &forecast);
 void clockDashboardSetForecastFailed(bool failed);
 // --- Slunce a Měsíc ---------------------------------------------------------
 // Časy jsou unixové sekundy; 0 znamená, že daný den událost nenastane.
+// Úplněk nebo nov se od 48 hodin předem do 24 hodin potom ukazuje i s časem
+// a druhá fáze se schová.
+constexpr int64_t SKY_PHASE_BEFORE_SECONDS = 48LL * 60 * 60;
+constexpr int64_t SKY_PHASE_AFTER_SECONDS = 24LL * 60 * 60;
+
 struct ClockSkyData {
   bool valid = false;
   int64_t sunrise = 0;
@@ -163,6 +170,7 @@ struct ClockSkyData {
   int64_t moonset = 0;
   float moonPhase = 0.0f;
   float moonIllumination = 0.0f;
+  // Nejbližší úplněk a nov, včetně těch z posledních SKY_PHASE_AFTER_SECONDS.
   int64_t nextFullMoon = 0;
   int64_t nextNewMoon = 0;
   // Na jižní polokouli svítí dorůstající Měsíc zleva.

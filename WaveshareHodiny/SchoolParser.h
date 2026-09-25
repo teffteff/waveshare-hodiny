@@ -27,6 +27,7 @@
 //    "meals":[{"when":"DNES","today":true,"who":"ZŠ",
 //              "text":"Kuře na paprice, těstoviny"}],
 //    "newsUpdated":"9:05",
+//    "timetableUpdated":"VČERA 22:10",
 //    "problem":""}
 //
 // Zprávy, známky a nástěnka (nasems.cz) jsou nepovinné: bez klíčů "messages",
@@ -174,6 +175,8 @@ struct SchoolFeed {
   // Kdy server naposled stáhl zprávy, známky a nástěnku (nejstarší z nich).
   // Prázdné u staršího serveru.
   char newsUpdated[SCHOOL_UPDATED_LENGTH] = "";
+  // Totéž pro první stránku: rozvrh a obědy, nejstarší z nich.
+  char timetableUpdated[SCHOOL_UPDATED_LENGTH] = "";
   // Server obědy stahuje; prázdné pole je víkend nebo den bez jídelníčku.
   bool hasMeals = false;
   size_t mealCount = 0;

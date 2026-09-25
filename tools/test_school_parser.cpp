@@ -43,7 +43,8 @@ const char *const RESPONSE =
     "{\"when\":\"VČERA\",\"title\":\"Střevní problémy\","
     "\"text\":\"děti v budově mají střevní problémy…\"},"
     "{\"when\":\"DNES\",\"title\":\"\",\"text\":\"Bez titulku\"}"
-    "],\"newsUpdated\":\"VČERA 20:53\",\"problem\":\"\"}";
+    "],\"newsUpdated\":\"VČERA 20:53\",\"timetableUpdated\":\"7:40\","
+    "\"problem\":\"\"}";
 
 void testResponse() {
   SchoolFeed feed;
@@ -95,6 +96,7 @@ void testResponse() {
   // Oznámení bez titulku se přeskočí, celkový počet drží server.
   assert(feed.hasNotices && feed.noticeCount == 1 && feed.noticeTotal == 2);
   assert(std::string(feed.newsUpdated) == "VČERA 20:53");
+  assert(std::string(feed.timetableUpdated) == "7:40");
   assert(std::string(feed.notices[0].when) == "VČERA");
   assert(std::string(feed.notices[0].title) == "Střevní problémy");
   assert(std::string(feed.notices[0].text) ==
