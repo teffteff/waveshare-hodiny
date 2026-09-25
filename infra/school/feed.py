@@ -404,15 +404,20 @@ def normalize_marks(payload) -> list[dict]:
         if day is None or not mark:
             continue
         subject = subjects.get(str(item.get("subjectId")), {})
+        # Kdy znamka pribyla. markDate je datum, ktere ucitel vybral, a byva
+        # i o tydny dopredu nebo zpet (25. 9. zapsane znamky nesly 29. a 30. 9.);
+        # okno "novych" znamek proto bezi podle zapisu.
+        entered = _parse_datetime(item.get("editDate"))
         marks.append({
             "id": str(item.get("id") or ""),
             "date": day.isoformat(),
+            "entered": (entered or datetime.combine(day, datetime.min.time())).isoformat(),
             "subject": plain_text(_text(subject, "name"), MAX_TITLE),
             "abbrev": plain_text(_text(subject, "abbrev"), MAX_SHORT),
             "mark": plain_text(mark, MAX_MARK),
             "theme": plain_text(_text(item, "theme")),
         })
-    marks.sort(key=lambda entry: (entry["date"], entry["id"]), reverse=True)
+    marks.sort(key=lambda entry: (entry["entered"], entry["id"]), reverse=True)
     return marks
 
 
@@ -819,7 +824,9 @@ def render(snapshot: dict, now: datetime | None = None) -> dict:
         } for message in recent[:MAX_MESSAGES]]
     if "marks" in snapshot:
         horizon = today - timedelta(days=MARK_DAYS)
-        recent = [mark for mark in snapshot["marks"] if date.fromisoformat(mark["date"]) >= horizon]
+        # Ulozeny stav ze starsi verze "entered" nema.
+        recent = [mark for mark in snapshot["marks"]
+                  if datetime.fromisoformat(mark.get("entered", mark["date"])).date() >= horizon]
         body["markCount"] = len(recent)
         body["marks"] = [{
             "when": day_label(date.fromisoformat(mark["date"]), today),

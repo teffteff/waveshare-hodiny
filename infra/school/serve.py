@@ -454,9 +454,13 @@ def _state_problem(state) -> str:
     return ""
 
 
+def jitter_spread(percent: float | None = None) -> float:
+    return max(0.0, min(POLL_JITTER_PERCENT if percent is None else percent, 50.0)) / 100
+
+
 def jittered(seconds: float, percent: float | None = None, rng=random) -> float:
     """Odstup nahodne v rozmezi +-percent (vychozi POLL_JITTER_PERCENT)."""
-    spread = max(0.0, min(POLL_JITTER_PERCENT if percent is None else percent, 50.0)) / 100
+    spread = jitter_spread(percent)
     return seconds * rng.uniform(1 - spread, 1 + spread)
 
 
@@ -642,7 +646,10 @@ class Poller:
             if not enabled:
                 continue
             clock = time.time()
-            if clock - self.extras_tried.get(name, 0.0) < minutes * 60:
+            # Rozvrh chodi po stejnem odstupu, jen s jitterem; bez te rezervy
+            # by drive prichozi stazeni zpravy a znamky preskocilo a ty by se
+            # novily po sesti hodinach misto po trech (25. 9. 2026).
+            if clock - self.extras_tried.get(name, 0.0) < minutes * 60 * (1 - jitter_spread()):
                 continue
             # V noci se nic nenovi; jen prvni stazeni po startu nesmi cekat do rana.
             if night and name in self.extras:

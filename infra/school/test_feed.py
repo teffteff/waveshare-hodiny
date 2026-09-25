@@ -185,6 +185,27 @@ class MessagesAndMarksTest(unittest.TestCase):
         self.assertEqual((marks[0]["subject"], marks[0]["mark"]), ("", "2-"))
         self.assertEqual(feed.normalize_marks(None), [])
 
+    def test_new_marks_follow_entry_not_mark_date(self):
+        payload = {"marks": [
+            # Zapsano dnes, datovano dopredu i hluboko zpet: obe jsou nove.
+            {"id": "F1", "subjectId": "S1", "markText": "2", "markDate": "2026-09-30T00:00:00",
+             "editDate": "2026-09-25T10:26:22.42"},
+            {"id": "F2", "subjectId": "S1", "markText": "3", "markDate": "2026-08-01T00:00:00",
+             "editDate": "2026-09-25T10:19:18.613"},
+            # Nedavne datum, ale zapsano pred mesicem: uz ne.
+            {"id": "F3", "subjectId": "S1", "markText": "1", "markDate": "2026-09-20T00:00:00",
+             "editDate": "2026-08-20T08:00:00"},
+        ], "subjects": MARKS["subjects"]}
+        marks = feed.normalize_marks(payload)
+        self.assertEqual([mark["id"] for mark in marks], ["F1", "F2", "F3"])
+        body = feed.render({**snapshot(), "marks": marks}, at("2026-09-25T12:00"))
+        self.assertEqual(body["markCount"], 2)
+        self.assertEqual([(mark["when"], mark["mark"]) for mark in body["marks"]],
+                         [("ST 30.9.", "2"), ("SO 1.8.", "3")])
+        # Stav ulozeny starsi verzi nema "entered" a jede podle data znamky.
+        old = [{key: value for key, value in mark.items() if key != "entered"} for mark in marks]
+        self.assertEqual(feed.render({**snapshot(), "marks": old}, at("2026-09-25T12:00"))["markCount"], 2)
+
     def test_render_windows_labels_and_counts(self):
         snap = {**snapshot(), "messages": feed.normalize_messages(MESSAGES),
                 "marks": feed.normalize_marks(MARKS)}
@@ -753,11 +774,20 @@ class PollerTest(unittest.TestCase):
         poller.poll_once()
         self.assertEqual(client.messages_calls, 2)
         self.assertEqual(len(poller.current()["messages"]), 3)
+        # Rozvrh prisel o jitter driv nez po trech hodinach: zpravy se presto
+        # obnovi, jinak by se novily jen kazde druhe stazeni.
+        client.messages_fail = False
+        poller.extras_tried["messages"] -= serve.MESSAGES_POLL_MINUTES * 60 * 0.95
+        poller.poll_once()
+        self.assertEqual(client.messages_calls, 3)
+        poller.extras_tried["messages"] -= serve.MESSAGES_POLL_MINUTES * 60 * 0.5
+        poller.poll_once()
+        self.assertEqual(client.messages_calls, 3)
         # V noci uz stazene zpravy cekaji do rana.
         serve.DAY_HOURS = (0, 0)
         poller.extras_tried["messages"] -= serve.MESSAGES_POLL_MINUTES * 60
         poller.poll_once()
-        self.assertEqual(client.messages_calls, 2)
+        self.assertEqual(client.messages_calls, 3)
 
     def test_errors_back_off_and_honour_retry_after(self):
         class Down:
