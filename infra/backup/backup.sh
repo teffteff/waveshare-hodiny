@@ -271,8 +271,12 @@ chmod 700 "$BACKUP_DEST"
 # z nej mazat. Mesic odejde, az je den po svem konci (zapisy z posledni
 # vteriny mesice uz dorazily), a z nocniho snimku se vypusti jen tehdy, kdyz
 # v evidenci sedi pocet radku. Kdyby do uzavreneho mesice pozdeji neco
-# pribylo nebo ubylo (proredeni), pocet nesedi a mesic odejde znovu pod
-# novym jmenem; starsi kopie v archivu zustava.
+# pribylo, mesic odejde znovu pod novym jmenem; starsi kopie v archivu
+# zustava. Ubyti se neposila: radar maze body starsi nez 90 dni
+# (RADAR_KEEP_DAYS) a archiv uz ma cely mesic, takze by jinak kazdou noc
+# odchazel znovu kousek nejstarsiho mesice.
+# xz, ne gzip: na tabulkach radaru o ~30 % mensi, a trvaly archiv se pocita
+# do 20 GB Always Free.
 export_month() { # snimek tabulka sloupec od do jmeno pocet db
   mdir="$stage/month-$6"
   mkdir -p "$mdir/files"
@@ -292,9 +296,9 @@ Obnova: nocni zaloha nese $8 bez uzavrenych mesicu teto tabulky.
 Po jejim vraceni pridej kazdy mesic (u opakovane odeslaneho staci nejnovejsi):
   sqlite3 $8 "ATTACH 'files/$6.sqlite' AS m; INSERT OR IGNORE INTO $2 SELECT * FROM m.$2;"
 EOF
-  marchive="$BACKUP_DEST/monthly/$6-$stamp.tar.gz"
+  marchive="$BACKUP_DEST/monthly/$6-$stamp.tar.xz"
   mkdir -p "$BACKUP_DEST/monthly"
-  tar -C "$mdir" -czf "$marchive.part" MANIFEST files || return 1
+  tar -C "$mdir" -cJf "$marchive.part" MANIFEST files || return 1
   mv "$marchive.part" "$marchive"
   # Bez odeslani by si Mac stahl kopii, ktera v archivu neni; zitra vznikne znovu.
   { encrypt "$marchive" "$stage/$(basename "$marchive").gpg" \
@@ -329,7 +333,7 @@ for spec in $BACKUP_MONTHLY; do
     name="$base-$table-$m"
     marker="$BACKUP_LEDGER/monthly/$name"
     count="$(sqlite3 "$snap" "SELECT count(*) FROM $table WHERE $col >= $from AND $col < $to;")"
-    if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$count" ]; then
+    if [ ! -f "$marker" ] || [ "$count" -gt "$(cat "$marker")" ]; then
       [ -f "$marker" ] && log "$name: v archivu $(cat "$marker") radku, ted $count - odchazi znovu"
       if [ "$count" -gt 0 ] && ! export_month "$snap" "$table" "$col" "$from" "$to" "$name" "$count" "$db"; then
         # Tenhle i pozdejsi mesice zustanou v nocni zaloze, zkusi se to zitra.
@@ -349,7 +353,7 @@ for snap in $(echo "$vacuum" | tr ' ' '\n' | sort -u); do
 done
 # Mesicni archivy na stroji jen cekaji, az si je Mac stahne; zdrojem je
 # porad ziva databaze a kopie je v trvalem archivu.
-find "$BACKUP_DEST/monthly" -name '*.tar.gz' -mtime +90 -delete 2>/dev/null || true
+find "$BACKUP_DEST/monthly" \( -name '*.tar.gz' -o -name '*.tar.xz' \) -mtime +90 -delete 2>/dev/null || true
 
 # --- audit ------------------------------------------------------------------
 # Nova sluzba nebo statistika, na kterou se v seznamech nahore zapomnelo, se

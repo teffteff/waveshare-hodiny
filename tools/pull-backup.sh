@@ -136,11 +136,11 @@ status=0
 # tady nikdy neprořezávají - každý je jediný kus svého měsíce. Stahuje se
 # všechno, co tu ještě není; server je drží 90 dní.
 mkdir -p "$LOCAL_DIR/monthly"
-ssh_run "sudo sh -c 'ls -1 $REMOTE_DIR/monthly/*.tar.gz 2>/dev/null'" | while read -r remote; do
+ssh_run "sudo sh -c 'ls -1 $REMOTE_DIR/monthly/*.tar.gz $REMOTE_DIR/monthly/*.tar.xz 2>/dev/null'" | while read -r remote; do
   m="$LOCAL_DIR/monthly/$(basename "$remote")"
   [ -f "$m" ] && continue
   printf 'Stahuji měsíční archiv %s…\n' "$(basename "$remote")"
-  if ssh_run "sudo cat '$remote'" > "$m.part" && tar -tzf "$m.part" >/dev/null 2>&1; then
+  if ssh_run "sudo cat '$remote'" > "$m.part" && tar -tf "$m.part" >/dev/null 2>&1; then
     mv "$m.part" "$m"
   else
     printf 'POZOR: měsíční archiv %s se nestáhl celý.\n' "$(basename "$remote")" >&2

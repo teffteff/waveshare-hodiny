@@ -26,6 +26,6 @@ trap 'gpgconf --homedir "$keyring" --kill all 2>/dev/null || true; rm -rf "$keyr
 chmod 700 "$keyring"
 gpg -q --homedir "$keyring" --batch --import "$secret" 2>/dev/null
 ( umask 077; gpg -q --homedir "$keyring" --batch --output "$out" --decrypt "$in" )
-tar -tzf "$out" MANIFEST >/dev/null || { echo "Rozšifrováno, ale není to archiv zálohy: $out" >&2; exit 1; }
+tar -tf "$out" MANIFEST >/dev/null || { echo "Rozšifrováno, ale není to archiv zálohy: $out" >&2; exit 1; }
 echo "hotovo: $out"
-tar -xzOf "$out" MANIFEST | head -3
+tar -xOf "$out" MANIFEST | head -3
