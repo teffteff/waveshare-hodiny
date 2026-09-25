@@ -70,6 +70,9 @@ bool rainForecastParse(const char *begin, const char *end,
       forecast.stepMinutes = static_cast<uint8_t>(rounded);
   }
 
+  const JsonValue wide = jsonFindMember(objectBegin, objectEnd, "wide");
+  if (!readInteger(wide, forecast.wide)) forecast.wide = -1;
+
   const JsonValue steps = jsonFindMember(objectBegin, objectEnd, "steps");
   JsonArrayCursor cursor = jsonOpenArray(steps);
   while (jsonNextItem(cursor) && forecast.stepCount < RAIN_FORECAST_MAX_STEPS) {
@@ -90,9 +93,10 @@ bool rainFeedBuildUrl(const char *baseUrl, float latitude, float longitude,
       capacity == 0)
     return false;
   const char separator = strchr(baseUrl, '?') != nullptr ? '&' : '?';
-  const int written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&r=%u",
-                               baseUrl, separator, latitude, longitude,
-                               static_cast<unsigned>(radiusKm));
+  const int written =
+      snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&r=%u&w=%u", baseUrl,
+               separator, latitude, longitude, static_cast<unsigned>(radiusKm),
+               static_cast<unsigned>(RAIN_WIDE_RADIUS_KM));
   return written > 0 && static_cast<size_t>(written) < capacity;
 }
 
@@ -120,4 +124,8 @@ bool rainAlertEvaluate(const RainForecast &forecast, uint8_t minimumDbz,
     return true;
   }
   return false;
+}
+
+bool rainForecastWideRain(const RainForecast &forecast, uint8_t minimumDbz) {
+  return forecast.covered && forecast.wide >= static_cast<int16_t>(minimumDbz);
 }

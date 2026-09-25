@@ -18,6 +18,10 @@
 // Nula znamená žádný odraz, -1 chybějící snímek - ty dva se nesmí zaměnit,
 // protože z chybějícího snímku se nedá udělat závěr "neprší".
 
+// Široké okolí, ve kterém se po upozornění hledá déšť: dokud nějaký je, radar
+// zůstane na displeji. Server ho vrací v "wide" (dotaz w=...).
+constexpr uint8_t RAIN_WIDE_RADIUS_KM = 100;
+
 // ČHMÚ vydává šest kroků; strop je s rezervou, kdyby přidalo další.
 constexpr size_t RAIN_FORECAST_MAX_STEPS = 12;
 
@@ -28,6 +32,9 @@ struct RainForecast {
   size_t stepCount = 0;
   // Délka jednoho kroku v minutách.
   uint8_t stepMinutes = 10;
+  // Nejsilnější odraz do RAIN_WIDE_RADIUS_KM teď i v celé předpovědi; -1 =
+  // nevíme (starší server, slepé místo).
+  int16_t wide = -1;
   // Poloha leží v dosahu radarů. Bez toho prázdná předpověď neznamená sucho,
   // jen slepé místo, a hodiny z ní nesmí dělat závěr.
   bool covered = false;
@@ -66,3 +73,7 @@ struct RainAlertDecision {
 // za sucho, a mimo dosah radaru (covered = false) se nevyhlašuje vůbec.
 bool rainAlertEvaluate(const RainForecast &forecast, uint8_t minimumDbz,
                        uint8_t horizonMinutes, RainAlertDecision &decision);
+
+// Prší (nebo podle předpovědi bude pršet) někde do RAIN_WIDE_RADIUS_KM? Když
+// to nejde poznat, odpověď je ne: radar pak po upozornění obrazovku pustí.
+bool rainForecastWideRain(const RainForecast &forecast, uint8_t minimumDbz);

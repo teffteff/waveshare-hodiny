@@ -109,6 +109,9 @@ RADAR_RANGE_KM = 250.0
 
 DEFAULT_RADIUS_KM = 5
 MAX_RADIUS_KM = 30
+# Siroke okoli pro "prsi jeste nekde pobliz?": hodiny podle nej po upozorneni
+# drzi radar, dokud je v dosahu dest (parametr w, odpoved "wide").
+MAX_WIDE_KM = 150
 # Kolik minut dopredu tar nese a s jakym krokem. Z nazvu ft60s10.
 FORECAST_STEP_MINUTES = 10
 FORECAST_LEADS = (10, 20, 30, 40, 50, 60)
@@ -380,7 +383,8 @@ class Radar:
 radar = Radar()
 
 
-def build_answer(latitude: float, longitude: float, radius_km: int, now: float) -> tuple[dict | None, str]:
+def build_answer(latitude: float, longitude: float, radius_km: int, now: float,
+                 wide_km: int = 0) -> tuple[dict | None, str]:
     slot, current, steps, source = radar.snapshot(now)
     if current is None:
         return None, source
@@ -389,8 +393,11 @@ def build_answer(latitude: float, longitude: float, radius_km: int, now: float) 
     inside = 0 <= x <= right and top <= y < current.height
     covered = inside and in_radar_range(latitude, longitude)
     if not inside:
-        return {"time": round(now), "slot": slot, "covered": False, "step": FORECAST_STEP_MINUTES,
-                "now": -1, "steps": [-1] * len(FORECAST_LEADS)}, source
+        answer = {"time": round(now), "slot": slot, "covered": False, "step": FORECAST_STEP_MINUTES,
+                  "now": -1, "steps": [-1] * len(FORECAST_LEADS)}
+        if wide_km > 0:
+            answer["wide"] = -1
+        return answer, source
     # Jeden pixel je zhruba kilometr v obou osach, takze se polomer v km da
     # vzit rovnou jako polomer v pixelech.
     radius_px = max(0, radius_km)
@@ -403,6 +410,11 @@ def build_answer(latitude: float, longitude: float, radius_km: int, now: float) 
         "steps": [steps[lead].peak_dbz(x, y, radius_px) if lead in steps else -1
                   for lead in FORECAST_LEADS],
     }
+    if wide_km > 0:
+        # Nejsilnejsi odraz v sirokem okoli ted i v cele predpovedi.
+        answer["wide"] = max([current.peak_dbz(x, y, wide_km)]
+                             + [steps[lead].peak_dbz(x, y, wide_km)
+                                for lead in FORECAST_LEADS if lead in steps])
     return answer, source
 
 
@@ -454,7 +466,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, b"r must be a number of kilometres\n")
             return
         radius_km = max(1, min(MAX_RADIUS_KM, radius_km))
-        answer, source = build_answer(latitude, longitude, radius_km, now)
+        try:
+            wide_km = int(float(query.get("w", ["0"])[0]))
+        except (TypeError, ValueError):
+            self._send(400, b"w must be a number of kilometres\n")
+            return
+        wide_km = max(0, min(MAX_WIDE_KM, wide_km))
+        answer, source = build_answer(latitude, longitude, radius_km, now, wide_km)
         if answer is None:
             self._send(502, b"upstream unavailable\n", source=source)
             return

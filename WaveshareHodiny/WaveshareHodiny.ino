@@ -190,6 +190,13 @@ unsigned long rainAlertHeldUntil = 0;
 unsigned long rainAlertRaisedAt = 0;
 unsigned long rainAlertCheckedAt = 0;
 bool rainAlertEverRaised = false;
+// Obrazovka, ze které upozornění na déšť nebo výstraha přeplo na radar. Až
+// radar pustí, hodiny se na ni vrátí (nebo na obrazovku plánu, má-li okno).
+uint8_t alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+bool alertReturnPending = false;
+// Po skončení držení se radar drží dál, dokud v širokém okolí prší; znovu se
+// to posoudí po tomhle odstupu. Server srážek se ptá po pěti minutách.
+constexpr unsigned long ALERT_RAIN_RECHECK_MS = 5UL * 60UL * 1000UL;
 // Výstraha ČHMÚ drží radar stejně jako déšť. Hodiny se přepnou jen jednou pro
 // každou výstrahu; id těch, na které už upozornily, si pamatují, dokud je
 // server posílá. Zmizí-li a později se vrátí, upozorní se znovu.
@@ -1565,6 +1572,55 @@ void maintainScreenSchedule() {
 
 constexpr unsigned long RAIN_ALERT_CHECK_MS = 10UL * 1000UL;
 
+// Zapamatuje si, odkud upozornění přepíná na radar. Když už radar drží jiné
+// upozornění, platí obrazovka z prvního; z radaru samotného se nevrací nikam.
+void rememberAlertReturnScreen() {
+  if (rainAlertHolding() || warningHolding()) return;
+  const uint8_t current = activeRotationScreen();
+  alertReturnScreen =
+      current == ROTATION_SCREEN_RADAR || current == ROTATION_SCREEN_SETTINGS
+          ? CLOCK_SCREEN_ORDER_UNUSED
+          : current;
+}
+
+// Držení upozornění skončilo. Když je radar pořád na displeji a v širokém
+// okolí (RAIN_WIDE_RADIUS_KM) prší nebo podle předpovědi bude, držení se
+// prodlouží a za chvíli se posoudí znovu. Jinak radar pustí a smyčka hodiny
+// vrátí tam, odkud přišly (maintainAlertReturn).
+void endAlertHold(const ClockConfig &config, unsigned long &heldUntil,
+                  unsigned long now) {
+  if (activeRotationScreen() == ROTATION_SCREEN_RADAR &&
+      config.rainAlert.enabled) {
+    RainAlertStatus status;
+    rainAlertServiceStatus(status);
+    if (status.ready &&
+        rainForecastWideRain(status.forecast, config.rainAlert.minimumDbz)) {
+      heldUntil = now + ALERT_RAIN_RECHECK_MS;
+      return;
+    }
+  }
+  heldUntil = 0;
+  displayModeStartedAt = now;
+  scheduleCheckPending = true;
+  alertReturnPending = true;
+}
+
+// Návrat po upozornění, až radar nedrží nic. Okno plánu má přednost: začalo-li
+// mezitím nebo trvá, patří displej jemu. Když radar mezitím vystřídalo něco
+// jiného - plán, gesto, web -, zůstane to, co je na displeji.
+void maintainAlertReturn() {
+  if (!alertReturnPending || alertHolding()) return;
+  alertReturnPending = false;
+  const uint8_t target = scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED
+                             ? scheduleHeldScreen
+                             : alertReturnScreen;
+  alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+  if (target == CLOCK_SCREEN_ORDER_UNUSED || clockDashboardSettingsVisible() ||
+      activeRotationScreen() != ROTATION_SCREEN_RADAR)
+    return;
+  switchToScreen(loopConfigSnapshot(), target);
+}
+
 // Upozornění na déšť: když se do nastaveného horizontu blíží srážky, přepne se
 // na radar a chvíli se na něm podrží. Předpověď vozí vlastní server, rozhodnutí
 // padá tady - stejně jako u blesků, kde server vozí údery a poplach vyhlašuje
@@ -1584,14 +1640,12 @@ void maintainRainAlert() {
     return;
   }
 
-  // Konec držení vrací obrazovku střídání nebo plánu. Střídání začne počítat
-  // od nuly, aby radar nezmizel v tomtéž průchodu.
+  // Konec držení: "Déšť za 10 min" už neplatí, i když radar zůstane kvůli
+  // dešti v okolí.
   if (rainAlertHeldUntil != 0 &&
       static_cast<long>(now - rainAlertHeldUntil) >= 0) {
-    rainAlertHeldUntil = 0;
     clockDashboardSetRainAlertNote("");
-    displayModeStartedAt = now;
-    scheduleCheckPending = true;
+    endAlertHold(config, rainAlertHeldUntil, now);
   }
 
   if (now - rainAlertCheckedAt < RAIN_ALERT_CHECK_MS) return;
@@ -1618,6 +1672,7 @@ void maintainRainAlert() {
   if (config.rainAlert.quietAtNight && clockDashboardNightModeEnabled()) return;
   // Otevřené nastavení na displeji se nezavírá: kdo v něm je, něco dělá.
   if (clockDashboardSettingsVisible()) return;
+  rememberAlertReturnScreen();
   if (!switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
 
   rainAlertHeldUntil =
@@ -1651,12 +1706,10 @@ void maintainWeatherWarnings() {
     return;
   }
 
-  // Konec držení vrací obrazovku střídání nebo plánu, stejně jako u deště.
+  // Konec držení, stejně jako u deště.
   if (warningHeldUntil != 0 &&
       static_cast<long>(now - warningHeldUntil) >= 0) {
-    warningHeldUntil = 0;
-    displayModeStartedAt = now;
-    scheduleCheckPending = true;
+    endAlertHold(config, warningHeldUntil, now);
   }
 
   if (now - warningCheckedAt < WARNING_CHECK_MS) return;
@@ -1716,6 +1769,7 @@ void maintainWeatherWarnings() {
   // pokud ještě bude platit. Otevřené nastavení se nezavírá.
   if (config.warnings.quietAtNight && clockDashboardNightModeEnabled()) return;
   if (clockDashboardSettingsVisible()) return;
+  rememberAlertReturnScreen();
   if (!switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
 
   if (warningAlertedCount < WARNING_ALERTED_CAPACITY) {
@@ -4021,6 +4075,7 @@ void loop() {
   maintainScreenSchedule();
   maintainRainAlert();
   maintainWeatherWarnings();
+  maintainAlertReturn();
   maintainAuroraAlert();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné
