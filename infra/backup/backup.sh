@@ -36,7 +36,7 @@ set -eu
 : "${BACKUP_HA_HISTORY:=1}"
 # Soubory s hesly a klici. Chybejici se preskoci - stroj nemusi mit vsechno.
 # Vyslovne prazdna hodnota znamena "zadne"; proto "=" a ne ":=" niz.
-: "${BACKUP_SECRETS=/etc/caddy/caddy.env /opt/news/news.env /opt/agenda/agenda.env /opt/agenda/key.json /opt/school/school.env /opt/alerts/alerts.env /opt/health/health.env /opt/backup/backup.env /opt/watch/watch.env /opt/ou-watch/watch.env /opt/fleet/fleet.env /opt/llm/llm.env /opt/radar/radar.env /opt/hodiny-stats/stats.env /opt/hodiny-stats/ntfy.env}"
+: "${BACKUP_SECRETS=/etc/caddy/caddy.env /opt/news/news.env /opt/agenda/agenda.env /opt/agenda/key.json /opt/school/school.env /opt/alerts/alerts.env /opt/health/health.env /opt/backup/backup.env /opt/watch/watch.env /opt/ou-watch/watch.env /opt/fleet/fleet.env /opt/llm/llm.env /opt/radar/radar.env /opt/hodiny-stats/stats.env /opt/hodiny-stats/ntfy.env /opt/learning/learning.env}"
 # Databaze, ktere se za behu zapisuji. Kopiruji se pres sqlite3 .backup, ne
 # cp: prosty cp za behu utrhne stranku uprostred transakce a vysledek je
 # nepouzitelny. Hlidaci si v nich drzi, co uz videli.
@@ -46,9 +46,9 @@ set -eu
 # Maly stav sluzeb (JSON, desitky kB), kopiruje se, jak lezi: registrovane
 # hodiny a TOTP, nastaveni hodin, stav upozorneni a hlaseni poruch, snimek
 # Skoly OnLine. Databaze sem nepatri, ty jdou pres BACKUP_SQLITE.
-: "${BACKUP_SERVICE_STATE=/opt/alerts/state /opt/fleet/state /opt/settings/data /var/lib/school /var/lib/health}"
-# Cokoli navic, oddelene mezerami. Svety Minecraftu sem patri jen tehdy, kdyz
-# je na ne dost mista - jsou radove GB a meni se porad.
+: "${BACKUP_SERVICE_STATE=/opt/alerts/state /opt/fleet/state /opt/settings/data /var/lib/school /var/lib/health /var/lib/learning}"
+# Cokoli navic, oddelene mezerami. Svety Minecraftu sem nepatri (rozhodnuto
+# 25. 9. 2026) - jsou radove GB a meni se porad.
 : "${BACKUP_EXTRA:=}"
 # Tabulky, ktere rostou bez konce, jako databaze:tabulka:sloupec (cas
 # v sekundach od 1970, UTC). Kazdy uzavreny mesic odejde jednou jako vlastni

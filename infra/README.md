@@ -1432,7 +1432,7 @@ Naopak se zálohovat nemusí: dráhy družic, registr poloh zpráv a jízdní ř
 autobusů se stáhnou samy, certifikáty si Caddy vyžádá znovu přes ACME a kód
 služeb je v `infra/` a v repozitářích služeb. Seznam toho, co se vědomě
 vynechává, je `BACKUP_IGNORE` v `backup.sh`. Světy Minecraftu v `/home/opc`
-(jednotky GB) se nezálohují vůbec.
+(jednotky GB) se nezálohují vůbec — rozhodnuto 25. 9. 2026, nepřidávat.
 
 ### Nová služba nebo statistika: co udělat se zálohou
 
@@ -1641,8 +1641,8 @@ Rozšiřovat Full Disk Access na `/bin/bash` kvůli jednomu klíči je horší l
 než nemoc.
 
 Nastavení je v `/opt/backup/backup.env`, vzor je `backup/backup.env.example`.
-Svět Minecraftu tam schválně není: je řádově v GB a mění se pořád, takže patří
-do `BACKUP_EXTRA` jen s vědomím, o kolik každý archiv naroste.
+Svět Minecraftu tam schválně není a nemá být (rozhodnuto 25. 9. 2026): je řádově
+v GB, mění se pořád a o jeho ztrátu nejde.
 
 **Obnova z archivu:** rozbal ho a vrať soubory z `files/` na stejné cesty,
 práva podle oddílu „Zabezpečení stroje“ (hesla 600, `key.json` 600 vlastník
