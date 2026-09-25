@@ -28,6 +28,10 @@ struct RainForecast {
   size_t stepCount = 0;
   // Délka jednoho kroku v minutách.
   uint8_t stepMinutes = 10;
+  // Nejsilnější odraz v širokém okolí (dotaz w=...) teď i v celé předpovědi;
+  // -1 = nevíme (starší server, slepé místo, široké okolí se nechtělo).
+  // Po upozornění podle něj radar zůstane, dokud v okolí prší.
+  int16_t wide = -1;
   // Poloha leží v dosahu radarů. Bez toho prázdná předpověď neznamená sucho,
   // jen slepé místo, a hodiny z ní nesmí dělat závěr.
   bool covered = false;
@@ -42,10 +46,12 @@ bool rainForecastParse(const char *begin, const char *end,
                        RainForecast &forecast);
 
 // Adresa dotazu na vlastní server z infra/rain: základní adresa z nastavení
-// (klidně i se jménem a heslem pro basic_auth) doplněná o polohu a poloměr.
-// Vrací false, když se do výstupu nevejde.
+// (klidně i se jménem a heslem pro basic_auth) doplněná o polohu a poloměr,
+// případně i o široké okolí (w; 0 = neptat se). Vrací false, když se do
+// výstupu nevejde.
 bool rainFeedBuildUrl(const char *baseUrl, float latitude, float longitude,
-                      uint8_t radiusKm, char *output, size_t capacity);
+                      uint8_t radiusKm, uint8_t wideKm, char *output,
+                      size_t capacity);
 
 struct RainAlertDecision {
   // Přepnout na radar.
@@ -66,3 +72,7 @@ struct RainAlertDecision {
 // za sucho, a mimo dosah radaru (covered = false) se nevyhlašuje vůbec.
 bool rainAlertEvaluate(const RainForecast &forecast, uint8_t minimumDbz,
                        uint8_t horizonMinutes, RainAlertDecision &decision);
+
+// Prší (nebo podle předpovědi bude pršet) někde v širokém okolí? Když
+// to nejde poznat, odpověď je ne: radar pak po upozornění obrazovku pustí.
+bool rainForecastWideRain(const RainForecast &forecast, uint8_t minimumDbz);

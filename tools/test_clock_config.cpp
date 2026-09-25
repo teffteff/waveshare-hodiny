@@ -1642,6 +1642,62 @@ void testWarningsAndNightSkyPersistenceAndMigration() {
   assert(clamped.nightSky.cooldownMinutes == CLOCK_AURORA_COOLDOWN_MAX_MINUTES);
 }
 
+void testRadarAlertsPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.radarAlerts.lightningSwitch);
+  assert(defaults.radarAlerts.lightningHoldMinutes == 10);
+  assert(defaults.radarAlerts.lightningCooldownMinutes == 30);
+  assert(defaults.radarAlerts.returnToPrevious);
+  assert(defaults.radarAlerts.keepWhileRainKm == 100);
+
+  // Schéma 51 je předponou 52: upozornění na telefon zůstanou, přepnutí na
+  // radar má výchozí hodnoty, ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.pushAlerts.enabled = true;
+  strcpy(source.pushAlerts.url, "https://hodiny:heslo@example.net/alerts");
+  memset(&source.radarAlerts, 0xA5, sizeof(source.radarAlerts));
+  seed(legacyRecord(source, 51, CLOCK_CONFIG_SCHEMA_51_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.pushAlerts.enabled);
+  assert(!migrated.radarAlerts.lightningSwitch);
+  assert(migrated.radarAlerts.returnToPrevious);
+  assert(migrated.radarAlerts.keepWhileRainKm == 100);
+
+  migrated.radarAlerts.lightningSwitch = true;
+  migrated.radarAlerts.lightningHoldMinutes = 15;
+  migrated.radarAlerts.lightningCooldownMinutes = 0;
+  migrated.radarAlerts.lightningQuietAtNight = true;
+  migrated.radarAlerts.returnToPrevious = false;
+  migrated.radarAlerts.keepWhileRainKm = 0;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.radarAlerts.lightningSwitch);
+  assert(loaded.radarAlerts.lightningHoldMinutes == 15);
+  assert(loaded.radarAlerts.lightningCooldownMinutes == 0);
+  assert(loaded.radarAlerts.lightningQuietAtNight);
+  assert(!loaded.radarAlerts.returnToPrevious);
+  assert(loaded.radarAlerts.keepWhileRainKm == 0);
+
+  // Mimo meze se srovná.
+  loaded.radarAlerts.lightningHoldMinutes = 0;
+  loaded.radarAlerts.lightningCooldownMinutes = 255;
+  loaded.radarAlerts.keepWhileRainKm = 255;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(clamped.radarAlerts.lightningHoldMinutes ==
+         CLOCK_LIGHTNING_HOLD_MIN_MINUTES);
+  assert(clamped.radarAlerts.lightningCooldownMinutes ==
+         CLOCK_LIGHTNING_COOLDOWN_MAX_MINUTES);
+  assert(clamped.radarAlerts.keepWhileRainKm == CLOCK_RADAR_KEEP_RAIN_MAX_KM);
+}
+
 void testPushAlertsPersistenceAndMigration() {
   hostPreferencesReset();
   ClockConfig defaults;
@@ -1719,6 +1775,7 @@ void testPushAlertsPersistenceAndMigration() {
 
 int main() {
   testPushAlertsPersistenceAndMigration();
+  testRadarAlertsPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();

@@ -214,6 +214,20 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(answer["now"], 0)
         self.assertEqual(answer["steps"], [0] * len(serve.FORECAST_LEADS))
 
+    def test_wide_sees_rain_away_from_the_clock(self):
+        far = blank()
+        far[(self.y + 60) * WIDTH + self.x + 40] = 187   # 36 dBZ, ~70 km daleko
+        self._install(frame_from(blank()), {**self.steps, 60: frame_from(far)})
+        answer, _ = serve.build_answer(49.90461, 14.7842, 1, NOW + 1, 100)
+        # Nad hodinami predpoved kolem, v sirokem okoli i vzdaleny odraz.
+        self.assertEqual(answer["wide"], 52)
+        self._install(frame_from(far), {})
+        self.assertEqual(serve.build_answer(49.90461, 14.7842, 1, NOW + 1, 100)[0]["wide"], 36)
+        self.assertEqual(serve.build_answer(49.90461, 14.7842, 1, NOW + 1, 30)[0]["wide"], 0)
+        # Bez w klic neni: starsi hodiny dostanou tutez odpoved jako driv.
+        self.assertNotIn("wide", serve.build_answer(49.90461, 14.7842, 1, NOW + 1)[0])
+        self.assertEqual(serve.build_answer(40.4168, -3.7038, 5, NOW + 1, 100)[0]["wide"], -1)
+
     def test_answer_stays_small(self):
         import json
         answer, _ = serve.build_answer(49.90461, 14.7842, 5, NOW + 1)

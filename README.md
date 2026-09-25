@@ -92,7 +92,10 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   hlídaný let a detail letadla i s trasou letu z adsb.lol,
 - realtime blesky ze sítě Blitzortung (LightningMaps.org) přes vlastní server:
   údery na meteoradaru obarvené podle stáří a výstraha na ciferníku, když
-  blýská v nastaveném okruhu kolem polohy (viz `infra/README.md`),
+  blýská v nastaveném okruhu kolem polohy, volitelně i s přepnutím na radar
+  (viz `infra/README.md`); po každém automatickém přepnutí na radar (déšť,
+  výstraha, blesky) se hodiny vrátí na předchozí obrazovku, až v okolí
+  přestane pršet,
 - obrazovku s družicemi nad hodinami: obloha jako kruh se zenitem uprostřed,
   ISS, jasné, meteorologické, navigační, radioamatérské družice i Starlink
   s dráhou na dvě minuty dopředu, vyznačením, co jde právě vidět okem,

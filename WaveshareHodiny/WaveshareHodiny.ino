@@ -190,6 +190,19 @@ unsigned long rainAlertHeldUntil = 0;
 unsigned long rainAlertRaisedAt = 0;
 unsigned long rainAlertCheckedAt = 0;
 bool rainAlertEverRaised = false;
+// Obrazovka, ze které upozornění na déšť nebo výstraha přeplo na radar. Až
+// radar pustí, hodiny se na ni vrátí (nebo na obrazovku plánu, má-li okno).
+uint8_t alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+bool alertReturnPending = false;
+// Přepnutí na radar kvůli bleskům v okruhu výstrahy.
+unsigned long lightningHeldUntil = 0;
+unsigned long lightningRaisedAt = 0;
+bool lightningEverRaised = false;
+// Blýská teď v okruhu výstrahy? Počítá maintainLightning.
+bool lightningNearNow = false;
+// Po skončení držení se radar drží dál, dokud v širokém okolí prší; znovu se
+// to posoudí po tomhle odstupu. Server srážek se ptá po pěti minutách.
+constexpr unsigned long ALERT_RAIN_RECHECK_MS = 5UL * 60UL * 1000UL;
 // Výstraha ČHMÚ drží radar stejně jako déšť. Hodiny se přepnou jen jednou pro
 // každou výstrahu; id těch, na které už upozornily, si pamatují, dokud je
 // server posílá. Zmizí-li a později se vrátí, upozorní se znovu.
@@ -539,6 +552,7 @@ void applyRainAlertState(const ClockConfig &config) {
                             config.openMeteoLatitude,
                             config.openMeteoLongitude,
                             config.rainAlert.radiusKm,
+                            config.radarAlerts.keepWhileRainKm,
                             config.rainAlert.refreshMinutes);
 }
 
@@ -1205,21 +1219,30 @@ bool warningHolding() {
          static_cast<long>(millis() - warningHeldUntil) < 0;
 }
 
+bool lightningHolding() {
+  return lightningHeldUntil != 0 &&
+         static_cast<long>(millis() - lightningHeldUntil) < 0;
+}
+
+// Drží radar některé upozornění na počasí (déšť, výstraha, blesky)?
+bool radarAlertHolding() {
+  return rainAlertHolding() || warningHolding() || lightningHolding();
+}
+
 bool auroraHolding() {
   return auroraHeldUntil != 0 &&
          static_cast<long>(millis() - auroraHeldUntil) < 0;
 }
 
-// Drží teď obrazovku některé upozornění (déšť, výstraha, polární záře)?
+// Drží teď obrazovku některé upozornění (déšť, výstraha, blesky, polární záře)?
 bool alertHolding() {
-  return rainAlertHolding() || warningHolding() || auroraHolding();
+  return radarAlertHolding() || auroraHolding();
 }
 
 // Obrazovka, kterou něco drží, nebo CLOCK_SCREEN_ORDER_UNUSED. Upozornění na
 // déšť přebíjí okno plánu: trvá jen pár minut a pak obrazovku zase pustí.
 uint8_t heldScreen() {
-  if (rainAlertHolding() || warningHolding())
-    return static_cast<uint8_t>(CLOCK_SCREEN_RADAR);
+  if (radarAlertHolding()) return static_cast<uint8_t>(CLOCK_SCREEN_RADAR);
   if (auroraHolding()) return static_cast<uint8_t>(CLOCK_SCREEN_SATELLITES);
   return scheduleHeldScreen;
 }
@@ -1565,6 +1588,65 @@ void maintainScreenSchedule() {
 
 constexpr unsigned long RAIN_ALERT_CHECK_MS = 10UL * 1000UL;
 
+// Zapamatuje si, odkud upozornění přepíná na radar. Když už radar drží jiné
+// upozornění, platí obrazovka z prvního; z radaru samotného se nevrací nikam.
+void rememberAlertReturnScreen() {
+  if (radarAlertHolding()) return;
+  const uint8_t current = activeRotationScreen();
+  alertReturnScreen =
+      current == ROTATION_SCREEN_RADAR || current == ROTATION_SCREEN_SETTINGS
+          ? CLOCK_SCREEN_ORDER_UNUSED
+          : current;
+}
+
+// Držení upozornění skončilo. Když je radar pořád na displeji a v nastaveném
+// širokém okolí prší nebo podle předpovědi bude - nebo pořád blýská v okruhu
+// výstrahy, přepínají-li blesky -, držení se prodlouží a za chvíli se posoudí
+// znovu. Jinak radar pustí a smyčka hodiny vrátí tam, odkud přišly
+// (maintainAlertReturn).
+void endAlertHold(const ClockConfig &config, unsigned long &heldUntil,
+                  unsigned long now) {
+  if (activeRotationScreen() == ROTATION_SCREEN_RADAR) {
+    bool keep = config.radarAlerts.lightningSwitch && lightningNearNow;
+    if (!keep && config.radarAlerts.keepWhileRainKm > 0 &&
+        config.rainAlert.enabled) {
+      RainAlertStatus status;
+      rainAlertServiceStatus(status);
+      keep = status.ready && rainForecastWideRain(status.forecast,
+                                                  config.rainAlert.minimumDbz);
+    }
+    if (keep) {
+      heldUntil = now + ALERT_RAIN_RECHECK_MS;
+      return;
+    }
+  }
+  heldUntil = 0;
+  displayModeStartedAt = now;
+  scheduleCheckPending = true;
+  alertReturnPending = true;
+}
+
+// Návrat po upozornění, až radar nedrží nic. Okno plánu má přednost: začalo-li
+// mezitím nebo trvá, patří displej jemu. Když radar mezitím vystřídalo něco
+// jiného - plán, gesto, web -, zůstane to, co je na displeji.
+void maintainAlertReturn() {
+  if (!alertReturnPending || alertHolding()) return;
+  alertReturnPending = false;
+  // Vypnutý návrat: radar zůstane, dokud ho nevystřídá střídání nebo plán.
+  if (!loopConfigSnapshot().radarAlerts.returnToPrevious) {
+    alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+    return;
+  }
+  const uint8_t target = scheduleHeldScreen != CLOCK_SCREEN_ORDER_UNUSED
+                             ? scheduleHeldScreen
+                             : alertReturnScreen;
+  alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+  if (target == CLOCK_SCREEN_ORDER_UNUSED || clockDashboardSettingsVisible() ||
+      activeRotationScreen() != ROTATION_SCREEN_RADAR)
+    return;
+  switchToScreen(loopConfigSnapshot(), target);
+}
+
 // Upozornění na déšť: když se do nastaveného horizontu blíží srážky, přepne se
 // na radar a chvíli se na něm podrží. Předpověď vozí vlastní server, rozhodnutí
 // padá tady - stejně jako u blesků, kde server vozí údery a poplach vyhlašuje
@@ -1584,14 +1666,12 @@ void maintainRainAlert() {
     return;
   }
 
-  // Konec držení vrací obrazovku střídání nebo plánu. Střídání začne počítat
-  // od nuly, aby radar nezmizel v tomtéž průchodu.
+  // Konec držení: "Déšť za 10 min" už neplatí, i když radar zůstane kvůli
+  // dešti v okolí.
   if (rainAlertHeldUntil != 0 &&
       static_cast<long>(now - rainAlertHeldUntil) >= 0) {
-    rainAlertHeldUntil = 0;
     clockDashboardSetRainAlertNote("");
-    displayModeStartedAt = now;
-    scheduleCheckPending = true;
+    endAlertHold(config, rainAlertHeldUntil, now);
   }
 
   if (now - rainAlertCheckedAt < RAIN_ALERT_CHECK_MS) return;
@@ -1618,6 +1698,7 @@ void maintainRainAlert() {
   if (config.rainAlert.quietAtNight && clockDashboardNightModeEnabled()) return;
   // Otevřené nastavení na displeji se nezavírá: kdo v něm je, něco dělá.
   if (clockDashboardSettingsVisible()) return;
+  rememberAlertReturnScreen();
   if (!switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
 
   rainAlertHeldUntil =
@@ -1651,12 +1732,10 @@ void maintainWeatherWarnings() {
     return;
   }
 
-  // Konec držení vrací obrazovku střídání nebo plánu, stejně jako u deště.
+  // Konec držení, stejně jako u deště.
   if (warningHeldUntil != 0 &&
       static_cast<long>(now - warningHeldUntil) >= 0) {
-    warningHeldUntil = 0;
-    displayModeStartedAt = now;
-    scheduleCheckPending = true;
+    endAlertHold(config, warningHeldUntil, now);
   }
 
   if (now - warningCheckedAt < WARNING_CHECK_MS) return;
@@ -1716,6 +1795,7 @@ void maintainWeatherWarnings() {
   // pokud ještě bude platit. Otevřené nastavení se nezavírá.
   if (config.warnings.quietAtNight && clockDashboardNightModeEnabled()) return;
   if (clockDashboardSettingsVisible()) return;
+  rememberAlertReturnScreen();
   if (!switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
 
   if (warningAlertedCount < WARNING_ALERTED_CAPACITY) {
@@ -1770,8 +1850,8 @@ void maintainAuroraAlert() {
       now - auroraRaisedAt <
           static_cast<unsigned long>(config.nightSky.cooldownMinutes) * 60000UL)
     return;
-  // Déšť a výstraha mají přednost; obloha počká, až radar pustí.
-  if (rainAlertHolding() || warningHolding()) return;
+  // Déšť, výstraha a blesky mají přednost; obloha počká, až radar pustí.
+  if (radarAlertHolding()) return;
   if (clockDashboardSettingsVisible()) return;
   if (!switchToScreen(config, CLOCK_SCREEN_SATELLITES)) return;
   clockDashboardSetSatellitesSkyPage(true);
@@ -1995,14 +2075,57 @@ void maintainLightning() {
   if (checkedAt != 0 && now - checkedAt < 5000) return;
   checkedAt = now;
   LightningProximity proximity;
-  const bool active =
-      enabled && config.lightning.clockAlert &&
+  // Okruh výstrahy se hlídá pro ikonu na ciferníku i pro přepnutí na radar;
+  // každé z nich jde vypnout zvlášť.
+  lightningNearNow =
+      enabled &&
+      (config.lightning.clockAlert || config.radarAlerts.lightningSwitch) &&
       lightningServiceProximity(latitude, longitude,
                                 config.lightning.alarmRadiusKm,
                                 config.lightning.alarmMinutes * 60U,
                                 proximity) &&
       proximity.count > 0;
-  clockDashboardSetLightningAlert(active, proximity.nearestKm);
+  clockDashboardSetLightningAlert(
+      lightningNearNow && config.lightning.clockAlert, proximity.nearestKm);
+}
+
+// Blesky v okruhu výstrahy přepnou na radar a chvíli ho podrží, stejně jako
+// blížící se déšť. Údery hlídá maintainLightning; tady se jen rozhoduje.
+void maintainLightningAlert() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  if (!config.radarAlerts.lightningSwitch || !config.lightning.enabled) {
+    if (lightningHeldUntil != 0) {
+      lightningHeldUntil = 0;
+      scheduleCheckPending = true;
+    }
+    return;
+  }
+  if (lightningHeldUntil != 0 &&
+      static_cast<long>(now - lightningHeldUntil) >= 0) {
+    endAlertHold(config, lightningHeldUntil, now);
+  }
+  if (!lightningNearNow || lightningHolding()) return;
+  if (lightningEverRaised &&
+      now - lightningRaisedAt <
+          static_cast<unsigned long>(
+              config.radarAlerts.lightningCooldownMinutes) *
+              60000UL)
+    return;
+  if (config.radarAlerts.lightningQuietAtNight &&
+      clockDashboardNightModeEnabled())
+    return;
+  if (clockDashboardSettingsVisible()) return;
+  // Radar už drží déšť nebo výstraha: stačí prodloužit, přepínat není kam.
+  const bool radarHeld = radarAlertHolding();
+  if (!radarHeld) rememberAlertReturnScreen();
+  if (!radarHeld && !switchToScreen(config, CLOCK_SCREEN_RADAR)) return;
+  auroraHeldUntil = 0;
+  lightningHeldUntil =
+      now + static_cast<unsigned long>(config.radarAlerts.lightningHoldMinutes) *
+                60000UL;
+  lightningRaisedAt = now;
+  lightningEverRaised = true;
 }
 
 // Dnešní místní půlnoc a délka dne v sekundách; při změně času má den 23 nebo
@@ -4021,6 +4144,8 @@ void loop() {
   maintainScreenSchedule();
   maintainRainAlert();
   maintainWeatherWarnings();
+  maintainLightningAlert();
+  maintainAlertReturn();
   maintainAuroraAlert();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné

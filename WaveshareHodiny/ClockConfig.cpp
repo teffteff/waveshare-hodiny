@@ -633,6 +633,16 @@ void normalizeConfig(ClockConfig &config) {
   config.pushAlerts.quietToHour =
       constrain(config.pushAlerts.quietToHour, static_cast<uint8_t>(0),
                 static_cast<uint8_t>(23));
+  config.radarAlerts.lightningHoldMinutes =
+      constrain(config.radarAlerts.lightningHoldMinutes,
+                CLOCK_LIGHTNING_HOLD_MIN_MINUTES,
+                CLOCK_LIGHTNING_HOLD_MAX_MINUTES);
+  config.radarAlerts.lightningCooldownMinutes =
+      constrain(config.radarAlerts.lightningCooldownMinutes,
+                static_cast<uint8_t>(0), CLOCK_LIGHTNING_COOLDOWN_MAX_MINUTES);
+  config.radarAlerts.keepWhileRainKm =
+      constrain(config.radarAlerts.keepWhileRainKm, static_cast<uint8_t>(0),
+                CLOCK_RADAR_KEEP_RAIN_MAX_KM);
   config.forecast.dayCount =
       constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
                 CLOCK_FORECAST_MAX_DAYS);
@@ -1060,6 +1070,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV51 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_51_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV50 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1116,6 +1133,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV51) ||
          storedSize == sizeof(ConfigRecordV50) ||
          storedSize == sizeof(ConfigRecordV49) ||
          storedSize == sizeof(ConfigRecordV46) ||
@@ -1158,6 +1176,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 51 je přesnou předponou schématu 52; přepnutí na radar si po
+  // zkopírování bajtů podrží výchozí hodnoty, tedy blesky nepřepínají.
+  const ConfigRecordV51 &legacyV51 =
+      *reinterpret_cast<const ConfigRecordV51 *>(&record);
+  uint32_t embeddedSchemaV51 = 0;
+  if (readComplete && storedSize == sizeof(legacyV51))
+    memcpy(&embeddedSchemaV51, legacyV51.config, sizeof(embeddedSchemaV51));
+  if (readComplete && storedSize == sizeof(legacyV51) &&
+      legacyV51.magic == CONFIG_MAGIC && legacyV51.schemaVersion == 51 &&
+      embeddedSchemaV51 == 51 &&
+      legacyV51.checksum ==
+          bytesChecksum(legacyV51.config, sizeof(legacyV51.config))) {
+    memcpy(&config, legacyV51.config, sizeof(legacyV51.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 50 je přesnou předponou schématu 51; upozornění na telefon si po

@@ -70,6 +70,9 @@ bool rainForecastParse(const char *begin, const char *end,
       forecast.stepMinutes = static_cast<uint8_t>(rounded);
   }
 
+  const JsonValue wide = jsonFindMember(objectBegin, objectEnd, "wide");
+  if (!readInteger(wide, forecast.wide)) forecast.wide = -1;
+
   const JsonValue steps = jsonFindMember(objectBegin, objectEnd, "steps");
   JsonArrayCursor cursor = jsonOpenArray(steps);
   while (jsonNextItem(cursor) && forecast.stepCount < RAIN_FORECAST_MAX_STEPS) {
@@ -85,14 +88,18 @@ bool rainForecastParse(const char *begin, const char *end,
 }
 
 bool rainFeedBuildUrl(const char *baseUrl, float latitude, float longitude,
-                      uint8_t radiusKm, char *output, size_t capacity) {
+                      uint8_t radiusKm, uint8_t wideKm, char *output,
+                      size_t capacity) {
   if (baseUrl == nullptr || baseUrl[0] == '\0' || output == nullptr ||
       capacity == 0)
     return false;
   const char separator = strchr(baseUrl, '?') != nullptr ? '&' : '?';
-  const int written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&r=%u",
-                               baseUrl, separator, latitude, longitude,
-                               static_cast<unsigned>(radiusKm));
+  int written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&r=%u",
+                         baseUrl, separator, latitude, longitude,
+                         static_cast<unsigned>(radiusKm));
+  if (written > 0 && wideKm > 0 && static_cast<size_t>(written) < capacity)
+    written += snprintf(output + written, capacity - written, "&w=%u",
+                        static_cast<unsigned>(wideKm));
   return written > 0 && static_cast<size_t>(written) < capacity;
 }
 
@@ -120,4 +127,8 @@ bool rainAlertEvaluate(const RainForecast &forecast, uint8_t minimumDbz,
     return true;
   }
   return false;
+}
+
+bool rainForecastWideRain(const RainForecast &forecast, uint8_t minimumDbz) {
+  return forecast.covered && forecast.wide >= static_cast<int16_t>(minimumDbz);
 }
