@@ -116,6 +116,8 @@ MARKS_ENABLED = os.environ.get("SCHOOL_MARKS", "1") != "0"
 MESSAGES_POLL_MINUTES = int(os.environ.get("SCHOOL_MESSAGES_POLL_MINUTES", "180"))
 # Zdroje druhe stranky obrazovky; jejich stari hodiny ukazuji v zapati.
 NEWS_SOURCES = ("messages", "marks", "notices")
+# Obedy pod rozvrhem; spolu s rozvrhem davaji stari prvni stranky.
+TIMETABLE_SOURCES = ("canteen", "kindermenu")
 MARKS_POLL_MINUTES = int(os.environ.get("SCHOOL_MARKS_POLL_MINUTES", "180"))
 # Neprectene zpravy za dva tydny jsou mezi nejnovejsimi; tricet staci i pro
 # tridu, ktera pise casto.
@@ -515,10 +517,11 @@ class Poller:
             return self._retry_seconds()
         self._refresh_extras(snapshot["student"]["id"], now)
         snapshot.update(self.extras)
-        self._stamp_news(snapshot)
+        fetched_at = time.time()
+        self._stamp_news(snapshot, fetched_at)
         with self.lock:
             self.snapshot = snapshot
-            self.fetched_at = time.time()
+            self.fetched_at = fetched_at
             self.problem = ""
         self.failures = 0
         if self.student is None:
@@ -615,7 +618,7 @@ class Poller:
         self.extras_ok = numbers(state.get("extras_ok"))
         self.extras_tried = numbers(state.get("extras_tried"))
         with self.lock:
-            self._stamp_news(self.snapshot)
+            self._stamp_news(self.snapshot, self.fetched_at)
         age = (time.time() - self.fetched_at) / 3600
         print(f"nacten ulozeny stav, star {age:.1f} h", flush=True)
         return True
@@ -630,15 +633,21 @@ class Poller:
         fetched = datetime.fromtimestamp(fetched_at, feed.TZ)
         return max(0.0, fetched_at + poll_minutes(snapshot, fetched) * 60 - time.time())
 
-    def _stamp_news(self, snapshot: dict) -> None:
-        """Jak stara je druha stranka: nejstarsi z uspesnych stazeni jejich
-        zdroju, at zapati nevypada cerstvejsi nez nejstarsi seznam."""
+    def _stamp_news(self, snapshot: dict, fetched_at: float) -> None:
+        """Jak stare jsou obe stranky: nejstarsi z uspesnych stazeni jejich
+        zdroju, at zapati nevypada cerstvejsi nez nejstarsi seznam. Prvni
+        stranka je rozvrh (fetched_at) a obedy, druha zpravy, znamky
+        a nastenka."""
+        stamp = lambda moment: datetime.fromtimestamp(moment, feed.TZ).isoformat(
+            timespec="seconds")
         news = [self.extras_ok[name] for name in NEWS_SOURCES
                 if name in self.extras and name in self.extras_ok]
         snapshot.pop("newsFetched", None)
         if news:
-            snapshot["newsFetched"] = datetime.fromtimestamp(min(news), feed.TZ).isoformat(
-                timespec="seconds")
+            snapshot["newsFetched"] = stamp(min(news))
+        meals = [self.extras_ok[name] for name in TIMETABLE_SOURCES
+                 if name in self.extras and name in self.extras_ok]
+        snapshot["timetableFetched"] = stamp(min([fetched_at, *meals]))
 
     def _refresh_extras(self, student_id: str, now: datetime) -> None:
         """Zpravy a znamky, pokud uz na ne prisel cas. Chyba tady rozvrh

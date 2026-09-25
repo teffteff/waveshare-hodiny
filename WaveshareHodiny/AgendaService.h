@@ -38,6 +38,7 @@ struct AgendaStatus {
   // události se naopak obcházejí návštěvníkem, aby se nekopírovaly na zásobník.
   size_t calendarCount = 0;
   char calendars[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
+  char updated[AGENDA_UPDATED_LENGTH] = "";
 };
 
 // Kalendáře, které server zná, pro výběr na webu. Zvlášť od AgendaStatus, aby

@@ -8,7 +8,8 @@
 // PlaneRadarService.
 //
 // Odpověď /agenda.json má tvar
-//   {"generated":"2026-09-09T14:56:39+02:00","calendars":["Neumannovi","","Já"],
+//   {"generated":"2026-09-09T14:56:39+02:00","updated":"14:56",
+//    "calendars":["Neumannovi","","Já"],
 //    "available":[{"name":"Neumannovi","private":false},
 //                 {"name":"Adámek","private":false},{"name":"Já","private":true}],
 //    "count":12,"items":[
@@ -46,6 +47,9 @@ constexpr size_t AGENDA_MAX_CALENDARS = 4;
 // Jméno kalendáře do legendy. Server posílá nejvýš dvacet znaků, ty ale mohou
 // být české a tedy dvoubajtové.
 constexpr size_t AGENDA_CALENDAR_NAME_LENGTH = 44;
+// Kdy server naposled stáhl kalendáře: "14:56", "VČERA 22:10" nebo
+// "PÁ 25.9. 9:05".
+constexpr size_t AGENDA_UPDATED_LENGTH = 32;
 
 struct AgendaItem {
   // Popisek dne nese jen PRVNÍ událost toho dne, u ostatních je prázdný. Podle
@@ -75,6 +79,8 @@ struct AgendaFeed {
   size_t availableCount = 0;
   char available[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
   bool availablePrivate[AGENDA_MAX_CALENDARS] = {};
+  // Hotový popisek ze serveru; starší server ho neposílá.
+  char updated[AGENDA_UPDATED_LENGTH] = "";
 };
 
 enum class AgendaParseStatus : uint8_t {

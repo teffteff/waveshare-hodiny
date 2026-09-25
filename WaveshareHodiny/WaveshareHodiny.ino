@@ -1920,7 +1920,8 @@ void maintainAgendaDisplay() {
   for (size_t index = 0; index < status.calendarCount; ++index) {
     calendarNames[index] = status.calendars[index];
   }
-  clockDashboardSetAgendaCalendars(calendarNames, status.calendarCount);
+  clockDashboardSetAgendaCalendars(calendarNames, status.calendarCount,
+                                   status.updated);
   clockDashboardSetAgendaStatus(
       status.message, static_cast<uint8_t>(status.count), status.ready);
   // Když je mezipaměť právě zamčená stahováním, generaci si nezapíšeme a

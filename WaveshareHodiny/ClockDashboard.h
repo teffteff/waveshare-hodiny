@@ -116,7 +116,9 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
 // Jména kalendářů do legendy, v pořadí, ve kterém je posílá server - index se
 // shoduje s parametrem calendar u události, takže legenda i časy dostanou
 // stejnou barvu. Bez jmen se legenda nekreslí.
-void clockDashboardSetAgendaCalendars(const char *const *names, size_t count);
+// updated: kdy server naposled stáhl kalendáře, ukazuje se pod legendou.
+void clockDashboardSetAgendaCalendars(const char *const *names, size_t count,
+                                      const char *updated);
 // --- Rozvrh a úkoly ---------------------------------------------------------
 bool clockDashboardSchoolVisible();
 // Tažení prstu na obrazovce Škola přepne mezi rozvrhem a stránkou se zprávami

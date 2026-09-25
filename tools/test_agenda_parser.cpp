@@ -12,7 +12,7 @@ namespace {
 // včetně prázdného "day" u pokračování dne, prázdného "time" u celodenní
 // události a diakritiky v titulcích.
 const char *const REAL_RESPONSE =
-    "{\"generated\":\"2026-09-09T15:01:02+02:00\","
+    "{\"generated\":\"2026-09-09T15:01:02+02:00\",\"updated\":\"VČERA 15:01\","
     "\"calendars\":[\"Neumannovi\",\"Adámek\"],\"count\":12,\"items\":["
     "{\"day\":\"DNES\",\"date\":\"2026-09-09\",\"time\":\"14:00\","
     "\"title\":\"Plavání Vilem\",\"cal\":1},"
@@ -68,6 +68,7 @@ void testRealResponse() {
 
   // Jména kalendářů nesou legendu; index se shoduje s "cal" u události.
   assert(feed.calendarCount == 2);
+  assert(std::string(feed.updated) == "VČERA 15:01");
   assert(std::string(feed.calendars[0]) == "Neumannovi");
   assert(std::string(feed.calendars[1]) == "Adámek");
 }

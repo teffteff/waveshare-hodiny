@@ -94,6 +94,25 @@ def day_label(day: date, today: date) -> str:
     return f"{WEEKDAYS[day.weekday()]} {day.day}.{day.month}."
 
 
+def updated_label(generated: str, now: datetime) -> str:
+    """Kdy generator naposled dobehl, pro radek pod legendou: dnes jen cas,
+    jinak i den ("VČERA 22:10", "PÁ 25.9. 9:05"). Prazdne, kdyz cas chybi."""
+    try:
+        moment = datetime.fromisoformat(generated)
+    except (TypeError, ValueError):
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=TZ)
+    moment = moment.astimezone(TZ)
+    clock = f"{moment.hour}:{moment.minute:02d}"
+    today = now.astimezone(TZ).date()
+    day = moment.date()
+    if day == today:
+        return clock
+    label = "VČERA" if day == today - timedelta(days=1) else day_label(day, today)
+    return f"{label} {clock}"
+
+
 def _event_times(event: dict) -> tuple[datetime, datetime]:
     start = datetime.fromisoformat(event["start"])
     end = datetime.fromisoformat(event["end"])
@@ -174,6 +193,8 @@ def render(snapshot: dict, hidden: set[int], unlocked: bool, now: datetime | Non
 
     return {
         "generated": snapshot.get("generated", ""),
+        # Hotovy popisek pro hodiny, at nemusi pocitat s datem.
+        "updated": updated_label(snapshot.get("generated", ""), now),
         # Poradi odpovida indexu "cal" u udalosti, takze si podle nej displej
         # obarvi legendu i casy. Prazdne jmeno = kalendar v teto odpovedi neni.
         "calendars": [

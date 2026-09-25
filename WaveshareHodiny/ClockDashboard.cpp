@@ -161,6 +161,9 @@ lv_obj_t *agendaPage = nullptr;
 lv_obj_t *agendaHeaderLabel = nullptr;
 lv_obj_t *agendaStatusLabel = nullptr;
 lv_obj_t *agendaLegendLabel = nullptr;
+// Pod legendou: kdy server naposled stáhl kalendáře.
+lv_obj_t *agendaUpdatedLabel = nullptr;
+char agendaUpdated[AGENDA_UPDATED_LENGTH] = "";
 lv_obj_t *agendaDayLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
 // Čas a název stojí ve dvou sloupcích, ne v jednom štítku s recolor značkou:
 // jeden štítek se nedá zarovnat do mřížky, protože písmo není neproporcionální.
@@ -2845,6 +2848,9 @@ constexpr char AGENDA_MORE_MARK[] = "...";
 // na spodním okraji písma (y = 195) tětivu jen 280 px a text nemá sahat až na
 // hranu displeje.
 constexpr int AGENDA_LEGEND_MAX_WIDTH = 260;
+// Řádek pod legendou leží níž, kde je kruh užší: na spodním okraji písma
+// (y = 212) má tětivu 224 px.
+constexpr int AGENDA_UPDATED_WIDTH = 210;
 // Kolik znaků jména zůstane v legendě, když se celá jména nevejdou.
 constexpr size_t AGENDA_LEGEND_SHORT_NAME_CHARACTERS = 4;
 constexpr size_t AGENDA_COLOR_TAG_LENGTH = 8;
@@ -2978,11 +2984,33 @@ String composeAgendaLegend(bool abbreviate) {
   return text;
 }
 
+// "aktualizováno VČERA 2:00" pod agendou a na obou stránkách školy. Popisek
+// dne i čas skládá server.
+void formatUpdatedText(const char *when, char *text, size_t capacity) {
+  snprintf(text, capacity, "%s %s",
+           englishLanguage() ? "updated" : "aktualizováno", when);
+}
+
+void updateAgendaUpdatedLabel(bool belowLegend) {
+  if (agendaUpdatedLabel == nullptr) return;
+  const bool shown = agendaUpdated[0] != '\0';
+  setObjectVisible(agendaUpdatedLabel, shown);
+  if (!shown) return;
+  char text[AGENDA_UPDATED_LENGTH + 24];
+  formatUpdatedText(agendaUpdated, text, sizeof(text));
+  lv_label_set_text(agendaUpdatedLabel, text);
+  // Pod legendou o řádek níž; bez legendy na jejím místě.
+  alignCenter(agendaUpdatedLabel, 0,
+              AGENDA_LEGEND_Y +
+                  (belowLegend ? lv_font_get_line_height(&clock_czech_14) : 0));
+}
+
 void updateAgendaLegendLabel() {
   if (agendaLegendLabel == nullptr) return;
   String text = composeAgendaLegend(false);
   if (text.isEmpty()) {
     setObjectVisible(agendaLegendLabel, false);
+    updateAgendaUpdatedLabel(false);
     return;
   }
   // Recolor značky se do šířky nepočítají, stejně jako při kreslení.
@@ -2991,6 +3019,7 @@ void updateAgendaLegendLabel() {
   if (width > AGENDA_LEGEND_MAX_WIDTH) text = composeAgendaLegend(true);
   lv_label_set_text(agendaLegendLabel, text.c_str());
   setObjectVisible(agendaLegendLabel, true);
+  updateAgendaUpdatedLabel(true);
 }
 
 // Hodiny a venkovní teplota, stejná řádka jako na předpovědi a radaru. Skládá
@@ -3081,6 +3110,14 @@ void createAgendaPage(lv_obj_t *screen) {
   alignCenter(agendaLegendLabel, 0, AGENDA_LEGEND_Y);
   lv_obj_add_flag(agendaLegendLabel, LV_OBJ_FLAG_HIDDEN);
 
+  agendaUpdatedLabel = makeLabel(agendaPage, &clock_czech_14, COLOR_MUTED);
+  lv_label_set_long_mode(agendaUpdatedLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(agendaUpdatedLabel, AGENDA_UPDATED_WIDTH);
+  lv_obj_set_style_text_align(agendaUpdatedLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(agendaUpdatedLabel, "");
+  alignCenter(agendaUpdatedLabel, 0, AGENDA_LEGEND_Y);
+  lv_obj_add_flag(agendaUpdatedLabel, LV_OBJ_FLAG_HIDDEN);
+
   makeChildrenTapThrough(agendaPage);
   lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
@@ -3090,6 +3127,7 @@ void applyAgendaColors() {
   if (agendaPage == nullptr) return;
   const bool redNight = redNightVisualEnabled();
   setTextColor(agendaStatusLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
+  setTextColor(agendaUpdatedLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
   for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
     if (agendaDayLabels[index] != nullptr) {
       setTextColor(agendaDayLabels[index], redNight ? COLOR_ERROR : COLOR_MUTED);
@@ -3181,11 +3219,14 @@ lv_obj_t *schoolMarksHeading = nullptr;
 lv_obj_t *schoolMarkWhenLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolMarkTextLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolNoticesHeading = nullptr;
-// Pod seznamy druhé stránky, na místě legendy agendy: jak stará je kopie
-// zpráv, známek a nástěnky na serveru. Hodiny se serveru ptají po dvaceti
-// minutách, server škol jen po třech hodinách - rozhoduje to druhé.
+// Pod seznamy obou stránek, na místě legendy agendy: jak stará je kopie na
+// serveru - na první stránce rozvrhu a obědů, na druhé zpráv, známek
+// a nástěnky. Hodiny se serveru ptají po dvaceti minutách, server škol zdrojů
+// mnohem řidčeji - rozhoduje to druhé.
 lv_obj_t *schoolUpdatedLabel = nullptr;
 char schoolNewsUpdated[SCHOOL_UPDATED_LENGTH] = "";
+// Na první stránce týž label říká, jak starý je rozvrh a obědy.
+char schoolTimetableUpdated[SCHOOL_UPDATED_LENGTH] = "";
 constexpr int SCHOOL_UPDATED_Y = AGENDA_LEGEND_Y;
 constexpr int SCHOOL_UPDATED_WIDTH = AGENDA_LEGEND_MAX_WIDTH;
 lv_obj_t *schoolNoticeWhenLabels[SCHOOL_MAX_NOTICES] = {};
@@ -3485,14 +3526,6 @@ void layoutSchoolNewsPage(bool shown, bool english) {
                                    sections[section].capacity, visible.rows,
                                    visible.ellipsis, cursorY);
   }
-  const bool haveTime = shown && schoolNewsUpdated[0] != '\0';
-  setObjectVisible(schoolUpdatedLabel, haveTime);
-  if (haveTime) {
-    char text[SCHOOL_UPDATED_LENGTH + 24];
-    snprintf(text, sizeof(text), "%s %s",
-             english ? "School data as of" : "Stav ze školy", schoolNewsUpdated);
-    lv_label_set_text(schoolUpdatedLabel, text);
-  }
 }
 
 // Rozmístí sloupce a řádky podle toho, kolik se jich vejde, a skryje zbytek.
@@ -3504,6 +3537,14 @@ void layoutSchoolPage() {
   if (!schoolNewsAvailable()) schoolPageIndex = 0;
   const bool newsPage = schoolPageIndex == 1;
   layoutSchoolNewsPage(newsPage, english);
+  const char *updated = newsPage ? schoolNewsUpdated : schoolTimetableUpdated;
+  const bool haveTime = schoolReady && updated[0] != '\0';
+  setObjectVisible(schoolUpdatedLabel, haveTime);
+  if (haveTime) {
+    char text[SCHOOL_UPDATED_LENGTH + 24];
+    formatUpdatedText(updated, text, sizeof(text));
+    lv_label_set_text(schoolUpdatedLabel, text);
+  }
   // Server s vypnutými úkoly klíč neposílá; pak se neukáže ani hlavička.
   const bool homeworkShown =
       dashboardRuntimeConfig.school.showHomework && schoolHasHomework;
@@ -8057,7 +8098,10 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
   if (index + 1 == agendaVisibleItemCount) layoutAgendaItems();
 }
 
-void clockDashboardSetAgendaCalendars(const char *const *names, size_t count) {
+void clockDashboardSetAgendaCalendars(const char *const *names, size_t count,
+                                      const char *updated) {
+  strlcpy(agendaUpdated, updated != nullptr ? updated : "",
+          sizeof(agendaUpdated));
   if (count > AGENDA_MAX_CALENDARS) count = AGENDA_MAX_CALENDARS;
   agendaCalendarCount = count;
   for (size_t index = 0; index < count; ++index) {
@@ -8129,6 +8173,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
     schoolMarkCount = schoolMarkTotal = 0;
     schoolNoticeCount = schoolNoticeTotal = 0;
     schoolNewsUpdated[0] = '\0';
+    schoolTimetableUpdated[0] = '\0';
     layoutSchoolPage();
     return true;
   }
@@ -8263,6 +8308,8 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   schoolNoticeCount = clampCount(feed->noticeCount);
   schoolNoticeTotal = clampCount(feed->noticeTotal);
   strlcpy(schoolNewsUpdated, feed->newsUpdated, sizeof(schoolNewsUpdated));
+  strlcpy(schoolTimetableUpdated, feed->timetableUpdated,
+          sizeof(schoolTimetableUpdated));
   for (size_t index = 0; index < feed->noticeCount; ++index) {
     const SchoolNotice &notice = feed->notices[index];
     lv_label_set_text(schoolNoticeWhenLabels[index], notice.when);

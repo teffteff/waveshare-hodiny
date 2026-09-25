@@ -877,11 +877,18 @@ def render(snapshot: dict, now: datetime | None = None) -> dict:
             "title": notice.get("title", ""),
             "text": notice.get("text", ""),
         } for notice in recent[:MAX_NOTICES]]
-    # Kdy server naposled stahl zdroje druhe stranky; hodiny ho opisou do
-    # zapati. Dnes jen cas, jinak i den.
+    # Kdy server naposled stahl zdroje kazde stranky; hodiny ho opisou do
+    # zapati.
     if "newsFetched" in snapshot and any(key in body for key in ("messages", "marks", "notices")):
-        fetched = datetime.fromisoformat(snapshot["newsFetched"]).astimezone(TZ)
-        clock = f"{fetched.hour}:{fetched.minute:02d}"
-        day = fetched.date()
-        body["newsUpdated"] = clock if day == today else f"{day_label(day, today)} {clock}"
+        body["newsUpdated"] = updated_label(snapshot["newsFetched"], today)
+    if "timetableFetched" in snapshot:
+        body["timetableUpdated"] = updated_label(snapshot["timetableFetched"], today)
     return body
+
+
+def updated_label(stamp: str, today: date) -> str:
+    """Dnes jen cas, jinak i den: "9:05", "VČERA 9:05", "PÁ 25.9. 9:05"."""
+    fetched = datetime.fromisoformat(stamp).astimezone(TZ)
+    clock = f"{fetched.hour}:{fetched.minute:02d}"
+    day = fetched.date()
+    return clock if day == today else f"{day_label(day, today)} {clock}"
