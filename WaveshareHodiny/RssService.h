@@ -41,6 +41,8 @@ struct RssStatus {
   bool lastSuccessAvailable = false;
   char channelTitle[RSS_CHANNEL_TITLE_LENGTH] = "";
   char message[RSS_MESSAGE_LENGTH] = "";
+  // Čas vzniku kanálu (unixové sekundy), 0 když ho kanál neposílá.
+  int64_t updatedAt = 0;
 };
 
 // Přehled poslední zkoušky kanálu z webu. Odděleně od RssStatus, protože

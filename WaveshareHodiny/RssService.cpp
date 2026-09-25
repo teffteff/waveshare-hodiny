@@ -175,6 +175,8 @@ bool rssServiceStatus(RssStatus &status) {
     strlcpy(status.channelTitle, rssCache->feed.channelTitle,
             sizeof(status.channelTitle));
     strlcpy(status.message, rssCache->message, sizeof(status.message));
+    if (rssCache->feed.updatedAvailable)
+      status.updatedAt = rssCache->feed.updatedAt;
   }
   xSemaphoreGive(rssMutex);
   return true;

@@ -91,7 +91,9 @@ void clockDashboardSetRssVisible(bool visible);
 void clockDashboardSetRssAvailable(bool available);
 // Stav obrazovky zpráv. Při count == 0 se místo seznamu ukáže hláška;
 // prázdná hláška znamená "načítám".
-void clockDashboardSetRssStatus(const char *message, uint8_t count);
+// updatedAt: kdy kanál vznikl (unixové sekundy), 0 = neznámo.
+void clockDashboardSetRssStatus(const char *message, uint8_t count,
+                                int64_t updatedAt);
 void clockDashboardSetRssItem(size_t index, const char *title,
                               const char *time);
 // --- Agenda z kalendáře -----------------------------------------------------

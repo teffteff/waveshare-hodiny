@@ -93,6 +93,7 @@ void testFeed() {
       "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
       "<rss version=\"2.0\"><channel>\n"
       " <title>iROZHLAS.cz</title>\n"
+      " <lastBuildDate>Wed, 02 Sep 2026 17:05:00 +0200</lastBuildDate>\n"
       " <item>\n"
       "  <title>Starsi zprava</title>\n"
       "  <pubDate>Wed, 02 Sep 2026 10:00:00 +0200</pubDate>\n"
@@ -107,6 +108,9 @@ void testFeed() {
   assert(rssParseFeed(PAYLOAD, sizeof(PAYLOAD) - 1, 5, feed, error,
                       sizeof(error)));
   assert(strcmp(feed.channelTitle, "iROZHLAS.cz") == 0);
+  // Čas kanálu: 17:05 +0200 je 15:05 UTC.
+  assert(feed.updatedAvailable);
+  assert(feed.updatedAt == 1788361500LL);
   assert(feed.count == 2);
   // Nejnovější zpráva musí být první i tehdy, když v kanálu byla druhá.
   assert(strcmp(feed.items[0].title, "Nejnovejsi zprava & spol") == 0);
@@ -130,6 +134,8 @@ void testFeed() {
       "</feed>";
   assert(rssParseFeed(ATOM, sizeof(ATOM) - 1, 5, feed, error, sizeof(error)));
   assert(strcmp(feed.channelTitle, "Atom kanal") == 0);
+  // <updated> jen u zprávy není čas kanálu.
+  assert(!feed.updatedAvailable);
   assert(feed.count == 2);
   // Datovaná zpráva jde před nedatovanou.
   assert(strcmp(feed.items[0].title, "Prvni") == 0);

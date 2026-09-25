@@ -22,6 +22,10 @@ struct RssItem {
 
 struct RssFeed {
   char channelTitle[RSS_CHANNEL_TITLE_LENGTH] = "";
+  // Kdy kanál naposled vznikl: <lastBuildDate> nebo <pubDate> kanálu v RSS,
+  // <updated> v Atomu. Ne každý kanál ho posílá.
+  bool updatedAvailable = false;
+  int64_t updatedAt = 0;
   size_t count = 0;
   RssItem items[RSS_MAX_ITEMS];
 };
