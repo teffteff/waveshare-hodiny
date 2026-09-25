@@ -670,7 +670,7 @@ if [ "$MODE" = "--deep" ]; then
     if [ -z "${failed_units// /}" ]; then
       ok "žádná jednotka není ve stavu failed"
     else
-      bad "jednotky ve stavu failed: $failed_units— journalctl -u …, po opravě sudo systemctl reset-failed"
+      bad "jednotky ve stavu failed: ${failed_units}— journalctl -u …, po opravě sudo systemctl reset-failed"
     fi
 
     # Hlášení poruch (infra/health): bez tématu ntfy se nic nepošle, a co

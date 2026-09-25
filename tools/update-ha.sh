@@ -84,7 +84,7 @@ echo "záloha (backup.service)…"
 systemctl start backup.service
 docker tag "$current_id" "homeassistant-previous:$current_version"
 
-echo "nový kontejner $new_version…"
+echo "nový kontejner ${new_version}…"
 docker stop "$NAME" >/dev/null
 docker rm "$NAME" >/dev/null
 run_ha "$IMAGE"
