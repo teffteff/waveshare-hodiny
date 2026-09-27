@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Jedno nastaveni pro vsechny hodiny: webove rozhrani hodin pres server.
+"""Vzdalene nastaveni (remote-config): webove rozhrani vsech hodin pres server.
 
 Hodiny sedi doma za NAT a server v OCI se k nim nedovola. Proto se k nemu
 hodiny pripojuji samy a drzi jedno odchozi spojeni (long-poll):
 
-    hodiny  --GET /fleet/agent/poll-->   server   (drzi az 25 s, pak 204)
+    hodiny  --GET /remote-config/agent/poll-->   server   (drzi az 25 s, pak 204)
             <--200 + pozadavek---------           (kdyz ma prohlizec co chtit)
-            --POST /fleet/agent/result->          (odpoved vlastniho webu)
+            --POST /remote-config/agent/result->          (odpoved vlastniho webu)
 
 Server tak nikdy nemusi znat adresu hodin a v domaci siti se nic neotevira.
 Hodiny pozadavek nevykladaji: predaji ho svemu vlastnimu web serveru pres
 loopback (127.0.0.1:80) a odpoved poslou zpet, takze stranka i API jsou
 presne ty z firmwaru daneho kusu, vcetne verze. Server ke strance jen prida
-vyber hodin a prefix /fleet/d/<nazev>/ pred adresy API.
+vyber hodin a prefix /remote-config/d/<nazev>/ pred adresy API.
 
 Pristup:
 
@@ -22,30 +22,30 @@ Pristup:
 - Brzda: z jedne IP nejvys 5 neuspechu za 15 minut, celkem 30 za hodinu,
   pak se prihlaseni docasne vubec nezkousi. Neuspech jde do journalu
   i s IP (pro fail2ban).
-- Relace je nahodny token v cookie __Secure-fleet (HttpOnly, Secure,
-  SameSite=Strict, Path=/fleet/), vyprsi po 30 minutach necinnosti
+- Relace je nahodny token v cookie __Secure-remote-config (HttpOnly, Secure,
+  SameSite=Strict, Path=/remote-config/), vyprsi po 30 minutach necinnosti
   a nejpozdeji po 12 hodinach. Drzi se jen v pameti: restart sluzby odhlasi.
-- Kazdy pozadavek na API hodin a kazdy POST nese hlavicku X-Fleet-Csrf
+- Kazdy pozadavek na API hodin a kazdy POST nese hlavicku X-Remote-Config-Csrf
   s tokenem relace. Home Assistant bezi na stejnem jmenu serveru, takze
   SameSite sam nestaci.
 - Hodiny se hlasi vlastnim tokenem (Authorization: Bearer). Server drzi jen
   jeho SHA-256; token se ukaze jednou pri `add-device`.
-- Pres server nejde zmenit heslo webu hodin ani nastaveni vzdalene spravy
+- Pres server nejde zmenit heslo webu hodin ani vzdalene nastaveni samotne
   a nejde na ovladaci API; totez hlidaji i hodiny samy. Firmware se instaluje
   jen z oficialniho vydani (hodiny si ho stahuji samy), podvrhnout se neda.
 
 Poslouchat smi jen na 127.0.0.1 za Caddy: X-Forwarded-For se veri, protoze
 ho nastavuje Caddy.
 
-Sprava (na serveru pod uzivatelem fleet, viz infra/README.md):
+Sprava (na serveru pod uzivatelem remote-config, viz infra/README.md):
 
-    serve.py hash-password         vypise FLEET_PASSWORD_HASH=... do fleet.env
-    serve.py new-totp              vypise FLEET_TOTP_SECRET=... a otpauth:// adresu
+    serve.py hash-password         vypise REMOTE_CONFIG_PASSWORD_HASH=... do remote-config.env
+    serve.py new-totp              vypise REMOTE_CONFIG_TOTP_SECRET=... a otpauth:// adresu
     serve.py add-device <nazev>    zaregistruje hodiny a vypise jejich token
     serve.py remove-device <nazev>
     serve.py list-devices
 
-GET /fleet-status vraci prehled pro check-stack; ven pres Caddy nevede.
+GET /remote-config-status vraci prehled pro check-stack; ven pres Caddy nevede.
 """
 from __future__ import annotations
 
@@ -71,13 +71,13 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PORT = int(os.environ.get("FLEET_PORT", "8099"))
-BIND = os.environ.get("FLEET_BIND", "127.0.0.1")
-STATE = Path(os.environ.get("FLEET_STATE", "/opt/fleet/state"))
-# Kde sluzba na webu zije: "/fleet" pod spolecnym jmenem, "" na vlastnim
-# jmene (fleet.sytes.net). Vlastni jmeno ji oddeli od service workeru
+PORT = int(os.environ.get("REMOTE_CONFIG_PORT", "8099"))
+BIND = os.environ.get("REMOTE_CONFIG_BIND", "127.0.0.1")
+STATE = Path(os.environ.get("REMOTE_CONFIG_STATE", "/opt/remote-config/state"))
+# Kde sluzba na webu zije: "/remote-config" pod spolecnym jmenem, "" na vlastnim
+# jmene ({{PORTAL_DOMAIN}}). Vlastni jmeno ji oddeli od service workeru
 # Home Assistanta, ktery by jinak stranky servirovals z mezipameti.
-PREFIX = os.environ.get("FLEET_PREFIX", "/fleet").rstrip("/")
+PREFIX = os.environ.get("REMOTE_CONFIG_PREFIX", "/remote-config").rstrip("/")
 
 # Hodiny se ptaji znovu hned po odpovedi; 25 s je pod vychozim limitem
 # necinnosti vetsiny proxy i NAT v routerech.
@@ -98,7 +98,7 @@ MAX_RESULT_BODY = 1024 * 1024
 
 SESSION_IDLE_S = 30 * 60
 SESSION_MAX_S = 12 * 3600
-COOKIE = "__Secure-fleet"
+COOKIE = "__Secure-remote-config"
 IP_FAILURES = 5
 IP_WINDOW_S = 15 * 60
 GLOBAL_FAILURES = 30
@@ -110,11 +110,11 @@ TOTP_DIGITS = 6
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 # Co smi prohlizec po hodinach chtit. Zbytek (ovladaci API, prihlaseni do
-# hodin, heslo webu, nastaveni vzdalene spravy) jde jen z domaci site.
+# hodin, heslo webu, vzdalene nastaveni samotne) jde jen z domaci site.
 RELAY_PATH = re.compile(r"^/(|ui-language\.js|diagnostics|api/[a-z0-9][a-z0-9/_-]*)$")
 RELAY_BLOCKED = ("/api/web-password", "/api/control/", "/api/auth/")
-# Stav vzdalene spravy si stranka precist smi, zmenit ho jde jen doma.
-RELAY_READ_ONLY = ("/api/remote-admin",)
+# Stav vzdaleneho nastaveni si stranka precist smi, zmenit ho jde jen doma.
+RELAY_READ_ONLY = ("/api/remote-config",)
 QUERY = re.compile(r"^[A-Za-z0-9=&%._~+-]*$")
 CONTENT_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+/;=\- ]{1,100}$")
 
@@ -442,7 +442,7 @@ class Guard:
                 reason = f"code (server time step {int(now // TOTP_STEP)})"
             else:
                 reason = f"code already used (step {counter}, last {self.last_counter})"
-            log(f"fleet: login rejected: {reason}")
+            log(f"remote-config: login rejected: {reason}")
             self.ip_failures.setdefault(ip, []).append(now)
             self.global_failures = [t for t in self.global_failures
                                     if now - t < GLOBAL_WINDOW_S] + [now]
@@ -489,24 +489,24 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px}
 
 LOGIN_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
-<title>Hodiny – přihlášení</title><style>{style}</style>{guard}</head><body><main>
-<h1>Nastavení hodin</h1><form class="card" method="post" action="{prefix}/login">
+<title>Vzdálené nastavení – přihlášení</title><style>{style}</style>{guard}</head><body><main>
+<h1>Vzdálené nastavení</h1><form class="card" method="post" action="{prefix}/login">
 {error}<label for="password">Heslo</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
 <label for="code">Kód z ověřovací aplikace</label><input id="code" name="code" inputmode="numeric" pattern="[0-9]{{6}}" maxlength="6" autocomplete="one-time-code" required>
 <button class="primary" type="submit">Přihlásit</button></form></main></body></html>"""
 
 DEVICES_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
-<title>Hodiny</title><style>{style}</style>{guard}</head><body><main>
-<header><h1>Hodiny</h1><form method="post" action="{prefix}/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Odhlásit</button></form></header>
+<title>Vzdálené nastavení</title><style>{style}</style>{guard}</head><body><main>
+<header><h1>Tvoje hodiny</h1><form method="post" action="{prefix}/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Odhlásit</button></form></header>
 <div class="card"><ul>{items}</ul></div>
 <p class="hint">Hodiny se připojují samy; „offline“ znamená, že se neozvaly {online} s. Nové hodiny se přidávají na serveru příkazem <code>serve.py add-device</code>.</p>
 </main></body></html>"""
 
 MESSAGE_PAGE = """<!doctype html><html lang="cs"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
-<title>Hodiny</title><style>{style}</style></head><body><main>
-<h1>Hodiny</h1><div class="card"><p>{message}</p><a class="button" href="{prefix}/">Zpět na seznam hodin</a></div>
+<title>Vzdálené nastavení</title><style>{style}</style></head><body><main>
+<h1>Vzdálené nastavení</h1><div class="card"><p>{message}</p><a class="button" href="{prefix}/">Zpět na seznam hodin</a></div>
 </main></body></html>"""
 
 # Vlozi se na zacatek <head> stranky z hodin, pred jeji vlastni skripty.
@@ -518,13 +518,13 @@ const nativeFetch=window.fetch.bind(window);
 // Token proti CSRF je vazany na relaci. Stranka z drivejska (jina karta,
 // obnovena karta, nove prihlaseni) si pri odmitnuti vezme aktualni a pozadavek
 // zopakuje; vyprsela relace vede na prihlaseni.
-const refreshCsrf=async()=>{{const r=await nativeFetch({prefix}+"/api/session",{{credentials:"same-origin",headers:{{"X-Fleet-Session":"1"}}}});
+const refreshCsrf=async()=>{{const r=await nativeFetch({prefix}+"/api/session",{{credentials:"same-origin",headers:{{"X-Remote-Config-Session":"1"}}}});
 if(!r.ok){{location.href={prefix}+"/";return false}}const j=await r.json();csrf=j.csrf;return true}};
-const send=(input,options)=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Fleet-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}})}};
-window.fetch=async(input,options={{}})=>{{let response=await send(input,options);const action=response.headers.get("X-Fleet-Action");
+const send=(input,options)=>{{const headers=new Headers(options.headers||{{}});headers.set("X-Remote-Config-Csrf",csrf);return nativeFetch(fix(input),{{...options,headers,credentials:"same-origin"}})}};
+window.fetch=async(input,options={{}})=>{{let response=await send(input,options);const action=response.headers.get("X-Remote-Config-Action");
 if(action==="refresh"&&await refreshCsrf())response=await send(input,options);else if(action==="login")location.href={prefix}+"/";return response}};
-const addBar=()=>{{const host=document.querySelector("header .header-actions")||document.querySelector("header")||document.body;if(!host||document.getElementById("fleetBar"))return;
-const bar=document.createElement("div");bar.id="fleetBar";bar.style.cssText="display:flex;align-items:center;gap:8px";
+const addBar=()=>{{const host=document.querySelector("header .header-actions")||document.querySelector("header")||document.body;if(!host||document.getElementById("remoteConfigBar"))return;
+const bar=document.createElement("div");bar.id="remoteConfigBar";bar.style.cssText="display:flex;align-items:center;gap:8px";
 const select=document.createElement("select");select.setAttribute("aria-label","Hodiny");select.style.cssText="min-height:48px;padding:0 12px;border:1px solid var(--line,#3b444b);border-radius:12px;background:var(--surface,#171c20);color:var(--text,#f3f6f8);font-size:16px;font-weight:700";
 for(const d of devices){{const o=document.createElement("option");o.value=d.name;o.textContent=(d.online?"● ":"○ ")+(d.clockName&&d.clockName!==d.name?d.name+" ("+d.clockName+")":d.name);o.selected=d.name===current;select.append(o)}}
 select.addEventListener("change",()=>{{location.href={prefix}+"/d/"+encodeURIComponent(select.value)+"/"}});
@@ -575,7 +575,7 @@ def inject(page: str, name: str, csrf: str, devices: list[dict]) -> str:
 # --- HTTP -----------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "fleet-web/1.0"
+    server_version = "remote-config-web/1.0"
     protocol_version = "HTTP/1.1"
     # Hodiny drzi spojeni mezi dotazy; long-poll sam ceka uvnitr obsluhy.
     timeout = 60
@@ -651,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _csrf_problem(self, session: Session, submitted: str | None = None) -> str:
         """Prazdny retezec, kdyz token proti CSRF sedi; jinak duvod do journalu."""
-        value = submitted if submitted is not None else self.headers.get("X-Fleet-Csrf", "")
+        value = submitted if submitted is not None else self.headers.get("X-Remote-Config-Csrf", "")
         if not self._same_origin():
             return "foreign origin"
         if not value:
@@ -665,7 +665,7 @@ class Handler(BaseHTTPRequestHandler):
     def _csrf_ok(self, session: Session, submitted: str | None = None) -> bool:
         problem = self._csrf_problem(session, submitted)
         if problem:
-            log(f"fleet: csrf rejected ({problem}) {self.command} {self.path.partition('?')[0]}")
+            log(f"remote-config: csrf rejected ({problem}) {self.command} {self.path.partition('?')[0]}")
         return not problem
 
     # -- smerovani --
@@ -689,9 +689,9 @@ class Handler(BaseHTTPRequestHandler):
                 if "prefetch" in purpose or "prerender" in purpose:
                     # Predem nactena stranka by mohla patrit jine relaci nez ta
                     # po kliknuti; prohlizec ji pri odmitnuti nacte az na klik.
-                    log(f"fleet: refused speculative {self.command} {path} ({purpose})")
+                    log(f"remote-config: refused speculative {self.command} {path} ({purpose})")
                     return self._send(503, b"", "text/plain", security_headers())
-            if path == "/fleet-status" and self.command == "GET":
+            if path == "/remote-config-status" and self.command == "GET":
                 return self._status()
             if path.startswith(f"{PREFIX}/agent/"):
                 return self._agent(path[len(PREFIX) + 7:])
@@ -721,10 +721,10 @@ class Handler(BaseHTTPRequestHandler):
         # Vlastni hlavicku cizi stranka bez CORS neposle a cookie je
         # SameSite=Strict; odpoved si stejne precist nemuze.
         session = self._session()
-        if session is None or self.headers.get("X-Fleet-Session") != "1" or \
+        if session is None or self.headers.get("X-Remote-Config-Session") != "1" or \
                 not self._same_origin():
             return self._json(401, {"ok": False, "message": "Přihlášení vypršelo."})
-        log("fleet: csrf refreshed")
+        log("remote-config: csrf refreshed")
         self._json(200, {"ok": True, "csrf": session.csrf})
 
     def _status(self):
@@ -760,7 +760,7 @@ class Handler(BaseHTTPRequestHandler):
     def _login_page(self, error: str = "", code: int = 200):
         message = f'<p class="error">{html.escape(error)}</p>' if error else ""
         if not self.guard.configured():
-            message = '<p class="error">Přihlášení není na serveru nastavené (fleet.env).</p>'
+            message = '<p class="error">Přihlášení není na serveru nastavené (remote-config.env).</p>'
         page = LOGIN_PAGE.format(style=STYLE, guard=PAGE_GUARD, prefix=PREFIX, error=message)
         self._send(code, page.encode(), "text/html; charset=utf-8")
 
@@ -774,14 +774,14 @@ class Handler(BaseHTTPRequestHandler):
         ip = self._client_ip()
         now = time.time()
         if self.guard.login_blocked(ip, now):
-            log(f"fleet: login blocked for {ip}")
+            log(f"remote-config: login blocked for {ip}")
             return self._login_page("Příliš mnoho pokusů. Zkus to později.", 429)
         token = self.guard.login(ip, form.get("password", [""])[0],
                                  form.get("code", [""])[0].strip(), now)
         if token is None:
-            log(f"fleet: failed login from {ip}")
+            log(f"remote-config: failed login from {ip}")
             return self._login_page("Heslo nebo kód nesouhlasí.", 401)
-        log(f"fleet: login from {ip}")
+        log(f"remote-config: login from {ip}")
         # Bez Max-Age: zavreni prohlizece prihlaseni ukonci (limity hlida server).
         cookie = f"{COOKIE}={token}; Path={PREFIX}/; Secure; HttpOnly; SameSite=Strict"
         self._redirect(f"{PREFIX}/", [("Set-Cookie", cookie)])
@@ -794,7 +794,7 @@ class Handler(BaseHTTPRequestHandler):
         form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
         if session is not None and self._csrf_ok(session, form.get("csrf", [""])[0]):
             self.guard.logout(self._cookie())
-            log(f"fleet: logout from {self._client_ip()}")
+            log(f"remote-config: logout from {self._client_ip()}")
         cookie = f"{COOKIE}=; Path={PREFIX}/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"
         self._redirect(f"{PREFIX}/", [("Set-Cookie", cookie)])
 
@@ -809,7 +809,7 @@ class Handler(BaseHTTPRequestHandler):
     def _agent(self, action: str):
         device = self._agent_device()
         if device is None:
-            log(f"fleet: agent rejected from {self._client_ip()}")
+            log(f"remote-config: agent rejected from {self._client_ip()}")
             # Tělo se nečte; spojení se zavře, aby nezůstalo rozbité.
             self.close_connection = True
             return self._error(401, "unknown device")
@@ -858,17 +858,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect(f"{PREFIX}/")
             # Stranka podle hlavicky presmeruje na prihlaseni (SHIM).
             return self._json(401, {"ok": False, "message": "Přihlášení na serveru vypršelo."},
-                              security_headers() + [("X-Fleet-Action", "login")])
+                              security_headers() + [("X-Remote-Config-Action", "login")])
         # Stranky (navigace prohlizece) hlavicku nemaji; vse ostatni ano.
         if not is_page and path != "/ui-language.js":
             problem = self._csrf_problem(session)
             if problem:
-                log(f"fleet: csrf rejected ({problem}) {self.command} {path}")
+                log(f"remote-config: csrf rejected ({problem}) {self.command} {path}")
                 extra = []
                 if problem == "stale token":
                     # Relace plati, jen stranka nese token starsi relace:
-                    # SHIM si vezme aktualni z /fleet/api/session a zopakuje.
-                    extra = [("X-Fleet-Action", "refresh")]
+                    # SHIM si vezme aktualni z /remote-config/api/session a zopakuje.
+                    extra = [("X-Remote-Config-Action", "refresh")]
                 return self._json(403, {"ok": False, "message": "Požadavek z cizí stránky byl odmítnut."},
                                   security_headers() + extra)
         if self.command not in ("GET", "POST") or not RELAY_PATH.match(path) or \
@@ -904,7 +904,7 @@ class Handler(BaseHTTPRequestHandler):
         # a kolik trva cely. Jen cesta, bez dotazu.
         now = time.monotonic()
         queued = (job.picked or now) - job.created
-        log(f"fleet: relay {name} {self.command} {path} "
+        log(f"remote-config: relay {name} {self.command} {path} "
             f"{job.status if finished else 'timeout'} {len(job.result_body)} B"
             f"{' (cache)' if job.from_cache else ''} "
             f"wait {queued * 1000:.0f} ms total {(now - job.created) * 1000:.0f} ms")
@@ -949,13 +949,13 @@ def command_hash_password() -> None:
         raise SystemExit("Heslo je kratší než 12 znaků.")
     if getpass.getpass("Znovu: ") != first:
         raise SystemExit("Hesla se neshodují.")
-    print(f"FLEET_PASSWORD_HASH={hash_password(first)}")
+    print(f"REMOTE_CONFIG_PASSWORD_HASH={hash_password(first)}")
 
 
 def command_new_totp(account: str) -> None:
     secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
     label = urllib.parse.quote(f"Hodiny:{account}")
-    print(f"FLEET_TOTP_SECRET={secret}")
+    print(f"REMOTE_CONFIG_TOTP_SECRET={secret}")
     print(f"otpauth://totp/{label}?secret={secret}&issuer=Hodiny&digits=6&period=30",
           file=sys.stderr)
 
@@ -1005,10 +1005,10 @@ def main() -> None:
             print(name, item.get("added", ""))
         return
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    guard = Guard(os.environ.get("FLEET_PASSWORD_HASH", ""),
-                  os.environ.get("FLEET_TOTP_SECRET", ""))
+    guard = Guard(os.environ.get("REMOTE_CONFIG_PASSWORD_HASH", ""),
+                  os.environ.get("REMOTE_CONFIG_TOTP_SECRET", ""))
     if not guard.configured():
-        log("fleet: FLEET_PASSWORD_HASH or FLEET_TOTP_SECRET missing, login disabled")
+        log("remote-config: REMOTE_CONFIG_PASSWORD_HASH or REMOTE_CONFIG_TOTP_SECRET missing, login disabled")
     make_server(BIND, PORT, guard, Relay()).serve_forever()
 
 

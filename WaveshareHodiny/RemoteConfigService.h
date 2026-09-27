@@ -2,28 +2,28 @@
 
 #include <Arduino.h>
 
-#include "RemoteAdmin.h"
+#include "RemoteConfig.h"
 
-// Vzdálená správa přes server (infra/fleet). Protokol viz RemoteAdmin.h.
+// Vzdálené nastavení přes server (infra/remote-config). Protokol viz RemoteConfig.h.
 //
 // Zapíná se jen na hodinách samých, z domácí sítě: adresa serveru a token od
 // `serve.py add-device` leží v NVS (oddíl clockcfg, jmenný prostor
-// remote-admin), nejsou v ClockConfig ani v záloze a přes server je změnit
+// remote-config), nejsou v ClockConfig ani v záloze a přes server je změnit
 // nejde. Požadavky ze serveru jdou na vlastní web přes loopback s klíčem,
 // který zná jen tahle úloha (configurationWebLoopbackKey), takže se na ně
 // vztahují všechny kontroly webu kromě přihlášení heslem webu: tu nahrazuje
 // přihlášení na serveru (heslo + TOTP).
 //
 // Vlastní úloha se zásobníkem v PSRAM: spojení se ověřuje proti svazku kořenů
-// Mozilly a drží se otevřené, dokud je správa zapnutá.
+// Mozilly a drží se otevřené, dokud je vzdálené nastavení zapnuté.
 
-struct RemoteAdminSettings {
+struct RemoteConfigSettings {
   bool enabled = false;
-  char url[REMOTE_ADMIN_URL_LENGTH] = "";
+  char url[REMOTE_CONFIG_URL_LENGTH] = "";
   bool tokenSet = false;
 };
 
-struct RemoteAdminStatus {
+struct RemoteConfigStatus {
   bool connected = false;
   // Kolik sekund uplynulo od poslední odpovědi serveru; UINT32_MAX = nikdy.
   uint32_t secondsSinceContact = UINT32_MAX;
@@ -31,7 +31,7 @@ struct RemoteAdminStatus {
   char message[80] = "";
 };
 
-enum class RemoteAdminSaveResult : uint8_t {
+enum class RemoteConfigSaveResult : uint8_t {
   Ok,
   InvalidUrl,
   InvalidToken,
@@ -39,15 +39,15 @@ enum class RemoteAdminSaveResult : uint8_t {
   StorageFailed,
 };
 
-void remoteAdminServiceBegin();
-void remoteAdminServicePrepareForFirmwareUpdate();
+void remoteConfigServiceBegin();
+void remoteConfigServicePrepareForFirmwareUpdate();
 // Nové jméno hodin po přejmenování na webu; úloha samotná NVS číst nesmí.
-void remoteAdminServiceSetDeviceName(const char *name);
+void remoteConfigServiceSetDeviceName(const char *name);
 
-void remoteAdminServiceSettings(RemoteAdminSettings &settings);
+void remoteConfigServiceSettings(RemoteConfigSettings &settings);
 // Prázdný token nechá uložený. Zapnout bez adresy a tokenu nejde.
-RemoteAdminSaveResult remoteAdminServiceSave(bool enabled, const char *url,
+RemoteConfigSaveResult remoteConfigServiceSave(bool enabled, const char *url,
                                              const char *token);
 // Smaže adresu i token a spojení zavře.
-bool remoteAdminServiceForget();
-void remoteAdminServiceStatus(RemoteAdminStatus &status);
+bool remoteConfigServiceForget();
+void remoteConfigServiceStatus(RemoteConfigStatus &status);

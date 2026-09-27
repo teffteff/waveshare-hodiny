@@ -1,4 +1,4 @@
-#include "RemoteAdminService.h"
+#include "RemoteConfigService.h"
 
 #include <Preferences.h>
 #include <WiFi.h>
@@ -19,7 +19,7 @@ extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_star
 extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
-constexpr char PREFS_NAMESPACE[] = "remote-admin";
+constexpr char PREFS_NAMESPACE[] = "remote-config";
 constexpr char PREFS_ENABLED[] = "on";
 constexpr char PREFS_URL[] = "url";
 constexpr char PREFS_TOKEN[] = "token";
@@ -46,8 +46,8 @@ constexpr uint32_t REJECTED_RETRY_MS = 10 * 60 * 1000;
 
 struct Settings {
   bool enabled = false;
-  char url[REMOTE_ADMIN_URL_LENGTH] = "";
-  char token[REMOTE_ADMIN_TOKEN_LENGTH + 1] = "";
+  char url[REMOTE_CONFIG_URL_LENGTH] = "";
+  char token[REMOTE_CONFIG_TOKEN_LENGTH + 1] = "";
 };
 
 TaskHandle_t taskHandle = nullptr;
@@ -89,9 +89,9 @@ void loadSettings() {
     preferences.getString(PREFS_TOKEN, next.token, sizeof(next.token));
     preferences.end();
   }
-  RemoteAdminEndpoint endpoint;
-  if (!remoteAdminParseUrl(next.url, endpoint) ||
-      !remoteAdminValidToken(next.token))
+  RemoteConfigEndpoint endpoint;
+  if (!remoteConfigParseUrl(next.url, endpoint) ||
+      !remoteConfigValidToken(next.token))
     next.enabled = false;
   portENTER_CRITICAL(&stateMux);
   settings = next;
@@ -159,7 +159,7 @@ bool readExact(Client &client, uint8_t *buffer, size_t length,
   return true;
 }
 
-bool discardBody(Client &client, const RemoteAdminHead &head) {
+bool discardBody(Client &client, const RemoteConfigHead &head) {
   if (head.chunked) return false;
   long remaining = head.contentLength < 0 ? 0 : head.contentLength;
   if (remaining > 16 * 1024) return false;
@@ -205,7 +205,7 @@ struct Buffer {
 
 struct LocalResult {
   int status = 502;
-  char contentType[REMOTE_ADMIN_CONTENT_TYPE_LENGTH] = "application/json";
+  char contentType[REMOTE_CONFIG_CONTENT_TYPE_LENGTH] = "application/json";
   bool gzip = false;
   const uint8_t *body = nullptr;
   size_t bodyLength = 0;
@@ -220,14 +220,14 @@ void failLocal(LocalResult &result, int status, const char *message) {
   result.bodyLength = strlen(text);
 }
 
-void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
+void executeLocally(const RemoteConfigHead &job, const uint8_t *body,
                     size_t bodyLength, Buffer &response, LocalResult &result) {
-  if (!remoteAdminAllowedRequest(job.jobMethod, job.jobPath)) {
+  if (!remoteConfigAllowedRequest(job.jobMethod, job.jobPath)) {
     failLocal(result, 403, "Tohle jde nastavit jen v domácí síti přímo na hodinách.");
     return;
   }
   char head[HEAD_CAPACITY];
-  const size_t headLength = remoteAdminBuildLocalRequest(
+  const size_t headLength = remoteConfigBuildLocalRequest(
       head, sizeof(head), job.jobMethod, job.jobPath, job.contentType,
       configurationWebLoopbackKey(), bodyLength);
   if (headLength == 0) {
@@ -261,7 +261,7 @@ void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
     if (got > 0) {
       response.length += static_cast<size_t>(got);
       const long complete =
-          remoteAdminCompleteLength(response.data, response.length);
+          remoteConfigCompleteLength(response.data, response.length);
       if (complete > 0) {
         response.length = static_cast<size_t>(complete);
         break;
@@ -276,10 +276,10 @@ void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
     failLocal(result, 502, "Odpověď hodin je příliš velká.");
     return;
   }
-  const size_t headEnd = remoteAdminHeadLength(response.data, response.length);
-  RemoteAdminHead parsed;
+  const size_t headEnd = remoteConfigHeadLength(response.data, response.length);
+  RemoteConfigHead parsed;
   if (headEnd == 0 ||
-      !remoteAdminParseHead(reinterpret_cast<const char *>(response.data),
+      !remoteConfigParseHead(reinterpret_cast<const char *>(response.data),
                             headEnd - 4, parsed)) {
     failLocal(result, 502, "Web hodin neodpověděl včas.");
     return;
@@ -287,7 +287,7 @@ void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
   uint8_t *payload = response.data + headEnd;
   size_t payloadLength = response.length - headEnd;
   if (parsed.chunked) {
-    const long plain = remoteAdminDechunk(payload, payloadLength);
+    const long plain = remoteConfigDechunk(payload, payloadLength);
     if (plain < 0) {
       failLocal(result, 502, "Odpověď hodin přišla neúplná.");
       return;
@@ -316,9 +316,9 @@ void executeLocally(const RemoteAdminHead &job, const uint8_t *body,
 enum class SessionEnd : uint8_t { Reconnect, Rejected, Failed, Stopped };
 
 struct Connection {
-  RemoteAdminEndpoint endpoint;
-  char hostHeader[REMOTE_ADMIN_HOST_LENGTH + 8] = "";
-  char token[REMOTE_ADMIN_TOKEN_LENGTH + 1] = "";
+  RemoteConfigEndpoint endpoint;
+  char hostHeader[REMOTE_CONFIG_HOST_LENGTH + 8] = "";
+  char token[REMOTE_CONFIG_TOKEN_LENGTH + 1] = "";
   char deviceName[DEVICE_NAME_LENGTH] = "";
 };
 
@@ -342,9 +342,9 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
              connection.token, FIRMWARE_VERSION, connection.deviceName);
     const uint32_t pollSentMs = millis();
     if (!writeText(client, head)) return SessionEnd::Failed;
-    RemoteAdminHead job;
+    RemoteConfigHead job;
     if (!readHead(client, head, sizeof(head), headLength, POLL_TIMEOUT_MS) ||
-        !remoteAdminParseHead(head, headLength, job))
+        !remoteConfigParseHead(head, headLength, job))
       return SessionEnd::Failed;
     markContact();
     if (job.status == 401 || job.status == 403) return SessionEnd::Rejected;
@@ -378,11 +378,11 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
 
     // Velké odpovědi (stránka, překlady) nahrávání na server zdržuje nejvíc.
     // Když server stejnou odpověď už má (shodný otisk), pošle se jen otisk.
-    char tag[REMOTE_ADMIN_TAG_LENGTH] = "";
+    char tag[REMOTE_CONFIG_TAG_LENGTH] = "";
     bool notModified = false;
     if (strcmp(job.jobMethod, "GET") == 0 && result.status == 200 &&
         result.bodyLength >= TAG_MIN_BODY) {
-      remoteAdminBodyTag(result.body, result.bodyLength, tag);
+      remoteConfigBodyTag(result.body, result.bodyLength, tag);
       notModified = strcmp(tag, job.jobIfNoneMatch) == 0;
     }
     const size_t uploadLength = notModified ? 0 : result.bodyLength;
@@ -403,9 +403,9 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
     const uint32_t resultSentMs = millis();
     response.trim();
     if (!sent) return SessionEnd::Failed;
-    RemoteAdminHead ack;
+    RemoteConfigHead ack;
     if (!readHead(client, head, sizeof(head), headLength, RESULT_TIMEOUT_MS) ||
-        !remoteAdminParseHead(head, headLength, ack))
+        !remoteConfigParseHead(head, headLength, ack))
       return SessionEnd::Failed;
 #if !FIRMWARE_RELEASE
     // Kde se ztrácí čas u požadavků přes server (vývojové buildy).
@@ -427,7 +427,7 @@ SessionEnd runSession(WiFiClientSecure &client, const Connection &connection,
   return SessionEnd::Stopped;
 }
 
-void remoteAdminTask(void *) {
+void remoteConfigTask(void *) {
   // Tělo požadavku od serveru; odpověď webu roste podle potřeby.
   uint8_t *requestBody = static_cast<uint8_t *>(
       heap_caps_malloc(MAX_REQUEST_BODY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -472,7 +472,7 @@ void remoteAdminTask(void *) {
     }
 
     Connection connection;
-    if (!remoteAdminParseUrl(current.url, connection.endpoint)) {
+    if (!remoteConfigParseUrl(current.url, connection.endpoint)) {
       setStatus("Adresa serveru není platná", false);
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
       continue;
@@ -534,11 +534,11 @@ void remoteAdminTask(void *) {
 }
 }  // namespace
 
-void remoteAdminServiceBegin() {
+void remoteConfigServiceBegin() {
   if (!loaded) loadSettings();
   char name[DEVICE_NAME_LENGTH];
   deviceNameLoad(name, sizeof(name));
-  remoteAdminServiceSetDeviceName(name);
+  remoteConfigServiceSetDeviceName(name);
   if (taskHandle != nullptr) {
     portENTER_CRITICAL(&stateMux);
     suspended = false;
@@ -546,24 +546,24 @@ void remoteAdminServiceBegin() {
     xTaskNotifyGive(taskHandle);
     return;
   }
-  xTaskCreatePinnedToCoreWithCaps(remoteAdminTask, "remote-admin", 16384,
+  xTaskCreatePinnedToCoreWithCaps(remoteConfigTask, "remote-config", 16384,
                                   nullptr, 1, &taskHandle, 0,
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
-void remoteAdminServiceSetDeviceName(const char *name) {
+void remoteConfigServiceSetDeviceName(const char *name) {
   portENTER_CRITICAL(&stateMux);
   strlcpy(deviceName, name, sizeof(deviceName));
   portEXIT_CRITICAL(&stateMux);
 }
 
-void remoteAdminServicePrepareForFirmwareUpdate() {
+void remoteConfigServicePrepareForFirmwareUpdate() {
   portENTER_CRITICAL(&stateMux);
   suspended = true;
   portEXIT_CRITICAL(&stateMux);
 }
 
-void remoteAdminServiceSettings(RemoteAdminSettings &out) {
+void remoteConfigServiceSettings(RemoteConfigSettings &out) {
   if (!loaded) loadSettings();
   portENTER_CRITICAL(&stateMux);
   out.enabled = settings.enabled;
@@ -572,27 +572,27 @@ void remoteAdminServiceSettings(RemoteAdminSettings &out) {
   portEXIT_CRITICAL(&stateMux);
 }
 
-RemoteAdminSaveResult remoteAdminServiceSave(bool enabled, const char *url,
+RemoteConfigSaveResult remoteConfigServiceSave(bool enabled, const char *url,
                                              const char *token) {
   if (!loaded) loadSettings();
   Settings next;
   portENTER_CRITICAL(&stateMux);
   next = settings;
   portEXIT_CRITICAL(&stateMux);
-  RemoteAdminEndpoint endpoint;
-  if (url[0] != '\0' && !remoteAdminParseUrl(url, endpoint))
-    return RemoteAdminSaveResult::InvalidUrl;
-  if (token[0] != '\0' && !remoteAdminValidToken(token))
-    return RemoteAdminSaveResult::InvalidToken;
+  RemoteConfigEndpoint endpoint;
+  if (url[0] != '\0' && !remoteConfigParseUrl(url, endpoint))
+    return RemoteConfigSaveResult::InvalidUrl;
+  if (token[0] != '\0' && !remoteConfigValidToken(token))
+    return RemoteConfigSaveResult::InvalidToken;
   strlcpy(next.url, url, sizeof(next.url));
   if (token[0] != '\0') strlcpy(next.token, token, sizeof(next.token));
   next.enabled = enabled;
-  if (enabled && next.url[0] == '\0') return RemoteAdminSaveResult::InvalidUrl;
-  if (enabled && next.token[0] == '\0') return RemoteAdminSaveResult::MissingToken;
+  if (enabled && next.url[0] == '\0') return RemoteConfigSaveResult::InvalidUrl;
+  if (enabled && next.token[0] == '\0') return RemoteConfigSaveResult::MissingToken;
 
   Preferences preferences;
   if (!preferences.begin(PREFS_NAMESPACE, false, "clockcfg"))
-    return RemoteAdminSaveResult::StorageFailed;
+    return RemoteConfigSaveResult::StorageFailed;
   bool saved = preferences.putUChar(PREFS_ENABLED, next.enabled ? 1 : 0) == 1;
   if (next.url[0] == '\0') {
     preferences.remove(PREFS_URL);
@@ -604,16 +604,16 @@ RemoteAdminSaveResult remoteAdminServiceSave(bool enabled, const char *url,
     saved = saved &&
             preferences.putString(PREFS_TOKEN, next.token) == strlen(next.token);
   preferences.end();
-  if (!saved) return RemoteAdminSaveResult::StorageFailed;
+  if (!saved) return RemoteConfigSaveResult::StorageFailed;
   portENTER_CRITICAL(&stateMux);
   settings = next;
   ++settingsRevision;
   portEXIT_CRITICAL(&stateMux);
   if (taskHandle != nullptr) xTaskNotifyGive(taskHandle);
-  return RemoteAdminSaveResult::Ok;
+  return RemoteConfigSaveResult::Ok;
 }
 
-bool remoteAdminServiceForget() {
+bool remoteConfigServiceForget() {
   Preferences preferences;
   if (!preferences.begin(PREFS_NAMESPACE, false, "clockcfg")) return false;
   const bool cleared = preferences.clear();
@@ -628,7 +628,7 @@ bool remoteAdminServiceForget() {
   return true;
 }
 
-void remoteAdminServiceStatus(RemoteAdminStatus &out) {
+void remoteConfigServiceStatus(RemoteConfigStatus &out) {
   portENTER_CRITICAL(&stateMux);
   out.connected = connected;
   out.secondsSinceContact =

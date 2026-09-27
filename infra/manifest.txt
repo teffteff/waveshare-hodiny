@@ -155,15 +155,15 @@ alerts     dropin    alerts-web.service
 alerts     enable    alerts-web.service
 alerts     restart   alerts-web.service
 
-fleet      user      fleet /opt/fleet
-fleet      dir       /opt/fleet root:fleet 750
-fleet      dir       /opt/fleet/state fleet:fleet 700
-fleet      secret    /opt/fleet/fleet.env root:root 600
-fleet      file      infra/fleet/serve.py               /opt/fleet/serve.py
-fleet      unit      infra/fleet/fleet-web.service      /opt/fleet/fleet-web.service
-fleet      dropin    fleet-web.service
-fleet      enable    fleet-web.service
-fleet      restart   fleet-web.service
+remote-config user      remote-config /opt/remote-config
+remote-config dir       /opt/remote-config root:remote-config 750
+remote-config dir       /opt/remote-config/state remote-config:remote-config 700
+remote-config secret    /opt/remote-config/remote-config.env root:root 600
+remote-config file      infra/remote-config/serve.py               /opt/remote-config/serve.py
+remote-config unit      infra/remote-config/remote-config-web.service      /opt/remote-config/remote-config-web.service
+remote-config dropin    remote-config-web.service
+remote-config enable    remote-config-web.service
+remote-config restart   remote-config-web.service
 
 backup     dir       /opt/backup root:root 700
 backup     dir       /opt/backup/data root:root 700

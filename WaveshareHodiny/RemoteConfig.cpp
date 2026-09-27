@@ -1,4 +1,4 @@
-#include "RemoteAdmin.h"
+#include "RemoteConfig.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -51,11 +51,11 @@ bool queryCharacter(char c) {
 }
 }  // namespace
 
-bool remoteAdminParseUrl(const char *url, RemoteAdminEndpoint &endpoint) {
-  endpoint = RemoteAdminEndpoint{};
+bool remoteConfigParseUrl(const char *url, RemoteConfigEndpoint &endpoint) {
+  endpoint = RemoteConfigEndpoint{};
   if (url == nullptr || !startsWith(url, "https://")) return false;
   const size_t total = strlen(url);
-  if (total >= REMOTE_ADMIN_URL_LENGTH) return false;
+  if (total >= REMOTE_CONFIG_URL_LENGTH) return false;
   for (size_t i = 0; i < total; ++i) {
     const unsigned char c = static_cast<unsigned char>(url[i]);
     if (c <= ' ' || c >= 0x7F || c == '?' || c == '#' || c == '@' ||
@@ -94,10 +94,10 @@ bool remoteAdminParseUrl(const char *url, RemoteAdminEndpoint &endpoint) {
   return true;
 }
 
-bool remoteAdminValidToken(const char *token) {
+bool remoteConfigValidToken(const char *token) {
   if (token == nullptr) return false;
   const size_t length = strlen(token);
-  if (length < 16 || length > REMOTE_ADMIN_TOKEN_LENGTH) return false;
+  if (length < 16 || length > REMOTE_CONFIG_TOKEN_LENGTH) return false;
   for (size_t i = 0; i < length; ++i) {
     const char c = token[i];
     if (!(isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'))
@@ -106,19 +106,19 @@ bool remoteAdminValidToken(const char *token) {
   return true;
 }
 
-bool remoteAdminAllowedRequest(const char *method, const char *path) {
+bool remoteConfigAllowedRequest(const char *method, const char *path) {
   if (method == nullptr || path == nullptr) return false;
   const bool post = strcmp(method, "POST") == 0;
   if (!post && strcmp(method, "GET") != 0) return false;
   const char *query = strchr(path, '?');
   const size_t pathLength =
       query != nullptr ? static_cast<size_t>(query - path) : strlen(path);
-  if (pathLength == 0 || pathLength >= REMOTE_ADMIN_PATH_LENGTH) return false;
+  if (pathLength == 0 || pathLength >= REMOTE_CONFIG_PATH_LENGTH) return false;
   if (query != nullptr) {
     for (const char *c = query + 1; *c != '\0'; ++c)
       if (!queryCharacter(*c)) return false;
   }
-  char bare[REMOTE_ADMIN_PATH_LENGTH];
+  char bare[REMOTE_CONFIG_PATH_LENGTH];
   copyValue(bare, sizeof(bare), path, pathLength);
   if (strcmp(bare, "/") == 0 || strcmp(bare, "/ui-language.js") == 0 ||
       strcmp(bare, "/diagnostics") == 0)
@@ -131,12 +131,12 @@ bool remoteAdminAllowedRequest(const char *method, const char *path) {
       strcmp(bare, "/api/control") == 0 || strcmp(bare, "/api/auth") == 0)
     return false;
   if (strcmp(bare, "/api/web-password") == 0) return false;
-  // Stav vzdálené správy si stránka přečíst smí, měnit ho jde jen doma.
-  if (post && strcmp(bare, "/api/remote-admin") == 0) return false;
+  // Stav vzdáleného nastavení si stránka přečíst smí, měnit ho jde jen doma.
+  if (post && strcmp(bare, "/api/remote-config") == 0) return false;
   return true;
 }
 
-size_t remoteAdminHeadLength(const uint8_t *data, size_t length) {
+size_t remoteConfigHeadLength(const uint8_t *data, size_t length) {
   for (size_t i = 3; i < length; ++i) {
     if (data[i - 3] == '\r' && data[i - 2] == '\n' && data[i - 1] == '\r' &&
         data[i] == '\n')
@@ -145,9 +145,9 @@ size_t remoteAdminHeadLength(const uint8_t *data, size_t length) {
   return 0;
 }
 
-bool remoteAdminParseHead(const char *head, size_t length,
-                          RemoteAdminHead &out) {
-  out = RemoteAdminHead{};
+bool remoteConfigParseHead(const char *head, size_t length,
+                          RemoteConfigHead &out) {
+  out = RemoteConfigHead{};
   const char *end = head + length;
   const char *lineEnd = static_cast<const char *>(memchr(head, '\n', length));
   if (lineEnd == nullptr) lineEnd = end;
@@ -208,7 +208,7 @@ bool remoteAdminParseHead(const char *head, size_t length,
   return true;
 }
 
-long remoteAdminDechunk(uint8_t *body, size_t length) {
+long remoteConfigDechunk(uint8_t *body, size_t length) {
   size_t read = 0;
   size_t write = 0;
   for (;;) {
@@ -236,11 +236,11 @@ long remoteAdminDechunk(uint8_t *body, size_t length) {
   }
 }
 
-long remoteAdminCompleteLength(const uint8_t *data, size_t length) {
-  const size_t headEnd = remoteAdminHeadLength(data, length);
+long remoteConfigCompleteLength(const uint8_t *data, size_t length) {
+  const size_t headEnd = remoteConfigHeadLength(data, length);
   if (headEnd == 0) return 0;
-  RemoteAdminHead head;
-  if (!remoteAdminParseHead(reinterpret_cast<const char *>(data), headEnd - 4,
+  RemoteConfigHead head;
+  if (!remoteConfigParseHead(reinterpret_cast<const char *>(data), headEnd - 4,
                             head))
     return -1;
   if (head.chunked) {
@@ -286,8 +286,8 @@ long remoteAdminCompleteLength(const uint8_t *data, size_t length) {
   return -1;
 }
 
-void remoteAdminBodyTag(const uint8_t *data, size_t length,
-                        char out[REMOTE_ADMIN_TAG_LENGTH]) {
+void remoteConfigBodyTag(const uint8_t *data, size_t length,
+                        char out[REMOTE_CONFIG_TAG_LENGTH]) {
   uint64_t hash = 0xcbf29ce484222325ULL;
   for (size_t i = 0; i < length; ++i) {
     hash ^= data[i];
@@ -301,7 +301,7 @@ void remoteAdminBodyTag(const uint8_t *data, size_t length,
   out[16] = '\0';
 }
 
-size_t remoteAdminBuildLocalRequest(char *out, size_t capacity,
+size_t remoteConfigBuildLocalRequest(char *out, size_t capacity,
                                     const char *method, const char *path,
                                     const char *contentType,
                                     const char *loopbackKey,
@@ -309,14 +309,14 @@ size_t remoteAdminBuildLocalRequest(char *out, size_t capacity,
   const bool withBody = strcmp(method, "POST") == 0;
   // Typ přišel ze serveru; řídicí znak by do požadavku propašoval hlavičku.
   bool typeUsable = contentType != nullptr && contentType[0] != '\0' &&
-                    strlen(contentType) < REMOTE_ADMIN_CONTENT_TYPE_LENGTH;
+                    strlen(contentType) < REMOTE_CONFIG_CONTENT_TYPE_LENGTH;
   for (const char *c = contentType; typeUsable && *c != '\0'; ++c)
     if (static_cast<unsigned char>(*c) < ' ' || *c == 0x7F) typeUsable = false;
   int written;
   if (withBody) {
     written = snprintf(out, capacity,
                        "%s %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                       "Connection: close\r\nX-Remote-Admin: %s\r\n"
+                       "Connection: close\r\nX-Remote-Config: %s\r\n"
                        "Content-Type: %s\r\nContent-Length: %u\r\n\r\n",
                        method, path, loopbackKey,
                        typeUsable ? contentType
@@ -325,7 +325,7 @@ size_t remoteAdminBuildLocalRequest(char *out, size_t capacity,
   } else {
     written = snprintf(out, capacity,
                        "%s %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                       "Connection: close\r\nX-Remote-Admin: %s\r\n\r\n",
+                       "Connection: close\r\nX-Remote-Config: %s\r\n\r\n",
                        method, path, loopbackKey);
   }
   if (written <= 0 || static_cast<size_t>(written) >= capacity) return 0;

@@ -38,7 +38,7 @@ manifest_local_md5() {
   local path="$1" host="$2" rendered
   if [ "$path" = "infra/caddy/Caddyfile" ]; then
     rendered="$(mktemp)"
-    sed -e "s/{{DOMAIN}}/$host/g" -e "s/{{FLEET_DOMAIN}}/${FLEET_HOST:?Chybí FLEET_HOST v .env}/g" \
+    sed -e "s/{{DOMAIN}}/$host/g" -e "s/{{PORTAL_DOMAIN}}/${PORTAL_HOST:?Chybí PORTAL_HOST v .env}/g" \
       "$REPO_ROOT/$path" > "$rendered"
     md5 -q "$rendered" 2>/dev/null || md5sum "$rendered" | cut -d' ' -f1
     rm -f "$rendered"

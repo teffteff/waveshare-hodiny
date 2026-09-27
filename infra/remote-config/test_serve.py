@@ -1,4 +1,4 @@
-"""Testy bez site: python3 -m unittest infra/fleet/test_serve.py (z korene repa)."""
+"""Testy bez site: python3 -m unittest infra/remote-config/test_serve.py (z korene repa)."""
 from __future__ import annotations
 
 import gzip
@@ -52,10 +52,10 @@ class PasswordTest(unittest.TestCase):
 class InjectTest(unittest.TestCase):
     def test_prefix_and_shim(self):
         page = serve.inject(PAGE, "kuchyn", "tok</script>", [{"name": "kuchyn"}])
-        self.assertIn('src="/fleet/d/kuchyn/ui-language.js"', page)
-        self.assertIn('href="/fleet/d/kuchyn/diagnostics"', page)
+        self.assertIn('src="/remote-config/d/kuchyn/ui-language.js"', page)
+        self.assertIn('href="/remote-config/d/kuchyn/diagnostics"', page)
         # Shim je hned za <head>, pred vlastnimi skripty stranky.
-        self.assertLess(page.index("X-Fleet-Csrf"), page.index('fetch("/api/config")'))
+        self.assertLess(page.index("X-Remote-Config-Csrf"), page.index('fetch("/api/config")'))
         self.assertNotIn("tok</script>", page)
 
 
@@ -149,7 +149,7 @@ class ServerBase(unittest.TestCase):
     def login(self, code=None, ip="203.0.113.5"):
         code = code or serve.totp_code(RFC_SECRET, int(time.time() // 30))
         form = urllib.parse.urlencode({"password": PASSWORD, "code": code})
-        return self.request("POST", "/fleet/login", form, {
+        return self.request("POST", "/remote-config/login", form, {
             "Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-For": ip})
 
     def session(self):
@@ -170,7 +170,7 @@ class ServerBase(unittest.TestCase):
 
 class ServerTest(ServerBase):
     def test_login_flow_and_code_reuse(self):
-        response, body = self.request("GET", "/fleet/")
+        response, body = self.request("GET", "/remote-config/")
         self.assertIn("Kód z ověřovací aplikace", body.decode())
         response, _ = self.login()
         self.assertEqual(response.status, 303)
@@ -184,13 +184,13 @@ class ServerTest(ServerBase):
 
     def test_speculative_loads_are_refused_and_pages_guarded(self):
         cookie, _ = self.session()
-        for path in ("/fleet/", "/fleet/d/kuchyn/"):
+        for path in ("/remote-config/", "/remote-config/d/kuchyn/"):
             response, _ = self.request("GET", path, headers={
                 "Cookie": cookie, "Sec-Purpose": "prefetch;prerender"})
             self.assertEqual(response.status, 503, path)
-        response, body = self.request("GET", "/fleet/", headers={"Cookie": cookie})
+        response, body = self.request("GET", "/remote-config/", headers={"Cookie": cookie})
         self.assertIn("e.persisted", body.decode())
-        response, body = self.request("GET", "/fleet/")
+        response, body = self.request("GET", "/remote-config/")
         self.assertIn("e.persisted", body.decode())
         # Cookie relace konci se zavrenim prohlizece.
         response, _ = self.login(code=serve.totp_code(RFC_SECRET, int(time.time() // 30) + 1))
@@ -207,39 +207,39 @@ class ServerTest(ServerBase):
         self.assertEqual(response.status, 303)
 
     def test_device_list_needs_login(self):
-        response, _ = self.request("GET", "/fleet/d/kuchyn/")
+        response, _ = self.request("GET", "/remote-config/d/kuchyn/")
         self.assertEqual(response.status, 303)
-        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config")
+        response, _ = self.request("GET", "/remote-config/d/kuchyn/api/config")
         self.assertEqual(response.status, 401)
 
     def test_relay_round_trip(self):
         cookie, csrf = self.session()
         self.start_clock()
-        response, body = self.request("GET", "/fleet/d/kuchyn/", headers={"Cookie": cookie})
+        response, body = self.request("GET", "/remote-config/d/kuchyn/", headers={"Cookie": cookie})
         self.assertEqual(response.status, 200)
         page = body.decode()
-        self.assertIn('src="/fleet/d/kuchyn/ui-language.js"', page)
+        self.assertIn('src="/remote-config/d/kuchyn/ui-language.js"', page)
         self.assertIn(json.dumps(csrf), page)
         self.assertIn("obyvak", page)  # vyber hodin zna i ostatni
         self.assertIsNone(response.getheader("Content-Encoding"))
         # Prohlizeci, ktery gzip umi, jde stranka zase zabalena.
-        response, body = self.request("GET", "/fleet/d/kuchyn/", headers={
+        response, body = self.request("GET", "/remote-config/d/kuchyn/", headers={
             "Cookie": cookie, "Accept-Encoding": "gzip, deflate, br"})
         self.assertEqual(response.getheader("Content-Encoding"), "gzip")
         self.assertEqual(gzip.decompress(body).decode(), page)
-        headers = {"Cookie": cookie, "X-Fleet-Csrf": csrf}
-        response, body = self.request("GET", "/fleet/d/kuchyn/api/config", headers=headers)
+        headers = {"Cookie": cookie, "X-Remote-Config-Csrf": csrf}
+        response, body = self.request("GET", "/remote-config/d/kuchyn/api/config", headers=headers)
         self.assertEqual(response.status, 200)
         self.assertEqual(json.loads(body), {"deviceName": "kuchyn"})
-        response, body = self.request("POST", "/fleet/d/kuchyn/api/config", "a=1&b=2", {
+        response, body = self.request("POST", "/remote-config/d/kuchyn/api/config", "a=1&b=2", {
             **headers, "Content-Type": "application/x-www-form-urlencoded"})
         self.assertEqual(json.loads(body)["echo"], "a=1&b=2")
         # Bez tokenu proti CSRF nic neodejde.
         count = len(self.clock.seen)
-        response, _ = self.request("POST", "/fleet/d/kuchyn/api/config", "a=1",
+        response, _ = self.request("POST", "/remote-config/d/kuchyn/api/config", "a=1",
                                    {"Cookie": cookie})
         self.assertEqual(response.status, 403)
-        response, _ = self.request("POST", "/fleet/d/kuchyn/api/config", "a=1", {
+        response, _ = self.request("POST", "/remote-config/d/kuchyn/api/config", "a=1", {
             **headers, "Origin": "https://evil.example"})
         self.assertEqual(response.status, 403)
         self.assertEqual(len(self.clock.seen), count)
@@ -250,44 +250,44 @@ class ServerTest(ServerBase):
         cookie, csrf = self.session()
         self.start_clock()
         # Stranka vykreslena pro starsi relaci, cookie uz je nova.
-        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config", headers={
-            "Cookie": cookie, "X-Fleet-Csrf": old_csrf})
+        response, _ = self.request("GET", "/remote-config/d/kuchyn/api/config", headers={
+            "Cookie": cookie, "X-Remote-Config-Csrf": old_csrf})
         self.assertEqual(response.status, 403)
-        self.assertEqual(response.getheader("X-Fleet-Action"), "refresh")
+        self.assertEqual(response.getheader("X-Remote-Config-Action"), "refresh")
         # Stranka si vezme aktualni token relace a pozadavek zopakuje.
-        response, body = self.request("GET", "/fleet/api/session", headers={
-            "Cookie": cookie, "X-Fleet-Session": "1"})
+        response, body = self.request("GET", "/remote-config/api/session", headers={
+            "Cookie": cookie, "X-Remote-Config-Session": "1"})
         self.assertEqual(json.loads(body)["csrf"], csrf)
-        response, _ = self.request("GET", "/fleet/api/session", headers={"Cookie": cookie})
+        response, _ = self.request("GET", "/remote-config/api/session", headers={"Cookie": cookie})
         self.assertEqual(response.status, 401)
-        response, _ = self.request("GET", "/fleet/api/session", headers={
-            "Cookie": cookie, "X-Fleet-Session": "1", "Origin": "https://evil.example"})
+        response, _ = self.request("GET", "/remote-config/api/session", headers={
+            "Cookie": cookie, "X-Remote-Config-Session": "1", "Origin": "https://evil.example"})
         self.assertEqual(response.status, 401)
         # Chybejici token je utok nebo chyba, ne zastarala stranka.
-        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config",
+        response, _ = self.request("GET", "/remote-config/d/kuchyn/api/config",
                                    headers={"Cookie": cookie})
         self.assertEqual(response.status, 403)
-        self.assertIsNone(response.getheader("X-Fleet-Action"))
-        response, _ = self.request("GET", "/fleet/d/kuchyn/api/config", headers={
-            "Cookie": "__Secure-fleet=neplatna", "X-Fleet-Csrf": csrf})
+        self.assertIsNone(response.getheader("X-Remote-Config-Action"))
+        response, _ = self.request("GET", "/remote-config/d/kuchyn/api/config", headers={
+            "Cookie": "__Secure-remote-config=neplatna", "X-Remote-Config-Csrf": csrf})
         self.assertEqual(response.status, 401)
-        self.assertEqual(response.getheader("X-Fleet-Action"), "login")
+        self.assertEqual(response.getheader("X-Remote-Config-Action"), "login")
         self.assertEqual(self.clock.seen, [])
 
     def test_unchanged_page_is_not_uploaded_again(self):
         cookie, csrf = self.session()
         self.start_clock()
-        first = self.request("GET", "/fleet/d/kuchyn/", headers={"Cookie": cookie})[1]
-        second = self.request("GET", "/fleet/d/kuchyn/", headers={"Cookie": cookie})[1]
+        first = self.request("GET", "/remote-config/d/kuchyn/", headers={"Cookie": cookie})[1]
+        second = self.request("GET", "/remote-config/d/kuchyn/", headers={"Cookie": cookie})[1]
         self.assertEqual(first, second)
         self.assertEqual(self.clock.skipped, 1)
         # Kazdy pozadavek pritom do hodin dosel (stav a vedlejsi ucinky plati).
         self.assertEqual([p for _, p, _ in self.clock.seen], ["/", "/"])
         # Male odpovedi se neotiskuji.
-        self.request("GET", "/fleet/d/kuchyn/api/config",
-                     headers={"Cookie": cookie, "X-Fleet-Csrf": csrf})
-        self.request("GET", "/fleet/d/kuchyn/api/config",
-                     headers={"Cookie": cookie, "X-Fleet-Csrf": csrf})
+        self.request("GET", "/remote-config/d/kuchyn/api/config",
+                     headers={"Cookie": cookie, "X-Remote-Config-Csrf": csrf})
+        self.request("GET", "/remote-config/d/kuchyn/api/config",
+                     headers={"Cookie": cookie, "X-Remote-Config-Csrf": csrf})
         self.assertEqual(self.clock.skipped, 1)
 
     def test_not_modified_without_cached_copy_fails_cleanly(self):
@@ -301,20 +301,20 @@ class ServerTest(ServerBase):
     def test_blocked_paths_never_reach_clock(self):
         cookie, csrf = self.session()
         self.start_clock()
-        headers = {"Cookie": cookie, "X-Fleet-Csrf": csrf}
-        for path in ("/api/web-password", "/api/remote-admin", "/api/control/display/off",
+        headers = {"Cookie": cookie, "X-Remote-Config-Csrf": csrf}
+        for path in ("/api/web-password", "/api/remote-config", "/api/control/display/off",
                      "/api/auth/login", "/api/../api/config", "/etc/passwd"):
-            response, _ = self.request("POST", "/fleet/d/kuchyn" + path, "x=1", headers)
+            response, _ = self.request("POST", "/remote-config/d/kuchyn" + path, "x=1", headers)
             self.assertEqual(response.status, 403, path)
         self.assertEqual(self.clock.seen, [])
 
     def test_offline_clock(self):
         cookie, csrf = self.session()
-        response, body = self.request("GET", "/fleet/d/obyvak/api/config", headers={
-            "Cookie": cookie, "X-Fleet-Csrf": csrf})
+        response, body = self.request("GET", "/remote-config/d/obyvak/api/config", headers={
+            "Cookie": cookie, "X-Remote-Config-Csrf": csrf})
         self.assertEqual(response.status, 503)
         self.assertIn("nejsou připojené", json.loads(body)["message"])
-        response, body = self.request("GET", "/fleet/d/obyvak/", headers={"Cookie": cookie})
+        response, body = self.request("GET", "/remote-config/d/obyvak/", headers={"Cookie": cookie})
         self.assertEqual(response.status, 503)
         self.assertIn("text/html", response.getheader("Content-Type"))
 
@@ -326,11 +326,11 @@ class ServerTest(ServerBase):
         self.assertTrue(device.online(2.0))
 
     def test_agent_needs_token(self):
-        response, _ = self.request("GET", "/fleet/agent/poll",
+        response, _ = self.request("GET", "/remote-config/agent/poll",
                                    headers={"Authorization": "Bearer spatny"})
         self.assertEqual(response.status, 401)
         # Odpoved na cizi ulohu se nikam nedostane.
-        response, _ = self.request("POST", "/fleet/agent/result", b"x", {
+        response, _ = self.request("POST", "/remote-config/agent/result", b"x", {
             "Authorization": f"Bearer {self.token}", "X-Job-Id": "neexistuje",
             "X-Job-Status": "200"})
         self.assertEqual(response.status, 410)
@@ -338,13 +338,13 @@ class ServerTest(ServerBase):
     def test_removed_device_token_stops_working(self):
         serve.save_devices({"obyvak": {"token_sha256": serve.token_hash("o" * 43)}})
         time.sleep(0.01)
-        response, _ = self.request("GET", "/fleet/agent/poll",
+        response, _ = self.request("GET", "/remote-config/agent/poll",
                                    headers={"Authorization": f"Bearer {self.token}"})
         self.assertEqual(response.status, 401)
 
 
 class RootPrefixTest(ServerBase):
-    """Sluzba na vlastnim jmene (fleet.sytes.net): bez /fleet v adresach."""
+    """Sluzba na vlastnim jmene ({{PORTAL_DOMAIN}}): bez /remote-config v adresach."""
 
     def setUp(self):
         self.saved_prefix = serve.PREFIX
@@ -379,10 +379,10 @@ class RootPrefixTest(ServerBase):
         self.assertIn('const base="/d/kuchyn"', page)
         self.assertIn('src="/d/kuchyn/ui-language.js"', page)
         response, body = self.request("GET", "/d/kuchyn/api/config", headers={
-            "Cookie": cookie, "X-Fleet-Csrf": csrf})
+            "Cookie": cookie, "X-Remote-Config-Csrf": csrf})
         self.assertEqual(json.loads(body), {"deviceName": "kuchyn"})
         response, body = self.request("GET", "/api/session", headers={
-            "Cookie": cookie, "X-Fleet-Session": "1"})
+            "Cookie": cookie, "X-Remote-Config-Session": "1"})
         self.assertEqual(json.loads(body)["csrf"], csrf)
 
 

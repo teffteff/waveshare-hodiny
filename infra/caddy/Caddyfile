@@ -134,25 +134,21 @@
 		}
 		reverse_proxy 127.0.0.1:8098
 	}
-	# Stranky pro prohlizec (nastaveni hodin, novinky) bydli na vlastnim jmenu
-	# {{FLEET_DOMAIN}}. Tady by je obsluhoval service worker Home Assistanta
+	# Stranky pro prohlizec (vzdalene nastaveni hodin, novinky) bydli na vlastnim jmenu
+	# {{PORTAL_DOMAIN}}. Tady by je obsluhoval service worker Home Assistanta
 	# (scope /): ukazoval by stranky z mezipameti o navsteva pozde (prihlaseni
 	# bez zmeny, stary token proti CSRF) a sdilely by s HA uloziste prohlizece.
-	# Stare adresy presmeruji i s cestou.
-	redir /fleet https://{{FLEET_DOMAIN}}/ permanent
-	handle_path /fleet/* {
-		redir https://{{FLEET_DOMAIN}}{uri} permanent
-	}
-	redir /novinky https://{{FLEET_DOMAIN}}/novinky/ permanent
+	# Stare adresy novinek presmeruji i s cestou.
+	redir /novinky https://{{PORTAL_DOMAIN}}/novinky/ permanent
 	handle_path /novinky/* {
-		redir https://{{FLEET_DOMAIN}}/novinky{uri} permanent
+		redir https://{{PORTAL_DOMAIN}}/novinky{uri} permanent
 	}
 	handle {
 		reverse_proxy 127.0.0.1:8123
 	}
 }
 
-{{FLEET_DOMAIN}} {
+{{PORTAL_DOMAIN}} {
 	header Strict-Transport-Security "max-age=31536000"
 	# Prehled novinek z hlidanych obchodu (projekt scraping, /opt/watch).
 	# Nese osobni sledovaci seznam a ceny, takze stejne jako agenda patri za
@@ -221,12 +217,12 @@
 		uri strip_prefix /bus
 		reverse_proxy 127.0.0.1:8103
 	}
-	# Nastaveni vsech hodin pres server (infra/fleet, FLEET_PREFIX prazdny).
+	# Nastaveni vsech hodin pres server (infra/remote-config, REMOTE_CONFIG_PREFIX prazdny).
 	# Hodiny se sem pripojuji samy a server jim predava pozadavky z prohlizece,
 	# takze kdo je tu prihlaseny, nastavuje hodiny doma. Heslo a kod TOTP resi
 	# sama sluzba (basic_auth by kolidoval s tokenem hodin v Authorization).
 	# Odpoved hodin nese stranku nastaveni (kolem 80 kB gzipem).
-	respond /fleet-status 404
+	respond /remote-config-status 404
 	handle {
 		request_body {
 			max_size 1MB

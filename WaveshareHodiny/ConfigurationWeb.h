@@ -105,7 +105,7 @@ bool configurationWebSetMode(ConfigurationWebMode mode);
 // displeji hodin: kdo na ně sáhne, má k hodinám fyzický přístup.
 bool configurationWebPasswordConfigured();
 bool configurationWebClearPassword();
-// Klíč, kterým se požadavky vzdálené správy (RemoteAdminService) na vlastní
+// Klíč, kterým se požadavky vzdáleného nastavení (RemoteConfigService) na vlastní
 // web přes loopback prokazují místo hesla webu. Nový při každém startu.
 const char *configurationWebLoopbackKey();
 void configurationWebLockForTest();
