@@ -132,7 +132,7 @@ put() {  # put <mód> <zdroj> <cíl>
   echo "  nový: $3"
 }
 EOF
-  for s in "${SERVICES[@]}"; do echo "changed_$s=$FORCE$INIT"; done
+  for s in "${SERVICES[@]}"; do echo "changed_${s//-/_}=$FORCE$INIT"; done
 
   if [ $INIT -eq 1 ]; then
     manifest_lines "${SERVICES[@]}" | while read -r svc kind a b c; do
@@ -146,10 +146,10 @@ EOF
 
   manifest_lines "${SERVICES[@]}" | while read -r svc kind a b; do
     case "$kind" in
-      file)    echo "put 644 \"\$S\"/$(q "$a") $(q "$b") && changed_$svc=1 || true" ;;
-      exec)    echo "put 700 \"\$S\"/$(q "$a") $(q "$b") && changed_$svc=1 || true" ;;
-      sysunit) echo "put 644 \"\$S\"/$(q "$a") $(q "$b") && changed_$svc=1 || true" ;;
-      unit)    echo "put 644 \"\$S\"/$(q "$a") $(q "$b") && changed_$svc=1 || true"
+      file)    echo "put 644 \"\$S\"/$(q "$a") $(q "$b") && changed_${svc//-/_}=1 || true" ;;
+      exec)    echo "put 700 \"\$S\"/$(q "$a") $(q "$b") && changed_${svc//-/_}=1 || true" ;;
+      sysunit) echo "put 644 \"\$S\"/$(q "$a") $(q "$b") && changed_${svc//-/_}=1 || true" ;;
+      unit)    echo "put 644 \"\$S\"/$(q "$a") $(q "$b") && changed_${svc//-/_}=1 || true"
                echo "put 644 \"\$S\"/$(q "$a") /etc/systemd/system/$(q "$(basename "$b")") >/dev/null || true" ;;
       caddyfile)
                echo "cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev"
@@ -178,7 +178,7 @@ EOF
   manifest_lines "${SERVICES[@]}" | while read -r svc kind rest; do
     case "$kind" in
       restart|start|enable|run)
-        echo "if [ \"\$changed_$svc\" != 00 ]; then"
+        echo "if [ \"\$changed_${svc//-/_}\" != 00 ]; then"
         case "$kind" in
           # Každý příkaz na vlastním řádku: v "a && b" by set -e selhání a přešel.
           restart) echo "  systemctl restart $(q "$rest")"; echo "  echo '  restart: $rest'" ;;
