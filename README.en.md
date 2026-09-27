@@ -89,7 +89,7 @@ changes the system text and verbal date shown on the display.
 - realtime lightning from the Blitzortung network (LightningMaps.org) through
   your own server: strokes on the radar coloured by age and an alert on the
   clock face when lightning strikes within a set radius, optionally switching
-  to the radar (see `infra/README.md`); after any automatic switch to the radar
+  to the radar (configured on the server); after any automatic switch to the radar
   (rain, warning, lightning) the clock goes back to the previous screen once
   the rain nearby has gone,
 - a satellite screen: the sky above the clock as a circle with the zenith in the
@@ -497,7 +497,7 @@ list from an address you enter in the **Agenda** tab, typically
 through a service account, merges them, expands recurring events and even builds
 the day labels, so no date arithmetic is left in the firmware and no token is
 stored on the clock. Which calendars the server reads is configured on the
-server; the setup and the source files live in [infra/](infra/README.md).
+server, whose code lives in a separate private repository.
 
 **Which of them the clock shows is chosen on the Agenda tab.** The calendar list
 appears after the agenda loads for the first time or after **Test the agenda**.
@@ -601,7 +601,7 @@ content never reaches the clock. The screen always opens on the timetable.
 
 **The server talks to Škola OnLine, the clock does not.** Škola OnLine has no
 public API, but its mobile app uses a JSON API mapped by unofficial projects.
-[Your own server](infra/README.md#rozvrh-a-úkoly-ze-školy-online) logs in,
+Your own server logs in,
 keeps the token, downloads the timetable and homework and sends the clock only
 finished rows. The child's username and password are therefore neither in the
 clock nor in the settings backup, and when Škola OnLine changes its API, the
@@ -672,8 +672,8 @@ key-free and need no registration. The location is the same city the weather
 uses, so there is nothing to configure twice.
 
 Optionally you can put **your own feed** between the clock and adsb.fi: the
-*Your own aircraft feed* field on the Aircraft tab, served by
-[`infra/planes`](infra/planes/). At the 100 km range the adsb.fi response runs
+*Your own aircraft feed* field on the Aircraft tab, served by your own
+server. At the 100 km range the adsb.fi response runs
 past 50 kB, yet the firmware reads twelve keys out of roughly fifty; the server
 drops the rest along with the traffic on the ground, and the same sample comes
 down to about 13 kB. The shape of the response stays the same, so it really is
@@ -768,7 +768,7 @@ cardinal directions. As on the aircraft radar you can choose which direction is
 at the top; the sky is drawn like a map, with east to the right of north. The
 location is the same city the weather uses.
 
-**Your [own server](infra/README.md#družice) computes the orbits, not the
+**Your own server computes the orbits, not the
 clock.** It downloads the public orbital elements from
 [CelesTrak](https://celestrak.org/) (OMM, the successor to TLE, which cannot hold
 catalogue numbers above 99999), each group at most once every six hours, and
@@ -879,7 +879,7 @@ server; the clock shows where it came from and which firmware made it, then asks
 for the backup password and for the parts to restore. Restoring **System and
 access** also takes over the web password of the clock the backup came from. The server is entered under **Sharing server** as
 `https://hodiny:password@server/settings`. **Delete from server** removes the
-backup selected in the list. The server side lives in `infra/settings/`. Older
+backup selected in the list. The server side lives in the server's private repository. Older
 unencrypted backups (versions 2 and 3) cannot be opened.
 
 ## Touchscreen settings
@@ -1072,14 +1072,13 @@ protocol. Use the repository script with the currently verified serial port:
 - `WaveshareHodiny/` – firmware source and embedded web interface,
 - `docs/` – public installer and OTA/weather assets for GitHub Pages,
 - `screenshots/` and `media/` – documentation media,
-- `tools/` – generators and release validation tools, plus the server tooling
-  (`check-stack.sh`, `deploy.sh`, `update-ha.sh`, `pull-backup.sh`,
-  `decrypt-backup.sh`),
-- `infra/` – the server side, a byte-for-byte copy of what runs there;
-  [infra/README.md](infra/README.md) (in Czech) covers deployment, failure
-  alerts, backups and recovery,
+- `tools/` – generators, host tests and release validation tools,
 - `build.sh` – development build,
 - `build-release.sh` – isolated release build and package validation.
+
+The server side (feeds, remote settings, deployment, backups) moved to a
+separate private repository on 2026-09-27; firmware comments that mention
+`infra/<service>` refer to paths there.
 
 ## Troubleshooting
 
