@@ -46,7 +46,7 @@
 #include "TmepService.h"
 #include "WeatherWarningService.h"
 #include "PushAlertsService.h"
-#include "RemoteAdminService.h"
+#include "RemoteConfigService.h"
 
 namespace {
 // Nastavení se dvěma sadami po devíti hodnotách, s plnými barevnými škálami a
@@ -532,7 +532,7 @@ String requestCookie(const char *name) {
   return String();
 }
 
-// Požadavky vzdálené správy (RemoteAdminService) přicházejí z úlohy v týchž
+// Požadavky vzdáleného nastavení (RemoteConfigService) přicházejí z úlohy v týchž
 // hodinách přes loopback a nesou klíč, který se vygeneruje při každém startu
 // a nikdy neopustí RAM. Kdo je poslal, se přihlásil na serveru heslem a TOTP;
 // heslo webu hodin se po nich proto nechce. Zvenku se na 127.0.0.1 nedostane
@@ -543,7 +543,7 @@ bool relayedRequest() {
   if (loopbackKey[0] == '\0' ||
       server.client().remoteIP() != IPAddress(127, 0, 0, 1))
     return false;
-  const String key = server.header("X-Remote-Admin");
+  const String key = server.header("X-Remote-Config");
   return key.length() == 32 &&
          constantTimeEqual(reinterpret_cast<const uint8_t *>(key.c_str()),
                            reinterpret_cast<const uint8_t *>(loopbackKey), 32);
@@ -5288,11 +5288,11 @@ void handleSettingsShareDelete() {
   sendJson(200, payload);
 }
 
-void sendRemoteAdminState() {
-  RemoteAdminSettings settings;
-  remoteAdminServiceSettings(settings);
-  RemoteAdminStatus status;
-  remoteAdminServiceStatus(status);
+void sendRemoteConfigState() {
+  RemoteConfigSettings settings;
+  remoteConfigServiceSettings(settings);
+  RemoteConfigStatus status;
+  remoteConfigServiceStatus(status);
   String payload = F("{\"ok\":true,\"enabled\":");
   payload += settings.enabled ? F("true") : F("false");
   payload += F(",\"url\":\"");
@@ -5310,44 +5310,44 @@ void sendRemoteAdminState() {
     payload += status.secondsSinceContact;
   payload += F(",\"requestsServed\":");
   payload += status.requestsServed;
-  // Stránka otevřená přes server nastavení správy jen ukáže.
+  // Stránka otevřená přes server vzdálené nastavení jen ukáže.
   payload += F(",\"viaServer\":");
   payload += relayedRequest() ? F("true") : F("false");
   payload += '}';
   sendJson(200, payload);
 }
 
-void handleRemoteAdminSave() {
+void handleRemoteConfigSave() {
   if (relayedRequest()) {
-    sendError(403, F("Vzdálenou správu jde nastavit jen v domácí síti přímo na hodinách."));
+    sendError(403, F("Vzdálené nastavení jde měnit jen v domácí síti přímo na hodinách."));
     return;
   }
   if (server.arg("action") == "forget") {
-    if (!remoteAdminServiceForget()) {
-      sendError(500, F("Nastavení vzdálené správy se nepodařilo smazat."));
+    if (!remoteConfigServiceForget()) {
+      sendError(500, F("Adresu serveru a token se nepodařilo smazat."));
       return;
     }
-    sendRemoteAdminState();
+    sendRemoteConfigState();
     return;
   }
   const String url = server.arg("url");
   const String token = server.arg("token");
-  switch (remoteAdminServiceSave(server.arg("enabled") == "1", url.c_str(),
+  switch (remoteConfigServiceSave(server.arg("enabled") == "1", url.c_str(),
                                  token.c_str())) {
-    case RemoteAdminSaveResult::Ok:
-      sendRemoteAdminState();
+    case RemoteConfigSaveResult::Ok:
+      sendRemoteConfigState();
       return;
-    case RemoteAdminSaveResult::InvalidUrl:
+    case RemoteConfigSaveResult::InvalidUrl:
       sendError(400, F("Adresa serveru musí začínat https:// a nesmí obsahovat jméno, heslo, dotaz ani mezery."));
       return;
-    case RemoteAdminSaveResult::InvalidToken:
+    case RemoteConfigSaveResult::InvalidToken:
       sendError(400, F("Token není platný. Opiš ho celý z výpisu serve.py add-device."));
       return;
-    case RemoteAdminSaveResult::MissingToken:
-      sendError(400, F("Pro zapnutí vzdálené správy doplň token hodin."));
+    case RemoteConfigSaveResult::MissingToken:
+      sendError(400, F("Pro zapnutí vzdáleného nastavení doplň připojovací token."));
       return;
-    case RemoteAdminSaveResult::StorageFailed:
-      sendError(500, F("Nastavení vzdálené správy se nepodařilo uložit."));
+    case RemoteConfigSaveResult::StorageFailed:
+      sendError(500, F("Vzdálené nastavení se nepodařilo uložit."));
       return;
   }
 }
@@ -5478,7 +5478,7 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
     loopbackKey[32] = '\0';
   }
   const char *collectedHeaders[] = {"Cookie", "Origin", "Content-Type",
-                                    "Accept-Language", "X-Remote-Admin"};
+                                    "Accept-Language", "X-Remote-Config"};
   server.collectHeaders(collectedHeaders, 5);
   server.on("/", HTTP_GET, handleRoot);
   server.on("/ui-language.js", HTTP_GET, []() {
@@ -5546,11 +5546,11 @@ void configurationWebBegin(ClockConfigLoadCallback loadCallback,
   registerBoundedPost("/api/backup/share/forget", []() {
     if (requireConfigurationAccess()) handleSettingsShareForget();
   });
-  server.on("/api/remote-admin", HTTP_GET, []() {
-    if (requireConfigurationAccess()) sendRemoteAdminState();
+  server.on("/api/remote-config", HTTP_GET, []() {
+    if (requireConfigurationAccess()) sendRemoteConfigState();
   });
-  registerBoundedPost("/api/remote-admin", []() {
-    if (requireConfigurationAccess()) handleRemoteAdminSave();
+  registerBoundedPost("/api/remote-config", []() {
+    if (requireConfigurationAccess()) handleRemoteConfigSave();
   });
   registerBoundedPost("/api/tmep/remove", []() {
     if (requireConfigurationAccess()) handleTmepRemove();

@@ -58,7 +58,7 @@ UNITS = os.environ.get(
     "caddy.service news-web.service agenda-web.service planes-web.service "
     "lightning-web.service settings-web.service school-web.service "
     "satellites-web.service rain-web.service warnings-web.service "
-    "alerts-web.service fleet-web.service watch-web.service radar-collector.service "
+    "alerts-web.service remote-config-web.service watch-web.service radar-collector.service "
     "radar-web.service stats-collector.service stats-web.service llm-gateway.service "
     "bus-web.service learning-web.service "
     "docker.service "

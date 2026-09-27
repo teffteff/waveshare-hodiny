@@ -95,15 +95,15 @@ serveru zkontrolovat nedají:
 | Srážková předpověď | 8096, jen loopback | `/opt/rain/serve.py`, `rain-web.service` | `rain/` |
 | Výstrahy ČHMÚ | 8097, jen loopback | `/opt/warnings/serve.py`, `orp.json`, `warnings-web.service` | `warnings/` |
 | Upozornění na telefon | 8098, jen loopback | `/opt/alerts/serve.py`, `alerts-web.service`, téma ntfy v `/opt/alerts/alerts.env`, stav v `/opt/alerts/state/` | `alerts/` |
-| Nastavení všech hodin | 8099, jen loopback | `/opt/fleet/serve.py`, `fleet-web.service`, heslo a TOTP v `/opt/fleet/fleet.env`, registrované hodiny v `/opt/fleet/state/` | `fleet/` |
+| Vzdálené nastavení hodin (remote-config) | 8099, jen loopback | `/opt/remote-config/serve.py`, `remote-config-web.service`, heslo a TOTP v `/opt/remote-config/remote-config.env`, registrované hodiny v `/opt/remote-config/state/` | `remote-config/` |
 | Noční záloha dat | — | `/opt/backup/backup.sh`, `backup.service` + `backup.timer`, archivy v `/opt/backup/data/`, zašifrovaná kopie do OCI Object Storage (`offsite-key.asc`, adresa v `backup.env`) | `backup/` |
 | Hlášení poruch | — | `/opt/health/check.py`, `health.service` + `health.timer`, `notify-failure@.service`, `ha-update-check.sh` + `ha-update.timer` (nová verze HA), drop-in `on-failure.conf` u každé hlídané jednotky, téma ntfy v `/opt/health/health.env`, stav v `/var/lib/health/` | `health/` |
 | Brána k jazykovým modelům | 8102, jen loopback | `/opt/llm` (kód, `config.json`, klíče v `llm.env`), `/opt/llm/state/usage.sqlite` (deník dotazů, vyčerpané kvóty), `llm-gateway.service` | `llm/` |
 | Hlídač obchodů a obce | 8091, jen loopback | `/opt/watch`, `/opt/ou-watch` (kód), `/var/lib/watch`, `/var/lib/ou-watch` (databáze, fotky) | vlastní repozitáře `hlidac-novinek`, `hlidac-ondrejov` |
-| Statistiky letů (radar) | 8100, jen loopback | `/opt/radar` (kód), `/var/lib/radar` (databáze), `radar-collector.service` + `radar-web.service`, poloha domu v `/opt/radar/radar.env`; stránka `https://$FLEET_DOMAIN/radar/` za heslem novinek | vlastní soukromý repozitář `radar` |
-| Statistiky funkcí hodin | 8101, jen loopback | `/opt/hodiny-stats` (kód), `/var/lib/hodiny-stats` (databáze), `stats-collector.service` + `stats-web.service`, poloha domu a token do HA v `/opt/hodiny-stats/stats.env`; stránka `https://$FLEET_DOMAIN/hodiny/` za heslem novinek | vlastní soukromý repozitář `hodiny-stats` |
-| Mapa autobusů | 8103, jen loopback | `/opt/bus` (kód, nic neukládá), `bus-web.service`, polohy z otevřených dat PID (Golemio); stránka `https://$FLEET_DOMAIN/bus/` bez hesla | vlastní repozitář `bus` |
-| Učení pro děti (matematika, čeština) | 8104 + 8105, jen loopback | `/opt/learning` (kód), `/var/lib/learning/progress.json` (postup), `learning-web.service`; procvičování `https://$FLEET_DOMAIN/uceni/` (heslo řeší služba, zařízení si ho pamatuje), statistiky `https://$FLEET_DOMAIN/hodiny/uceni/` za heslem novinek | vlastní soukromý repozitář `learning` |
+| Statistiky letů (radar) | 8100, jen loopback | `/opt/radar` (kód), `/var/lib/radar` (databáze), `radar-collector.service` + `radar-web.service`, poloha domu v `/opt/radar/radar.env`; stránka `https://$PORTAL_HOST/radar/` za heslem novinek | vlastní soukromý repozitář `radar` |
+| Statistiky funkcí hodin | 8101, jen loopback | `/opt/hodiny-stats` (kód), `/var/lib/hodiny-stats` (databáze), `stats-collector.service` + `stats-web.service`, poloha domu a token do HA v `/opt/hodiny-stats/stats.env`; stránka `https://$PORTAL_HOST/hodiny/` za heslem novinek | vlastní soukromý repozitář `hodiny-stats` |
+| Mapa autobusů | 8103, jen loopback | `/opt/bus` (kód, nic neukládá), `bus-web.service`, polohy z otevřených dat PID (Golemio); stránka `https://$PORTAL_HOST/bus/` bez hesla | vlastní repozitář `bus` |
+| Učení pro děti (matematika, čeština) | 8104 + 8105, jen loopback | `/opt/learning` (kód), `/var/lib/learning/progress.json` (postup), `learning-web.service`; procvičování `https://$PORTAL_HOST/uceni/` (heslo řeší služba, zařízení si ho pamatuje), statistiky `https://$PORTAL_HOST/hodiny/uceni/` za heslem novinek | vlastní soukromý repozitář `learning` |
 | Home Assistant | 8123 | Docker, `--network=host`, config bind-mount | — |
 | Ostatní | 25565, 24454/udp | Minecraft (ruční start v `tmux` pod `opc`), go2rtc z HA — s hodinami nesouvisí | — |
 
@@ -154,7 +154,7 @@ https://hodiny:$WARNINGS_PASSWORD@$CLOCK_HOST/warnings.json  výstrahy ČHMÚ (n
 https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts  upozornění na telefon (nepovinné)
 https://hodiny:$SETTINGS_PASSWORD@$CLOCK_HOST/settings  zálohy nastavení (nepovinné)
 https://hodiny:$AGENDA_PASSWORD@$CLOCK_HOST/agenda.json  agenda z kalendáře
-https://$FLEET_HOST              vzdálená správa (nepovinné; adresa + token, viz níž)
+https://$PORTAL_HOST              vzdálené nastavení (nepovinné; adresa + token, viz níž)
 https://$CLOCK_HOST              Home Assistant
 ```
 
@@ -188,7 +188,7 @@ problem)“, jedno z těch dvou je zavřené.
 
 Nic dalšího otevřené není (ověřeno zvenčí 13. 9. 2026). Porty **8088, 8089,
 8090, 8092, 8093, 8094, 8095, 8096, 8097, 8098, 8099 a 8102 mezi ně nepatří**: servery se zprávami, agendou, letadly,
-blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami, upozorněními, vzdálenou správou a branou k modelům poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
+blesky, zálohami, rozvrhem, družicemi, srážkami, výstrahami, upozorněními, vzdáleným nastavením a branou k modelům poslouchají jen na `127.0.0.1`, protože jinak by šlo heslo
 z Caddyfile obejít dotazem přímo na ně. Otevřít ho v OCI nebo ve `firewalld` by tu ochranu zrušilo.
 Home Assistant poslouchá na 8123 na všech rozhraních (`--network=host`), ale
 ve `firewalld` otevřený není; ven chodí jen přes Caddy.
@@ -249,7 +249,7 @@ nezkouší a `/status` hlásí `problem`, který pošle health jako push.
 **Přehled:** `curl -s 127.0.0.1:8102/status` na serveru: dnešní dotazy po
 službách a kdo na ně odpověděl, blokované modely, útrata OpenRouteru.
 `GET /stats?days=N` (nejvýš 90) vrací historii pro stránku
-`https://$FLEET_DOMAIN/hodiny/modely/` (repozitář hodiny-stats): dny, služby,
+`https://$PORTAL_HOST/hodiny/modely/` (repozitář hodiny-stats): dny, služby,
 modely, dnešní kvótu Gemini po projektech proti `gemini_free_per_day`,
 přetížení Googlu po hodinách a útratu OpenRouteru za měsíc proti
 `openrouter_usd_per_month` (jen pro stránku, limit sám hlídá OpenRouter). Deník je
@@ -917,9 +917,9 @@ SSH "$CLOCK_SSH" 'sudo -u alerts env $(sudo cat /opt/alerts/alerts.env) python3.
 Do hodin se opíše `https://hodiny:$ALERTS_PASSWORD@$CLOCK_HOST/alerts`. Testy bez sítě
 (z kořene repozitáře): `python3 -m unittest infra/alerts/test_serve.py`.
 
-## Nastavení všech hodin přes server
+## Vzdálené nastavení hodin (remote-config)
 
-`https://$FLEET_HOST/` je jedno místo pro nastavení všech hodin, i mimo
+`https://$PORTAL_HOST/` je jedno místo pro nastavení všech hodin, i mimo
 domácí síť. Po přihlášení je tam seznam hodin a u každé její vlastní stránka
 nastavení — ta z firmwaru daného kusu, jen s výběrem hodin v hlavičce.
 
@@ -928,9 +928,9 @@ service worker (`sw-modern.js`, scope `/`) obsluhuje v prohlížeči všechno na
 tom jméně: stránky končící `/` vrací z mezipaměti a čerstvé stahuje až na
 pozadí. Nastavení hodin i `/novinky/` pak byly o návštěvu pozadu (po
 přihlášení se stránka nezměnila, starý token proti CSRF) a sdílely s HA
-úložiště prohlížeče, kde HA drží přihlašovací tokeny. Proto `$FLEET_HOST`
-(v `.env`, Caddy `{{FLEET_DOMAIN}}`, služba s `FLEET_PREFIX=` prázdným);
-staré adresy `/fleet/…` a `/novinky/…` na `$CLOCK_HOST` přesměrují. Datové
+úložiště prohlížeče, kde HA drží přihlašovací tokeny. Proto `$PORTAL_HOST`
+(v `.env`, Caddy `{{PORTAL_DOMAIN}}`, služba s `REMOTE_CONFIG_PREFIX=` prázdným);
+staré adresy `/novinky/…` na `$CLOCK_HOST` přesměrují. Datové
 kanály pro hodiny zůstávají na `$CLOCK_HOST`, hodiny nejsou prohlížeč.
 
 **Jak to jde přes NAT.** Server v OCI se k hodinám doma nedovolá, proto se
@@ -948,32 +948,32 @@ neotevírá a server adresy hodin nezná.
 - přihlášení heslem (scrypt) a kódem **TOTP** (Aegis, Google Authenticator…)
   v jednom kroku; kód nejde použít dvakrát, neúspěch neřekne, co nesedělo,
 - brzda: 5 neúspěchů z jedné IP za 15 min, 30 celkem za hodinu → 15 min nic;
-  pokusy jsou v journalu jako `fleet: failed login from <IP>`,
-- relace jen v paměti (restart služby odhlásí), cookie `__Secure-fleet`
+  pokusy jsou v journalu jako `remote-config: failed login from <IP>`,
+- relace jen v paměti (restart služby odhlásí), cookie `__Secure-remote-config`
   HttpOnly/Secure/SameSite=Strict, 30 min nečinnosti, nejvýš 12 h,
-- každý dotaz na API hodin nese token proti CSRF (hlavička `X-Fleet-Csrf`) —
+- každý dotaz na API hodin nese token proti CSRF (hlavička `X-Remote-Config-Csrf`) —
   Home Assistant běží na stejném jménu, takže SameSite sám nestačí,
 - hodiny se hlásí vlastním tokenem, server drží jen jeho SHA-256,
-- přes server **nejde**: heslo webu hodin, nastavení vzdálené správy, ovládací
+- přes server **nejde**: heslo webu hodin, vzdálené nastavení samotné, ovládací
   API ani přihlášení do webu hodin — hlídá to server i firmware
-  (`RemoteAdmin.cpp`). Firmware jde instalovat jen z oficiálního vydání,
+  (`RemoteConfig.cpp`). Firmware jde instalovat jen z oficiálního vydání,
 - hodiny ověřují certifikát serveru (svazek kořenů Mozilly) a na vlastní web
   pouštějí jen dotazy s klíčem loopbacku, který se generuje při každém startu.
 
 Co to znamená: kdo ovládne server nebo přihlášení, může přenastavit všechny
 připojené hodiny a přečíst jejich nastavení (adresy s hesly, ne tokeny — ty
-web nevrací). Proto TOTP a proto je správa v hodinách ve výchozím stavu
+web nevrací). Proto TOTP a proto je vzdálené nastavení v hodinách ve výchozím stavu
 vypnutá a zapíná se jen doma.
 
 Zavedení (jednou):
 
 ```sh
-python3 infra/fleet/serve.py hash-password   # na Macu; FLEET_PASSWORD_HASH=...
-python3 infra/fleet/serve.py new-totp        # FLEET_TOTP_SECRET=... + otpauth:// adresa
-tools/deploy.sh --init fleet                 # uživatel, /opt/fleet, state/ 700, prázdný fleet.env
-# oba řádky do /opt/fleet/fleet.env (root:root 600), pak:
-ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo systemctl restart fleet-web.service'
-tools/deploy.sh caddy                        # blok {{FLEET_DOMAIN}}
+python3 infra/remote-config/serve.py hash-password   # na Macu; REMOTE_CONFIG_PASSWORD_HASH=...
+python3 infra/remote-config/serve.py new-totp        # REMOTE_CONFIG_TOTP_SECRET=... + otpauth:// adresa
+tools/deploy.sh --init remote-config               # uživatel, /opt/remote-config, state/ 700, prázdný remote-config.env
+# oba řádky do /opt/remote-config/remote-config.env (root:root 600), pak:
+ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo systemctl restart remote-config-web.service'
+tools/deploy.sh caddy                        # blok {{PORTAL_DOMAIN}}
 ```
 
 Adresu `otpauth://` stačí převést na QR kód (`qrencode -t ansiutf8 '<adresa>'`)
@@ -982,20 +982,20 @@ a naskenovat, nebo tajemství opsat ručně. Nikam jinam ji neukládej.
 Hodiny se přidávají na serveru; token se ukáže jen jednou:
 
 ```sh
-ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo -u fleet env FLEET_STATE=/opt/fleet/state python3.11 /opt/fleet/serve.py add-device pracovna'
+ssh -i "$CLOCK_SSH_KEY" "$CLOCK_SSH" 'sudo -u remote-config env REMOTE_CONFIG_STATE=/opt/remote-config/state python3.11 /opt/remote-config/serve.py add-device pracovna'
 ```
 
-Pak v hodinách **doma** Systém → **Vzdálená správa přes server**: adresa
-`https://$FLEET_HOST`, token, zapnout, uložit. Webový server hodin musí
+Pak v hodinách **doma** Systém → **Vzdálené nastavení přes server**: adresa
+`https://$PORTAL_HOST`, připojovací token, zapnout, uložit. Webový server hodin musí
 být „Vždy zapnutý“ (v režimu na 10 minut odpovídá po jejich uplynutí zamčeně).
 Stav spojení je vidět tamtéž. `remove-device <název>` token okamžitě zneplatní
 (`devices.json` se čte bez restartu), `list-devices` vypíše registrované.
-`curl -s http://127.0.0.1:8099/fleet-status` na serveru ukáže, kdo je online.
+`curl -s http://127.0.0.1:8099/remote-config-status` na serveru ukáže, kdo je online.
 
-Testy bez sítě: `python3 -m unittest infra/fleet/test_serve.py`; protokol
-ve firmwaru `tools/run_host_tests.sh` (`remote_admin`). Stránku přes server jde
+Testy bez sítě: `python3 -m unittest infra/remote-config/test_serve.py`; protokol
+ve firmwaru `tools/run_host_tests.sh` (`remote_config`). Stránku přes server jde
 vyzkoušet i bez hodin: `tools/preview_web_ui.py` jako „hodiny“ a malý agent,
-který jeho odpovědi posílá serveru (hlavička `X-Remote-Admin` přepne náhled
+který jeho odpovědi posílá serveru (hlavička `X-Remote-Config` přepne náhled
 do režimu „otevřeno přes server“).
 
 ## Past s X-Forwarded-For (přečti dřív, než začneš „opravovat“ Caddyfile)
@@ -1424,9 +1424,9 @@ věcí na serveru nemá kopii nikde jinde:
 | Historie senzorů | `home-assistant_v2.db` | Grafy a statistiky. Šablonové senzory na ní nestojí. |
 | Stav hlídačů | `/var/lib/watch/state.db`, `/var/lib/ou-watch/state.db` | Co už hlídač viděl. Bez toho přijde po restartu buď záplava „novinek“, nebo se dávka tiše ztratí. |
 | Statistiky | `/var/lib/radar/radar.sqlite`, `/var/lib/hodiny-stats/stats.sqlite`, `/opt/llm/state/usage.sqlite` | Sbírají se jen jednou; historie letů a funkcí hodin se znovu stáhnout nedá. Velké tabulky radaru viz „Trvalý archiv“. |
-| Malý stav služeb | `/opt/fleet/state` (registrované hodiny), `/opt/settings/data`, `/opt/alerts/state`, `/var/lib/school`, `/var/lib/health` | Bez `devices.json` by se musely znovu registrovat všechny hodiny. |
+| Malý stav služeb | `/opt/remote-config/state` (registrované hodiny), `/opt/settings/data`, `/opt/alerts/state`, `/var/lib/school`, `/var/lib/health` | Bez `devices.json` by se musely znovu registrovat všechny hodiny. |
 | Fotky hlídačů | `/var/lib/watch/cache/images`, `/var/lib/ou-watch/cache/images` | E-shop fotku po prodeji smaže. Nejsou v nočním archivu, viz „Trvalý archiv“. |
-| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě `watch.env`, `backup.env` (adresa PAR), `fleet.env` (heslo a TOTP), `llm.env`, `radar.env`, `stats.env` a `ntfy.env` (hodiny-stats) | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
+| Hesla a klíče | `caddy.env`, `news.env`, `agenda.env`, `key.json`, `school.env`, `alerts.env`, `health.env`, obě `watch.env`, `backup.env` (adresa PAR), `remote-config.env` (heslo a TOTP), `llm.env`, `radar.env`, `stats.env` a `ntfy.env` (hodiny-stats) | Do veřejného repozitáře nepatří. Většina se dá vyrobit znovu, `key.json` se vydá nový ve stejném projektu Google Cloudu (sdílení kalendářů zůstává). |
 
 Naopak se zálohovat nemusí: dráhy družic, registr poloh zpráv a jízdní řád
 autobusů se stáhnou samy, certifikáty si Caddy vyžádá znovu přes ACME a kód
