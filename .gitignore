@@ -15,4 +15,3 @@ WaveshareHodiny/firmware_config.h
 WaveshareHodiny/release_version.h
 WaveshareHodiny/CompressedPages.h
 .DS_Store
-infra/school/nasems.local.env

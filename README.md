@@ -93,7 +93,7 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - realtime blesky ze sítě Blitzortung (LightningMaps.org) přes vlastní server:
   údery na meteoradaru obarvené podle stáří a výstraha na ciferníku, když
   blýská v nastaveném okruhu kolem polohy, volitelně i s přepnutím na radar
-  (viz `infra/README.md`); po každém automatickém přepnutí na radar (déšť,
+  (nastavuje se na serveru); po každém automatickém přepnutí na radar (déšť,
   výstraha, blesky) se hodiny vrátí na předchozí obrazovku, až v okolí
   přestane pršet,
 - obrazovku s družicemi nad hodinami: obloha jako kruh se zenitem uprostřed,
@@ -520,7 +520,7 @@ zadáš v záložce **Agenda** — typicky `https://tvuj-server.example.net/agen
 Server kalendáře přečte přes servisní účet, sloučí je, rozbalí opakované
 události a složí i popisky dnů, takže ve firmwaru nezůstala žádná datumová
 aritmetika a v hodinách žádný token. Které kalendáře server čte, se nastavuje
-na serveru; návod i zdrojové soubory jsou v [infra/](infra/README.md).
+na serveru, jehož kód je v samostatném soukromém repozitáři.
 
 **Které z nich hodiny ukážou, vybereš v záložce Agenda.** Seznam kalendářů
 se objeví po prvním načtení agendy nebo po tlačítku **Vyzkoušet agendu**.
@@ -616,7 +616,7 @@ obsah zprávy do hodin nejde. Obrazovka se vždycky otevírá na rozvrhu.
 
 **Do Školy OnLine chodí server, ne hodiny.** Škola OnLine nemá veřejné API,
 mobilní aplikace ale mluví s JSON API, které zmapovaly neoficiální projekty.
-Přihlašuje se [vlastní server](infra/README.md#rozvrh-a-úkoly-ze-školy-online):
+Přihlašuje se vlastní server:
 drží token, stahuje rozvrh a úkoly a hodinám posílá jen hotové řádky. Jméno
 a heslo dítěte proto v hodinách ani v záloze nastavení není. Když Škola OnLine
 své API změní, opravuje se server a firmware zůstane.
@@ -681,7 +681,7 @@ letu [adsb.lol](https://api.adsb.lol/); obojí je bez klíče a bez registrace.
 Poloha se bere ze stejného města jako počasí, takže se nikde nenastavuje znovu.
 
 Volitelně se dá mezi hodiny a adsb.fi postavit **vlastní zdroj** — pole *Vlastní
-zdroj letadel* na záložce Letadla, server z [`infra/planes`](infra/planes/).
+zdroj letadel* na záložce Letadla, obsluhuje ho vlastní server.
 Odpověď adsb.fi má při dosahu 100 km přes 50 kB, z toho ale firmware čte dvanáct
 klíčů ze zhruba padesáti; server zahodí zbytek i letadla na zemi a ze stejného
 vzorku zbude kolem 13 kB. Tvar odpovědi zůstává stejný, takže je to opravdu jen
@@ -764,7 +764,7 @@ jako u radaru letadel se dá zvolit, který směr je nahoře; obloha je nakresle
 jako mapa, tedy východ vpravo od severu. Poloha se bere ze stejného města jako
 počasí.
 
-**Dráhy počítá [vlastní server](infra/README.md#družice), ne hodiny.** Server
+**Dráhy počítá vlastní server, ne hodiny.** Server
 stahuje veřejné dráhy z [CelesTraku](https://celestrak.org/) (formát OMM,
 nástupce TLE, který nová katalogová čísla nad 99999 neumí), každou skupinu
 nejvýš jednou za šest hodin, a z nich knihovnou SGP4 počítá, kde družice na
@@ -888,7 +888,7 @@ hodin, ze kterých záloha pochází. Server se zadává v sekci
 **Server pro sdílení** jako `https://hodiny:heslo@server/settings`. Zálohu
 vybranou v seznamu odstraní ze serveru **Smazat ze serveru**.
 Adresa musí být `https://` a hodiny si ji zapamatují po prvním úspěšném spojení.
-Serverová část je v `infra/settings/`. Starší nešifrované zálohy (verze 2 a 3)
+Serverová část je v soukromém repozitáři serveru. Starší nešifrované zálohy (verze 2 a 3)
 hodiny neotevřou. Restart zařízení uložené nastavení nemaže.
 
 ## Nastavení na displeji
@@ -1161,7 +1161,6 @@ Pokud je připojeno více zařízení, předej `--port`. Nástroj používá pys
 WaveshareHodiny/        Arduino sketch a firmware
 assets/                 Zdrojové assety použité generátory
 docs/assets/            Jen veřejně používané animované GIFy a manifesty
-infra/                  Kopie serverové části (proxy, zdroje pro obrazovky, hlášení poruch)
 screenshots/            Veřejné obrázky dokumentace
 tools/                  Build, test a asset utility
 WaveshareHodiny/partitions.csv
@@ -1169,18 +1168,13 @@ WaveshareHodiny/partitions.csv
 build.sh                Vývojový build
 build-release.sh        Oddělený release build
 upload.sh               USB upload vývojového buildu
-tools/check-stack.sh    Kontrola serverové části (všechny zdroje, HA, certifikát, shoda)
-tools/deploy.sh         Nasazení serverové části podle infra/manifest.txt
-tools/update-ha.sh      Aktualizace Home Assistanta se zálohou a návratem
-tools/pull-backup.sh    Stažení noční zálohy serveru na Mac
-tools/decrypt-backup.sh Rozšifrování kopie zálohy z OCI Object Storage
 ```
 
 Zprávy, agenda, letadla, blesky, srážky, výstrahy, družice, škola, zálohy
 nastavení, upozornění na telefon i hodnoty z Home Assistanta chodí přes vlastní
-server. Co na něm běží, jak se nasazuje (`tools/deploy.sh`), jak se obnovuje
-a na co si dát pozor popisuje [infra/README.md](infra/README.md). Stav se ověří
-příkazem `tools/check-stack.sh`; poruchy server hlásí sám pushem na telefon.
+server. Jeho kód, nasazení, zálohy a obnova jsou od 27. 9. 2026 v samostatném
+soukromém repozitáři; komentáře ve firmwaru, které zmiňují `infra/<služba>`,
+odkazují na cesty v něm. Poruchy server hlásí sám pushem na telefon.
 
 ## Řešení problémů
 
