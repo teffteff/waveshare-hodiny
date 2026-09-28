@@ -170,6 +170,8 @@ struct ClockSkyData {
   int dayLengthMinutes = 0;
   int64_t moonrise = 0;
   int64_t moonset = 0;
+  // Měsíc je nahoře a zapadne až zítra; popisek to řekne.
+  bool moonsetNextDay = false;
   float moonPhase = 0.0f;
   float moonIllumination = 0.0f;
   // Nejbližší úplněk a nov, včetně těch z posledních SKY_PHASE_AFTER_SECONDS.

@@ -4446,7 +4446,9 @@ void updateSkyPage() {
   const char *captions[4] = {english ? "rise" : "východ",
                              english ? "set" : "západ",
                              english ? "rise" : "východ",
-                             english ? "set" : "západ"};
+                             skyData.valid && skyData.moonsetNextDay
+                                 ? (english ? "set tomorrow" : "západ zítra")
+                                 : (english ? "set" : "západ")};
   const int64_t times[4] = {skyData.sunrise, skyData.sunset, skyData.moonrise,
                             skyData.moonset};
   for (int index = 0; index < 4; ++index) {

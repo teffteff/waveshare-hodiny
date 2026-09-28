@@ -99,8 +99,8 @@ changes the system text and verbal date shown on the display.
   SATGUS, the household's own satellite; the orbits are computed by your own
   server from CelesTrak data,
 - a night sky on the second page of the satellite screen (swipe): planets, the
-  Moon with its phase and the path of its whole pass across the sky (at night
-  until morning), by day the Sun's whole path from sunrise to sunset, bright stars, named
+  Moon with its phase and the path of its whole pass across the sky until it
+  sets (at night faded after sunrise), by day the Sun's whole path from sunrise to sunset, bright stars, named
   constellation figures, the ecliptic and, around a shower's peak, its radiant
   in the same circle; tapping a planet or a star opens its details. The top
   line shows when it is astronomically dark (by day sunrise and sunset
@@ -111,7 +111,8 @@ changes the system text and verbal date shown on the display.
   ahead, big ones three months); the same server computes them,
 - a sun and moon screen: rise and set times of both, civil dawn and dusk, day
   length, moon phase and illumination and the next full and new moon, computed
-  on the device,
+  on the device; once the Moon has risen and is up, it shows the set that ends
+  this pass instead of the morning one (marked "set tomorrow" if needed),
 - two additional values such as CO₂, VOC, particulate matter, humidity,
   pressure or battery level,
 - eight independent values on the VALUES face, each with its own name, Home

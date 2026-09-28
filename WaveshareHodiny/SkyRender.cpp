@@ -214,6 +214,8 @@ struct TrackTick {
   int x;
   int y;
   int hour;
+  // Za dne: popisek se kreslí tlumeně jako dráha pod ním.
+  bool faint;
 };
 
 // Poloha Měsíce v čase moment lineárně mezi body dráhy; false mimo dráhu.
@@ -282,10 +284,12 @@ double passStart(const TrackSource &source, float latitude, float longitude,
 }
 
 // Dráha tělesa od start do end: přerušovaná čára nad obzorem a na každé
-// celé hodině tečka. Hodiny, kde se tečka dá popsat, vrací v ticks.
+// celé hodině tečka. Od faintFrom dál je všechno tlumenější. Hodiny, kde se
+// tečka dá popsat, vrací v ticks.
 size_t drawTrack(const SkyCanvas &canvas, const TrackSource &source,
                  uint16_t trackColor, float latitude, float longitude,
-                 double start, double end, TrackTick *ticks) {
+                 double start, double end, double faintFrom,
+                 TrackTick *ticks) {
   size_t tickCount = 0;
   const uint16_t color = canvas.color(trackColor);
   int previousX = 0;
@@ -314,15 +318,17 @@ size_t drawTrack(const SkyCanvas &canvas, const TrackSource &source,
     float altitude = 0.0f;
     const bool up = toScreen(canvas, ra, dec, latitude, longitude, moment, x, y,
                              azimuth, altitude);
+    const bool faint = moment > faintFrom;
     if (up && previousUp && index % 2 != 0)
-      drawMapLine(canvas.pixels(), previousX, previousY, x, y, color, 55);
+      drawMapLine(canvas.pixels(), previousX, previousY, x, y, color,
+                  faint ? 25 : 55);
     if (up && seconds % 3600 == 0) {
-      fillMapCircle(canvas.pixels(), x, y, 1, color, 90);
+      fillMapCircle(canvas.pixels(), x, y, 1, color, faint ? 45 : 90);
       if (tickCount < TRACK_MAX_TICKS) {
         const time_t when = static_cast<time_t>(seconds);
         struct tm local;
         localtime_r(&when, &local);
-        ticks[tickCount++] = {x, y, local.tm_hour};
+        ticks[tickCount++] = {x, y, local.tm_hour, faint};
       }
     }
     previousX = x;
@@ -355,7 +361,8 @@ void labelTicks(MapLabelPlacer &placer, uint16_t *pixels, const TrackTick *ticks
     MapLabelBox box;
     if (placeLabel(placer, ticks[index].x, ticks[index].y, 0,
                    mapTextWidth(hour) + 2, 9, box))
-      drawMapText(pixels, box.x + 1, box.y + 1, hour, color, 70);
+      drawMapText(pixels, box.x + 1, box.y + 1, hour, color,
+                  ticks[index].faint ? 35 : 70);
   }
 }
 
@@ -524,16 +531,18 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
   }
 
   // Měsíc: celý přechod oblohou, který právě je nebo brzy začne, i s tím,
-  // co už urazil. V noci jen do východu Slunce: kudy Měsíc půjde za dne,
-  // nikoho při pohledu na noční oblohu nezajímá.
+  // co už urazil, až do západu. V noci je kus po východu Slunce tlumený:
+  // za dne Měsíc tolik vidět není, ale dráha má končit tam, kde ho horní
+  // řádek nechá zapadnout.
   TrackTick moonTicks[TRACK_MAX_TICKS];
   size_t moonTickCount = 0;
   for (size_t index = 0; index < feed->bodyCount; ++index) {
     const SkyBody &body = feed->bodies[index];
     if (body.kind != SKY_BODY_MOON) continue;
-    double trackEnd = moonTrackEnd(body, epoch);
-    if (!result.sunUp && sunRise > epoch && sunRise < trackEnd)
-      trackEnd = static_cast<double>(sunRise);
+    const double trackEnd = moonTrackEnd(body, epoch);
+    const double faintFrom = !result.sunUp && sunRise > epoch
+                                 ? static_cast<double>(sunRise)
+                                 : trackEnd;
     TrackSource moonTrack;
     moonTrack.moon = feed;
     if (trackEnd <= epoch) continue;
@@ -544,7 +553,8 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
                               : static_cast<double>(body.rise);
     moonTickCount = drawTrack(
         canvas, moonTrack, COLOR_MOON_TRACK, latitude, longitude,
-        passStart(moonTrack, latitude, longitude, anchor), trackEnd, moonTicks);
+        passStart(moonTrack, latitude, longitude, anchor), trackEnd, faintFrom,
+        moonTicks);
   }
   // Slunce: ve dne celá jeho cesta od východu do západu.
   TrackTick sunTicks[TRACK_MAX_TICKS];
@@ -553,6 +563,7 @@ void skyRender(uint16_t *pixels, const SkyFeed *feed, float latitude,
     sunTickCount = drawTrack(canvas, sunTrack, COLOR_SUN_TRACK, latitude,
                              longitude,
                              passStart(sunTrack, latitude, longitude, epoch),
+                             static_cast<double>(sunSet),
                              static_cast<double>(sunSet), sunTicks);
 
   int radiantX = 0;

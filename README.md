@@ -102,7 +102,7 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   a časem příštího přeletu ISS nebo domácí družice SATGUS; dráhy počítá
   vlastní server z dat CelesTrak,
 - noční oblohu na druhé stránce družic (tažením prstu): planety, Měsíc s fází
-  a dráhou celého jeho přechodu oblohou (v noci do rána), ve dne celou dráhu
+  a dráhou celého jeho přechodu oblohou až k západu (v noci po východu Slunce tlumeně), ve dne celou dráhu
   Slunce od východu do západu, jasné hvězdy, obrazce souhvězdí se jmény, ekliptiku a kolem
   maxima roje jeho radiant ve stejném kruhu; klepnutím na planetu nebo
   hvězdu se ukáže detail. Nahoře kdy je astronomická tma (ve dne místo ní
@@ -112,7 +112,8 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   týž server jako dráhy,
 - obrazovku se Sluncem a Měsícem: východ a západ obou, občanské svítání
   a soumrak, délka dne, fáze a osvětlení Měsíce a data příštího úplňku a novu,
-  počítané přímo na zařízení,
+  počítané přímo na zařízení; když Měsíc vyšel a je nahoře, ukazuje místo
+  ranního západu ten, kterým zapadne (případně „západ zítra“),
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
 - devět nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
   entitou Home Assistantu, jednotkou, přesností a barevnou škálou,

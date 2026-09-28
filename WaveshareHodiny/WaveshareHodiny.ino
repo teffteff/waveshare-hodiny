@@ -2256,12 +2256,11 @@ void maintainSkyData() {
     if (astronomyFindSunAltitude(ASTRONOMY_CIVIL_TWILIGHT_DEG, false, dayStart,
                                  dayLength, latitude, longitude, event))
       data.civilDusk = event;
-    if (astronomyFindEvent(AstronomyBody::Moon, true, dayStart, dayLength,
-                           latitude, longitude, event))
-      data.moonrise = event;
-    if (astronomyFindEvent(AstronomyBody::Moon, false, dayStart, dayLength,
-                           latitude, longitude, event))
-      data.moonset = event;
+    const ClockMoonTimes moon =
+        clockLocalMoonTimes(epoch, dayStart, dayLength, latitude, longitude);
+    data.moonrise = moon.rise;
+    data.moonset = moon.set;
+    data.moonsetNextDay = moon.setNextDay;
     const int64_t noon = dayStart + dayLength / 2;
     data.sunUpAllDay =
         astronomyHorizonMarginDeg(AstronomyBody::Sun, noon, latitude,
