@@ -362,6 +362,24 @@ int main(int argc, char **argv) {
     skyRender(up.data(), &night, LATITUDE, LONGITUDE, EPOCH, 0, false, false,
               true, "", result);
     assert(differing(up, noTrack) > 50);
+
+    // Slunce vyjde dřív, než Měsíc zapadne: dráha jde dál až k západu,
+    // jen po východu Slunce tlumeně.
+    SkyBody &sun = night.bodies[0];
+    assert(sun.kind == SKY_BODY_SUN);
+    sun.rise = static_cast<int64_t>(EPOCH) + 3600;
+    std::vector<uint16_t> faintTail = canvas();
+    skyRender(faintTail.data(), &night, LATITUDE, LONGITUDE, EPOCH, 0, false,
+              false, true, "", result);
+    assert(differing(faintTail, up) > 10);
+    const int64_t moonset = moon.set;
+    moon.set = sun.rise;
+    std::vector<uint16_t> noTail = canvas();
+    skyRender(noTail.data(), &night, LATITUDE, LONGITUDE, EPOCH, 0, false,
+              false, true, "", result);
+    assert(differing(faintTail, noTail) > 10);
+    moon.set = moonset;
+    sun.rise = 0;
   }
 
   puts("sky render OK");

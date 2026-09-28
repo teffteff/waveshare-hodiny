@@ -126,5 +126,23 @@ int main() {
   const ClockLocalSunState polarNight = clockLocalSunState(
       1797854400LL, 1797811200LL - HOUR, DAY, 69.6492, 18.9553, 0, 0);
   assert(!polarNight.isDay && polarNight.sunrise == 0 && polarNight.sunset == 0);
+
+  // Měsíc 28. 9. 2026 u Prahy: zapadl v 9:08, vyšel v 19:01 a zapadne
+  // 29. 9. v 10:33 (SELČ). Přes den obrazovka ukazuje ranní západ, po
+  // východu Měsíce ten zítřejší, kterým jeho přechod skončí.
+  const auto near = [](int64_t actual, int64_t expected) {
+    return actual > expected - 3 * 60 && actual < expected + 3 * 60;
+  };
+  constexpr int64_t MOON_DAY_START = 1790546400LL;
+  constexpr double HOME_LAT = 49.9039;
+  constexpr double HOME_LON = 14.7710;
+  const ClockMoonTimes noon = clockLocalMoonTimes(
+      1790596800LL, MOON_DAY_START, DAY, HOME_LAT, HOME_LON);
+  assert(near(noon.rise, 1790614860LL) && near(noon.set, 1790579280LL));
+  assert(!noon.setNextDay);
+  const ClockMoonTimes evening = clockLocalMoonTimes(
+      1790624460LL, MOON_DAY_START, DAY, HOME_LAT, HOME_LON);
+  assert(near(evening.rise, 1790614860LL) && near(evening.set, 1790670780LL));
+  assert(evening.setNextDay);
   return 0;
 }

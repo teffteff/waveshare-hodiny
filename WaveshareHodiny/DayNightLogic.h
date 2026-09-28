@@ -40,3 +40,18 @@ ClockLocalSunState clockLocalSunState(int64_t now, int64_t dayStart,
                                       double longitudeDeg,
                                       int8_t sunriseOffsetMinutes,
                                       int8_t sunsetOffsetMinutes);
+
+// Východ a západ Měsíce pro obrazovku Slunce a Měsíc: dnešní, jen když
+// Měsíc dnes vyšel a je nahoře, ukáže místo dnešního ranního západu ten,
+// kterým tenhle přechod skončí. Jinak by večer vedle východu stál západ,
+// který už dávno byl. 0 = dnes nenastane.
+struct ClockMoonTimes {
+  int64_t rise = 0;
+  int64_t set = 0;
+  // Západ padne až na zítřek.
+  bool setNextDay = false;
+};
+
+ClockMoonTimes clockLocalMoonTimes(int64_t now, int64_t dayStart,
+                                   int64_t dayLength, double latitudeDeg,
+                                   double longitudeDeg);

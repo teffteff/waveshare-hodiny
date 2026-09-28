@@ -90,3 +90,29 @@ ClockLocalSunState clockLocalSunState(int64_t now, int64_t dayStart,
   }
   return state;
 }
+
+ClockMoonTimes clockLocalMoonTimes(int64_t now, int64_t dayStart,
+                                   int64_t dayLength, double latitudeDeg,
+                                   double longitudeDeg) {
+  // Přechod Měsíce oblohou trvá nejvýš kolem 16 hodin; s rezervou na
+  // vysoké šířky, kde bývá delší.
+  constexpr int64_t PASS_SEARCH_SECONDS = 24 * 60 * 60;
+  ClockMoonTimes times;
+  int64_t event = 0;
+  if (astronomyFindEvent(AstronomyBody::Moon, true, dayStart, dayLength,
+                         latitudeDeg, longitudeDeg, event))
+    times.rise = event;
+  if (astronomyFindEvent(AstronomyBody::Moon, false, dayStart, dayLength,
+                         latitudeDeg, longitudeDeg, event))
+    times.set = event;
+  const bool upSinceTodaysRise =
+      times.rise > 0 && times.rise <= now &&
+      (times.set == 0 || times.set < times.rise);
+  if (upSinceTodaysRise &&
+      astronomyFindEvent(AstronomyBody::Moon, false, now, PASS_SEARCH_SECONDS,
+                         latitudeDeg, longitudeDeg, event)) {
+    times.set = event;
+    times.setNextDay = event >= dayStart + dayLength;
+  }
+  return times;
+}
