@@ -9,9 +9,7 @@
 #include <cstring>
 
 #include "HttpDownload.h"
-#include "JsonScan.h"
 #include "NetworkCoordinator.h"
-#include "PushAlerts.h"
 
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
@@ -22,8 +20,11 @@ constexpr uint32_t RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint32_t NETWORK_GUARD_MS = 10000;
 constexpr uint32_t FIRST_RETRY_MS = 60 * 1000;
 constexpr uint32_t MAX_RETRY_MS = 30 * 60 * 1000;
-// Odpověď je {"elevation":478.0}; víc se od serveru nečte.
-constexpr size_t MAX_RESPONSE_BYTES = 128;
+// Nastavení se mění na webu serveru; hodiny se o změně dozví nejpozději takhle.
+constexpr uint32_t REFRESH_MS = 30 * 60 * 1000;
+constexpr uint32_t MANUAL_REFRESH_GAP_MS = 60 * 1000;
+// Odpověď má kolem pěti set bajtů.
+constexpr size_t MAX_RESPONSE_BYTES = 1024;
 
 class BoundedPrint : public Print {
  public:
@@ -47,25 +48,25 @@ class BoundedPrint : public Print {
 
 struct Desired {
   bool valid = false;
-  // Adresa tak, jak ji zadal majitel; /config/<MAC> se přidá až při odeslání,
+  // Adresa tak, jak ji zadal majitel; /config/<MAC> se přidá až při dotazu,
   // protože hned po startu Wi-Fi ještě MAC hlásit nemusí.
   char url[CLOCK_PUSH_URL_LENGTH] = "";
-  char body[PUSH_ALERTS_BODY_LENGTH] = "";
+  float latitude = 0.0f;
+  float longitude = 0.0f;
 };
 
 TaskHandle_t taskHandle = nullptr;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
-// Chtěné nastavení a revize; úloha si je pod zámkem zkopíruje.
+// Chtěný stav a revize; úloha si je pod zámkem zkopíruje.
 Desired desired;
 uint32_t desiredRevision = 0;
 bool suspended = false;
+bool refreshRequested = false;
+uint32_t lastManualRefreshMs = 0;
+bool manualRefreshUsed = false;
 char statusMessage[80] = "Vypnuto";
-// Meze nízkého přeletu z nastavení a výška od serveru; pod stateMux.
-bool lowPassEnabled = false;
-uint16_t lowPassRadiusM = 0;
-uint16_t lowPassHeightM = 0;
-bool elevationKnown = false;
-float groundElevationM = 0.0f;
+// Naposledy přečtené nastavení; pod stateMux.
+PushAlertsServerSettings serverSettings;
 
 void setStatus(const char *message) {
   portENTER_CRITICAL(&stateMux);
@@ -73,14 +74,15 @@ void setStatus(const char *message) {
   portEXIT_CRITICAL(&stateMux);
 }
 
-int putConfig(const Desired &request, char *response, size_t capacity) {
+int getSettings(const Desired &request, char *response, size_t capacity) {
   response[0] = '\0';
   int status = 0;
   char id[PUSH_ALERTS_ID_LENGTH];
   char url[PUSH_ALERTS_REQUEST_URL_LENGTH];
   if (!pushAlertsIdFromMac(WiFi.macAddress().c_str(), id, sizeof(id)) ||
       strcmp(id, "000000000000") == 0 ||
-      !pushAlertsBuildUrl(request.url, id, url, sizeof(url)))
+      !pushAlertsBuildUrl(request.url, id, request.latitude, request.longitude,
+                          url, sizeof(url)))
     return 0;
   const bool secure = strncmp(url, "https://", 8) == 0;
   {
@@ -104,11 +106,8 @@ int putConfig(const Desired &request, char *response, size_t capacity) {
     http.setUserAgent(F("WaveshareHodiny"));
     httpDownloadPrepare(http);
     if (http.begin(client, url)) {
-      http.addHeader(F("Content-Type"), F("application/json"));
-      status = http.sendRequest(
-          "PUT",
-          reinterpret_cast<uint8_t *>(const_cast<char *>(request.body)),
-          strlen(request.body));
+      http.addHeader(F("Accept"), F("application/json"));
+      status = http.GET();
       if (status == 200) {
         // Ne getString(): používá writeToStream, který se u chunked odpovědi
         // nemusí vrátit (viz HttpDownload.h).
@@ -125,17 +124,11 @@ int putConfig(const Desired &request, char *response, size_t capacity) {
   return status;
 }
 
-void describe(int status) {
-  if (status == 200 || status == 204) {
-    setStatus("Server nastavení přijal");
-  } else if (status == 401 || status == 403) {
+void describeFailure(int status) {
+  if (status == 401 || status == 403) {
     setStatus("Server odmítl heslo v adrese");
   } else if (status == 404) {
     setStatus("Na adrese server upozornění není");
-  } else if (status == 400) {
-    setStatus("Server nastavení odmítl jako neplatné");
-  } else if (status == 507) {
-    setStatus("Na serveru je už příliš mnoho hodin");
   } else if (status > 0) {
     char message[64];
     snprintf(message, sizeof(message), "Server odpověděl chybou HTTP %d",
@@ -146,24 +139,13 @@ void describe(int status) {
   }
 }
 
-// Poloha je v těle za "lat": až po "rain"; stačí porovnat ten kus textu.
-bool sameLocation(const char *a, const char *b) {
-  const char *startA = strstr(a, "\"lat\":");
-  const char *startB = strstr(b, "\"lat\":");
-  if (startA == nullptr || startB == nullptr) return false;
-  const char *endA = strstr(startA, ",\"rain\"");
-  const char *endB = strstr(startB, ",\"rain\"");
-  if (endA == nullptr || endB == nullptr) return false;
-  return endA - startA == endB - startB &&
-         strncmp(startA, startB, endA - startA) == 0;
-}
-
 void pushAlertsTask(void *) {
-  // Kopie v PSRAM zásobníku úlohy; dvakrát po sedmi stech bajtech.
+  // Odpověď v PSRAM zásobníku úlohy.
+  char response[MAX_RESPONSE_BYTES];
   Desired current;
-  Desired acknowledged;
   uint32_t failures = 0;
-  uint32_t retryAt = 0;
+  uint32_t nextAt = 0;
+  bool scheduled = false;
   uint32_t lastRevision = UINT32_MAX;
 
   for (;;) {
@@ -172,52 +154,54 @@ void pushAlertsTask(void *) {
     current = desired;
     const uint32_t revision = desiredRevision;
     const bool stopped = suspended;
+    const bool refresh = refreshRequested;
+    refreshRequested = false;
     portEXIT_CRITICAL(&stateMux);
     if (stopped || !current.valid) continue;
 
-    // Nové nastavení se zkouší hned, i když staré zrovna čeká na opakování.
-    if (revision != lastRevision) {
+    // Nová adresa nebo poloha se čte hned, i když stará čeká na opakování.
+    if (revision != lastRevision || refresh) {
+      if (revision != lastRevision) failures = 0;
       lastRevision = revision;
-      failures = 0;
-      retryAt = 0;
+      scheduled = false;
     }
-    if (strcmp(current.url, acknowledged.url) == 0 &&
-        strcmp(current.body, acknowledged.body) == 0)
-      continue;
-    if (retryAt != 0 && static_cast<long>(millis() - retryAt) < 0) continue;
+    if (scheduled && static_cast<long>(millis() - nextAt) < 0) continue;
     if (WiFi.status() != WL_CONNECTED) {
       setStatus("Čeká na Wi-Fi");
       continue;
     }
 
     int status = 0;
-    char response[MAX_RESPONSE_BYTES];
     {
       NetworkOperationGuard guard(NETWORK_GUARD_MS);
       if (!guard) continue;
-      status = putConfig(current, response, sizeof(response));
+      status = getSettings(current, response, sizeof(response));
     }
-    describe(status);
-    float elevation = 0.0f;
-    if (status == 200 &&
-        jsonReadNumberMember(response, response + strlen(response),
-                             "elevation", elevation) &&
-        elevation > -500.0f && elevation < 9000.0f) {
+    PushAlertsServerSettings parsed;
+    const bool readable =
+        status == 200 &&
+        pushAlertsParseAnswer(response, response + strlen(response), parsed);
+    if (readable) {
       portENTER_CRITICAL(&stateMux);
-      groundElevationM = elevation;
-      elevationKnown = true;
+      // Mezitím se mohla změnit adresa nebo poloha; pak by to nepatřilo sem.
+      if (desiredRevision == revision) serverSettings = parsed;
       portEXIT_CRITICAL(&stateMux);
-    }
-    if (status == 200 || status == 204) {
-      acknowledged = current;
+      setStatus(parsed.known ? "Nastavení je načtené"
+                             : "Server zatím nezná polohu domu");
       failures = 0;
-      retryAt = 0;
+      nextAt = millis() + REFRESH_MS;
+      scheduled = true;
       continue;
     }
+    if (status == 200)
+      setStatus("Server poslal nečitelnou odpověď");
+    else
+      describeFailure(status);
     ++failures;
     uint32_t wait = FIRST_RETRY_MS << (failures < 6 ? failures - 1 : 5);
     if (wait > MAX_RETRY_MS) wait = MAX_RETRY_MS;
-    retryAt = millis() + wait;
+    nextAt = millis() + wait;
+    scheduled = true;
   }
 }
 }  // namespace
@@ -242,44 +226,60 @@ void pushAlertsServicePrepareForFirmwareUpdate() {
 }
 
 void pushAlertsServiceSetConfig(const ClockPushAlertsConfig &alerts,
-                                float latitude, float longitude,
-                                const char *deviceName) {
+                                float latitude, float longitude) {
   Desired next;
-  // Bez adresy není komu co poslat. Server, který už hlídá, se o vymazané
-  // adrese nedozví; vypnout se má přepínačem, adresa se maže až potom.
   strlcpy(next.url, alerts.url, sizeof(next.url));
-  next.valid = alerts.url[0] != '\0' &&
-               pushAlertsBuildBody(alerts, latitude, longitude, deviceName,
-                                   next.body, sizeof(next.body));
+  next.latitude = latitude;
+  next.longitude = longitude;
+  next.valid = alerts.url[0] != '\0' && latitude >= -90.0f &&
+               latitude <= 90.0f && longitude >= -180.0f && longitude <= 180.0f;
 
   bool changed = false;
   portENTER_CRITICAL(&stateMux);
-  lowPassEnabled = alerts.enabled && alerts.low;
-  lowPassRadiusM = alerts.lowRadiusM;
-  lowPassHeightM = alerts.lowHeightM;
-  // Jiná poloha nebo adresa, jiná nadmořská výška; stará by tu lhala.
-  if (strcmp(next.url, desired.url) != 0 ||
-      !sameLocation(next.body, desired.body))
-    elevationKnown = false;
+  const bool moved = next.latitude != desired.latitude ||
+                     next.longitude != desired.longitude;
   if (next.valid != desired.valid || strcmp(next.url, desired.url) != 0 ||
-      strcmp(next.body, desired.body) != 0) {
+      moved) {
+    // Jiný server nebo poloha: staré nastavení i výška by tu lhaly.
+    serverSettings = PushAlertsServerSettings();
     desired = next;
     ++desiredRevision;
     changed = true;
   }
   if (!next.valid)
-    strlcpy(statusMessage, alerts.url[0] == '\0' ? "Vypnuto" : "Nastavení nejde sestavit",
-            sizeof(statusMessage));
+    strlcpy(statusMessage, "Vypnuto", sizeof(statusMessage));
   portEXIT_CRITICAL(&stateMux);
   if (changed && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
+void pushAlertsServiceRefresh() {
+  bool wake = false;
+  portENTER_CRITICAL(&stateMux);
+  const uint32_t now = millis();
+  if (desired.valid &&
+      (!manualRefreshUsed || now - lastManualRefreshMs >= MANUAL_REFRESH_GAP_MS)) {
+    manualRefreshUsed = true;
+    lastManualRefreshMs = now;
+    refreshRequested = true;
+    wake = true;
+  }
+  portEXIT_CRITICAL(&stateMux);
+  if (wake && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+}
+
 void pushAlertsServiceLowPass(PushAlertsLowPass &lowPass) {
   portENTER_CRITICAL(&stateMux);
-  lowPass.valid = lowPassEnabled && elevationKnown;
-  lowPass.groundElevationM = groundElevationM;
-  lowPass.radiusM = lowPassRadiusM;
-  lowPass.heightM = lowPassHeightM;
+  lowPass.valid = serverSettings.known && serverSettings.low &&
+                  serverSettings.elevationKnown;
+  lowPass.groundElevationM = serverSettings.elevationM;
+  lowPass.radiusM = serverSettings.lowDistanceM;
+  lowPass.heightM = serverSettings.lowHeightM;
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void pushAlertsServiceSettings(PushAlertsServerSettings &settings) {
+  portENTER_CRITICAL(&stateMux);
+  settings = serverSettings;
   portEXIT_CRITICAL(&stateMux);
 }
 
