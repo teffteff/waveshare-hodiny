@@ -534,11 +534,12 @@ void applySatellitesState(const ClockConfig &config) {
   applySatellitesState(config, clockDashboardSatellitesVisible());
 }
 
-// Upozornění na telefon hlídá server; hodiny mu jen předají nastavení, a to
-// i vypnuté, aby hlídat přestal. Nezáleží na obrazovkách ani na radaru.
+// Upozornění na telefon hlídá server podle nastavení domácnosti; hodiny si ho
+// jen čtou (nízký přelet na obrazovce letadel, přehled na stránce nastavení).
+// Nezáleží na obrazovkách ani na radaru.
 void applyPushAlertsState(const ClockConfig &config) {
   pushAlertsServiceSetConfig(config.pushAlerts, config.openMeteoLatitude,
-                             config.openMeteoLongitude, networkDeviceName);
+                             config.openMeteoLongitude);
 }
 
 // Upozornění na déšť se ptá serveru bez ohledu na to, která obrazovka je právě

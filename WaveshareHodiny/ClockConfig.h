@@ -712,10 +712,14 @@ constexpr uint8_t CLOCK_AURORA_HOLD_MIN_MINUTES = 1;
 constexpr uint8_t CLOCK_AURORA_HOLD_MAX_MINUTES = 120;
 constexpr uint8_t CLOCK_AURORA_COOLDOWN_MAX_MINUTES = 240;
 
-// Upozornění na telefon. Hodiny samy nic nehlídají ani neposílají: nastavení
-// jen po uložení předají vlastnímu serveru (infra/alerts) a ten hlídá déšť
-// i letadla dál, i když jsou všechny hodiny vypnuté, a posílá push přes ntfy.
-// Téma ntfy zná jen server; hodiny znají jen jeho adresu.
+// Upozornění na telefon. Hodiny samy nic nehlídají ani neposílají: hlídá
+// vlastní server (majnr infra/alerts) podle nastavení celé domácnosti, které
+// se mění na jeho webu, a posílá push přes ntfy. Hodiny znají jen adresu
+// serveru a nastavení si z něj čtou (PushAlertsService).
+//
+// Do verze 2.3.1 posílaly hodiny serveru každé své nastavení. Ta pole
+// (rain až lowHeightM) zůstávají kvůli tvaru uloženého záznamu a staršímu
+// firmwaru, novější je nečte; enabled znamená "adresa je vyplněná".
 //
 // Noční obloha má osm bajtů, takže upozornění začínají na násobku čtyř.
 struct alignas(4) ClockPushAlertsConfig {
