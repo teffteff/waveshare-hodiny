@@ -12,6 +12,7 @@
 
 #include "ClockFonts.h"
 #include "DisplayDriver.h"
+#include "Display_ST7701.h"
 #include "ImprovSerialService.h"
 #include "WifiProvisioning.h"
 
@@ -295,6 +296,9 @@ void runPortal() {
   showPortalScreen();
   startPortalServer();
   storedNetworkAttemptAt = millis();
+  // Start přístupového bodu blokuje přerušení panelu a obraz může ujet dřív,
+  // než si LCD_MaintainSync změří správnou fázi. Srovnat jednou natvrdo.
+  LCD_Resync();
 
   while (true) {
     improvSerialServiceLoop();
@@ -303,6 +307,7 @@ void runPortal() {
     dnsServer->processNextRequest();
     portalServer->handleClient();
     displayDriverLoop();
+    LCD_MaintainSync();
 
     if (restartAt == 0 && wifiProvisioningReadyForNormalStart()) {
       restartAt = millis() + RESTART_DELAY_MS;
@@ -324,6 +329,7 @@ void wifiOnboardingRequireConnection() {
     improvSerialServiceLoop();
     wifiProvisioningLoop();
     displayDriverLoop();
+    LCD_MaintainSync();
     if (wifiProvisioningReadyForNormalStart()) {
       lv_obj_clean(lv_scr_act());
       return;
