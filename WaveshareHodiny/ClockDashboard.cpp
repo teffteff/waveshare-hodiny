@@ -3304,6 +3304,11 @@ lv_obj_t *schoolMealTextLabels[SCHOOL_MAX_MEALS] = {};
 lv_obj_t *schoolMessagesHeading = nullptr;
 lv_obj_t *schoolMessageWhenLabels[SCHOOL_MAX_MESSAGES] = {};
 lv_obj_t *schoolMessageTextLabels[SCHOOL_MAX_MESSAGES] = {};
+// Zpráva, ze které server zapsal akci do kalendáře (zelený den), nebo kterou
+// má zkontrolovat člověk na /hodiny/skola/ (modrý den).
+SchoolCalendarMark schoolMessageCalendar[SCHOOL_MAX_MESSAGES] = {};
+// Totéž u oznámení z nástěnky školky.
+SchoolCalendarMark schoolNoticeCalendar[SCHOOL_MAX_NOTICES] = {};
 lv_obj_t *schoolMarksHeading = nullptr;
 lv_obj_t *schoolMarkWhenLabels[SCHOOL_MAX_MARKS] = {};
 lv_obj_t *schoolMarkTextLabels[SCHOOL_MAX_MARKS] = {};
@@ -3475,7 +3480,21 @@ void applySchoolColors() {
     const SchoolListResult &shown = schoolListsVisible.sections[section];
     for (size_t index = 0; index < sections[section].capacity; ++index) {
       const bool moreMark = shown.ellipsis && index + 1 == shown.rows;
-      setTextColor(sections[section].when[index], when);
+      lv_color_t rowWhen = when;
+      // Sekce 0 jsou zprávy, 2 nástěnka (schoolNewsLabels); v noci zůstává
+      // vše červené.
+      SchoolCalendarMark mark = SchoolCalendarMark::None;
+      if (section == 0 && index < SCHOOL_MAX_MESSAGES) {
+        mark = schoolMessageCalendar[index];
+      } else if (section == 2 && index < SCHOOL_MAX_NOTICES) {
+        mark = schoolNoticeCalendar[index];
+      }
+      if (!redNight && mark == SchoolCalendarMark::Added) {
+        rowWhen = COLOR_AIR;
+      } else if (!redNight && mark == SchoolCalendarMark::Review) {
+        rowWhen = COLOR_OUTSIDE;
+      }
+      setTextColor(sections[section].when[index], rowWhen);
       setTextColor(sections[section].text[index], moreMark ? muted : text);
     }
   }
@@ -8377,6 +8396,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   schoolMessageTotal = clampCount(feed->messageTotal);
   for (size_t index = 0; index < feed->messageCount; ++index) {
     const SchoolMessage &message = feed->messages[index];
+    schoolMessageCalendar[index] = message.calendar;
     lv_label_set_text(schoolMessageWhenLabels[index], message.when);
     char text[SCHOOL_SENDER_LENGTH + SCHOOL_TITLE_LENGTH + 4];
     if (message.sender[0] != '\0') {
@@ -8409,6 +8429,7 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
           sizeof(schoolTimetableUpdated));
   for (size_t index = 0; index < feed->noticeCount; ++index) {
     const SchoolNotice &notice = feed->notices[index];
+    schoolNoticeCalendar[index] = notice.calendar;
     lv_label_set_text(schoolNoticeWhenLabels[index], notice.when);
     // "Střevní problémy: děti v budově..." - label useknutý na jeden řádek.
     char text[2 * SCHOOL_TITLE_LENGTH + 4];

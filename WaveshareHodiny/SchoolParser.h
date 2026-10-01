@@ -101,11 +101,16 @@ struct SchoolHomework {
   char title[SCHOOL_TITLE_LENGTH] = "";
 };
 
+// Co server (infra/school schoolcal.py) se zprávou udělal v kalendáři:
+// akce z ní je zapsaná, nebo ji má zkontrolovat člověk na /hodiny/skola/.
+enum class SchoolCalendarMark : uint8_t { None, Added, Review };
+
 // Jen odesílatel a titulek; tělo zprávy server hodinám neposílá.
 struct SchoolMessage {
   char when[SCHOOL_DAY_LENGTH] = "";
   char sender[SCHOOL_SENDER_LENGTH] = "";
   char title[SCHOOL_TITLE_LENGTH] = "";
+  SchoolCalendarMark calendar = SchoolCalendarMark::None;
 };
 
 struct SchoolMark {
@@ -121,6 +126,7 @@ struct SchoolNotice {
   char when[SCHOOL_DAY_LENGTH] = "";
   char title[SCHOOL_TITLE_LENGTH] = "";
   char text[SCHOOL_TITLE_LENGTH] = "";
+  SchoolCalendarMark calendar = SchoolCalendarMark::None;
 };
 
 // Jedno jídlo: den, pro koho a hlavní chod bez alergenů a nápojů.
