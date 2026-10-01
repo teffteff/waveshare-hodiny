@@ -457,7 +457,10 @@ headline gets three lines, which fits a typical news headline whole. A sixth
 item fits only at the cost of dropping to two headline lines, so longer
 headlines are cut with an ellipsis. The publication time is shown to the
 left of each headline in local time; a feed without dates is shown without
-times and sorts after dated items.
+times and sorts after dated items. Items are sorted newest first, except in a
+feed whose channel carries `<hodiny:order>importance</hodiny:order>` (the
+server's news of the day): it keeps the feed's order, most important first, and
+a longer feed is cut to its first items.
 
 Headlines are transliterated to ASCII: `Ř` becomes `R` and `ř` becomes `r`. The
 mapping covers the whole Latin-1 Supplement and Latin Extended-A blocks, so

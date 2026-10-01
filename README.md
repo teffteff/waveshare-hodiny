@@ -483,7 +483,10 @@ Zobrazit lze 3 až 6 zpráv; výchozí je 5. U tří až pěti zpráv má titule
 se vejde jen za cenu dvou řádků na titulek, takže se delší titulky utnou třemi
 tečkami. Vlevo od titulku je čas
 vydání převedený do místního času; kanál bez data se zobrazí bez času a řadí
-se za zprávy s datem.
+se za zprávy s datem. Zprávy se řadí od nejnovější, kromě kanálu, který
+v hlavičce nese `<hodiny:order>importance</hodiny:order>` (výběr zpráv dne ze
+serveru): ten zůstane v pořadí kanálu, nejdůležitější nahoře, a z delšího
+kanálu se vezmou první zprávy.
 
 Titulky se přepisují do ASCII: z `Ř` se stane `R` a z `ř` pak `r`. Přepis
 pokrývá celé bloky Latin-1 Supplement a Latin Extended-A, takže projdou i
