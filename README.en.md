@@ -604,6 +604,10 @@ Swiping sideways switches to a second page (like the second set of values on
 the VALUES face): **unread messages** and **marks** from the last two weeks.
 A message shows only the day, the sender's surname and its title; the message
 content never reaches the clock. The screen always opens on the timetable.
+When the server writes school events into a calendar (reference server,
+`schoolcal.py`), a message's day turns **green** if an event from it was
+added and **blue** if a person should review it on the server's page; other
+messages stay orange.
 
 **The server talks to Škola OnLine, the clock does not.** Škola OnLine has no
 public API, but its mobile app uses a JSON API mapped by unofficial projects.

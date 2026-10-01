@@ -34,7 +34,8 @@ const char *const RESPONSE =
     "\"abbrev\":\"Čj\",\"title\":\"Přečíst kapitolu o Praze…\"},"
     "{\"due\":\"ZÍTRA\",\"subject\":\"Matematika\",\"abbrev\":\"M\",\"title\":\"\"}"
     "],\"messageCount\":9,\"messages\":["
-    "{\"when\":\"VČERA\",\"sender\":\"Nováková\",\"title\":\"Třídní schůzky\"},"
+    "{\"when\":\"VČERA\",\"sender\":\"Nováková\",\"title\":\"Třídní schůzky\","
+    "\"cal\":\"added\"},"
     "{\"when\":\"DNES\",\"sender\":\"Malá\",\"title\":\"\"}"
     "],\"markCount\":1,\"marks\":["
     "{\"when\":\"DNES\",\"subject\":\"Matematika\",\"abbrev\":\"M\","
@@ -89,6 +90,7 @@ void testResponse() {
   assert(std::string(feed.messages[0].when) == "VČERA");
   assert(std::string(feed.messages[0].sender) == "Nováková");
   assert(std::string(feed.messages[0].title) == "Třídní schůzky");
+  assert(feed.messages[0].calendar == SchoolCalendarMark::Added);
   assert(feed.hasMarks && feed.markCount == 1 && feed.markTotal == 1);
   assert(std::string(feed.marks[0].abbrev) == "M");
   assert(std::string(feed.marks[0].mark) == "1");
@@ -105,6 +107,20 @@ void testResponse() {
 
 // Služba parsuje každé obnovení do téhož bufferu; oznámení se dřív
 // přičítala k předchozím a po prvním obnovení byla na displeji dvakrát.
+void testCalendarMarks() {
+  SchoolFeed feed;
+  const char *json =
+      "{\"days\":[],\"messages\":["
+      "{\"when\":\"DNES\",\"title\":\"Výlet\",\"cal\":\"review\"},"
+      "{\"when\":\"DNES\",\"title\":\"Kroužky\"},"
+      "{\"when\":\"DNES\",\"title\":\"Budoucí\",\"cal\":\"something\"}]}";
+  assert(schoolParseFeed(json, strlen(json), feed) == SchoolParseStatus::Ok);
+  assert(feed.messageCount == 3);
+  assert(feed.messages[0].calendar == SchoolCalendarMark::Review);
+  assert(feed.messages[1].calendar == SchoolCalendarMark::None);
+  assert(feed.messages[2].calendar == SchoolCalendarMark::None);
+}
+
 void testReparseReplacesLists() {
   SchoolFeed feed;
   for (int pass = 0; pass < 3; ++pass) {
@@ -411,6 +427,7 @@ void testRowLeft() {
 }  // namespace
 
 int main() {
+  testCalendarMarks();
   testResponse();
   testReparseReplacesLists();
   testBrokenResponses();

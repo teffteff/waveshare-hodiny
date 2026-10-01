@@ -3,6 +3,8 @@
 #include "AgendaParser.h"
 #include "JsonScan.h"
 
+#include <string.h>
+
 namespace {
 
 // Text z JSONu přes stejný převod jako agenda: escapy, UTF-8 a znaky, které
@@ -175,6 +177,16 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
                  sizeof(message.when));
       copyMember(items.itemBegin, items.itemEnd, "sender", message.sender,
                  sizeof(message.sender));
+      // "cal" chybí u zpráv, se kterými kalendář nic nedělal; neznámá hodnota
+      // (novější server) se bere jako žádná.
+      char calendar[8] = "";
+      copyMember(items.itemBegin, items.itemEnd, "cal", calendar,
+                 sizeof(calendar));
+      if (strcmp(calendar, "added") == 0) {
+        message.calendar = SchoolCalendarMark::Added;
+      } else if (strcmp(calendar, "review") == 0) {
+        message.calendar = SchoolCalendarMark::Review;
+      }
       ++feed.messageCount;
     }
     feed.messageTotal = readTotal("messageCount", feed.messageCount);

@@ -618,6 +618,9 @@ Tažením prstu do strany se obrazovka přepne na druhou stránku (stejně jako
 druhá sada hodnot na ciferníku HODNOTY): **nepřečtené zprávy** a **známky**
 za poslední dva týdny. U zprávy je jen den, příjmení odesílatele a titulek;
 obsah zprávy do hodin nejde. Obrazovka se vždycky otevírá na rozvrhu.
+Když server zapisuje školní akce do kalendáře (referenční server, `schoolcal.py`),
+svítí den u zprávy **zeleně**, pokud z ní akci zapsal, a **modře**, pokud ji
+má zkontrolovat člověk na jeho stránce; ostatní zprávy zůstávají oranžové.
 
 **Do Školy OnLine chodí server, ne hodiny.** Škola OnLine nemá veřejné API,
 mobilní aplikace ale mluví s JSON API, které zmapovaly neoficiální projekty.
