@@ -26,6 +26,10 @@ struct RssFeed {
   // <updated> v Atomu. Ne každý kanál ho posílá.
   bool updatedAvailable = false;
   int64_t updatedAt = 0;
+  // Kanál seřazený podle důležitosti (server zpráv dne posílá v hlavičce
+  // <hodiny:order>importance</hodiny:order>). Zprávy pak zůstanou v pořadí
+  // kanálu a maximumItems vezme první, ne nejnovější.
+  bool ranked = false;
   size_t count = 0;
   RssItem items[RSS_MAX_ITEMS];
 };
@@ -46,6 +50,7 @@ size_t rssTransliterate(const char *source, size_t sourceLength,
 bool rssParseDate(const char *text, size_t length, int64_t &unixSeconds);
 
 // Načte RSS 2.0 i Atom. maximumItems omezuje, kolik zpráv si feed nechá;
-// hodnota nad RSS_MAX_ITEMS se ořízne na strop.
+// hodnota nad RSS_MAX_ITEMS se ořízne na strop. Zprávy se řadí od nejnovější,
+// kromě kanálu s pořadím podle důležitosti (RssFeed::ranked).
 bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
                   RssFeed &feed, char *error, size_t errorSize);

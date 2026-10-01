@@ -155,6 +155,45 @@ void testFeed() {
   assert(strcmp(feed.items[0].title, "Prvni") == 0);
   assert(strcmp(feed.items[2].title, "Treti") == 0);
 
+  // Zprávy dne ze serveru jsou seřazené podle důležitosti: pořadí kanálu
+  // platí i přes data a strop nechá první, ne nejnovější.
+  static const char RANKED[] =
+      "<rss version=\"2.0\" xmlns:hodiny=\"https://example.invalid/hodiny\">"
+      "<channel><title>Zpravy dne</title>"
+      "<hodiny:order> importance </hodiny:order>"
+      "<item><title>Nejdulezitejsi</title>"
+      "<pubDate>Wed, 02 Sep 2026 08:00:00 +0200</pubDate></item>"
+      "<item><title>Druha</title>"
+      "<pubDate>Wed, 02 Sep 2026 16:00:00 +0200</pubDate></item>"
+      "<item><title>Treti</title>"
+      "<pubDate>Wed, 02 Sep 2026 17:00:00 +0200</pubDate></item>"
+      "</channel></rss>";
+  assert(rssParseFeed(RANKED, sizeof(RANKED) - 1, 2, feed, error,
+                      sizeof(error)));
+  assert(feed.ranked);
+  assert(feed.count == 2);
+  assert(strcmp(feed.items[0].title, "Nejdulezitejsi") == 0);
+  assert(strcmp(feed.items[1].title, "Druha") == 0);
+  // Čas zůstává k zobrazení.
+  assert(feed.items[0].timeAvailable);
+
+  // Jiná hodnota pořadí nic nemění a značka ve zprávě se nepočítá.
+  static const char OTHER_ORDER[] =
+      "<rss><channel><title>Jiny</title><order>date</order>"
+      "<item><title>Starsi</title><hodiny:order>importance</hodiny:order>"
+      "<pubDate>Wed, 02 Sep 2026 08:00:00 +0200</pubDate></item>"
+      "<item><title>Novejsi</title>"
+      "<pubDate>Wed, 02 Sep 2026 16:00:00 +0200</pubDate></item>"
+      "</channel></rss>";
+  assert(rssParseFeed(OTHER_ORDER, sizeof(OTHER_ORDER) - 1, 5, feed, error,
+                      sizeof(error)));
+  assert(!feed.ranked);
+  assert(strcmp(feed.items[0].title, "Novejsi") == 0);
+  // Obyčejný kanál o pořadí nic neříká.
+  assert(rssParseFeed(PAYLOAD, sizeof(PAYLOAD) - 1, 5, feed, error,
+                      sizeof(error)));
+  assert(!feed.ranked);
+
   // Odpovědi, které nejsou kanálem, musí selhat se srozumitelnou hláškou.
   static const char HTML[] = "<!doctype html><html><body>Ahoj</body></html>";
   assert(!rssParseFeed(HTML, sizeof(HTML) - 1, 5, feed, error, sizeof(error)));

@@ -693,6 +693,24 @@ bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
     if (feed.updatedAvailable) break;
   }
 
+  // Pořadí podle důležitosti, taky jen v hlavičce kanálu. Bez něj by hodiny
+  // z výběru zpráv dne ukázaly nejnovější, ne nejdůležitější.
+  {
+    Range order;
+    size_t afterOrder = 0;
+    if (findElement(payload, channelLimit, start, "order", order, afterOrder)) {
+      stripCdata(payload, order);
+      static const char IMPORTANCE[] = "importance";
+      const size_t length = sizeof(IMPORTANCE) - 1;
+      size_t begin = order.begin;
+      size_t end = order.end;
+      while (begin < end && isXmlSpace(payload[begin])) ++begin;
+      while (end > begin && isXmlSpace(payload[end - 1])) --end;
+      feed.ranked = end - begin == length &&
+                    memcmp(payload + begin, IMPORTANCE, length) == 0;
+    }
+  }
+
   // Řadicí klíč. Zprávy s datem se řadí od nejnovější; zprávy bez data se drží
   // v pořadí dokumentu a řadí se až za ně, protože kanály bývají seřazené
   // samy a první položka je pak ta nejnovější.
@@ -737,7 +755,9 @@ bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
                                           parsed.publishedAt);
     }
 
-    const int64_t key = parsed.timeAvailable
+    // V seřazeném kanálu dostane každá zpráva klíč podle pořadí dokumentu,
+    // takže se nepřehází a strop odřízne ty na konci.
+    const int64_t key = parsed.timeAvailable && !feed.ranked
                             ? parsed.publishedAt
                             : UNDATED_BASE - static_cast<int64_t>(documentIndex);
     ++documentIndex;
