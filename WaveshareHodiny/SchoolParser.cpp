@@ -22,6 +22,17 @@ size_t copyMember(const char *objectBegin, const char *objectEnd,
       destination, capacity);
 }
 
+// "cal" u zprávy nebo oznámení: chybí, když s ním kalendář nic nedělal;
+// neznámá hodnota (novější server) se bere jako žádná.
+SchoolCalendarMark readCalendarMark(const char *objectBegin,
+                                    const char *objectEnd) {
+  char calendar[8] = "";
+  copyMember(objectBegin, objectEnd, "cal", calendar, sizeof(calendar));
+  if (strcmp(calendar, "added") == 0) return SchoolCalendarMark::Added;
+  if (strcmp(calendar, "review") == 0) return SchoolCalendarMark::Review;
+  return SchoolCalendarMark::None;
+}
+
 }  // namespace
 
 int schoolClockMinutes(const char *text) {
@@ -177,16 +188,7 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
                  sizeof(message.when));
       copyMember(items.itemBegin, items.itemEnd, "sender", message.sender,
                  sizeof(message.sender));
-      // "cal" chybí u zpráv, se kterými kalendář nic nedělal; neznámá hodnota
-      // (novější server) se bere jako žádná.
-      char calendar[8] = "";
-      copyMember(items.itemBegin, items.itemEnd, "cal", calendar,
-                 sizeof(calendar));
-      if (strcmp(calendar, "added") == 0) {
-        message.calendar = SchoolCalendarMark::Added;
-      } else if (strcmp(calendar, "review") == 0) {
-        message.calendar = SchoolCalendarMark::Review;
-      }
+      message.calendar = readCalendarMark(items.itemBegin, items.itemEnd);
       ++feed.messageCount;
     }
     feed.messageTotal = readTotal("messageCount", feed.messageCount);
@@ -231,6 +233,7 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
                  sizeof(notice.when));
       copyMember(items.itemBegin, items.itemEnd, "text", notice.text,
                  sizeof(notice.text));
+      notice.calendar = readCalendarMark(items.itemBegin, items.itemEnd);
       ++feed.noticeCount;
     }
     feed.noticeTotal = readTotal("noticeCount", feed.noticeCount);

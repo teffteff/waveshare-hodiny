@@ -41,7 +41,7 @@ const char *const RESPONSE =
     "{\"when\":\"DNES\",\"subject\":\"Matematika\",\"abbrev\":\"M\","
     "\"mark\":\"1\",\"theme\":\"Násobilka\"}"
     "],\"noticeCount\":2,\"notices\":["
-    "{\"when\":\"VČERA\",\"title\":\"Střevní problémy\","
+    "{\"when\":\"VČERA\",\"title\":\"Střevní problémy\",\"cal\":\"review\","
     "\"text\":\"děti v budově mají střevní problémy…\"},"
     "{\"when\":\"DNES\",\"title\":\"\",\"text\":\"Bez titulku\"}"
     "],\"newsUpdated\":\"VČERA 20:53\",\"timetableUpdated\":\"7:40\","
@@ -101,6 +101,7 @@ void testResponse() {
   assert(std::string(feed.timetableUpdated) == "7:40");
   assert(std::string(feed.notices[0].when) == "VČERA");
   assert(std::string(feed.notices[0].title) == "Střevní problémy");
+  assert(feed.notices[0].calendar == SchoolCalendarMark::Review);
   assert(std::string(feed.notices[0].text) ==
          "děti v budově mají střevní problémy...");
 }

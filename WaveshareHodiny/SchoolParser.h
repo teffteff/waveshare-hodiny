@@ -126,6 +126,7 @@ struct SchoolNotice {
   char when[SCHOOL_DAY_LENGTH] = "";
   char title[SCHOOL_TITLE_LENGTH] = "";
   char text[SCHOOL_TITLE_LENGTH] = "";
+  SchoolCalendarMark calendar = SchoolCalendarMark::None;
 };
 
 // Jedno jídlo: den, pro koho a hlavní chod bez alergenů a nápojů.
