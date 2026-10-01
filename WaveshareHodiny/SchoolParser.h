@@ -21,6 +21,11 @@
 //    "markCount":1,
 //    "marks":[{"when":"DNES","subject":"Matematika","abbrev":"M","mark":"1",
 //              "theme":"Násobilka"}],
+//    "testCount":1,
+//    "tests":[{"when":"ÚT 6.10.","subject":"Matematika","abbrev":"M",
+//              "theme":"Test - převody jednotek","cal":"added"},
+//             {"when":"VČERA","subject":"Český jazyk","abbrev":"Čj",
+//              "theme":"Diktát","done":true}],
 //    "noticeCount":1,
 //    "notices":[{"when":"VČERA","title":"Střevní problémy",
 //                "text":"děti v budově mají střevní problémy…"}],
@@ -30,9 +35,9 @@
 //    "timetableUpdated":"VČERA 22:10",
 //    "problem":""}
 //
-// Zprávy, známky a nástěnka (nasems.cz) jsou nepovinné: bez klíčů "messages",
-// "marks" i "notices" hodiny druhou stránku obrazovky nenabízejí (starší
-// server, nebo je má vypnuté). Stejně nepovinné jsou obědy pod rozvrhem
+// Testy, známky, zprávy a nástěnka (nasems.cz) jsou nepovinné. Druhá stránka
+// obrazovky nese testy a známky, třetí zprávy a nástěnku; stránka, pro kterou
+// server nic neposílá (starší server, nebo je má vypnuté), se přeskočí. Stejně nepovinné jsou obědy pod rozvrhem
 // ("meals") a úkoly ("homework"): server s vypnutými úkoly klíč neposílá
 // a hodiny pak nepíšou ani "ŽÁDNÉ ÚKOLY".
 //
@@ -66,6 +71,9 @@ constexpr size_t SCHOOL_MAX_MESSAGES = 6;
 constexpr size_t SCHOOL_MAX_MARKS = 8;
 constexpr size_t SCHOOL_SENDER_LENGTH = 32;
 constexpr size_t SCHOOL_MARK_LENGTH = 12;
+// Ohlášené testy (ve Škole OnLine známka s pomlčkou); server jich posílá
+// nejvýš šest, nadcházející první.
+constexpr size_t SCHOOL_MAX_TESTS = 6;
 // Oznámení z nástěnky školky; server jich posílá nejvýš šest.
 constexpr size_t SCHOOL_MAX_NOTICES = 6;
 // Obědy na dva dny pro školu a školku, tedy čtyři řádky; dva navíc pro
@@ -121,6 +129,17 @@ struct SchoolMark {
   char theme[SCHOOL_TITLE_LENGTH] = "";
 };
 
+// Test ještě bez známky. `done`: už se psal a čeká na opravení; jinak je
+// teprve ohlášený. Kalendář jako u zpráv: server ho zapsal Adamovi.
+struct SchoolTest {
+  char when[SCHOOL_DAY_LENGTH] = "";
+  char subject[SCHOOL_SUBJECT_LENGTH] = "";
+  char abbrev[SCHOOL_SHORT_LENGTH] = "";
+  char theme[SCHOOL_TITLE_LENGTH] = "";
+  bool done = false;
+  SchoolCalendarMark calendar = SchoolCalendarMark::None;
+};
+
 // Titulek a začátek textu oznámení; řádek si displej zkrátí sám.
 struct SchoolNotice {
   char when[SCHOOL_DAY_LENGTH] = "";
@@ -174,11 +193,16 @@ struct SchoolFeed {
   size_t markCount = 0;
   size_t markTotal = 0;
   SchoolMark marks[SCHOOL_MAX_MARKS];
+  bool hasTests = false;
+  size_t testCount = 0;
+  // Nadcházející testy podle serveru; napsané a neopravené se nepočítají.
+  size_t testTotal = 0;
+  SchoolTest tests[SCHOOL_MAX_TESTS];
   bool hasNotices = false;
   size_t noticeCount = 0;
   size_t noticeTotal = 0;
   SchoolNotice notices[SCHOOL_MAX_NOTICES];
-  // Kdy server naposled stáhl zprávy, známky a nástěnku (nejstarší z nich).
+  // Kdy server naposled stáhl zprávy, známky (i testy) a nástěnku (nejstarší z nich).
   // Prázdné u staršího serveru.
   char newsUpdated[SCHOOL_UPDATED_LENGTH] = "";
   // Totéž pro první stránku: rozvrh a obědy, nejstarší z nich.

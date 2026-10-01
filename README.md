@@ -615,12 +615,17 @@ přepnout, ví každé hodiny samy; server posílá oba dny a u každého jídla
 to, jestli je dnešní.
 
 Tažením prstu do strany se obrazovka přepne na druhou stránku (stejně jako
-druhá sada hodnot na ciferníku HODNOTY): **nepřečtené zprávy** a **známky**
-za poslední dva týdny. U zprávy je jen den, příjmení odesílatele a titulek;
-obsah zprávy do hodin nejde. Obrazovka se vždycky otevírá na rozvrhu.
+druhá sada hodnot na ciferníku HODNOTY): **ohlášené testy** a **známky** za
+poslední dva týdny. Test učitel zapíše mezi známky s datem testu a pomlčkou
+místo hodnocení; po opravení se přesune mezi známky. Napsaný a ještě
+neopravený test má tlumený den. Dalším tažením přijde třetí stránka:
+**nepřečtené zprávy** a **nástěnka školky**, a pak zase rozvrh. Stránka, pro
+kterou server nic neposílá, se přeskočí. U zprávy je jen den, příjmení
+odesílatele a titulek; obsah zprávy do hodin nejde. Obrazovka se vždycky
+otevírá na rozvrhu.
 Když server zapisuje školní akce do kalendáře (referenční server, `schoolcal.py`),
-svítí den u zprávy i u oznámení z nástěnky školky **zeleně**, pokud z nich akci
-zapsal, a **modře**, pokud je má zkontrolovat člověk na jeho stránce; ostatní
+svítí den u zprávy, u oznámení z nástěnky školky i u testu **zeleně**, pokud
+z nich akci zapsal, a **modře**, pokud je má zkontrolovat člověk na jeho stránce; ostatní
 zůstávají oranžové.
 
 **Do Školy OnLine chodí server, ne hodiny.** Škola OnLine nemá veřejné API,

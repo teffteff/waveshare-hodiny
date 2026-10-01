@@ -3305,6 +3305,25 @@ void appendSchoolFeedJson(String &result, const SchoolFeed &feed) {
     }
     result += ']';
   }
+  if (feed.hasTests) {
+    result += F(",\"testCount\":");
+    result += static_cast<unsigned>(feed.testTotal);
+    result += F(",\"tests\":[");
+    for (size_t index = 0; index < feed.testCount; ++index) {
+      const SchoolTest &test = feed.tests[index];
+      if (index > 0) result += ',';
+      result += F("{\"when\":\"");
+      result += jsonEscape(test.when);
+      result += F("\",\"subject\":\"");
+      result += jsonEscape(test.subject);
+      result += F("\",\"abbrev\":\"");
+      result += jsonEscape(test.abbrev);
+      result += F("\",\"theme\":\"");
+      result += jsonEscape(test.theme);
+      result += test.done ? F("\",\"done\":true}") : F("\"}");
+    }
+    result += ']';
+  }
   if (feed.hasMeals) {
     result += F(",\"meals\":[");
     for (size_t index = 0; index < feed.mealCount; ++index) {
