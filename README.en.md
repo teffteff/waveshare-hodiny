@@ -601,11 +601,16 @@ timetable. Each clock decides for itself; the server sends both days and, for
 every dish, only whether it belongs to today.
 
 Swiping sideways switches to a second page (like the second set of values on
-the VALUES face): **unread messages** and **marks** from the last two weeks.
-A message shows only the day, the sender's surname and its title; the message
-content never reaches the clock. The screen always opens on the timetable.
+the VALUES face): **announced tests** and **marks** from the last two weeks.
+A teacher enters a test among the marks with the test date and a dash instead
+of a grade; once graded it moves to the marks. A test that was written but not
+graded yet has a dimmed day. Another swipe shows a third page: **unread
+messages** and the **kindergarten noticeboard**, and then the timetable again.
+A page the server sends nothing for is skipped. A message shows only the day,
+the sender's surname and its title; the message content never reaches the
+clock. The screen always opens on the timetable.
 When the server writes school events into a calendar (reference server,
-`schoolcal.py`), the day of a message or kindergarten notice turns **green**
+`schoolcal.py`), the day of a message, kindergarten notice or test turns **green**
 if an event from it was added and **blue** if a person should review it on
 the server's page; the others stay orange.
 

@@ -106,6 +106,34 @@ void testResponse() {
          "děti v budově mají střevní problémy...");
 }
 
+// Testy ze známek (server od 1. 10. 2026): nadcházející se počítají,
+// napsaný a neopravený nese done a do počtu nepatří.
+void testTests() {
+  SchoolFeed feed;
+  const char *json =
+      "{\"days\":[],\"testCount\":2,\"tests\":["
+      "{\"when\":\"ÚT 6.10.\",\"subject\":\"Matematika\",\"abbrev\":\"M\","
+      "\"theme\":\"Test - převody\",\"cal\":\"added\"},"
+      "{\"when\":\"ČT 8.10.\",\"subject\":\"Vlastivěda\",\"abbrev\":\"Vla\","
+      "\"theme\":\"Habsburkové\"},"
+      "{\"when\":\"VČERA\",\"subject\":\"Český jazyk\",\"abbrev\":\"Čj\","
+      "\"theme\":\"Diktát\",\"done\":true}]}";
+  assert(schoolParseFeed(json, strlen(json), feed) == SchoolParseStatus::Ok);
+  assert(feed.hasTests && feed.testCount == 3 && feed.testTotal == 2);
+  assert(std::string(feed.tests[0].abbrev) == "M");
+  assert(feed.tests[0].calendar == SchoolCalendarMark::Added && !feed.tests[0].done);
+  assert(feed.tests[2].done && std::string(feed.tests[2].theme) == "Diktát");
+  // Bez testCount platí nenapsané z pole; starší server klíč nemá vůbec.
+  const char *noCount =
+      "{\"days\":[],\"tests\":[{\"when\":\"VČERA\",\"theme\":\"x\",\"done\":true},"
+      "{\"when\":\"ZÍTRA\",\"theme\":\"y\"}]}";
+  assert(schoolParseFeed(noCount, strlen(noCount), feed) == SchoolParseStatus::Ok);
+  assert(feed.testCount == 2 && feed.testTotal == 1);
+  const char *old = "{\"days\":[],\"marks\":[]}";
+  assert(schoolParseFeed(old, strlen(old), feed) == SchoolParseStatus::Ok);
+  assert(!feed.hasTests && feed.testCount == 0);
+}
+
 // Služba parsuje každé obnovení do téhož bufferu; oznámení se dřív
 // přičítala k předchozím a po prvním obnovení byla na displeji dvakrát.
 void testCalendarMarks() {
@@ -427,8 +455,21 @@ void testRowLeft() {
 
 }  // namespace
 
+// Stránka se dvěma seznamy (testy nad známkami) dostane celý pás jen pro ně.
+void testTwoSectionPage() {
+  const SchoolListInput page[2] = {{true, 4, 3}, {true, 8, 8}};
+  // Testy 19 + 4 * 22, mezera 7, známky 19 + 8 * 22 = 309.
+  const SchoolListsResult result = schoolListsLayout(
+      page, SchoolLayoutMetrics{LINE, HEADING, GAP, SECTION, 309}, 2);
+  assert(result.sections[0].rows == 4 && !result.sections[0].ellipsis);
+  assert(result.sections[1].rows == 8 && !result.sections[1].ellipsis);
+  assert(!result.sections[2].heading);
+}
+
 int main() {
   testCalendarMarks();
+  testTests();
+  testTwoSectionPage();
   testResponse();
   testReparseReplacesLists();
   testBrokenResponses();

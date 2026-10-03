@@ -67,6 +67,9 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   feed.hasMarks = false;
   feed.markCount = 0;
   feed.markTotal = 0;
+  feed.hasTests = false;
+  feed.testCount = 0;
+  feed.testTotal = 0;
   feed.hasNotices = false;
   feed.noticeCount = 0;
   feed.noticeTotal = 0;
@@ -216,6 +219,39 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
       ++feed.markCount;
     }
     feed.markTotal = readTotal("markCount", feed.markCount);
+  }
+
+  const JsonValue tests = jsonFindMember(begin, end, "tests");
+  if (tests.isArray()) {
+    feed.hasTests = true;
+    JsonArrayCursor items = jsonOpenArray(tests);
+    while (feed.testCount < SCHOOL_MAX_TESTS && jsonNextItem(items)) {
+      SchoolTest &test = feed.tests[feed.testCount];
+      test = SchoolTest{};
+      if (copyMember(items.itemBegin, items.itemEnd, "when", test.when,
+                     sizeof(test.when)) == 0) {
+        continue;
+      }
+      copyMember(items.itemBegin, items.itemEnd, "subject", test.subject,
+                 sizeof(test.subject));
+      copyMember(items.itemBegin, items.itemEnd, "abbrev", test.abbrev,
+                 sizeof(test.abbrev));
+      copyMember(items.itemBegin, items.itemEnd, "theme", test.theme,
+                 sizeof(test.theme));
+      test.done = jsonReadBoolMember(items.itemBegin, items.itemEnd, "done");
+      test.calendar = readCalendarMark(items.itemBegin, items.itemEnd);
+      ++feed.testCount;
+    }
+    // testCount od serveru počítá jen nadcházející; když chybí, platí počet
+    // nenapsaných v poli.
+    size_t upcoming = 0;
+    for (size_t index = 0; index < feed.testCount; ++index)
+      if (!feed.tests[index].done) ++upcoming;
+    float total = 0.0f;
+    feed.testTotal =
+        jsonReadNumberMember(begin, end, "testCount", total) && total >= 0.0f
+            ? (total > 9999.0f ? 9999 : static_cast<size_t>(total))
+            : upcoming;
   }
 
   const JsonValue notices = jsonFindMember(begin, end, "notices");

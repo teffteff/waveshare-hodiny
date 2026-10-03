@@ -136,9 +136,9 @@ inline int schoolRowLeft(int radius, int target, int top, int height,
   return -limit < target ? target : -limit;
 }
 
-// Druhá stránka obrazovky Škola: zprávy, pod nimi známky a nástěnka školky,
-// každá sekce s hlavičkou. Prázdná sekce má jen hlavičku ("ŽÁDNÉ NOVÉ
-// ZPRÁVY"), vypnutá (server data neposílá) se vynechá. Vyšší sekce dostane
+// Další stránky obrazovky Škola: na druhé testy a pod nimi známky, na třetí
+// zprávy a nástěnka školky, každá sekce s hlavičkou. Prázdná sekce má jen
+// hlavičku ("ŽÁDNÉ NOVÉ ZPRÁVY"), vypnutá (server data neposílá) se vynechá. Vyšší sekce dostane
 // řádky dřív, ale každé zapnuté pod sebou nechá hlavičku a až dva řádky, aby
 // ji úplně nevytlačila. Tečky nahradí poslední řádek sekce, když se všechny
 // položky nevejdou.
@@ -161,25 +161,27 @@ struct SchoolListsResult {
   SchoolListResult sections[SCHOOL_LIST_SECTIONS];
 };
 
+// `count` je, kolik sekcí stránka má (nejvýš SCHOOL_LIST_SECTIONS).
 inline SchoolListsResult schoolListsLayout(
-    const SchoolListInput sections[SCHOOL_LIST_SECTIONS],
-    const SchoolLayoutMetrics &metrics) {
+    const SchoolListInput *sections, const SchoolLayoutMetrics &metrics,
+    size_t count = SCHOOL_LIST_SECTIONS) {
+  if (count > SCHOOL_LIST_SECTIONS) count = SCHOOL_LIST_SECTIONS;
   SchoolListsResult result;
   const int row = metrics.lineHeight + metrics.rowGap;
-  const auto heading = [&](uint8_t count) {
-    return metrics.headingHeight + (count > 0 ? metrics.rowGap : 0);
+  const auto heading = [&](uint8_t items) {
+    return metrics.headingHeight + (items > 0 ? metrics.rowGap : 0);
   };
   constexpr uint8_t RESERVED_ROWS = 2;
   int used = 0;
   bool anyHeading = false;
-  for (size_t index = 0; index < SCHOOL_LIST_SECTIONS; ++index) {
+  for (size_t index = 0; index < count; ++index) {
     const SchoolListInput &section = sections[index];
     if (!section.enabled) continue;
     const int start = used + (anyHeading ? metrics.sectionGap : 0);
     if (start + metrics.headingHeight > metrics.blockHeight) break;
     // Místo pro hlavičky a první řádky zapnutých sekcí níž.
     int reserve = 0;
-    for (size_t later = index + 1; later < SCHOOL_LIST_SECTIONS; ++later) {
+    for (size_t later = index + 1; later < count; ++later) {
       const SchoolListInput &below = sections[later];
       if (!below.enabled) continue;
       const uint8_t rows =
