@@ -3497,10 +3497,12 @@ void applySchoolColors() {
                           index + 1 == schoolVisible.homework;
     setTextColor(schoolTaskLabels[index], moreMark ? muted : text);
   }
-  // Nepřečtené zprávy svítí oranžově jako termíny; "žádné nové" je tlumené.
+  // Nepřečtené zprávy, nové známky a ohlášené testy svítí oranžově jako
+  // termíny; "žádné nové" je tlumené.
   setTextColor(schoolMessagesHeading,
                schoolMessageTotal > 0 && !redNight ? COLOR_ROOM : muted);
-  setTextColor(schoolMarksHeading, muted);
+  setTextColor(schoolMarksHeading,
+               schoolMarkTotal > 0 && !redNight ? COLOR_ROOM : muted);
   setTextColor(schoolTestsHeading,
                schoolTestTotal > 0 && !redNight ? COLOR_ROOM : muted);
   setTextColor(schoolNoticesHeading, muted);
