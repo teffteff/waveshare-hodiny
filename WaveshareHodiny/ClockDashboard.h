@@ -94,8 +94,16 @@ void clockDashboardSetRssAvailable(bool available);
 // updatedAt: kdy kanál vznikl (unixové sekundy), 0 = neznámo.
 void clockDashboardSetRssStatus(const char *message, uint8_t count,
                                 int64_t updatedAt);
+// summary: text pro detail, který se otevře klepnutím na titulek.
 void clockDashboardSetRssItem(size_t index, const char *title,
-                              const char *time);
+                              const char *time, const char *summary);
+// Tažení prstu na otevřeném detailu zprávy ho zavře a vrátí seznam. Vrací
+// false, když detail otevřený není a tažení patří někomu jinému.
+bool clockDashboardSwipeRss();
+// Otevřený detail drží obrazovku zpráv mimo automatické střídání.
+bool clockDashboardRssDetailOpen();
+// Zavře detail, na který se už dlouho nikdo nedíval. Volá se ze smyčky.
+void clockDashboardMaintainRssDetail();
 // --- Agenda z kalendáře -----------------------------------------------------
 bool clockDashboardAgendaVisible();
 void clockDashboardSetAgendaVisible(bool visible);
@@ -196,8 +204,8 @@ void clockDashboardSetPlanesVisible(bool visible);
 void clockDashboardSetPlanesAvailable(bool available);
 void clockDashboardSetPlanesVisibilityCallback(RssVisibilityCallback visibility);
 // Jedno klepnutí. Na mapě letadel vybere letadlo pod prstem nebo zavře jeho
-// detail; na ostatních obrazovkách nedělá nic, protože denní režim přepíná
-// dvojklepnutí.
+// detail, na zprávách otevře detail zprávy pod prstem; na ostatních
+// obrazovkách nedělá nic, protože denní režim přepíná dvojklepnutí.
 void clockDashboardHandleSingleTap(int16_t x, int16_t y);
 // Předá obrazovce hotový snímek radaru letadel i s detailem vybraného letu.
 void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,

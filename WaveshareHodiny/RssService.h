@@ -16,6 +16,8 @@ struct RssDisplayItem {
   // "HH:MM" v místním čase, nebo prázdný řetězec, když kanál datum neposlal
   // nebo zařízení ještě nemá čas ze sítě.
   const char *time;
+  // Shrnutí pro detail po klepnutí; prázdné, když ho kanál neposlal.
+  const char *summary;
 };
 
 using RssItemVisitor = void (*)(size_t index, const RssDisplayItem &item,

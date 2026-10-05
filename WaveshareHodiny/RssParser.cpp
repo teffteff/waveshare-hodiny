@@ -76,16 +76,51 @@ class AsciiWriter {
     return length_;
   }
 
+  bool truncated() const { return truncated_; }
+
+  // Ukončí useknutý text na hranici slova a připíše tři tečky. Nevešel-li se
+  // text celý, je buffer plný, takže tečky musí vytlačit konec.
+  size_t finishWithEllipsis() {
+    static const char ELLIPSIS[] = "...";
+    constexpr size_t ELLIPSIS_LENGTH = sizeof(ELLIPSIS) - 1;
+    if (!truncated_ || destinationSize_ <= ELLIPSIS_LENGTH + 1)
+      return finish();
+    size_t end = destinationSize_ - 1 - ELLIPSIS_LENGTH;
+    if (end > length_) end = length_;
+    // Řez je čistý tam, kde další znak slovo ukončuje: mezera nebo
+    // interpunkce za ním.
+    size_t cut = end;
+    while (cut > 0 && !endsWord(destination_[cut])) --cut;
+    if (cut > 0) end = cut;
+    // Bez mezery v dosahu se nesmí rozdělit dvoubajtový znak (°, µ).
+    while (end > 0 &&
+           (static_cast<unsigned char>(destination_[end]) & 0xC0) == 0x80)
+      --end;
+    while (end > 0 && endsWord(destination_[end - 1])) --end;
+    memcpy(destination_ + end, ELLIPSIS, ELLIPSIS_LENGTH);
+    length_ = end + ELLIPSIS_LENGTH;
+    return finish();
+  }
+
  private:
   void putByte(char value) {
-    if (destinationSize_ == 0 || length_ + 1 >= destinationSize_) return;
+    if (destinationSize_ == 0 || length_ + 1 >= destinationSize_) {
+      truncated_ = true;
+      return;
+    }
     destination_[length_++] = value;
+  }
+
+  static bool endsWord(char value) {
+    return value == ' ' || value == ',' || value == '.' || value == ':' ||
+           value == ';' || value == '-';
   }
 
   char *destination_;
   size_t destinationSize_;
   size_t length_ = 0;
   bool pendingSpace_ = false;
+  bool truncated_ = false;
 };
 
 bool isXmlSpace(char value) {
@@ -598,26 +633,73 @@ void copyError(char *error, size_t errorSize, const char *message) {
 
 }  // namespace
 
+namespace {
+
+// Jeden kódový bod zdroje: entita, nebo znak v UTF-8.
+uint32_t readCodePoint(const char *source, size_t sourceLength,
+                       size_t position, size_t &consumed) {
+  uint32_t codePoint = CODE_POINT_SKIP;
+  consumed = 1;
+  if (source[position] == '&') {
+    if (!readEntity(source, sourceLength, position, codePoint, consumed)) {
+      codePoint = '&';
+      consumed = 1;
+    }
+  } else {
+    codePoint = readUtf8(source, sourceLength, position, consumed);
+  }
+  return codePoint;
+}
+
+bool startsMarkup(char next) {
+  return (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') ||
+         next == '/' || next == '!';
+}
+
+}  // namespace
+
 size_t rssTransliterate(const char *source, size_t sourceLength,
                         char *destination, size_t destinationSize) {
   AsciiWriter writer(destination, destinationSize);
   if (source == nullptr) return writer.finish();
   size_t position = 0;
   while (position < sourceLength) {
-    uint32_t codePoint = CODE_POINT_SKIP;
     size_t consumed = 1;
-    if (source[position] == '&') {
-      if (!readEntity(source, sourceLength, position, codePoint, consumed)) {
-        codePoint = '&';
-        consumed = 1;
-      }
-    } else {
-      codePoint = readUtf8(source, sourceLength, position, consumed);
-    }
-    writeCodePoint(writer, codePoint);
+    writeCodePoint(writer,
+                   readCodePoint(source, sourceLength, position, consumed));
     position += consumed;
   }
   return writer.finish();
+}
+
+size_t rssTransliterateText(const char *source, size_t sourceLength,
+                            char *destination, size_t destinationSize) {
+  AsciiWriter writer(destination, destinationSize);
+  if (source == nullptr) return writer.finish();
+  // Značka začíná '<' (doslovně nebo jako &lt;), za kterým rovnou stojí
+  // písmeno, '/' nebo '!'. Samotné "a < b" v textu tak zůstane.
+  bool inMarkup = false;
+  size_t position = 0;
+  while (position < sourceLength && !writer.truncated()) {
+    size_t consumed = 1;
+    const uint32_t codePoint =
+        readCodePoint(source, sourceLength, position, consumed);
+    position += consumed;
+    if (inMarkup) {
+      if (codePoint == '>') {
+        inMarkup = false;
+        writer.space();
+      }
+      continue;
+    }
+    if (codePoint == '<' && position < sourceLength &&
+        startsMarkup(source[position])) {
+      inMarkup = true;
+      continue;
+    }
+    writeCodePoint(writer, codePoint);
+  }
+  return writer.finishWithEllipsis();
 }
 
 bool rssParseDate(const char *text, size_t length, int64_t &unixSeconds) {
@@ -638,7 +720,10 @@ bool rssParseDate(const char *text, size_t length, int64_t &unixSeconds) {
 
 bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
                   RssFeed &feed, char *error, size_t errorSize) {
-  feed = RssFeed{};
+  // Ne `feed = RssFeed{}`: se shrnutími má struktura přes 5 kB a dočasná
+  // kopie by je vzala ze zásobníku úlohy, která drží TLS relaci. Všechny
+  // výchozí hodnoty jsou nuly, takže memset dá totéž.
+  memset(static_cast<void *>(&feed), 0, sizeof(feed));
   copyError(error, errorSize, "");
   if (payload == nullptr || length == 0) {
     copyError(error, errorSize, "Kanál nevrátil žádná data.");
@@ -724,7 +809,13 @@ bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
     if (!findElement(payload, length, position, itemTag, item, after)) break;
     position = after > position ? after : position + 1;
 
-    RssItem parsed;
+    // Bez shrnutí: to se přepisuje až rovnou do přiděleného místa, aby
+    // půlkilobajtový text nejel přes zásobník.
+    struct {
+      char title[RSS_TITLE_LENGTH];
+      bool timeAvailable;
+      int64_t publishedAt;
+    } parsed = {"", false, 0};
     Range title;
     size_t afterTitle = 0;
     if (findElement(payload, item.end, item.begin, "title", title,
@@ -770,7 +861,22 @@ bool rssParseFeed(const char *payload, size_t length, size_t maximumItems,
       feed.items[index] = feed.items[index - 1];
       keys[index] = keys[index - 1];
     }
-    feed.items[slot] = parsed;
+    RssItem &stored = feed.items[slot];
+    memcpy(stored.title, parsed.title, sizeof(stored.title));
+    stored.timeAvailable = parsed.timeAvailable;
+    stored.publishedAt = parsed.publishedAt;
+    stored.summary[0] = '\0';
+    // RSS má perex v <description>, Atom v <summary>, jinak celý <content>.
+    for (const char *tag : {"description", "summary", "content"}) {
+      Range text;
+      size_t afterText = 0;
+      if (!findElement(payload, item.end, item.begin, tag, text, afterText))
+        continue;
+      stripCdata(payload, text);
+      rssTransliterateText(payload + text.begin, text.end - text.begin,
+                           stored.summary, sizeof(stored.summary));
+      if (stored.summary[0] != '\0') break;
+    }
     keys[slot] = key;
     if (feed.count < limit) ++feed.count;
   }
