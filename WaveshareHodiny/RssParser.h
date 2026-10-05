@@ -11,6 +11,10 @@ constexpr size_t RSS_MAX_ITEMS = 8;
 // dvou řádků se jich vejde kolem sta, zbytek utne LVGL třemi tečkami.
 constexpr size_t RSS_TITLE_LENGTH = 160;
 constexpr size_t RSS_CHANNEL_TITLE_LENGTH = 48;
+// Shrnutí pro detail zprávy po přepisu do ASCII. Server zpráv dne posílá 3 až
+// 5 vět, naměřeno 180 až 350 znaků; víc se na kulatý displej pod titulek
+// stejně nevejde. Delší text se utne na hranici slova a dostane tři tečky.
+constexpr size_t RSS_SUMMARY_LENGTH = 512;
 
 struct RssItem {
   char title[RSS_TITLE_LENGTH] = "";
@@ -18,6 +22,9 @@ struct RssItem {
   // RssService, protože jen zařízení zná nastavenou časovou zónu.
   bool timeAvailable = false;
   int64_t publishedAt = 0;
+  // Text pro detail po klepnutí: <description> v RSS, <summary> nebo
+  // <content> v Atomu, bez HTML značek. Prázdný, když kanál žádný neposílá.
+  char summary[RSS_SUMMARY_LENGTH] = "";
 };
 
 struct RssFeed {
@@ -44,6 +51,13 @@ struct RssFeed {
 // zapíše platný řetězec, i když se text nevejde celý.
 size_t rssTransliterate(const char *source, size_t sourceLength,
                         char *destination, size_t destinationSize);
+
+// Totéž pro delší text zprávy. Navíc vynechá HTML značky, i když přišly
+// zakódované jako &lt;p&gt;, protože běžné kanály tak posílají perex
+// s odstavci a obrázky. Značka se nahradí mezerou. Co se nevejde, utne se na
+// konci slova a doplní třemi tečkami.
+size_t rssTransliterateText(const char *source, size_t sourceLength,
+                            char *destination, size_t destinationSize);
 
 // Datum z RSS (RFC 822: "Wed, 02 Sep 2026 16:42:00 +0200") nebo z Atomu
 // (ISO 8601: "2026-09-02T16:42:00+02:00"). Výsledek je vždy v UTC.

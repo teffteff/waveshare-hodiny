@@ -33,7 +33,7 @@ SemaphoreHandle_t rssMutex = nullptr;
 
 struct RssCache {
   RssFeed feed;
-  // Rozebraný kanál před převzetím do feed. RssFeed má přes 1,4 kB, což je na
+  // Rozebraný kanál před převzetím do feed. RssFeed má se shrnutími přes 5 kB, což je na
   // zásobník úlohy provádějící TLS handshake příliš. Souběh nehrozí: celé
   // stahování drží NetworkOperationGuard, takže běží vždy jen jedno.
   RssFeed scratch;
@@ -65,7 +65,7 @@ unsigned long rssLastSuccessAt = 0;
 
 void releaseStorage() {
   if (rssCache != nullptr) {
-    // Ne `*rssCache = RssCache{}`: dočasná kopie struktury má přes 3 kB a
+    // Ne `*rssCache = RssCache{}`: dočasná kopie struktury má přes 15 kB a
     // stála by tolik zásobníku úloze, která zrovna drží TLS relaci.
     const uint32_t generation = rssCache->generation;
     memset(rssCache, 0, sizeof(*rssCache));
@@ -207,7 +207,8 @@ bool rssServiceVisitItems(RssItemVisitor visitor, void *context) {
   if (rssCache != nullptr && rssCache->ready) {
     for (size_t index = 0; index < rssCache->feed.count; ++index) {
       const RssDisplayItem item{rssCache->feed.items[index].title,
-                                rssCache->times[index]};
+                                rssCache->times[index],
+                                rssCache->feed.items[index].summary};
       visitor(index, item, context);
     }
   }
@@ -224,7 +225,8 @@ bool rssServiceVisitProbeItems(RssItemVisitor visitor, void *context) {
   if (rssCache != nullptr && rssCache->probeReady) {
     for (size_t index = 0; index < rssCache->probe.count; ++index) {
       const RssDisplayItem item{rssCache->probe.items[index].title,
-                                rssCache->probeTimes[index]};
+                                rssCache->probeTimes[index],
+                                rssCache->probe.items[index].summary};
       visitor(index, item, context);
     }
   }
@@ -410,7 +412,7 @@ static bool rssServiceDownload(const ClockRssConfig &config,
       detail += parsed.count;
       networkDiagnosticsSetDetail(diagnosticKind, detail);
     } else {
-      // Ne `cache->probe = RssFeed{}`: dočasná kopie stojí přes 1,4 kB
+      // Ne `cache->probe = RssFeed{}`: dočasná kopie stojí přes 5 kB
       // zásobníku úloze, která právě dokončila TLS relaci. Číst se stejně
       // nesmí, protože probeReady je false.
       networkDiagnosticsSetDetail(diagnosticKind, error);

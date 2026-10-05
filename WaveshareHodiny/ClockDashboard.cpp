@@ -19,6 +19,7 @@
 
 #include "ClockFonts.h"
 #include "ClockLvglMemory.h"
+#include "RssParser.h"
 #include "WeatherForecastLayout.h"
 #include "DisplayDriver.h"
 #include "FirmwareUpdateService.h"
@@ -192,6 +193,22 @@ uint8_t rssVisibleItemCount = 0;
 lv_obj_t *rssUpdatedLabel = nullptr;
 int64_t rssUpdatedAt = 0;
 bool rssFooterShown = false;
+// Detail zprávy po klepnutí na titulek: celá obrazovka nad seznamem, zpátky
+// se jde tažením prstu. Texty všech řádků leží v PSRAM, protože kanál je
+// posílá jen jednou za obnovení, a vnitřní RAM na půl kilobajtu na řádek
+// nestačí (viz TLS).
+struct RssDetailText {
+  char title[RSS_TITLE_LENGTH];
+  char time[8];
+  char summary[RSS_SUMMARY_LENGTH];
+};
+RssDetailText *rssDetailTexts = nullptr;
+lv_obj_t *rssDetailPanel = nullptr;
+lv_obj_t *rssDetailTimeLabel = nullptr;
+lv_obj_t *rssDetailTitleLabel = nullptr;
+lv_obj_t *rssDetailSummaryLabel = nullptr;
+bool rssDetailOpen = false;
+unsigned long rssDetailOpenedAt = 0;
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
 // Pás pod ukazatelem obrazovek: čas a venkovní teplota. Stejná informace na
@@ -564,6 +581,7 @@ void setTextColor(lv_obj_t *object, lv_color_t color);
 lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font,
                     lv_color_t color);
 void applyRssColors();
+void closeRssDetail();
 void applyAgendaColors();
 void applySkyColors();
 void updateSkyHeaderLabel();
@@ -842,6 +860,8 @@ void setActiveScreen(uint8_t screen) {
   // jen dá vědět, aby stará data stáhl znovu.
   const bool wasRss = previous == DASHBOARD_SCREEN_RSS;
   const bool isRss = screen == DASHBOARD_SCREEN_RSS;
+  // Po návratu na zprávy má být vidět seznam, ne detail z minula.
+  if (wasRss && !isRss) closeRssDetail();
   if (wasRss != isRss && rssVisibilityCallback != nullptr)
     rssVisibilityCallback(isRss);
   // Agenda běží na vlastním intervalu i skrytá; otevření obrazovky jí jen dá
@@ -2702,6 +2722,17 @@ constexpr int RSS_FOOTER_Y = 186;
 constexpr int RSS_FOOTER_TOP_Y = RSS_FOOTER_Y - 13;
 constexpr int RSS_FOOTER_WIDTH = 210;
 constexpr int RSS_MIN_ROW_GAP = 10;
+// Detail zprávy. Titulek stojí výš, kde je kruh užší: 300 px se vejde do
+// y = ±180. Shrnutí v šířce 350 px drží okraj ještě v y = ±150, kam dosáhne
+// i nejdelší naměřené shrnutí (350 znaků, devět řádků).
+constexpr int RSS_DETAIL_TITLE_WIDTH = 300;
+constexpr int RSS_DETAIL_SUMMARY_WIDTH = 350;
+constexpr int RSS_DETAIL_GAP = 10;
+constexpr int RSS_DETAIL_TOP_LIMIT_Y = -200;
+constexpr int RSS_DETAIL_BOTTOM_Y = 185;
+// Detail drží obrazovku proti střídání. Kdo od hodin odejde, nemá je najít
+// zaseknuté na jedné zprávě.
+constexpr unsigned long RSS_DETAIL_TIMEOUT_MS = 3UL * 60UL * 1000UL;
 // Mezera mezi časem a titulkem na prvním řádku.
 constexpr char RSS_TIME_SEPARATOR[] = "  ";
 // "#RRGGBB " před časem. Při přepnutí palety se přepisuje jen hex, proto se
@@ -2786,6 +2817,11 @@ void applyRssColors() {
   updateRssHeaderLabel();
   setTextColor(rssStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   setTextColor(rssUpdatedLabel, redNight ? COLOR_ERROR : COLOR_MUTED);
+  if (rssDetailPanel != nullptr) {
+    setTextColor(rssDetailTimeLabel, rssTimeColor());
+    setTextColor(rssDetailTitleLabel, redNight ? COLOR_ERROR : COLOR_TEXT);
+    setTextColor(rssDetailSummaryLabel, redNight ? COLOR_ERROR : COLOR_TEXT);
+  }
   char tag[RSS_COLOR_TAG_LENGTH + 1];
   rssBuildColorTag(tag, rssTimeColor());
   for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
@@ -2896,9 +2932,129 @@ void createRssPage(lv_obj_t *screen) {
   }
   layoutRssItems(0);
 
+  // Detail přes celou stránku. Leží v rssPage, takže se schová i ukáže s ní
+  // a vlastní pozadí zakryje seznam pod sebou.
+  rssDetailPanel = lv_obj_create(rssPage);
+  lv_obj_set_size(rssDetailPanel, 480, 480);
+  lv_obj_center(rssDetailPanel);
+  lv_obj_set_style_bg_color(rssDetailPanel, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(rssDetailPanel, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(rssDetailPanel, 0, 0);
+  lv_obj_set_style_pad_all(rssDetailPanel, 0, 0);
+  lv_obj_set_style_radius(rssDetailPanel, 0, 0);
+  lv_obj_clear_flag(rssDetailPanel, LV_OBJ_FLAG_SCROLLABLE);
+
+  rssDetailTimeLabel = makeLabel(rssDetailPanel, &clock_czech_16, COLOR_TEXT);
+  lv_label_set_text(rssDetailTimeLabel, "");
+
+  rssDetailTitleLabel = makeLabel(rssDetailPanel, &clock_czech_20, COLOR_TEXT);
+  lv_label_set_long_mode(rssDetailTitleLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(rssDetailTitleLabel, RSS_DETAIL_TITLE_WIDTH);
+  lv_obj_set_style_text_align(rssDetailTitleLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(rssDetailTitleLabel, "");
+
+  rssDetailSummaryLabel =
+      makeLabel(rssDetailPanel, &clock_czech_16, COLOR_TEXT);
+  lv_label_set_long_mode(rssDetailSummaryLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(rssDetailSummaryLabel, RSS_DETAIL_SUMMARY_WIDTH);
+  lv_obj_set_style_text_align(rssDetailSummaryLabel, LV_TEXT_ALIGN_LEFT, 0);
+  lv_obj_set_style_text_line_space(rssDetailSummaryLabel, 2, 0);
+  lv_label_set_text(rssDetailSummaryLabel, "");
+  lv_obj_add_flag(rssDetailPanel, LV_OBJ_FLAG_HIDDEN);
+
   makeChildrenTapThrough(rssPage);
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+RssDetailText *ensureRssDetailTexts() {
+  if (rssDetailTexts == nullptr) {
+    rssDetailTexts = static_cast<RssDetailText *>(heap_caps_calloc(
+        CLOCK_RSS_MAX_ITEMS, sizeof(RssDetailText),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  return rssDetailTexts;
+}
+
+// Čas, titulek a shrnutí pod sebou, jako blok svisle na střed. Výšky jsou
+// známé až po zalomení, proto se nejdřív nastaví texty a pak se měří.
+void layoutRssDetail() {
+  lv_obj_update_layout(rssDetailPanel);
+  const bool hasTime = lv_label_get_text(rssDetailTimeLabel)[0] != '\0';
+  const int timeHeight =
+      hasTime ? lv_obj_get_height(rssDetailTimeLabel) + RSS_DETAIL_GAP : 0;
+  const int titleHeight = lv_obj_get_height(rssDetailTitleLabel);
+  const int summaryHeight = lv_obj_get_height(rssDetailSummaryLabel);
+  const int total =
+      timeHeight + titleHeight + RSS_DETAIL_GAP + summaryHeight;
+  int top = -total / 2;
+  if (top < RSS_DETAIL_TOP_LIMIT_Y) top = RSS_DETAIL_TOP_LIMIT_Y;
+  setObjectVisible(rssDetailTimeLabel, hasTime);
+  if (hasTime)
+    lv_obj_align(rssDetailTimeLabel, LV_ALIGN_TOP_MID, 0, RSS_RADIUS + top);
+  top += timeHeight;
+  lv_obj_align(rssDetailTitleLabel, LV_ALIGN_TOP_MID, 0, RSS_RADIUS + top);
+  top += titleHeight + RSS_DETAIL_GAP;
+  lv_obj_align(rssDetailSummaryLabel, LV_ALIGN_TOP_MID, 0, RSS_RADIUS + top);
+}
+
+void openRssDetail(size_t index) {
+  if (rssDetailPanel == nullptr || rssDetailTexts == nullptr ||
+      index >= rssVisibleItemCount)
+    return;
+  const RssDetailText &text = rssDetailTexts[index];
+  if (text.title[0] == '\0') return;
+  lv_label_set_text(rssDetailTimeLabel, text.time);
+  lv_label_set_text(rssDetailTitleLabel, text.title);
+  lv_label_set_text(rssDetailSummaryLabel,
+                    text.summary[0] != '\0'
+                        ? text.summary
+                        : (englishLanguage()
+                               ? "The feed sends no text for this story."
+                               : "Kanál k téhle zprávě text neposílá."));
+  // Text může být pro kruh pořád moc dlouhý. Spodek se pak zkrátí na celé
+  // řádky, které se vejdou nad RSS_DETAIL_BOTTOM_Y, a skončí třemi tečkami.
+  lv_label_set_long_mode(rssDetailSummaryLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(rssDetailSummaryLabel, LV_SIZE_CONTENT);
+  layoutRssDetail();
+  lv_area_t area;
+  lv_obj_get_coords(rssDetailSummaryLabel, &area);
+  const int bottomLimit = RSS_RADIUS + RSS_DETAIL_BOTTOM_Y;
+  if (area.y2 > bottomLimit) {
+    const int lineHeight = lv_font_get_line_height(&clock_czech_16) + 2;
+    const int lines = (bottomLimit - area.y1) / lineHeight;
+    lv_label_set_long_mode(rssDetailSummaryLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(rssDetailSummaryLabel,
+                      (lines > 1 ? lines : 1) * lineHeight);
+    layoutRssDetail();
+  }
+  applyRssColors();
+  lv_obj_clear_flag(rssDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(rssDetailPanel);
+  rssDetailOpen = true;
+  rssDetailOpenedAt = millis();
+}
+
+void closeRssDetail() {
+  rssDetailOpen = false;
+  if (rssDetailPanel != nullptr)
+    lv_obj_add_flag(rssDetailPanel, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Řádek seznamu pod prstem. Mezera mezi řádky se dělí napůl, aby klepnutí
+// vedle textu nepropadlo; vodorovně platí celá šířka displeje.
+int rssItemAt(int16_t y) {
+  for (size_t index = 0; index < rssVisibleItemCount; ++index) {
+    lv_obj_t *title = rssTitleLabels[index];
+    if (title == nullptr || lv_obj_has_flag(title, LV_OBJ_FLAG_HIDDEN))
+      continue;
+    lv_area_t area;
+    lv_obj_get_coords(title, &area);
+    const int slack = RSS_ROW_GAP / 2 + 1;
+    if (y >= area.y1 - slack && y <= area.y2 + slack)
+      return static_cast<int>(index);
+  }
+  return -1;
 }
 
 // Obrazovka s agendou z kalendáře. Sloupce jako u předpovědi: čas vlevo pod
@@ -7162,6 +7318,7 @@ void clockDashboardSetRssAvailable(bool available) {
   rssFeatureAvailable = available;
   if (!available && activeScreen == DASHBOARD_SCREEN_RSS) {
     activeScreen = DASHBOARD_SCREEN_CLOCK;
+    closeRssDetail();
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     if (!settingsVisible && !firmwareUpdateActive) {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
@@ -7223,6 +7380,13 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   if (consumeSuppressedTap()) return;
   if (activeScreen == DASHBOARD_SCREEN_SATELLITES) {
     satelliteServiceHandleTap(x, y);
+    return;
+  }
+  if (activeScreen == DASHBOARD_SCREEN_RSS) {
+    // Na otevřeném detailu klepnutí nic nedělá; zpátky vede tažení prstu.
+    if (rssDetailOpen) return;
+    const int index = rssItemAt(y);
+    if (index >= 0) openRssDetail(static_cast<size_t>(index));
     return;
   }
   if (activeScreen != DASHBOARD_SCREEN_PLANES) return;
@@ -8145,7 +8309,7 @@ void clockDashboardSetRssStatus(const char *message, uint8_t count,
 }
 
 void clockDashboardSetRssItem(size_t index, const char *title,
-                              const char *time) {
+                              const char *time, const char *summary) {
   if (rssPage == nullptr || index >= rssVisibleItemCount) return;
   lv_obj_t *titleLabel = rssTitleLabels[index];
   if (titleLabel == nullptr) return;
@@ -8168,6 +8332,33 @@ void clockDashboardSetRssItem(size_t index, const char *title,
   rssItemHasTime[index] = hasTime;
   lv_label_set_text(titleLabel, text.c_str());
   setObjectVisible(titleLabel, true);
+
+  // Pro detail. Otevřený detail má texty ve vlastních labelech, takže ho
+  // obnovení kanálu pod rukama nepřepíše.
+  RssDetailText *texts = ensureRssDetailTexts();
+  if (texts == nullptr) return;
+  RssDetailText &stored = texts[index];
+  strlcpy(stored.title, title != nullptr ? title : "", sizeof(stored.title));
+  strlcpy(stored.time, hasTime ? time : "", sizeof(stored.time));
+  strlcpy(stored.summary, summary != nullptr ? summary : "",
+          sizeof(stored.summary));
+}
+
+bool clockDashboardSwipeRss() {
+  if (activeScreen != DASHBOARD_SCREEN_RSS || !rssDetailOpen ||
+      settingsVisible || firmwareUpdateActive)
+    return false;
+  closeRssDetail();
+  return true;
+}
+
+bool clockDashboardRssDetailOpen() {
+  return activeScreen == DASHBOARD_SCREEN_RSS && rssDetailOpen;
+}
+
+void clockDashboardMaintainRssDetail() {
+  if (rssDetailOpen && millis() - rssDetailOpenedAt >= RSS_DETAIL_TIMEOUT_MS)
+    closeRssDetail();
 }
 
 bool clockDashboardSkyVisible() {

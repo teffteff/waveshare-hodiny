@@ -1398,10 +1398,11 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES);
   // Okno plánu i upozornění na déšť drží svou obrazovku; střídání se rozběhne
-  // až po nich.
+  // až po nich. Stejně tak rozečtený detail zprávy.
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
                        timeWasSynchronized && !displayForcedOff &&
                        clockDashboardAutomaticRotationAllowed() &&
+                       !clockDashboardRssDetailOpen() &&
                        heldScreen() == CLOCK_SCREEN_ORDER_UNUSED;
   if (!allowed) {
     automaticRotationPaused = true;
@@ -1479,7 +1480,8 @@ void maintainDisplayGestures() {
   }
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
-    if (clockDashboardSwipeValues() || clockDashboardSwipeSchool()) {
+    if (clockDashboardSwipeValues() || clockDashboardSwipeSchool() ||
+        clockDashboardSwipeRss()) {
       displayModeStartedAt = millis();
     } else if (clockDashboardSwipeSatellites()) {
       // Služba musí vědět, kterou stránku kreslit.
@@ -1495,12 +1497,13 @@ void maintainDisplayGestures() {
   }
   int16_t tapX = 0;
   int16_t tapY = 0;
-  // Jedno klepnutí vybírá letadlo na radaru nebo zavírá jeho detail; jinde
-  // nedělá nic. Denní režim přepíná až dvojklepnutí, protože jedno klepnutí se
+  // Jedno klepnutí vybírá letadlo na radaru nebo zavírá jeho detail a na
+  // zprávách otevírá detail zprávy; jinde nedělá nic. Denní režim přepíná až dvojklepnutí, protože jedno klepnutí se
   // pletlo s podržením prstu a místo obrazovky přepínalo den a noc.
   if (displayDriverTakeShortTap(tapX, tapY))
     clockDashboardHandleSingleTap(tapX, tapY);
   if (displayDriverTakeDoubleTap()) clockDashboardHandleDoubleTap();
+  clockDashboardMaintainRssDetail();
 }
 
 // Přepne na obrazovku, pokud je zapnutá. Nastavení na displeji zavře; když
@@ -1866,7 +1869,7 @@ void maintainAuroraAlert() {
 }
 
 void pushRssItemToDashboard(size_t index, const RssDisplayItem &item, void *) {
-  clockDashboardSetRssItem(index, item.title, item.time);
+  clockDashboardSetRssItem(index, item.title, item.time, item.summary);
 }
 
 void pushAgendaItemToDashboard(size_t index, const AgendaDisplayItem &item,
@@ -2496,6 +2499,20 @@ void handleUsbCommands() {
         clockDashboardSetSchoolVisible(true);
         Serial.println(clockDashboardSwipeSchool() ? "SCHOOL_NEWS_SHOWN"
                                                    : "SCHOOL_NEWS_UNAVAILABLE");
+      } else if (usbCommand.startsWith("TAP ") && !screenshotTransferActive) {
+        // Klepnutí na souřadnice displeje, stejnou cestou jako prst: na
+        // zprávách tak jde otevřít detail pro screenshot.
+        char *rest = nullptr;
+        const long x = strtol(usbCommand.c_str() + 4, &rest, 10);
+        const long y = strtol(rest, nullptr, 10);
+        clockDashboardHandleSingleTap(static_cast<int16_t>(x),
+                                      static_cast<int16_t>(y));
+        Serial.println(clockDashboardRssDetailOpen() ? "TAP_DONE_RSS_DETAIL"
+                                                     : "TAP_DONE");
+      } else if (usbCommand == "RSSBACK" && !screenshotTransferActive) {
+        // Tažení prstu, kterým se z detailu zprávy vrací na seznam.
+        Serial.println(clockDashboardSwipeRss() ? "RSS_LIST_SHOWN"
+                                                : "RSS_DETAIL_NOT_OPEN");
       } else if (usbCommand == "SKYSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
         // takže ručně nalistovanou obrazovku by screenshot nikdy nezastihl.

@@ -209,6 +209,60 @@ void testFeed() {
                        sizeof(error)));
 }
 
+std::string text(const std::string &source, size_t size = RSS_SUMMARY_LENGTH) {
+  std::string buffer(size, 'x');
+  rssTransliterateText(source.c_str(), source.size(), &buffer[0], size);
+  return std::string(buffer.c_str());
+}
+
+void testSummaries() {
+  // Doslovné i zakódované HTML zmizí, odstavce se oddělí mezerou.
+  assert(text("<p>Prvn\xc3\xad odstavec.</p><p>Druh\xc3\xbd <b>tu</b>.</p>") ==
+         "Prvni odstavec. Druhy tu .");
+  assert(text("&lt;p&gt;Perex &amp; obr&#225;zek&lt;img src=\"a.jpg\"/&gt;"
+              "&lt;/p&gt;") == "Perex & obrazek");
+  // Porovnání v textu značkou není.
+  assert(text("a < b a 3&lt;4") == "a < b a 3<4");
+  // Delší text se utne na konci slova a dostane tři tečky.
+  assert(text("Jedna dva tri ctyri pet", 16) == "Jedna dva...");
+  assert(text("Jedna dva, tri", 13) == "Jedna dva...");
+  // Co se vejde, zůstane bez teček.
+  assert(text("Jedna dva", 10) == "Jedna dva");
+
+  static const char FEED[] =
+      "<rss version=\"2.0\"><channel><title>Zpravy dne</title>"
+      "<hodiny:order>importance</hodiny:order>"
+      "<item><title>Prvni</title>"
+      "<description>Shrnut\xc3\xad prvn\xc3\xad zpr\xc3\xa1vy.</description>"
+      "<media:content url=\"x.jpg\"/></item>"
+      "<item><title>Druha</title>"
+      "<description><![CDATA[<p>V CDATA <a href=\"#\">odkaz</a></p>]]>"
+      "</description></item>"
+      "<item><title>Bez shrnuti</title></item>"
+      "</channel></rss>";
+  RssFeed feed;
+  char error[160];
+  assert(rssParseFeed(FEED, sizeof(FEED) - 1, 5, feed, error, sizeof(error)));
+  assert(feed.count == 3);
+  assert(strcmp(feed.items[0].summary, "Shrnuti prvni zpravy.") == 0);
+  assert(strcmp(feed.items[1].summary, "V CDATA odkaz") == 0);
+  assert(feed.items[2].summary[0] == '\0');
+
+  // Atom: <summary>, a když chybí, <content>. Shrnutí jede s titulkem i při
+  // přeřazení podle data.
+  static const char ATOM[] =
+      "<feed xmlns=\"http://www.w3.org/2005/Atom\"><title>Atom</title>"
+      "<entry><title>Starsi</title><updated>2026-09-02T08:00:00Z</updated>"
+      "<content type=\"html\">&lt;p&gt;Obsah&lt;/p&gt;</content></entry>"
+      "<entry><title>Novejsi</title><updated>2026-09-02T09:00:00Z</updated>"
+      "<summary>Souhrn</summary><content>Obsah navic</content></entry>"
+      "</feed>";
+  assert(rssParseFeed(ATOM, sizeof(ATOM) - 1, 5, feed, error, sizeof(error)));
+  assert(strcmp(feed.items[0].title, "Novejsi") == 0);
+  assert(strcmp(feed.items[0].summary, "Souhrn") == 0);
+  assert(strcmp(feed.items[1].summary, "Obsah") == 0);
+}
+
 // Volitelný běh proti staženému kanálu: test_rss_parser <soubor.xml>.
 int testLiveFeed(const char *path) {
   std::ifstream input(path, std::ios::binary);
@@ -232,6 +286,8 @@ int testLiveFeed(const char *path) {
       assert(static_cast<unsigned char>(*scan) < 0x80);
     }
     assert(feed.items[index].timeAvailable);
+    if (feed.items[index].summary[0] != '\0')
+      printf("      %s\n", feed.items[index].summary);
   }
   assert(feed.count == 5);
   return 0;
@@ -244,5 +300,6 @@ int main(int argc, char **argv) {
   testTransliteration();
   testDates();
   testFeed();
+  testSummaries();
   return 0;
 }
