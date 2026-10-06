@@ -15,8 +15,9 @@
 // své sekce.
 
 // Graf na obrazovce předpovědi pokrývá den dopředu, stejně jako graf na
-// nástěnce.
-constexpr size_t WEATHER_FORECAST_MAX_HOURS = 24;
+// nástěnce, a kousek zpátky, aby bylo vidět, kde v něm je teď.
+constexpr size_t WEATHER_FORECAST_PAST_HOURS = 3;
+constexpr size_t WEATHER_FORECAST_MAX_HOURS = 24 + WEATHER_FORECAST_PAST_HOURS;
 // Open-Meteo posílá první den jako dnešek; druhá stránka obrazovky z něj
 // ukazuje nanejvýš týden následujících dnů.
 constexpr size_t WEATHER_FORECAST_MAX_DAYS = 7;

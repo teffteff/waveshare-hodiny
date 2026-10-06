@@ -4,6 +4,7 @@
 
 #include "ClockConfig.h"
 #include "PlaneRadarService.h"
+#include "WeatherHistory.h"
 #include "WeatherForecast.h"
 
 struct ClockValues {
@@ -135,9 +136,10 @@ bool clockDashboardSchoolVisible();
 // a známkami. Vrací false, když obrazovka Škola nesvítí nebo druhá stránka
 // nemá data.
 bool clockDashboardSwipeSchool();
-// Na obrazovce předpovědi přepne mezi grafem hodin a denní předpovědí.
-// Vrací false, když předpověď není vidět.
-bool clockDashboardSwipeForecast();
+// Na obrazovce předpovědi: tažení doleva (+1) ukáže dny, doprava (-1)
+// naměřených 24 hodin, zpět vždy ke grafu. Vrací false, když předpověď není
+// vidět nebo dál žádná stránka není.
+bool clockDashboardSwipeForecast(int8_t direction);
 void clockDashboardSetSchoolVisible(bool visible);
 // Vypnutá obrazovka nebo prázdná adresa se do rotace ani pod gesto nepustí;
 // stránka se zakládá až při prvním zapnutí.
@@ -155,6 +157,9 @@ void clockDashboardSetForecastVisible(bool visible);
 void clockDashboardSetForecastAvailable(bool available);
 // Předá staženou předpověď obrazovce.
 void clockDashboardSetForecast(const WeatherForecastData &forecast);
+// Naměřených posledních 24 hodin ze serveru: stránka minulosti a uplynulé
+// hodiny v grafu předpovědi. nullptr historii smaže; graf se vrátí k modelu.
+void clockDashboardSetWeatherHistory(const WeatherHistoryData *history);
 // Dokud předpověď nedorazila, drží obrazovku hláška. Text si obrazovka skládá
 // sama, aby se přepnutím jazyka přeložil i on.
 void clockDashboardSetForecastFailed(bool failed);

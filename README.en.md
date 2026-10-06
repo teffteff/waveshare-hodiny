@@ -83,8 +83,10 @@ changes the system text and verbal date shown on the display.
   for an orange or red one a single switch to the radar; your own server reads
   the institute's two-megabyte CAP file and passes on only the clock's
   warnings (Czechia only),
-- a forecast screen with hourly and daily Open-Meteo data, optionally with air
-  quality, PM2.5 and grass pollen — and nine hours instead of six without it,
+- an Open-Meteo forecast screen: a chart of the next 24 hours with
+  temperature, precipitation and wind, a swipe to the week ahead with air
+  quality and pollen and the other way to the measured last 24 hours from your
+  own server,
 - an aircraft radar fed by the free adsb.fi API: nearby traffic coloured by
   altitude, 10 to 100 km ranges, an altitude filter, emergency squawk alerts,
   a watched flight and an aircraft detail with the flight route from adsb.lol,
@@ -645,29 +647,39 @@ disabled, so a firmware upgrade never adds it on its own.
 
 The header carries the time and the outside temperature, just like the radar
 status line — the forecast fills the whole display and the clock face below is
-not visible. Under it come the hourly rows (hour, icon, temperature,
-precipitation, wind) and, below a divider, the daily rows with a weekday
-abbreviation and the high/low pair. Precipitation under a tenth of a millimetre
-is left blank so the column is not a forest of zeros.
+not visible. The screen has three pages, switched by swiping:
+
+- **A chart of the next 24 hours** (the default): temperature as a line colored
+  by the temperature scale, precipitation as bars from the bottom, night as a
+  darker background, icons and hours every three hours, wind speed in km/h
+  below them and a temperature axis in steps of 1, 2, 5 or 10 degrees on the
+  left. The chart starts three hours back; a dashed line marks the current time
+  and a dot on it shows the outside temperature from the status line.
+- **Swipe left** for the week ahead: daily rows with the weekday, icon,
+  high/low, precipitation and wind, and below them the European air quality
+  index, PM2.5 and grass pollen (colored by the European Environment Agency
+  bands; pollen only exists in the European CAMS domain).
+- **Swipe right** for the measured last 24 hours in the same chart: temperature
+  every ten minutes, precipitation, wind and a sun or cloud icon from the
+  sunlight sensor (none at night, when there is nothing to tell clouds by).
 
 <p align="center">
-  <img src="screenshots/forecast-air-quality.png" alt="Forecast screen with the air quality section" width="46%">
-  <img src="screenshots/forecast-nine-hours.png" alt="Forecast screen without air quality, showing nine hours" width="46%">
+  <img src="screenshots/forecast-history.png" alt="The measured last 24 hours" width="31%">
+  <img src="screenshots/forecast-chart.png" alt="Chart of the next hours with the measured past and the current-time line" width="31%">
+  <img src="screenshots/forecast-days.png" alt="The week ahead with air quality" width="31%">
 </p>
 
-At the bottom sits an optional section with the European air quality index, the
-PM2.5 concentration and grass pollen; the values are colored by the European
-Environment Agency bands. Pollen is only modelled by the European CAMS domain,
-so outside Europe the row shows a dash.
-
-**The hour count is not a setting, it is derived.** The circular display has a
-fixed number of rows and everything else that takes a row takes it from the
-hours. The air quality section occupies the bottom three rows: with it the
-screen fits **six hours**, without it **nine**. Every day removed (0 to 4, 3 by
-default) is likewise one more hour. The web hint next to the air quality switch
-states how many hours the current combination yields and how many the other one
-would; the numbers come from the firmware so they cannot drift from what the
-screen actually draws.
+**The measured past** comes from your own server (the *Measured history
+address* field; the server side is `~/stanice`, endpoint `/api/clock`, served to
+the clocks as `history.json`). The server reads the sensors it already records
+and sends the clock about 1 kB: temperature every ten minutes and wind,
+precipitation and an icon per hour. Left of the dashed line the forecast chart
+then draws the measured temperature instead of the model estimate, which can be
+two or three degrees off. The server takes the temperature from the same sensor
+the status line shows (the clock sends it that entity), so changing the sensor
+changes it everywhere; the `wind`, `rain` and `sun` parameters in the address
+pick the station for wind, precipitation and sunshine. Without the address the
+chart draws past hours from the model and the history page does not open.
 
 The forecast is downloaded every 10 to 180 minutes, 30 by default, even while
 the screen is closed. Opening the screen — by gesture or by the automatic

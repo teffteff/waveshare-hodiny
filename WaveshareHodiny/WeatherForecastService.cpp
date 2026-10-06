@@ -151,7 +151,8 @@ int downloadJson(const char *url, char *buffer, size_t capacity,
 // Open-Meteo vydává hodinová razítka jako skutečný čas UTC, takže se porovnají
 // přímo s time().
 int64_t firstHourToShow(time_t now) {
-  return static_cast<int64_t>(now) - static_cast<int64_t>(now % 3600);
+  return static_cast<int64_t>(now) - static_cast<int64_t>(now % 3600) -
+         static_cast<int64_t>(WEATHER_FORECAST_PAST_HOURS) * 3600;
 }
 
 // První den, který se ještě smí ukázat: zítřek. Dnešek popisují hodiny nad
@@ -183,11 +184,15 @@ void buildForecastUrl(float latitude, float longitude, String &url) {
       "precipitation_sum,wind_speed_10m_max&timeformat=unixtime&timezone=auto"
       "&forecast_days=");
   url += FORECAST_REQUESTED_DAYS;
-  // Hodinová data jen na graf: forecast_hours začíná aktuální hodinou, takže
-  // odpověď nenese týden hodin, které by se stejně zahodily. Dvě navíc kryjí
-  // hodinu, která mezi stažením a rozborem přeskočí.
+  // Hodinová data jen na graf: forecast_hours začíná aktuální hodinou a
+  // past_hours přidá několik uplynulých, takže odpověď nenese týden hodin,
+  // které by se stejně zahodily. Dvě navíc kryjí hodinu, která mezi stažením
+  // a rozborem přeskočí.
+  url += F("&past_hours=");
+  url += static_cast<int>(WEATHER_FORECAST_PAST_HOURS);
   url += F("&forecast_hours=");
-  url += static_cast<int>(WEATHER_FORECAST_MAX_HOURS + 2);
+  url += static_cast<int>(WEATHER_FORECAST_MAX_HOURS -
+                          WEATHER_FORECAST_PAST_HOURS + 2);
 }
 
 void buildAirQualityUrl(float latitude, float longitude, String &url) {

@@ -249,6 +249,8 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     // heslo stejně jako adresa srážek.
     CONFIG_FIELD(pushAlerts, PART_SCREENS),
     CONFIG_FIELD(radarAlerts, PART_SCREENS),
+    // Adresa nese heslo stejně jako adresa srážek.
+    CONFIG_FIELD(historyUrl, PART_SCREENS),
 };
 #undef CONFIG_FIELD
 
@@ -265,8 +267,8 @@ constexpr bool configFieldsInOrder() {
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
 // Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
-static_assert((offsetof(ClockConfig, radarAlerts) +
-               sizeof(ClockRadarAlertsConfig) +
+static_assert((offsetof(ClockConfig, historyUrl) +
+               CLOCK_HISTORY_URL_LENGTH +
                alignof(ClockConfig) - 1) /
                       alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),

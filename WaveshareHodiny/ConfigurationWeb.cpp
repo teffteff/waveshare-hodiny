@@ -1801,6 +1801,9 @@ void handleGetConfig() {
     result += F(",\"agendaCalendars\":");
     appendAgendaCalendarsJson(result, calendars);
   }
+  result += F(",\"historyUrl\":\"");
+  result += jsonEscape(config.historyUrl);
+  result += F("\"");
   result += F(",\"forecastEnabled\":");
   result += config.forecast.enabled ? F("true") : F("false");
   result += F(",\"forecastRefreshMinutes\":");
@@ -2719,6 +2722,28 @@ void handleSaveConfig() {
         static_cast<uint16_t>(forecastDisplaySeconds);
     config.forecast.automaticRotation =
         server.arg("forecastAutomaticRotation") == "1";
+    if (server.hasArg("historyUrl")) {
+      String historyUrl = server.arg("historyUrl");
+      historyUrl.trim();
+      if (historyUrl.length() >= CLOCK_HISTORY_URL_LENGTH) {
+        sendError(400, F("Adresa naměřené historie je příliš dlouhá."));
+        return;
+      }
+      if (!historyUrl.isEmpty() && !historyUrl.startsWith("http://") &&
+          !historyUrl.startsWith("https://")) {
+        sendError(400, F("Adresa naměřené historie musí začínat http:// nebo "
+                         "https://."));
+        return;
+      }
+      if (historyUrl.startsWith("http://") &&
+          clockConfigUrlHasCredentials(historyUrl.c_str())) {
+        sendError(400, F("Adresa naměřené historie s heslem musí začínat "
+                         "https://."));
+        return;
+      }
+      clockConfigCopy(config.historyUrl, sizeof(config.historyUrl),
+                      historyUrl);
+    }
   }
 
   if (server.hasArg("planesEnabled")) {
