@@ -8,7 +8,10 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 #include <lvgl.h>
+
+#include <vector>
 
 #include "ClockFonts.h"
 #include "DisplayDriver.h"
@@ -26,6 +29,9 @@ constexpr uint8_t ACCESS_POINT_PASSWORD_LENGTH = 8;
 constexpr uint32_t STORED_NETWORK_RETRY_MS = 60000;
 constexpr uint32_t STORED_NETWORK_ATTEMPT_MS = 15000;
 constexpr char PORTAL_IP[] = "192.168.4.1";
+// Seznam sítí se obnovuje jen tehdy, když k hodinám není připojený žádný
+// telefon - viz startNetworkScan.
+constexpr uint32_t NETWORK_RESCAN_MS = 60000;
 
 const char PORTAL_PAGE[] PROGMEM = R"HTML(<!doctype html>
 <html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -51,6 +57,17 @@ unsigned long restartAt = 0;
 bool restartScreenShown = false;
 unsigned long storedNetworkAttemptAt = 0;
 bool storedNetworkAttemptActive = false;
+
+struct PortalNetwork {
+  String ssid;
+  int32_t rssi;
+  bool secure;
+};
+// Poslední úplný výsledek hledání. Web ho jen čte, takže dotaz z telefonu
+// nikdy nespustí nové hledání.
+std::vector<PortalNetwork> portalNetworks;
+bool portalNetworksReady = false;
+unsigned long networkScanFinishedAt = 0;
 
 String jsonEscape(const String &value) {
   String escaped;
@@ -162,21 +179,68 @@ void redirectToPortal() {
   portalServer->send(302, PSTR("text/plain"), "");
 }
 
+// Hledání sítí přeladí rádio postupně na všechny kanály. Dokud je k
+// přístupovému bodu připojený telefon, rámce pro něj mezitím selhávají a
+// úloha Wi-Fi se v opakovaných pokusech zasekne tak, že hodiny restartuje
+// watchdog - přesně v chvíli, kdy si uživatel otevírá seznam sítí. Proto se
+// hledá jen bez připojeného telefonu a rozběhnuté hledání se při jeho
+// připojení zastaví.
+bool stationConnected() { return WiFi.softAPgetStationNum() > 0; }
+
+// Převezme dokončené hledání do seznamu: bez prázdných a zdvojených názvů,
+// nejsilnější signál první (scanNetworks je řadí podle RSSI).
+void takeScanResults(int16_t count) {
+  portalNetworks.clear();
+  for (int16_t index = 0; index < count; ++index) {
+    if (portalNetworks.size() >= MAX_VISIBLE_NETWORKS) break;
+    const String ssid = WiFi.SSID(index);
+    if (ssid.isEmpty()) continue;
+    bool duplicate = false;
+    for (const PortalNetwork &network : portalNetworks) {
+      if (network.ssid == ssid) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
+    portalNetworks.push_back({ssid, WiFi.RSSI(index),
+                              WiFi.encryptionType(index) != WIFI_AUTH_OPEN});
+  }
+  WiFi.scanDelete();
+  portalNetworksReady = true;
+  networkScanFinishedAt = millis();
+}
+
 void startNetworkScan() {
-  if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) return;
+  // Pokus o uloženou síť si rádio bere sám; hledání by ho rušilo.
+  if (stationConnected() || storedNetworkAttemptActive ||
+      WiFi.scanComplete() == WIFI_SCAN_RUNNING)
+    return;
   WiFi.scanDelete();
   WiFi.scanNetworks(true, true);
 }
 
-void handleNetworkList() {
-  const int16_t count = WiFi.scanComplete();
-  if (count == WIFI_SCAN_FAILED) {
-    startNetworkScan();
-    portalServer->send(200, PSTR("application/json; charset=utf-8"),
-                       F("{\"scanning\":true}"));
+void maintainNetworkScan() {
+  const int16_t state = WiFi.scanComplete();
+  if (state == WIFI_SCAN_RUNNING) {
+    if (stationConnected()) {
+      esp_wifi_scan_stop();
+      WiFi.scanDelete();
+    }
     return;
   }
-  if (count == WIFI_SCAN_RUNNING) {
+  if (state >= 0) {
+    takeScanResults(state);
+    return;
+  }
+  if (millis() - networkScanFinishedAt >= NETWORK_RESCAN_MS)
+    startNetworkScan();
+}
+
+void handleNetworkList() {
+  // Bez hotového seznamu a s připojeným telefonem se hledat nebude, tak ať
+  // stránka rovnou nabídne ruční zadání místo věčného čekání.
+  if (!portalNetworksReady && !stationConnected()) {
     portalServer->send(200, PSTR("application/json; charset=utf-8"),
                        F("{\"scanning\":true}"));
     return;
@@ -185,36 +249,23 @@ void handleNetworkList() {
   portalServer->setContentLength(CONTENT_LENGTH_UNKNOWN);
   portalServer->send(200, PSTR("application/json; charset=utf-8"), "");
   portalServer->sendContent(F("{\"scanning\":false,\"networks\":["));
-  uint8_t emitted = 0;
-  for (int16_t index = 0;
-       index < count && emitted < MAX_VISIBLE_NETWORKS; ++index) {
-    const String ssid = WiFi.SSID(index);
-    if (ssid.isEmpty()) continue;
-    bool duplicate = false;
-    for (int16_t previous = 0; previous < index; ++previous) {
-      if (WiFi.SSID(previous) == ssid) {
-        duplicate = true;
-        break;
-      }
-    }
-    if (duplicate) continue;
+  bool first = true;
+  for (const PortalNetwork &network : portalNetworks) {
     String item;
-    item.reserve(ssid.length() + 55);
-    if (emitted > 0) item += ',';
+    item.reserve(network.ssid.length() + 55);
+    if (!first) item += ',';
+    first = false;
     item += F("{\"ssid\":\"");
-    item += jsonEscape(ssid);
+    item += jsonEscape(network.ssid);
     item += F("\",\"rssi\":");
-    item += WiFi.RSSI(index);
+    item += network.rssi;
     item += F(",\"secure\":");
-    item += WiFi.encryptionType(index) == WIFI_AUTH_OPEN ? F("false")
-                                                         : F("true");
+    item += network.secure ? F("true") : F("false");
     item += '}';
     portalServer->sendContent(item);
-    ++emitted;
   }
   portalServer->sendContent(F("]}"));
   portalServer->sendContent("");
-  WiFi.scanDelete();
 }
 
 void handleWifiSave() {
@@ -257,7 +308,6 @@ void startPortalServer() {
   portalServer->onNotFound(redirectToPortal);
   portalServer->begin();
   dnsServer->start(53, "*", WiFi.softAPIP());
-  startNetworkScan();
 }
 
 // Each attempt briefly takes the radio off the access point's channel, so it
@@ -286,6 +336,11 @@ void maintainStoredNetworkAttempt() {
 
 void runPortal() {
   wifiProvisioningPauseStartupRetries();
+  // První seznam sítí ještě před spuštěním přístupového bodu: telefon se
+  // připojí až k hotovému seznamu a hledání mu nebude brát rádio.
+  WiFi.mode(WIFI_STA);
+  const int16_t found = WiFi.scanNetworks(false, true);
+  if (found >= 0) takeScanResults(found);
   WiFi.mode(WIFI_AP_STA);
   makeAccessPointCredentials();
   const IPAddress portalAddress(192, 168, 4, 1);
@@ -303,6 +358,7 @@ void runPortal() {
   while (true) {
     improvSerialServiceLoop();
     maintainStoredNetworkAttempt();
+    maintainNetworkScan();
     wifiProvisioningLoop();
     dnsServer->processNextRequest();
     portalServer->handleClient();
