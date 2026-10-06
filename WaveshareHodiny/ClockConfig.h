@@ -378,21 +378,20 @@ struct ClockRssConfig {
   char url[CLOCK_RSS_URL_LENGTH] = "";
 };
 
-// Obrazovka předpovědi. Hodiny se počítají z místa, které na kruhovém displeji
-// zbude, takže se nenastavují: kdo chce víc hodin, vypne kvalitu ovzduší nebo
-// ubere dny. Meze tady drží web i normalizace, aby se počítalo se stejnými
-// čísly jako v rozvržení obrazovky.
-constexpr uint8_t CLOCK_FORECAST_MAX_DAYS = 4;
+// Obrazovka předpovědi: graf příštích 24 hodin a na druhé stránce týden
+// dopředu s kvalitou ovzduší. Obsah se nenastavuje, jen zapnutí, rotace a
+// obnovování.
 
 struct ClockForecastConfig {
   bool enabled = false;
   // Zapojení do automatické rotace, stejně jako u radaru a zpráv. Ve výchozím
   // stavu vypnuté, aby ručně otevřená obrazovka nezmizela dřív, než se dočte.
   bool automaticRotation = false;
-  // Sekce s kvalitou ovzduší pod předpovědí. Vypnutá uvolní tři řádky, které
-  // rozvržení rozdá hodinám - z šesti se tak stane devět.
-  bool airQuality = true;
-  uint8_t dayCount = 3;
+  // Do verze 2.3.7 přepínač kvality ovzduší a počet dní. Od té doby ukazuje
+  // druhá stránka vždy týden s kvalitou ovzduší; bajty zůstávají, aby se
+  // nepohnulo uložené schéma.
+  bool reservedAirQuality = true;
+  uint8_t reservedDayCount = 3;
   uint8_t refreshMinutes = 30;
   uint16_t displaySeconds = 20;
 };

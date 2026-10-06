@@ -649,8 +649,7 @@ void testSchema34MigrationAddsDisabledPlanes() {
   source.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
   source.radarStatusLine = false;
   source.forecast.enabled = true;
-  source.forecast.dayCount = 4;
-  source.forecast.airQuality = false;
+  source.forecast.refreshMinutes = 45;
   clockConfigCopy(source.rss.url, sizeof(source.rss.url),
                   "https://www.irozhlas.cz/rss/irozhlas");
   source.rss.enabled = true;
@@ -669,8 +668,7 @@ void testSchema34MigrationAddsDisabledPlanes() {
   assert(migrated.rss.enabled);
   assert(strcmp(migrated.rss.url, "https://www.irozhlas.cz/rss/irozhlas") == 0);
   assert(migrated.forecast.enabled);
-  assert(migrated.forecast.dayCount == 4);
-  assert(!migrated.forecast.airQuality);
+  assert(migrated.forecast.refreshMinutes == 45);
   // Nová obrazovka zůstává vypnutá a mimo rotaci.
   assert(!migrated.planes.enabled);
   assert(!migrated.planes.automaticRotation);
