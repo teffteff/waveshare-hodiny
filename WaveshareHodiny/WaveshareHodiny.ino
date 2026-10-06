@@ -49,6 +49,7 @@
 #include "ScreenSchedule.h"
 #include "WeatherAnimationService.h"
 #include "WeatherForecastService.h"
+#include "WeatherHistoryService.h"
 #include "WeatherIconMapping.h"
 
 // Zásobník úlohy loop musí unést LVGL render, webový server i TLS. Kopie
@@ -384,6 +385,11 @@ struct ForecastTaskConfig {
   ClockForecastConfig forecast;
   float latitude = 0.0f;
   float longitude = 0.0f;
+  // Naměřená historie se stahuje ve stejné úloze. Entita venkovní teploty
+  // stavového řádku jde serveru s ní, aby graf ukazoval totéž čidlo; prázdná,
+  // když hodnoty nejdou z Home Assistantu.
+  char historyUrl[CLOCK_HISTORY_URL_LENGTH] = "";
+  char temperatureEntity[CLOCK_ENTITY_ID_LENGTH] = "";
 };
 
 void copyRuntimeForecastConfig(ForecastTaskConfig &destination) {
@@ -392,6 +398,15 @@ void copyRuntimeForecastConfig(ForecastTaskConfig &destination) {
   destination.forecast = runtimeConfig.forecast;
   destination.latitude = runtimeConfig.openMeteoLatitude;
   destination.longitude = runtimeConfig.openMeteoLongitude;
+  memcpy(destination.historyUrl, runtimeConfig.historyUrl,
+         sizeof(destination.historyUrl));
+  if (runtimeConfig.dataSource == CLOCK_DATA_SOURCE_HOME_ASSISTANT) {
+    memcpy(destination.temperatureEntity,
+           runtimeConfig.radarStatusTemperatureEntityId,
+           sizeof(destination.temperatureEntity));
+  } else {
+    destination.temperatureEntity[0] = '\0';
+  }
   if (runtimeConfigMutex != nullptr) xSemaphoreGive(runtimeConfigMutex);
 }
 
@@ -1481,7 +1496,8 @@ void maintainDisplayGestures() {
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
     if (clockDashboardSwipeValues() || clockDashboardSwipeSchool() ||
-        clockDashboardSwipeRss() || clockDashboardSwipeForecast()) {
+        clockDashboardSwipeRss() ||
+        clockDashboardSwipeForecast(rangeSwipeDirection)) {
       displayModeStartedAt = millis();
     } else if (clockDashboardSwipeSatellites()) {
       // Služba musí vědět, kterou stránku kreslit.
@@ -1901,6 +1917,21 @@ void maintainForecastDisplay() {
     clockDashboardSetForecastFailed(status.failed);
   }
   displayedForecastGeneration = status.generation;
+}
+
+// Předá obrazovce novou naměřenou historii, nebo její smazání.
+void maintainHistoryDisplay() {
+  static uint32_t generation = 0;
+  static WeatherHistoryData *history = nullptr;
+  if (history == nullptr) {
+    void *memory = heap_caps_malloc(sizeof(WeatherHistoryData),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr) return;
+    history = new (memory) WeatherHistoryData();
+  }
+  bool ready = false;
+  if (!weatherHistoryServiceSnapshot(generation, *history, ready)) return;
+  clockDashboardSetWeatherHistory(ready ? history : nullptr);
 }
 
 void maintainRssDisplay() {
@@ -2497,11 +2528,14 @@ void handleUsbCommands() {
         clockDashboardSetSchoolVisible(true);
         Serial.println(clockDashboardSwipeSchool() ? "SCHOOL_NEWS_SHOWN"
                                                    : "SCHOOL_NEWS_UNAVAILABLE");
-      } else if (usbCommand == "FORECASTSWIPE" && !screenshotTransferActive) {
-        // Druhá stránka předpovědi pro screenshot, stejně jako SCHOOLNEWS.
+      } else if (usbCommand.startsWith("FORECASTSWIPE") && !screenshotTransferActive) {
+        // Další stránka předpovědi pro screenshot, stejně jako SCHOOLNEWS:
+        // "FORECASTSWIPE L" jako tažení doleva (dny), jinak doprava (minulost).
         clockDashboardSetForecastVisible(true);
-        Serial.println(clockDashboardSwipeForecast() ? "FORECAST_PAGE_SWITCHED"
-                                                     : "FORECAST_PAGE_UNAVAILABLE");
+        const bool left = usbCommand.endsWith("L");
+        Serial.println(clockDashboardSwipeForecast(left ? 1 : -1)
+                           ? "FORECAST_PAGE_SWITCHED"
+                           : "FORECAST_PAGE_UNAVAILABLE");
       } else if (usbCommand.startsWith("TAP ") && !screenshotTransferActive) {
         // Klepnutí na souřadnice displeje, stejnou cestou jako prst: na
         // zprávách tak jde otevřít detail pro screenshot.
@@ -3768,8 +3802,34 @@ unsigned long maintainForecastFetch(const ForecastTaskConfig &config,
   return interval;
 }
 
+// Naměřená historie: server ji přepočítává z čidel průběžně, deset minut
+// stačí, aby graf "teď" nedohánělo. Vrací čekání jako maintainForecastFetch.
+constexpr unsigned long HISTORY_REFRESH_MS = 10UL * 60UL * 1000UL;
+constexpr unsigned long HISTORY_RETRY_MS = 2UL * 60UL * 1000UL;
+
+unsigned long maintainHistoryFetch(const ForecastTaskConfig &config,
+                                   unsigned long &nextRefreshAt) {
+  if (!config.forecast.enabled || config.historyUrl[0] == '\0') {
+    weatherHistoryServiceClear();
+    nextRefreshAt = 0;
+    return 0;
+  }
+  const unsigned long now = millis();
+  if (nextRefreshAt != 0 && static_cast<long>(now - nextRefreshAt) < 0)
+    return nextRefreshAt - now;
+  char url[CLOCK_HISTORY_URL_LENGTH + CLOCK_ENTITY_ID_LENGTH + 16];
+  const bool ok =
+      weatherHistoryBuildUrl(config.historyUrl, config.temperatureEntity, url,
+                             sizeof(url)) &&
+      weatherHistoryServiceFetch(url);
+  const unsigned long interval = ok ? HISTORY_REFRESH_MS : HISTORY_RETRY_MS;
+  nextRefreshAt = millis() + interval;
+  return interval;
+}
+
 void forecastTask(void *) {
   unsigned long nextRefreshAt = 0;
+  unsigned long nextHistoryAt = 0;
   bool cacheHolds = false;
   ForecastTaskConfig config;
   float lastLatitude = NAN;
@@ -3795,13 +3855,18 @@ void forecastTask(void *) {
       lastLongitude = config.longitude;
       nextRefreshAt = 0;
     }
-    const unsigned long waitMs =
+    unsigned long waitMs =
         maintainForecastFetch(config, nextRefreshAt, cacheHolds);
+    const unsigned long historyWaitMs =
+        maintainHistoryFetch(config, nextHistoryAt);
+    if (historyWaitMs != 0 && (waitMs == 0 || historyWaitMs < waitMs))
+      waitMs = historyWaitMs;
     // Vypnutá obrazovka nemá kdy pokračovat sama; probudí ji až uložení
     // nastavení.
     if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
                                              : pdMS_TO_TICKS(waitMs)) > 0) {
       nextRefreshAt = 0;
+      nextHistoryAt = 0;
     }
   }
 }
@@ -3991,6 +4056,7 @@ void setup() {
   agendaServiceBegin();
   schoolServiceBegin();
   weatherForecastServiceBegin();
+  weatherHistoryServiceBegin();
   LCD_Init();
   currentDisplayBrightness = runtimeConfig.dayBrightness;
   Set_Backlight(currentDisplayBrightness);
@@ -4166,6 +4232,7 @@ void loop() {
   maintainAgendaDisplay();
   maintainSchoolDisplay();
   maintainForecastDisplay();
+  maintainHistoryDisplay();
   maintainScreenSchedule();
   maintainRainAlert();
   maintainWeatherWarnings();

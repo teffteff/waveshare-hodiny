@@ -434,6 +434,7 @@ void terminateConfigTexts(ClockConfig &config) {
     terminateValueSlotTexts(clockConfigValueSlot(config, index));
   terminateText(config.rss.url);
   terminateText(config.radarStatusTemperatureEntityId);
+  terminateText(config.historyUrl);
   terminateText(config.planes.watchCallsign);
   terminateText(config.agenda.url);
   terminateText(config.planesFeedUrl);
@@ -1067,6 +1068,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV52 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_52_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV51 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1130,6 +1138,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV52) ||
          storedSize == sizeof(ConfigRecordV51) ||
          storedSize == sizeof(ConfigRecordV50) ||
          storedSize == sizeof(ConfigRecordV49) ||
@@ -1173,6 +1182,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 52 je přesnou předponou schématu 53; adresa naměřené historie
+  // zůstane po zkopírování bajtů prázdná, graf tedy kreslí model.
+  const ConfigRecordV52 &legacyV52 =
+      *reinterpret_cast<const ConfigRecordV52 *>(&record);
+  uint32_t embeddedSchemaV52 = 0;
+  if (readComplete && storedSize == sizeof(legacyV52))
+    memcpy(&embeddedSchemaV52, legacyV52.config, sizeof(embeddedSchemaV52));
+  if (readComplete && storedSize == sizeof(legacyV52) &&
+      legacyV52.magic == CONFIG_MAGIC && legacyV52.schemaVersion == 52 &&
+      embeddedSchemaV52 == 52 &&
+      legacyV52.checksum ==
+          bytesChecksum(legacyV52.config, sizeof(legacyV52.config))) {
+    memcpy(&config, legacyV52.config, sizeof(legacyV52.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 51 je přesnou předponou schématu 52; přepnutí na radar si po

@@ -31,10 +31,12 @@ struct WeatherForecastChartRange {
   float rainScaleMm = WEATHER_FORECAST_CHART_MIN_RAIN_MM;
 };
 
+// Maximum, minimum a nejdeštivější hodina se hledají od `firstIndex`: hodiny
+// před ním už uplynuly a popisky mají patřit k tomu, co teprve přijde.
 inline WeatherForecastChartRange weatherForecastChartRange(
-    const WeatherForecastHour *hours, size_t count) {
+    const WeatherForecastHour *hours, size_t count, size_t firstIndex = 0) {
   WeatherForecastChartRange range;
-  for (size_t index = 0; index < count; ++index) {
+  for (size_t index = firstIndex; index < count; ++index) {
     const float temperature = hours[index].temperatureC;
     if (!isnan(temperature)) {
       if (range.lowIndex < 0 ||
@@ -116,4 +118,43 @@ inline int weatherForecastChartGridStep(float low, float high,
     if (lines <= maximumLines) return step;
   }
   return 20;
+}
+
+// Kde na ose hodin leží `now`: 0 je první hodina grafu, 1 druhá a tak dál,
+// mezi nimi zlomek. Mimo graf se ořízne na jeho okraj. Vrací false, když
+// graf nemá ani jednu hodinu.
+inline bool weatherForecastChartNowPosition(const WeatherForecastHour *hours,
+                                            size_t count, int64_t now,
+                                            float &position) {
+  if (count == 0) return false;
+  position = static_cast<float>(now - hours[0].time) / 3600.0f;
+  if (position < 0.0f) position = 0.0f;
+  const float last = static_cast<float>(count - 1);
+  if (position > last) position = last;
+  return true;
+}
+
+// Teplota v místě `position` lineárně mezi sousedními hodinami, nebo NAN,
+// když jedna z nich teplotu nemá.
+inline float weatherForecastChartTemperatureAt(
+    const WeatherForecastHour *hours, size_t count, float position) {
+  if (count == 0) return NAN;
+  size_t index = static_cast<size_t>(position);
+  if (index + 1 >= count) return hours[count - 1].temperatureC;
+  const float fraction = position - static_cast<float>(index);
+  const float first = hours[index].temperatureC;
+  const float second = hours[index + 1].temperatureC;
+  if (isnan(first) || isnan(second)) return NAN;
+  return first + (second - first) * fraction;
+}
+
+// Rozšíří teplotní osu tak, aby se na ni vešla i `valueC` - třeba naměřená
+// teplota z uplynulých hodin - se stejnou rezervou jako předpověď.
+inline void weatherForecastChartExtendAxis(WeatherForecastChartRange &range,
+                                           float valueC) {
+  if (isnan(valueC)) return;
+  const float low = valueC - WEATHER_FORECAST_CHART_AXIS_PADDING_C;
+  const float high = valueC + WEATHER_FORECAST_CHART_AXIS_PADDING_C;
+  if (isnan(range.axisLowC) || low < range.axisLowC) range.axisLowC = low;
+  if (isnan(range.axisHighC) || high > range.axisHighC) range.axisHighC = high;
 }

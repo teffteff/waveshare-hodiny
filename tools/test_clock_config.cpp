@@ -1640,6 +1640,41 @@ void testWarningsAndNightSkyPersistenceAndMigration() {
   assert(clamped.nightSky.cooldownMinutes == CLOCK_AURORA_COOLDOWN_MAX_MINUTES);
 }
 
+void testHistoryUrlPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.historyUrl[0] == '\0');
+
+  // Schéma 52 je předponou 53: přepnutí na radar zůstane, adresa historie
+  // zůstane prázdná, ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.radarAlerts.keepWhileRainKm = 42;
+  memset(source.historyUrl, 'x', sizeof(source.historyUrl));
+  seed(legacyRecord(source, 52, CLOCK_CONFIG_SCHEMA_52_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.radarAlerts.keepWhileRainKm == 42);
+  assert(migrated.historyUrl[0] == '\0');
+
+  strcpy(migrated.historyUrl,
+         "https://hodiny:heslo@example.net/history.json?temp=pracovna");
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(strcmp(loaded.historyUrl,
+                "https://hodiny:heslo@example.net/history.json?temp=pracovna") == 0);
+
+  // Neukončený text se při načtení ukončí.
+  memset(loaded.historyUrl, 'y', sizeof(loaded.historyUrl));
+  assert(clockConfigSave(loaded));
+  ClockConfig terminated;
+  assert(clockConfigLoad(terminated));
+  assert(strlen(terminated.historyUrl) < sizeof(terminated.historyUrl));
+}
+
 void testRadarAlertsPersistenceAndMigration() {
   hostPreferencesReset();
   ClockConfig defaults;
@@ -1774,6 +1809,7 @@ void testPushAlertsPersistenceAndMigration() {
 int main() {
   testPushAlertsPersistenceAndMigration();
   testRadarAlertsPersistenceAndMigration();
+  testHistoryUrlPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();

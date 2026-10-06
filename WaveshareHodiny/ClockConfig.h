@@ -55,6 +55,7 @@ constexpr size_t CLOCK_RAIN_URL_LENGTH = 192;
 constexpr size_t CLOCK_WARNINGS_URL_LENGTH = 192;
 // Adresa serveru upozornění na telefon i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_PUSH_URL_LENGTH = 192;
+constexpr size_t CLOCK_HISTORY_URL_LENGTH = 192;
 // Skupiny družic jako bity. Pořadí bitů je pořadí skupin na serveru
 // (SatelliteFeed.h), takže se nesmí měnit.
 constexpr uint8_t CLOCK_SATELLITE_GROUP_STATIONS = 0x01;
@@ -182,7 +183,12 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // after any alert the clock returns to the screen it left, keeping the radar
 // while it rains within a wider circle. The schema 51 record stays an exact
 // prefix.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 52;
+// Schema 53 appends the address of the measured last 24 hours (stanice's
+// /api/clock behind history.json), which the forecast screen draws as its own
+// page and left of "now" in the forecast chart. Empty after migration: the
+// chart keeps the model's values and the page stays off. The schema 52 record
+// stays an exact prefix.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 53;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -944,6 +950,9 @@ struct ClockConfig {
   ClockPushAlertsConfig pushAlerts;
   // Pole schématu 52; upozornění na telefon končí na násobku čtyř.
   ClockRadarAlertsConfig radarAlerts;
+  // Pole schématu 53. Adresa naměřených 24 hodin pro obrazovku předpovědi;
+  // vybírá i čidla ("?temp=pracovna&wind=obyvak..."). Prázdná = jen model.
+  char historyUrl[CLOCK_HISTORY_URL_LENGTH] = "";
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1113,8 +1122,16 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_51_SIZE = offsetof(ClockConfig, radarAlerts
 
 static_assert(CLOCK_CONFIG_SCHEMA_51_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_51_SIZE + sizeof(ClockRadarAlertsConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, historyUrl),
               "Schema 52 must preserve the complete schema 51 prefix.");
+
+// Schéma 52 končilo přepnutím na radar: 8 bajtů, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_52_SIZE = offsetof(ClockConfig, historyUrl);
+
+static_assert(CLOCK_CONFIG_SCHEMA_52_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_52_SIZE + CLOCK_HISTORY_URL_LENGTH ==
+                      sizeof(ClockConfig),
+              "Schema 53 must preserve the complete schema 52 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.

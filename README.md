@@ -86,8 +86,9 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   barevný řádek s nejvážnější výstrahou nad rozsahem meteoradaru a u oranžové
   či červené jednou přepnutí na radar; dvoumegabajtový CAP soubor ČHMÚ čte
   vlastní server a hodinám posílá jen jejich výstrahy (jen v Česku),
-- obrazovku s hodinovou a denní předpovědí z Open-Meteo, volitelně s kvalitou
-  ovzduší, PM2.5 a pylem trav — a bez ní s devíti hodinami místo šesti,
+- obrazovku předpovědi z Open-Meteo: graf příštích 24 hodin s teplotou,
+  srážkami a větrem, tažením týden dopředu s kvalitou ovzduší a pylem a na
+  druhou stranu naměřených posledních 24 hodin z vlastního serveru,
 - radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
   výšky, dosahy 10 až 100 km, filtr výšky, upozornění na nouzový squawk,
   hlídaný let a detail letadla i s trasou letu z adsb.lol,
@@ -655,28 +656,38 @@ funguje v obou režimech. Zapíná se v záložce **Počasí**; ve výchozím st
 vypnutá, takže se po aktualizaci firmwaru sama neobjeví.
 
 Nahoře je čas a venkovní teplota, stejně jako ve stavovém řádku radaru — celý
-displej totiž zabírá předpověď a ciferník pod ní vidět není. Pod hlavičkou jsou
-hodinové řádky (hodina, ikona, teplota, srážky, vítr) a pod dělicí čárou denní
-řádky se zkratkou dne a maximem s minimem. Srážky pod desetinu milimetru se
-nevypisují, aby ve sloupci nebyl les nul.
+displej totiž zabírá předpověď a ciferník pod ní vidět není. Obrazovka má tři
+stránky, mezi kterými se přechází tažením prstu:
+
+- **Graf příštích 24 hodin** (výchozí): teplota čarou obarvenou podle teplotní
+  škály, srážky sloupci odspodu, noc tmavším pozadím, ikony a hodiny po třech
+  hodinách, pod nimi rychlost větru v km/h a vlevo teplotní osa po 1, 2, 5 nebo
+  10 stupních. Graf začíná tři hodiny zpátky; čárkovaná čára ukazuje současný
+  čas a tečka na ní venkovní teplotu ze stavového řádku.
+- **Tažením doleva** týden dopředu: denní řádky se zkratkou dne, ikonou,
+  maximem s minimem, srážkami a větrem, pod nimi evropský index kvality
+  ovzduší, PM2.5 a pyl trav (barvy podle pásem Evropské agentury pro životní
+  prostředí; pyl počítá jen evropská doména CAMS).
+- **Tažením doprava** naměřených posledních 24 hodin ve stejném grafu: teplota
+  po deseti minutách, srážky, vítr a ikona slunce nebo mraků podle osvitu (v
+  noci ikona chybí, mraky není podle čeho poznat).
 
 <p align="center">
-  <img src="screenshots/forecast-air-quality.png" alt="Obrazovka předpovědi se sekcí kvality ovzduší" width="46%">
-  <img src="screenshots/forecast-nine-hours.png" alt="Obrazovka předpovědi bez kvality ovzduší s devíti hodinami" width="46%">
+  <img src="screenshots/forecast-history.png" alt="Naměřených posledních 24 hodin" width="31%">
+  <img src="screenshots/forecast-chart.png" alt="Graf příštích hodin s naměřenou minulostí a čárou současného času" width="31%">
+  <img src="screenshots/forecast-days.png" alt="Týden dopředu s kvalitou ovzduší" width="31%">
 </p>
 
-Dole je volitelná sekce s evropským indexem kvality ovzduší, koncentrací PM2.5
-a pylem trav; hodnoty se barví podle pásem Evropské agentury pro životní
-prostředí. Pyl počítá jen evropská doména modelu CAMS, takže mimo Evropu
-zůstane řádek s pomlčkou.
-
-**Počet hodin se nenastavuje, dopočítává se.** Kruhový displej má pevný počet
-řádků a každý řádek, který si vezme něco jiného, hodinám chybí. Sekce kvality
-ovzduší zabírá spodní tři řádky: s ní se vejde **šest hodin**, bez ní jich je
-**devět**. Stejně tak každý ubraný den (0 až 4, výchozí 3) je jedna hodina
-navíc. Web u přepínače kvality ovzduší rovnou píše, kolik hodin z aktuální
-kombinace vyjde a kolik by jich bylo po přepnutí; čísla počítá firmware, aby se
-nemohla rozejít s tím, co obrazovka opravdu nakreslí.
+**Naměřená minulost** přichází z vlastního serveru (pole *Adresa naměřené
+historie*, server viz `~/stanice`, endpoint `/api/clock`, na hodinách
+`history.json`). Server čte čidla, která už sbírá, a hodinám pošle kolem 1 kB:
+teplotu po deseti minutách a vítr, srážky a ikonu po hodinách. Vlevo od čárkované
+čáry pak graf předpovědi kreslí naměřenou teplotu místo odhadu modelu — ten se
+od skutečnosti klidně liší o dva tři stupně. Teplotu bere server z téhož čidla,
+které ukazuje stavový řádek (hodiny mu pošlou jeho entitu), takže se změna
+čidla projeví všude; parametry `wind`, `rain` a `sun` v adrese vybírají stanici
+pro vítr, srážky a slunce. Bez adresy graf kreslí uplynulé hodiny podle modelu
+a stránka minulosti se tažením neotevře.
 
 Předpověď se stahuje v intervalu 10 až 180 minut, výchozí je 30 minut, a to
 i když je obrazovka zavřená. Otevření obrazovky gestem nebo automatickým

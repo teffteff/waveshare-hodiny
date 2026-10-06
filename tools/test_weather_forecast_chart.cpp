@@ -90,6 +90,47 @@ void testGridStep() {
   assert(weatherForecastChartGridStep(-40.0f, 40.0f, 4) == 20);
 }
 
+// V 10:48 leží teď 0,8 hodiny za první hodinou grafu (10:00) a teplota
+// mezi 11 a 15 stupni je 14,2.
+void testNowPosition() {
+  WeatherForecastHour hours[] = {hour(11, 0), hour(15, 0), hour(18, 0)};
+  for (int index = 0; index < 3; ++index)
+    hours[index].time = 36000 + index * 3600;
+  float position = -1.0f;
+  assert(weatherForecastChartNowPosition(hours, 3, 36000 + 48 * 60, position));
+  assert(std::fabs(position - 0.8f) < 0.001f);
+  assert(std::fabs(weatherForecastChartTemperatureAt(hours, 3, position) -
+                   14.2f) < 0.001f);
+  // Před první a za poslední hodinou se poloha ořízne.
+  assert(weatherForecastChartNowPosition(hours, 3, 30000, position));
+  assert(position == 0.0f);
+  assert(weatherForecastChartNowPosition(hours, 3, 99999, position));
+  assert(position == 2.0f);
+  assert(weatherForecastChartTemperatureAt(hours, 3, position) == 18.0f);
+  hours[1].temperatureC = NAN;
+  assert(std::isnan(weatherForecastChartTemperatureAt(hours, 3, 0.5f)));
+  assert(!weatherForecastChartNowPosition(hours, 0, 0, position));
+}
+
+// Uplynulé hodiny do popisků min a max nepatří; osa se na ně dá rozšířit
+// zvlášť.
+void testFirstIndexAndExtend() {
+  const WeatherForecastHour hours[] = {hour(4.6f, 0), hour(6.7f, 0),
+                                       hour(15, 0), hour(20, 0), hour(12, 0)};
+  WeatherForecastChartRange range = weatherForecastChartRange(hours, 5, 2);
+  assert(range.lowIndex == 4);
+  assert(range.highIndex == 3);
+  assert(range.axisLowC == 11.0f);
+  weatherForecastChartExtendAxis(range, 7.2f);
+  assert(std::fabs(range.axisLowC - 6.2f) < 0.001f);
+  assert(range.axisHighC == 21.0f);
+  weatherForecastChartExtendAxis(range, NAN);
+  assert(std::fabs(range.axisLowC - 6.2f) < 0.001f);
+  WeatherForecastChartRange empty;
+  weatherForecastChartExtendAxis(empty, 10.0f);
+  assert(empty.axisLowC == 9.0f && empty.axisHighC == 11.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -99,6 +140,8 @@ int main() {
   testRainScale();
   testLabelStep();
   testGridStep();
+  testNowPosition();
+  testFirstIndexAndExtend();
   printf("weather forecast chart: OK\n");
   return 0;
 }

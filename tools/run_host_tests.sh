@@ -62,6 +62,7 @@ run_test rain_viewer_index "$FIRMWARE_DIR/RainViewerIndex.cpp" || failures=$((fa
 run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))
 run_test weather_forecast_layout || failures=$((failures + 1))
 run_test weather_forecast_chart || failures=$((failures + 1))
+run_test weather_history "$FIRMWARE_DIR/WeatherHistory.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test chmi_frame_names "$FIRMWARE_DIR/ChmiFrameNames.cpp" || failures=$((failures + 1))
 run_test map_canvas "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
 run_test plane_feed_url "$FIRMWARE_DIR/PlaneFeedUrl.cpp" || failures=$((failures + 1))

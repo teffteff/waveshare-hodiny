@@ -194,6 +194,7 @@ def stub_config() -> dict:
         "satellitesShowTracks": True,
         "satellitesDisplaySeconds": 20,
         "satellitesAutomaticRotation": False,
+        "historyUrl": "https://hodiny:heslo@example.net/history.json?wind=obyvak&rain=obyvak&sun=rodice",
         "forecastEnabled": True,
         "forecastRefreshMinutes": 30,
         "forecastDisplaySeconds": 20,
