@@ -25,11 +25,10 @@ void weatherForecastServiceStatus(WeatherForecastStatus &status);
 // Zkopíruje předpověď pod zámkem. Vrací false, když zámek nebyl volný nebo
 // mezipaměť zatím nic nemá; volající to zkusí při dalším průchodu smyčkou.
 bool weatherForecastServiceSnapshot(WeatherForecastData &forecast);
-// Stáhne předpověď a případně i kvalitu ovzduší. Bere jen souřadnice a
-// přepínač kvality ovzduší, aby úloha nemusela nosit celou ClockConfig - ta má
-// přes pět kilobajtů a na zásobník vedle TLS relace se nevejde.
+// Stáhne předpověď i kvalitu ovzduší. Bere jen souřadnice, aby úloha
+// nemusela nosit celou ClockConfig - ta má přes pět kilobajtů a na zásobník
+// vedle TLS relace se nevejde.
 bool weatherForecastServiceFetch(float latitude, float longitude,
-                                 bool airQuality,
                                  NetworkDiagnosticKind diagnosticKind);
 // Zahodí mezipaměť. Volá se, když se obrazovka vypne nebo změní poloha, aby na
 // ní nezůstala předpověď pro jiné město.

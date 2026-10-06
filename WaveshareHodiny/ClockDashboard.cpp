@@ -15,11 +15,13 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <new>
 #include <esp_heap_caps.h>
 
 #include "ClockFonts.h"
 #include "ClockLvglMemory.h"
 #include "RssParser.h"
+#include "WeatherForecastChart.h"
 #include "WeatherForecastLayout.h"
 #include "DisplayDriver.h"
 #include "FirmwareUpdateService.h"
@@ -4200,10 +4202,11 @@ void createSchoolPage(lv_obj_t *screen) {
   applySchoolColors();
 }
 
-// Obrazovka předpovědi. Svislý rozpočet - kolik hodin po denní části a
-// kvalitě ovzduší zbude - je ve WeatherForecastLayout.h, aby ho šlo testovat
-// bez LVGL; tady zůstávají jen vodorovné sloupce a kreslení.
-constexpr int FORECAST_ROW_HEIGHT = WEATHER_FORECAST_ROW_HEIGHT;
+// Obrazovka předpovědi má dvě stránky: graf příštích 24 hodin a po tažení
+// prstem denní předpověď s kvalitou ovzduší. Svislé rozvržení je ve
+// WeatherForecastLayout.h a měřítka grafu ve WeatherForecastChart.h, aby šly
+// testovat bez LVGL; tady zůstává kreslení.
+constexpr int FORECAST_DAY_ROW_HEIGHT = WEATHER_FORECAST_DAY_ROW_HEIGHT;
 constexpr int FORECAST_AIR_LINE_COUNT = WEATHER_FORECAST_AIR_LINE_COUNT;
 constexpr int FORECAST_AIR_LINE_HEIGHT = WEATHER_FORECAST_AIR_LINE_HEIGHT;
 constexpr int FORECAST_AIR_TOP_Y = WEATHER_FORECAST_AIR_TOP_Y;
@@ -4220,10 +4223,40 @@ constexpr int FORECAST_PRECIPITATION_X = 28;
 constexpr int FORECAST_PRECIPITATION_WIDTH = 76;
 constexpr int FORECAST_WIND_X = 110;
 constexpr int FORECAST_WIND_WIDTH = 84;
-// Nejvíc řádků, které si obrazovka může vyžádat naráz. Objekty se zakládají
-// jen pro ty, které aktuální nastavení opravdu kreslí.
-constexpr size_t FORECAST_MAX_ROWS =
-    WEATHER_FORECAST_MAX_HOURS + WEATHER_FORECAST_MAX_DAYS;
+// Řádky jsou jen denní, na druhé stránce: vždy týden dopředu.
+constexpr size_t FORECAST_MAX_ROWS = WEATHER_FORECAST_MAX_DAYS;
+// Graf je široký, kolik dovolí kruh uprostřed výšky. V horním a dolním rohu
+// je kruh užší, takže tam ikona nebo popisek, který by vyjel z displeje,
+// vypadne (forecastChartInsideCircle).
+constexpr int FORECAST_CHART_WIDTH = 336;
+// Popisky a ikony musí zůstat kousek od okraje kruhu.
+constexpr int FORECAST_CHART_SAFE_RADIUS = 236;
+// Vlevo pruh pro popisky teplotní osy; sloupce hodin začínají až za ním.
+constexpr int FORECAST_CHART_AXIS_WIDTH = 30;
+constexpr int FORECAST_CHART_PLOT_WIDTH =
+    FORECAST_CHART_WIDTH - FORECAST_CHART_AXIS_WIDTH;
+// Nejvíc vodorovných čar teplotní osy, stejně jako na nástěnce.
+constexpr int FORECAST_CHART_GRID_LINES = 4;
+// Nahoře pás s ikonami, dole řádek hodin, řádek větru a jednotka větru;
+// mezi nimi teplota a srážky.
+constexpr int FORECAST_CHART_ICON_BAND = FORECAST_ICON_SIZE + 2;
+constexpr int FORECAST_CHART_TEXT_LINE = 18;
+constexpr int FORECAST_CHART_UNIT_LINE = 14;
+constexpr int FORECAST_CHART_BOTTOM_BAND =
+    2 * FORECAST_CHART_TEXT_LINE + FORECAST_CHART_UNIT_LINE + 2;
+// Místo nad a pod teplotní čarou pro popisky maxima a minima.
+constexpr int FORECAST_CHART_LABEL_ROOM = 18;
+// Srážkové sloupce sahají nanejvýš do dvou pětin výšky grafu.
+constexpr int FORECAST_CHART_RAIN_SHARE_PERCENT = 40;
+// Popisky hodin musí být od sebe aspoň takhle daleko; dvě číslice písma
+// clock_czech_16 mají kolem dvaceti pixelů a ikona 28.
+constexpr float FORECAST_CHART_LABEL_SPACING = 32.0f;
+// Ikon je tolik, kolik popisků hodin: při 24 hodinách po třech osm, s
+// rezervou na posun první hodiny.
+constexpr size_t FORECAST_CHART_MAX_ICONS =
+    static_cast<size_t>(FORECAST_CHART_PLOT_WIDTH /
+                        FORECAST_CHART_LABEL_SPACING) +
+    1;
 
 // Objekty obrazovky předpovědi se zakládají do PSRAM. Je jich přes padesát a
 // v interní RAM by ubraly kolem dvanácti kilobajtů, o které pak přijde TLS:
@@ -4257,12 +4290,16 @@ lv_obj_t *forecastHeaderLabel = nullptr;
 lv_obj_t *forecastMessageLabel = nullptr;
 lv_obj_t *forecastDivider = nullptr;
 lv_obj_t *forecastAirLabels[FORECAST_AIR_LINE_COUNT] = {};
+lv_obj_t *forecastChart = nullptr;
+lv_obj_t *forecastChartIcons[FORECAST_CHART_MAX_ICONS] = {};
+ForecastIconState forecastChartIconStates[FORECAST_CHART_MAX_ICONS];
 ForecastRow forecastRows[FORECAST_MAX_ROWS];
-uint8_t forecastCreatedRowCount = 0;
-uint8_t forecastHourRowCount = 0;
-uint8_t forecastDayRowCount = 0;
-bool forecastAirQualityEnabled = true;
-WeatherForecastData forecastDisplayed;
+// 0 = graf, 1 = dny a kvalita ovzduší. Jako u školy si obrazovka stránku
+// pamatuje i po odchodu na jinou obrazovku.
+uint8_t forecastPageIndex = 0;
+// Předpověď s 24 hodinami má přes kilobajt; drží se v PSRAM, aby neubírala
+// interní RAM, na které závisí TLS. Založí se s první staženou předpovědí.
+WeatherForecastData *forecastDisplayed = nullptr;
 bool forecastDisplayedAvailable = false;
 bool forecastFetchFailed = false;
 
@@ -4438,68 +4475,355 @@ void setForecastRowVisible(const ForecastRow &row, bool visible) {
   if (!visible) lv_obj_add_flag(row.icon, LV_OBJ_FLAG_HIDDEN);
 }
 
-int forecastRowY(size_t index) {
-  return weatherForecastRowY(static_cast<uint8_t>(index),
-                             forecastHourRowCount);
-}
-
+// Dělicí čára mezi posledním dnem a kvalitou ovzduší.
 int forecastDividerY() {
-  if (forecastHourRowCount == 0 || forecastDayRowCount == 0) return 0;
-  const int lastHour = forecastRowY(forecastHourRowCount - 1);
-  const int firstDay = forecastRowY(forecastHourRowCount);
-  return (lastHour + firstDay) / 2;
+  const int lastDay =
+      weatherForecastDayRowY(static_cast<uint8_t>(FORECAST_MAX_ROWS - 1)) +
+      FORECAST_DAY_ROW_HEIGHT / 2;
+  const int firstAir = FORECAST_AIR_TOP_Y - FORECAST_AIR_LINE_HEIGHT / 2;
+  return (lastDay + firstAir) / 2;
 }
 
 void layoutForecastPage() {
   if (forecastPage == nullptr) return;
-  const size_t needed = forecastHourRowCount + forecastDayRowCount;
-  for (size_t index = 0; index < forecastCreatedRowCount; ++index) {
-    if (index < needed) {
-      layoutForecastRow(forecastRows[index], forecastRowY(index));
-    } else {
-      setForecastRowVisible(forecastRows[index], false);
-    }
+  if (forecastChart != nullptr) {
+    lv_obj_set_size(forecastChart, FORECAST_CHART_WIDTH,
+                    WEATHER_FORECAST_CHART_BOTTOM_Y -
+                        WEATHER_FORECAST_CHART_TOP_Y);
+    alignCenter(forecastChart, 0,
+                (WEATHER_FORECAST_CHART_TOP_Y +
+                 WEATHER_FORECAST_CHART_BOTTOM_Y) /
+                    2);
   }
-  const bool showDivider = forecastHourRowCount > 0 && forecastDayRowCount > 0;
-  setObjectVisible(forecastDivider, showDivider);
-  if (showDivider) {
-    const int y = forecastDividerY();
-    lv_obj_set_width(forecastDivider,
-                     forecastChordWidth(y, FORECAST_DIVIDER_INSET));
-    alignCenter(forecastDivider, 0, y);
-  }
+  for (size_t index = 0; index < FORECAST_MAX_ROWS; ++index)
+    layoutForecastRow(forecastRows[index],
+                      weatherForecastDayRowY(static_cast<uint8_t>(index)));
+  const int dividerY = forecastDividerY();
+  lv_obj_set_width(forecastDivider,
+                   forecastChordWidth(dividerY, FORECAST_DIVIDER_INSET));
+  alignCenter(forecastDivider, 0, dividerY);
   for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line) {
     alignCenter(forecastAirLabels[line], 0,
                 FORECAST_AIR_TOP_Y + line * FORECAST_AIR_LINE_HEIGHT);
   }
 }
 
-// Založí tolik řádků, kolik jich současné nastavení kreslí. Volá se při
-// každé změně nastavení; ubrané řádky se ruší, aby nedržely paměť pro
-// obrazovku, na které už nejsou.
-void rebuildForecastRows(uint8_t hourCount, uint8_t dayCount) {
-  if (forecastPage == nullptr) return;
-  const ForecastPsramAllocations psramAllocations;
-  forecastHourRowCount = hourCount;
-  forecastDayRowCount = dayCount;
-  const size_t needed = hourCount + dayCount;
-  while (forecastCreatedRowCount < needed) {
-    createForecastRow(forecastRows[forecastCreatedRowCount]);
-    ++forecastCreatedRowCount;
+// --- Graf příštích hodin ---------------------------------------------------
+// Stejný obsah jako graf "Další hodiny" na nástěnce, zmenšený na kruh:
+// teplota čarou obarvenou podle teplotní škály, srážky sloupci odspodu, noc
+// tmavším pozadím a půlnoc čárkovanou čarou se dnem v týdnu. Popisky jen
+// u maxima, minima a nejdeštivější hodiny, jinak by se na 288 px slily.
+
+// Místní hodina dané hodiny předpovědi, nebo -1.
+int forecastLocalHour(const WeatherForecastHour &hour, struct tm *local) {
+  const time_t stamp = static_cast<time_t>(hour.time);
+  struct tm parts;
+  if (localtime_r(&stamp, &parts) == nullptr) return -1;
+  if (local != nullptr) *local = parts;
+  return parts.tm_hour;
+}
+
+float forecastChartColumnWidth(size_t count) {
+  return count == 0 ? 0.0f
+                    : static_cast<float>(FORECAST_CHART_PLOT_WIDTH) /
+                          static_cast<float>(count);
+}
+
+// Hodiny s popiskem a ikonou: ty, jejichž místní hodina je násobkem kroku,
+// takže popisky padnou na 0, 3, 6 ... a nepřeskakují s každou novou hodinou.
+bool forecastChartLabelled(const WeatherForecastHour &hour, int step) {
+  const int localHour = forecastLocalHour(hour, nullptr);
+  return localHour >= 0 && localHour % step == 0;
+}
+
+void forecastChartFill(lv_draw_ctx_t *context, int x1, int y1, int x2, int y2,
+                       lv_color_t color, lv_opa_t opacity = LV_OPA_COVER,
+                       lv_coord_t radius = 0) {
+  if (x2 < x1 || y2 < y1) return;
+  lv_draw_rect_dsc_t descriptor;
+  lv_draw_rect_dsc_init(&descriptor);
+  descriptor.bg_color = color;
+  descriptor.bg_opa = opacity;
+  descriptor.radius = radius;
+  const lv_area_t area = {static_cast<lv_coord_t>(x1),
+                          static_cast<lv_coord_t>(y1),
+                          static_cast<lv_coord_t>(x2),
+                          static_cast<lv_coord_t>(y2)};
+  lv_draw_rect(context, &descriptor, &area);
+}
+
+// Leží obdélník (souřadnice od středu displeje) celý uvnitř kruhu?
+bool forecastChartInsideCircle(int x1, int y1, int x2, int y2) {
+  const int x = std::max(std::abs(x1), std::abs(x2));
+  const int y = std::max(std::abs(y1), std::abs(y2));
+  return x * x + y * y <=
+         FORECAST_CHART_SAFE_RADIUS * FORECAST_CHART_SAFE_RADIUS;
+}
+
+// Text vystředěný na `centerX`, ale nikdy přes okraj grafu. `top` je horní
+// hrana textu. S `insideCircle` se text, který by vyjel z kruhu, nenakreslí.
+void forecastChartText(lv_draw_ctx_t *context, const lv_area_t &bounds,
+                       const char *text, const lv_font_t *font,
+                       lv_color_t color, int centerX, int top,
+                       bool insideCircle = false) {
+  lv_point_t size;
+  lv_txt_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  int x1 = centerX - size.x / 2;
+  if (x1 + size.x - 1 > bounds.x2) x1 = bounds.x2 - size.x + 1;
+  if (x1 < bounds.x1) x1 = bounds.x1;
+  if (insideCircle) {
+    // Střed displeje leží uprostřed šířky grafu a WEATHER_FORECAST_CHART_TOP_Y
+    // nad jeho horní hranou.
+    const int centerScreenX = bounds.x1 + FORECAST_CHART_WIDTH / 2;
+    const int centerScreenY = bounds.y1 - WEATHER_FORECAST_CHART_TOP_Y;
+    if (!forecastChartInsideCircle(
+            x1 - centerScreenX, top - centerScreenY,
+            x1 + size.x - 1 - centerScreenX,
+            top + size.y - 1 - centerScreenY))
+      return;
   }
-  while (forecastCreatedRowCount > needed) {
-    --forecastCreatedRowCount;
-    ForecastRow &row = forecastRows[forecastCreatedRowCount];
-    lv_obj_del(row.label);
-    lv_obj_del(row.icon);
-    lv_obj_del(row.temperature);
-    lv_obj_del(row.precipitation);
-    lv_obj_del(row.wind);
-    row = ForecastRow{};
+  lv_draw_label_dsc_t descriptor;
+  lv_draw_label_dsc_init(&descriptor);
+  descriptor.font = font;
+  descriptor.color = color;
+  const lv_area_t area = {static_cast<lv_coord_t>(x1),
+                          static_cast<lv_coord_t>(top),
+                          static_cast<lv_coord_t>(x1 + size.x - 1),
+                          static_cast<lv_coord_t>(top + size.y - 1)};
+  lv_draw_label(context, &descriptor, &area, text, nullptr);
+}
+
+void drawForecastChart(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_DRAW_MAIN) return;
+  if (!forecastDisplayedAvailable || forecastDisplayed == nullptr) return;
+  const WeatherForecastData &data = *forecastDisplayed;
+  const size_t count = data.hourCount;
+  if (count == 0) return;
+  lv_draw_ctx_t *context = lv_event_get_draw_ctx(event);
+  lv_area_t bounds;
+  lv_obj_get_coords(lv_event_get_target(event), &bounds);
+
+  const bool redNight = redNightVisualEnabled();
+  const lv_color_t muted = forecastMutedColor();
+  const lv_color_t rainColor = redNight ? COLOR_ERROR : COLOR_OUTSIDE;
+  const lv_color_t nightColor =
+      redNight ? lv_color_make(36, 0, 0) : lv_color_make(22, 27, 38);
+  const float columnWidth = forecastChartColumnWidth(count);
+  const int plotLeft = bounds.x1 + FORECAST_CHART_AXIS_WIDTH;
+  const auto columnLeft = [&](size_t index) {
+    return plotLeft +
+           static_cast<int>(lroundf(static_cast<float>(index) * columnWidth));
+  };
+  const auto columnCenter = [&](size_t index) {
+    return static_cast<float>(plotLeft) +
+           (static_cast<float>(index) + 0.5f) * columnWidth;
+  };
+  const int plotTop = bounds.y1 + FORECAST_CHART_ICON_BAND;
+  const int plotBottom = bounds.y2 - FORECAST_CHART_BOTTOM_BAND;
+  if (plotBottom - plotTop < 2 * FORECAST_CHART_LABEL_ROOM) return;
+
+  // Noc. Sousední noční hodiny splývají v jeden pruh.
+  for (size_t index = 0; index < count; ++index) {
+    if (data.hours[index].isDay) continue;
+    forecastChartFill(context, columnLeft(index), plotTop,
+                      columnLeft(index + 1) - 1, plotBottom, nightColor);
   }
-  makeChildrenTapThrough(forecastPage);
-  layoutForecastPage();
-  updateForecastPage();
+
+  const WeatherForecastChartRange range =
+      weatherForecastChartRange(data.hours, count);
+  const float lineTop = static_cast<float>(plotTop + FORECAST_CHART_LABEL_ROOM);
+  const float lineBottom =
+      static_cast<float>(plotBottom - FORECAST_CHART_LABEL_ROOM);
+
+  // Teplotní osa: vodorovné čáry po 1, 2, 5 nebo 10 stupních a popisky
+  // vlevo od nich, jako na nástěnce.
+  if (range.lowIndex >= 0) {
+    const int step = weatherForecastChartGridStep(
+        range.axisLowC, range.axisHighC, FORECAST_CHART_GRID_LINES);
+    const lv_color_t gridColor =
+        redNight ? lv_color_make(70, 0, 0) : lv_color_make(48, 56, 72);
+    const int lineHeight = lv_font_get_line_height(&clock_czech_14);
+    char label[12];
+    for (int value =
+             static_cast<int>(ceilf(range.axisLowC / step)) * step;
+         value <= range.axisHighC; value += step) {
+      const int y = static_cast<int>(lroundf(weatherForecastChartTemperatureY(
+          range, static_cast<float>(value), lineTop, lineBottom)));
+      forecastChartFill(context, plotLeft, y, bounds.x2, y, gridColor);
+      snprintf(label, sizeof(label), "%d°", value);
+      lv_point_t size;
+      lv_txt_get_size(&size, label, &clock_czech_14, 0, 0, LV_COORD_MAX,
+                      LV_TEXT_FLAG_NONE);
+      forecastChartText(context, bounds, label, &clock_czech_14, muted,
+                        plotLeft - 4 - size.x / 2, y - lineHeight / 2);
+    }
+  }
+
+  // Půlnoc: čárkovaná čára a zkratka nového dne vedle ní.
+  for (size_t index = 1; index < count; ++index) {
+    struct tm local;
+    if (forecastLocalHour(data.hours[index], &local) != 0) continue;
+    const int x = columnLeft(index);
+    lv_draw_line_dsc_t line;
+    lv_draw_line_dsc_init(&line);
+    line.color = muted;
+    line.width = 1;
+    line.dash_width = 3;
+    line.dash_gap = 3;
+    const lv_point_t from = {static_cast<lv_coord_t>(x),
+                             static_cast<lv_coord_t>(plotTop)};
+    const lv_point_t to = {static_cast<lv_coord_t>(x),
+                           static_cast<lv_coord_t>(plotBottom)};
+    lv_draw_line(context, &line, &from, &to);
+    const char *weekday = forecastWeekdayName(local.tm_wday);
+    lv_point_t size;
+    lv_txt_get_size(&size, weekday, &clock_czech_14, 0, 0, LV_COORD_MAX,
+                    LV_TEXT_FLAG_NONE);
+    forecastChartText(context, bounds, weekday, &clock_czech_14, muted,
+                      x + 4 + size.x / 2, plotTop + 2);
+  }
+
+  // Srážky odspodu. Sloupec je o pixel užší z každé strany, aby se sousední
+  // hodiny nesplétly v jeden blok.
+  const int rainHeight =
+      (plotBottom - plotTop) * FORECAST_CHART_RAIN_SHARE_PERCENT / 100;
+  for (size_t index = 0; index < count; ++index) {
+    const int height = weatherForecastChartRainHeight(
+        range, data.hours[index].precipitationMm, rainHeight);
+    if (height == 0) continue;
+    int left = columnLeft(index) + 1;
+    int right = columnLeft(index + 1) - 2;
+    if (right < left + 1) right = left + 1;
+    forecastChartFill(context, left, plotBottom - height + 1, right,
+                      plotBottom, rainColor, LV_OPA_COVER, 2);
+  }
+
+  // Teplota. Každý úsek má barvu podle průměru svých dvou hodin, stejně jako
+  // hodnoty v denních řádcích.
+  const auto temperatureY = [&](size_t index) {
+    return weatherForecastChartTemperatureY(
+        range, data.hours[index].temperatureC, lineTop, lineBottom);
+  };
+  for (size_t index = 0; index + 1 < count; ++index) {
+    const float first = data.hours[index].temperatureC;
+    const float second = data.hours[index + 1].temperatureC;
+    if (std::isnan(first) || std::isnan(second)) continue;
+    lv_draw_line_dsc_t line;
+    lv_draw_line_dsc_init(&line);
+    line.color = forecastTemperatureColor((first + second) / 2.0f);
+    line.width = 3;
+    line.round_start = true;
+    line.round_end = true;
+    const lv_point_t from = {
+        static_cast<lv_coord_t>(lroundf(columnCenter(index))),
+        static_cast<lv_coord_t>(lroundf(temperatureY(index)))};
+    const lv_point_t to = {
+        static_cast<lv_coord_t>(lroundf(columnCenter(index + 1))),
+        static_cast<lv_coord_t>(lroundf(temperatureY(index + 1)))};
+    lv_draw_line(context, &line, &from, &to);
+  }
+
+  // Maximum nad čarou, minimum pod ní. Při stejné teplotě po celý den
+  // stačí jeden popisek.
+  char text[16];
+  const int labelHeight = lv_font_get_line_height(&clock_czech_16);
+  if (range.highIndex >= 0) {
+    const WeatherForecastHour &high = data.hours[range.highIndex];
+    snprintf(text, sizeof(text), "%d°",
+             static_cast<int>(std::lround(high.temperatureC)));
+    forecastChartText(
+        context, bounds, text, &clock_czech_16,
+        forecastTemperatureColor(high.temperatureC),
+        static_cast<int>(lroundf(columnCenter(range.highIndex))),
+        static_cast<int>(lroundf(temperatureY(range.highIndex))) - 4 -
+            labelHeight);
+  }
+  if (range.lowIndex >= 0 &&
+      std::lround(data.hours[range.lowIndex].temperatureC) !=
+          std::lround(data.hours[range.highIndex].temperatureC)) {
+    const WeatherForecastHour &low = data.hours[range.lowIndex];
+    snprintf(text, sizeof(text), "%d°",
+             static_cast<int>(std::lround(low.temperatureC)));
+    forecastChartText(context, bounds, text, &clock_czech_16,
+                      forecastTemperatureColor(low.temperatureC),
+                      static_cast<int>(lroundf(columnCenter(range.lowIndex))),
+                      static_cast<int>(lroundf(temperatureY(range.lowIndex))) +
+                          4);
+  }
+
+  // Nejdeštivější hodina dostane úhrn nad svůj sloupec.
+  if (range.wettestIndex >= 0) {
+    const float rain = data.hours[range.wettestIndex].precipitationMm;
+    snprintf(text, sizeof(text), "%.1f mm", rain);
+    const int height =
+        weatherForecastChartRainHeight(range, rain, rainHeight);
+    forecastChartText(
+        context, bounds, text, &clock_czech_14, rainColor,
+        static_cast<int>(lroundf(columnCenter(range.wettestIndex))),
+        plotBottom - height - 2 - lv_font_get_line_height(&clock_czech_14));
+  }
+
+  // Pod grafem hodiny a pod nimi rychlost větru ve stejných sloupcích,
+  // obarvená podle Beaufortovy stupnice jako v denních řádcích.
+  const int step =
+      weatherForecastChartLabelStep(columnWidth, FORECAST_CHART_LABEL_SPACING);
+  const int hourTop = plotBottom + 2;
+  const int windTop = hourTop + FORECAST_CHART_TEXT_LINE;
+  for (size_t index = 0; index < count; ++index) {
+    const WeatherForecastHour &hour = data.hours[index];
+    if (!forecastChartLabelled(hour, step)) continue;
+    const int x = static_cast<int>(lroundf(columnCenter(index)));
+    snprintf(text, sizeof(text), "%02d", forecastLocalHour(hour, nullptr));
+    forecastChartText(context, bounds, text, &clock_czech_16, muted, x,
+                      hourTop, true);
+    if (std::isnan(hour.windKmh)) continue;
+    snprintf(text, sizeof(text), "%d",
+             static_cast<int>(std::lround(hour.windKmh)));
+    const lv_color_t windColor = forecastWindColor(hour.windKmh);
+    forecastChartText(context, bounds, text, &clock_czech_16,
+                      windColor.full == COLOR_MUTED.full ? COLOR_TEXT
+                                                         : windColor,
+                      x, windTop, true);
+  }
+  forecastChartText(context, bounds,
+                    englishLanguage() ? "wind km/h" : "vítr km/h",
+                    &clock_czech_14, muted,
+                    (plotLeft + bounds.x2) / 2,
+                    windTop + FORECAST_CHART_TEXT_LINE);
+}
+
+// Ikony nad hodinami s popiskem. Leží na stránce, ne v grafu, takže se jejich
+// poloha počítá od středu displeje jako u ostatních objektů.
+void updateForecastChartIcons(bool show) {
+  size_t used = 0;
+  if (show && forecastDisplayed != nullptr) {
+    const WeatherForecastData &data = *forecastDisplayed;
+    const float columnWidth = forecastChartColumnWidth(data.hourCount);
+    const int step = weatherForecastChartLabelStep(
+        columnWidth, FORECAST_CHART_LABEL_SPACING);
+    const int y = WEATHER_FORECAST_CHART_TOP_Y + FORECAST_ICON_SIZE / 2;
+    const bool redNight = redNightVisualEnabled();
+    for (size_t index = 0;
+         index < data.hourCount && used < FORECAST_CHART_MAX_ICONS; ++index) {
+      const WeatherForecastHour &hour = data.hours[index];
+      if (!forecastChartLabelled(hour, step)) continue;
+      const int x = static_cast<int>(lroundf(
+          -FORECAST_CHART_WIDTH / 2.0f + FORECAST_CHART_AXIS_WIDTH +
+          (static_cast<float>(index) + 0.5f) * columnWidth));
+      const int half = FORECAST_ICON_SIZE / 2;
+      if (!forecastChartInsideCircle(x - half, y - half, x + half, y + half))
+        continue;
+      forecastChartIconStates[used] = {hour.weatherCode, hour.isDay, redNight};
+      lv_obj_t *icon = forecastChartIcons[used];
+      alignCenter(icon, x, y);
+      lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_invalidate(icon);
+      ++used;
+    }
+  }
+  for (size_t index = used; index < FORECAST_CHART_MAX_ICONS; ++index)
+    if (forecastChartIcons[index] != nullptr)
+      lv_obj_add_flag(forecastChartIcons[index], LV_OBJ_FLAG_HIDDEN);
 }
 
 void createForecastPage(lv_obj_t *screen) {
@@ -4529,6 +4853,28 @@ void createForecastPage(lv_obj_t *screen) {
 
   forecastDivider = makeDivider(forecastPage, 300, 1, 0, 0);
   lv_obj_add_flag(forecastDivider, LV_OBJ_FLAG_HIDDEN);
+
+  // Graf se kreslí v draw události přímo do displeje, bez vlastního bufferu;
+  // ikony nad ním jsou samostatné objekty jako v denních řádcích.
+  forecastChart = lv_obj_create(forecastPage);
+  lv_obj_remove_style_all(forecastChart);
+  lv_obj_clear_flag(forecastChart,
+                    LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(forecastChart, drawForecastChart, LV_EVENT_DRAW_MAIN,
+                      nullptr);
+  lv_obj_add_flag(forecastChart, LV_OBJ_FLAG_HIDDEN);
+  for (size_t index = 0; index < FORECAST_CHART_MAX_ICONS; ++index) {
+    lv_obj_t *icon = lv_obj_create(forecastPage);
+    lv_obj_remove_style_all(icon);
+    lv_obj_set_size(icon, FORECAST_ICON_SIZE, FORECAST_ICON_SIZE);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(icon, drawForecastIcon, LV_EVENT_DRAW_MAIN,
+                        &forecastChartIconStates[index]);
+    lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+    forecastChartIcons[index] = icon;
+  }
+
+  for (ForecastRow &row : forecastRows) createForecastRow(row);
 
   for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line) {
     lv_obj_t *label = makeLabel(forecastPage, &clock_czech_20, COLOR_TEXT);
@@ -5068,13 +5414,13 @@ void forecastSetIcon(ForecastRow &row, int wmoCode, bool isDay) {
   lv_obj_invalidate(row.icon);
 }
 
-void updateForecastAirQuality() {
-  const bool show = forecastAirQualityEnabled && forecastDisplayedAvailable &&
-                    forecastDisplayed.airAvailable;
+void updateForecastAirQuality(bool daysPage) {
+  const bool show = daysPage && forecastDisplayedAvailable &&
+                    forecastDisplayed->airAvailable;
   for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line)
     setObjectVisible(forecastAirLabels[line], show);
   if (!show) return;
-  const WeatherForecastAirQuality &air = forecastDisplayed.air;
+  const WeatherForecastAirQuality &air = forecastDisplayed->air;
   const bool english = englishLanguage();
   char muted[10];
   forecastAppendColorTag(muted, sizeof(muted), forecastMutedColor());
@@ -5117,11 +5463,13 @@ void updateForecastPage() {
   // Dokud předpověď nedorazila, drží obrazovku jediná hláška - poloprázdné
   // řádky by tvrdily, že data jsou a jen chybí čísla.
   const bool showRows = forecastDisplayedAvailable &&
-                        forecastDisplayed.hourCount > 0;
+                        forecastDisplayed->hourCount > 0;
+  const bool chartPage = forecastPageIndex == 0;
   setObjectVisible(forecastMessageLabel, !showRows);
+  setObjectVisible(forecastChart, showRows && chartPage);
+  updateForecastChartIcons(showRows && chartPage);
   if (!showRows) {
-    for (size_t index = 0; index < forecastCreatedRowCount; ++index)
-      setForecastRowVisible(forecastRows[index], false);
+    for (ForecastRow &row : forecastRows) setForecastRowVisible(row, false);
     setObjectVisible(forecastDivider, false);
     for (int line = 0; line < FORECAST_AIR_LINE_COUNT; ++line)
       setObjectVisible(forecastAirLabels[line], false);
@@ -5139,44 +5487,16 @@ void updateForecastPage() {
     alignCenter(forecastMessageLabel, 0, 0);
     return;
   }
+  if (chartPage) lv_obj_invalidate(forecastChart);
 
+  const WeatherForecastData &data = *forecastDisplayed;
   char value[16];
-  for (size_t index = 0; index < forecastHourRowCount; ++index) {
+  for (size_t index = 0; index < FORECAST_MAX_ROWS; ++index) {
     ForecastRow &row = forecastRows[index];
-    const bool present = index < forecastDisplayed.hourCount;
+    const bool present = !chartPage && index < data.dayCount;
     setForecastRowVisible(row, present);
     if (!present) continue;
-    const WeatherForecastHour &hour = forecastDisplayed.hours[index];
-    const time_t stamp = static_cast<time_t>(hour.time);
-    struct tm local;
-    if (localtime_r(&stamp, &local) != nullptr) {
-      snprintf(value, sizeof(value), "%02d", local.tm_hour);
-    } else {
-      snprintf(value, sizeof(value), "--");
-    }
-    setTextColor(row.label, forecastMutedColor());
-    lv_label_set_text(row.label, value);
-    forecastSetIcon(row, hour.weatherCode, hour.isDay);
-    if (std::isnan(hour.temperatureC)) {
-      lv_label_set_text(row.temperature, "");
-    } else {
-      snprintf(value, sizeof(value), "%d",
-               static_cast<int>(std::lround(hour.temperatureC)));
-      forecastSetValue(row.temperature, value, "°C",
-                       forecastTemperatureColor(hour.temperatureC));
-    }
-    forecastSetPrecipitation(row.precipitation, hour.precipitationMm);
-    forecastSetWind(row.wind, hour.windKmh);
-  }
-
-  for (size_t offset = 0; offset < forecastDayRowCount; ++offset) {
-    const size_t index = forecastHourRowCount + offset;
-    if (index >= forecastCreatedRowCount) break;
-    ForecastRow &row = forecastRows[index];
-    const bool present = offset < forecastDisplayed.dayCount;
-    setForecastRowVisible(row, present);
-    if (!present) continue;
-    const WeatherForecastDay &day = forecastDisplayed.days[offset];
+    const WeatherForecastDay &day = data.days[index];
     const time_t stamp = static_cast<time_t>(day.time);
     struct tm local;
     setTextColor(row.label, forecastMutedColor());
@@ -5205,9 +5525,8 @@ void updateForecastPage() {
   }
 
   setObjectVisible(forecastDivider,
-                   forecastHourRowCount > 0 && forecastDayRowCount > 0 &&
-                       forecastDisplayed.dayCount > 0);
-  updateForecastAirQuality();
+                   !chartPage && data.dayCount > 0 && data.airAvailable);
+  updateForecastAirQuality(!chartPage);
 }
 
 // Jedna tečka ukazatele. lv_obj_create přináší vlastní rámeček i odsazení,
@@ -6557,19 +6876,6 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetSatellitesAvailable(clockConfigSatellitesAvailable(config));
   // Vypínač úkolů mění rozvržení bez nového stažení.
   layoutSchoolPage();
-  // Počet řádků se odvíjí od kvality ovzduší a počtu dnů, takže se po každé
-  // změně nastavení musí přepočítat - jinak by obrazovka kreslila hodiny do
-  // místa, které si mezitím vzala spodní sekce.
-  if (forecastPage != nullptr) {
-    const uint8_t hours = weatherForecastHourCapacity(
-        config.forecast.airQuality, config.forecast.dayCount);
-    if (forecastAirQualityEnabled != config.forecast.airQuality ||
-        forecastHourRowCount != hours ||
-        forecastDayRowCount != config.forecast.dayCount) {
-      forecastAirQualityEnabled = config.forecast.airQuality;
-      rebuildForecastRows(hours, config.forecast.dayCount);
-    }
-  }
   if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
     activeScreen = DASHBOARD_SCREEN_CLOCK;
     lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
@@ -8235,20 +8541,11 @@ void clockDashboardSetForecastVisible(bool visible) {
                           : DASHBOARD_SCREEN_CLOCK);
 }
 
-uint8_t clockDashboardForecastHourCapacity(
-    const ClockForecastConfig &forecast) {
-  return weatherForecastHourCapacity(forecast.airQuality,
-                                     forecast.dayCount);
-}
-
 void clockDashboardSetForecastAvailable(bool available) {
   if (available && forecastPage == nullptr && dashboardScreen != nullptr) {
     createForecastPage(dashboardScreen);
-    const ClockForecastConfig &forecast = dashboardRuntimeConfig.forecast;
-    forecastAirQualityEnabled = forecast.airQuality;
-    rebuildForecastRows(
-        weatherForecastHourCapacity(forecast.airQuality, forecast.dayCount),
-        forecast.dayCount);
+    layoutForecastPage();
+    updateForecastPage();
   }
   if (forecastFeatureAvailable == available) return;
   forecastFeatureAvailable = available;
@@ -8276,7 +8573,13 @@ void clockDashboardSetForecastAvailable(bool available) {
 }
 
 void clockDashboardSetForecast(const WeatherForecastData &forecast) {
-  forecastDisplayed = forecast;
+  if (forecastDisplayed == nullptr) {
+    void *memory = heap_caps_malloc(sizeof(WeatherForecastData),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr) return;
+    forecastDisplayed = new (memory) WeatherForecastData();
+  }
+  *forecastDisplayed = forecast;
   forecastDisplayedAvailable = true;
   forecastFetchFailed = false;
   updateForecastPage();
@@ -8497,6 +8800,15 @@ void clockDashboardSetAgendaCalendars(const char *const *names, size_t count,
             AGENDA_CALENDAR_NAME_LENGTH);
   }
   updateAgendaLegendLabel();
+}
+
+bool clockDashboardSwipeForecast() {
+  if (activeScreen != DASHBOARD_SCREEN_FORECAST || forecastPage == nullptr ||
+      settingsVisible || firmwareUpdateActive)
+    return false;
+  forecastPageIndex = forecastPageIndex == 0 ? 1 : 0;
+  updateForecastPage();
+  return true;
 }
 
 bool clockDashboardSwipeSchool() {

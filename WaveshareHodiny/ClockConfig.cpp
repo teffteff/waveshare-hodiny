@@ -643,9 +643,6 @@ void normalizeConfig(ClockConfig &config) {
   config.radarAlerts.keepWhileRainKm =
       constrain(config.radarAlerts.keepWhileRainKm, static_cast<uint8_t>(0),
                 CLOCK_RADAR_KEEP_RAIN_MAX_KM);
-  config.forecast.dayCount =
-      constrain(config.forecast.dayCount, static_cast<uint8_t>(0),
-                CLOCK_FORECAST_MAX_DAYS);
   config.forecast.refreshMinutes =
       constrain(config.forecast.refreshMinutes, 10, 180);
   config.forecast.displaySeconds =

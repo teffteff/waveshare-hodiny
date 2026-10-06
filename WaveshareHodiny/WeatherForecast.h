@@ -14,12 +14,12 @@
 // "time". Klíče se v obou objektech opakují, takže se každý hledá až uvnitř
 // své sekce.
 
-// Kolik hodin se vejde na obrazovku i v nejvyšší variantě - devět řádků při
-// skryté kvalitě ovzduší a bez denní části zbývá ještě rezerva.
-constexpr size_t WEATHER_FORECAST_MAX_HOURS = 12;
-// Open-Meteo posílá první den jako dnešek; obrazovka z něj ukazuje nanejvýš
-// čtyři následující dny.
-constexpr size_t WEATHER_FORECAST_MAX_DAYS = 4;
+// Graf na obrazovce předpovědi pokrývá den dopředu, stejně jako graf na
+// nástěnce.
+constexpr size_t WEATHER_FORECAST_MAX_HOURS = 24;
+// Open-Meteo posílá první den jako dnešek; druhá stránka obrazovky z něj
+// ukazuje nanejvýš týden následujících dnů.
+constexpr size_t WEATHER_FORECAST_MAX_DAYS = 7;
 
 struct WeatherForecastHour {
   // Sekundy od epochy, ale posunuté do místního pásma - Open-Meteo je tak

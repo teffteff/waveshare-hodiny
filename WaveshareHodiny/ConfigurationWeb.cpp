@@ -1803,10 +1803,6 @@ void handleGetConfig() {
   }
   result += F(",\"forecastEnabled\":");
   result += config.forecast.enabled ? F("true") : F("false");
-  result += F(",\"forecastAirQuality\":");
-  result += config.forecast.airQuality ? F("true") : F("false");
-  result += F(",\"forecastDayCount\":");
-  result += config.forecast.dayCount;
   result += F(",\"forecastRefreshMinutes\":");
   result += config.forecast.refreshMinutes;
   result += F(",\"forecastDisplaySeconds\":");
@@ -1886,20 +1882,6 @@ void handleGetConfig() {
                                                  : "settings";
     result += '"';
   }
-  // Kolik hodin se na obrazovku vejde pro každou kombinaci kvality ovzduší a
-  // počtu dní. Počítá to rozvržení obrazovky, aby si web nemusel držet vlastní
-  // kopii stejného vzorce; index je (kvalita ovzduší ? 5 : 0) + počet dní.
-  result += F(",\"forecastHourCounts\":[");
-  for (uint8_t air = 0; air <= 1; ++air) {
-    for (uint8_t days = 0; days <= CLOCK_FORECAST_MAX_DAYS; ++days) {
-      ClockForecastConfig probe;
-      probe.airQuality = air != 0;
-      probe.dayCount = days;
-      if (air != 0 || days != 0) result += ',';
-      result += clockDashboardForecastHourCapacity(probe);
-    }
-  }
-  result += ']';
   result += F(",\"clockStyle\":\"");
   result += clockStyleSlug(savedAppearance.style);
   result += F("\",\"activeClockStyle\":\"");
@@ -2717,11 +2699,6 @@ void handleSaveConfig() {
   }
 
   if (server.hasArg("forecastEnabled")) {
-    const int forecastDayCount = server.arg("forecastDayCount").toInt();
-    if (forecastDayCount < 0 || forecastDayCount > CLOCK_FORECAST_MAX_DAYS) {
-      sendError(400, F("Počet dní předpovědi musí být 0 až 4."));
-      return;
-    }
     const int forecastRefreshMinutes =
         server.arg("forecastRefreshMinutes").toInt();
     if (forecastRefreshMinutes < 10 || forecastRefreshMinutes > 180) {
@@ -2736,8 +2713,6 @@ void handleSaveConfig() {
       return;
     }
     config.forecast.enabled = server.arg("forecastEnabled") == "1";
-    config.forecast.airQuality = server.arg("forecastAirQuality") == "1";
-    config.forecast.dayCount = static_cast<uint8_t>(forecastDayCount);
     config.forecast.refreshMinutes =
         static_cast<uint8_t>(forecastRefreshMinutes);
     config.forecast.displaySeconds =

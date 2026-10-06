@@ -1481,7 +1481,7 @@ void maintainDisplayGestures() {
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
     if (clockDashboardSwipeValues() || clockDashboardSwipeSchool() ||
-        clockDashboardSwipeRss()) {
+        clockDashboardSwipeRss() || clockDashboardSwipeForecast()) {
       displayModeStartedAt = millis();
     } else if (clockDashboardSwipeSatellites()) {
       // Služba musí vědět, kterou stránku kreslit.
@@ -1886,9 +1886,17 @@ void maintainForecastDisplay() {
   weatherForecastServiceStatus(status);
   if (status.generation == displayedForecastGeneration) return;
   if (status.ready) {
-    static WeatherForecastData forecast;
-    if (!weatherForecastServiceSnapshot(forecast)) return;
-    clockDashboardSetForecast(forecast);
+    // Kopie má s 24 hodinami přes kilobajt, proto leží v PSRAM a ne v
+    // interní RAM, kterou potřebuje TLS.
+    static WeatherForecastData *forecast = nullptr;
+    if (forecast == nullptr) {
+      void *memory = heap_caps_malloc(sizeof(WeatherForecastData),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (memory == nullptr) return;
+      forecast = new (memory) WeatherForecastData();
+    }
+    if (!weatherForecastServiceSnapshot(*forecast)) return;
+    clockDashboardSetForecast(*forecast);
   } else {
     clockDashboardSetForecastFailed(status.failed);
   }
@@ -2465,16 +2473,6 @@ void handleUsbCommands() {
         config.forecast.enabled = true;
         Serial.println(saveRuntimeConfig(config, true) ? "FORECAST_ON"
                                                        : "FORECAST_ON_FAILED");
-      } else if (usbCommand.startsWith("FORECASTAIR") &&
-                 !screenshotTransferActive) {
-        // Přepnutí kvality ovzduší bez webu, aby šly obě varianty rozvržení
-        // porovnat na jednom snímku vedle druhého.
-        ClockConfig &config = loopConfigSnapshot();
-        config.forecast.airQuality = usbCommand.endsWith("ON");
-        Serial.println(saveRuntimeConfig(config, true)
-                           ? (config.forecast.airQuality ? "FORECAST_AIR_ON"
-                                                         : "FORECAST_AIR_OFF")
-                           : "FORECAST_AIR_FAILED");
       } else if (usbCommand == "FORECASTFETCH" && !screenshotTransferActive) {
         // Notifikace ve forecastTask nuluje deadline, takže tohle opravdu
         // vynutí stažení i uprostřed nastaveného intervalu.
@@ -2499,6 +2497,11 @@ void handleUsbCommands() {
         clockDashboardSetSchoolVisible(true);
         Serial.println(clockDashboardSwipeSchool() ? "SCHOOL_NEWS_SHOWN"
                                                    : "SCHOOL_NEWS_UNAVAILABLE");
+      } else if (usbCommand == "FORECASTSWIPE" && !screenshotTransferActive) {
+        // Druhá stránka předpovědi pro screenshot, stejně jako SCHOOLNEWS.
+        clockDashboardSetForecastVisible(true);
+        Serial.println(clockDashboardSwipeForecast() ? "FORECAST_PAGE_SWITCHED"
+                                                     : "FORECAST_PAGE_UNAVAILABLE");
       } else if (usbCommand.startsWith("TAP ") && !screenshotTransferActive) {
         // Klepnutí na souřadnice displeje, stejnou cestou jako prst: na
         // zprávách tak jde otevřít detail pro screenshot.
@@ -3754,7 +3757,7 @@ unsigned long maintainForecastFetch(const ForecastTaskConfig &config,
     return nextRefreshAt - now;
   }
   const bool ok = weatherForecastServiceFetch(
-      config.latitude, config.longitude, config.forecast.airQuality,
+      config.latitude, config.longitude,
       NetworkDiagnosticKind::ForecastRuntime);
   if (ok) cacheHolds = true;
   const unsigned long interval =

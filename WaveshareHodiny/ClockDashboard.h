@@ -135,6 +135,9 @@ bool clockDashboardSchoolVisible();
 // a známkami. Vrací false, když obrazovka Škola nesvítí nebo druhá stránka
 // nemá data.
 bool clockDashboardSwipeSchool();
+// Na obrazovce předpovědi přepne mezi grafem hodin a denní předpovědí.
+// Vrací false, když předpověď není vidět.
+bool clockDashboardSwipeForecast();
 void clockDashboardSetSchoolVisible(bool visible);
 // Vypnutá obrazovka nebo prázdná adresa se do rotace ani pod gesto nepustí;
 // stránka se zakládá až při prvním zapnutí.
@@ -150,10 +153,6 @@ bool clockDashboardForecastVisible();
 void clockDashboardSetForecastVisible(bool visible);
 // Vypnutá obrazovka se do rotace ani pod gesto nepustí.
 void clockDashboardSetForecastAvailable(bool available);
-// Kolik hodin se na obrazovku vejde vedle denní části a případné kvality
-// ovzduší. Datová úloha podle toho pozná, kdy má smysl stahovat znovu, a web
-// to ukazuje jako nápovědu u přepínače kvality ovzduší.
-uint8_t clockDashboardForecastHourCapacity(const ClockForecastConfig &forecast);
 // Předá staženou předpověď obrazovce.
 void clockDashboardSetForecast(const WeatherForecastData &forecast);
 // Dokud předpověď nedorazila, drží obrazovku hláška. Text si obrazovka skládá

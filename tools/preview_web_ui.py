@@ -195,13 +195,10 @@ def stub_config() -> dict:
         "satellitesDisplaySeconds": 20,
         "satellitesAutomaticRotation": False,
         "forecastEnabled": True,
-        "forecastAirQuality": True,
-        "forecastDayCount": 3,
         "forecastRefreshMinutes": 30,
         "forecastDisplaySeconds": 20,
         "forecastAutomaticRotation": False,
         # Stejné pořadí jako ve firmwaru: (kvalita ovzduší ? 5 : 0) + dny.
-        "forecastHourCounts": [12, 11, 10, 9, 8, 10, 8, 7, 6, 5],
         "screenOrder": ["clock", "radar", "rss", "forecast", "planes"],
         "startupScreen": "clock",
         # Družice od soumraku do svítání, letadla přes den, zbytek vypnutý.

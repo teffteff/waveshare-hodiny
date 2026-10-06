@@ -20,12 +20,12 @@ constexpr char AIR_QUALITY_HOST[] =
 constexpr uint32_t FORECAST_CONNECT_TIMEOUT_MS = 6000;
 constexpr uint32_t FORECAST_RESPONSE_TIMEOUT_MS = 15000;
 constexpr uint32_t FORECAST_NETWORK_GUARD_MS = 15000;
-// Pět dní po hodinách má kolem 3,5 kB; strop je s rezervou na delší názvy
+// Osm dní a 26 hodin má kolem 1,7 kB; strop je s rezervou na delší názvy
 // časových pásem i na to, že by Open-Meteo přidal desetinné místo.
 constexpr size_t FORECAST_MAX_RESPONSE_BYTES = 12 * 1024;
 
-// Kolik dní si říct. Obrazovka ukazuje nanejvýš čtyři následující, dnešek
-// popisují hodiny nad nimi - proto o jeden víc.
+// Kolik dní si říct. Obrazovka ukazuje nanejvýš týden následujících, dnešek
+// popisuje graf hodin - proto o jeden víc.
 constexpr int FORECAST_REQUESTED_DAYS = WEATHER_FORECAST_MAX_DAYS + 1;
 
 StaticSemaphore_t forecastMutexStorage;
@@ -183,6 +183,11 @@ void buildForecastUrl(float latitude, float longitude, String &url) {
       "precipitation_sum,wind_speed_10m_max&timeformat=unixtime&timezone=auto"
       "&forecast_days=");
   url += FORECAST_REQUESTED_DAYS;
+  // Hodinová data jen na graf: forecast_hours začíná aktuální hodinou, takže
+  // odpověď nenese týden hodin, které by se stejně zahodily. Dvě navíc kryjí
+  // hodinu, která mezi stažením a rozborem přeskočí.
+  url += F("&forecast_hours=");
+  url += static_cast<int>(WEATHER_FORECAST_MAX_HOURS + 2);
 }
 
 void buildAirQualityUrl(float latitude, float longitude, String &url) {
@@ -236,7 +241,6 @@ bool weatherForecastServiceSnapshot(WeatherForecastData &forecast) {
 }
 
 bool weatherForecastServiceFetch(float latitude, float longitude,
-                                 bool airQuality,
                                  NetworkDiagnosticKind diagnosticKind) {
   networkDiagnosticsBegin(diagnosticKind);
   if (WiFi.status() != WL_CONNECTED) {
@@ -301,7 +305,7 @@ bool weatherForecastServiceFetch(float latitude, float longitude,
 
   // Kvalita ovzduší je doplněk: bez ní se předpověď pořád ukáže, jen bez
   // spodní sekce. Neúspěch tady tedy celé stažení neshodí.
-  if (parsed && airQuality) {
+  if (parsed) {
     String airUrl;
     buildAirQualityUrl(latitude, longitude, airUrl);
     int airStatus = HTTPC_ERROR_CONNECTION_REFUSED;
