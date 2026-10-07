@@ -59,7 +59,7 @@ changes the system text and verbal date shown on the display.
 - CHMI precipitation radar with a Czech map, cities and 1–15 frames,
 - 25, 50, 100 and 200 km radar ranges plus a full-country view,
 - optional automatic rotation between the clock, radar, news, forecast,
-  aircraft, agenda, school timetable and satellites, in an order you choose,
+  aircraft, agenda, school timetable, satellites and traffic, in an order you choose,
 - a news screen fed by any RSS or Atom feed,
 - an agenda screen fed by Google Calendar, merged across several calendars and
   coloured by the one each event came from,
@@ -102,6 +102,9 @@ changes the system text and verbal date shown on the display.
   with the naked eye right now and the time of the next pass of the ISS or of
   SATGUS, the household's own satellite; the orbits are computed by your own
   server from CelesTrak data,
+- a traffic screen: the drives to Prague and Benešov and the D1 both ways
+  coloured by traffic, buses with their delay, driving times, warnings and
+  departures from your own server,
 - a night sky on the second page of the satellite screen (swipe): planets, the
   Moon with its phase and the path of its whole pass across the sky until it
   sets (at night faded after sunrise), by day the Sun's whole path from sunrise to sunset, bright stars, named
@@ -846,6 +849,43 @@ even while hidden, so the paths are ready when its turn comes. The rotation open
 the screen only with paths that cover the current moment; an empty sky above the
 minimum elevation is a valid state.
 
+### Traffic
+
+The **Traffic** screen shows the drives from Ondřejov to Prague (Tomíčkova)
+and to Benešov, the D1 motorway between exits 15 and 56 in both directions, the
+II/113 detour through Ondřejov and the buses of the Ondřejov lines. Everything
+is computed by your own server (toulky, `/api/doprava?for=hodiny`) and arrives
+already projected to display pixels, so the clock only downloads and draws; a
+response is two to three kilobytes.
+
+**Map** (first page): roads are green, and stretches where traffic is slow,
+jammed (40 km/h or less) or standing (15 km/h or less) are drawn yellow, orange
+and red; a closure is a dark red dashed line. The D1 shows both directions side
+by side, each on its right-hand side, and the detour is thinner. D1 exits are
+numbered circles, places are white dots with Czech names, and buses are blue
+circles with the line number and an orange (3 minutes late) or red (5 minutes)
+ring. At the top are the status line used on the radars and a title with the
+time of the traffic sample (marked **old data** when older than 25 minutes),
+at the bottom a colour legend. When the server does not answer, the last data
+stays on screen with the reason at the bottom; without any data the screen
+says that traffic is not available.
+
+**Swiping** (sideways or up and down) switches to the second page with the
+driving times — **Praha 30 min**, the usual time and the way back below it, and
+what delays the drive; orange from five extra minutes, red from ten — and the
+D1 texts for both directions. The third page lists warnings (up to three, in
+orange) and the next bus departures; it is skipped when there are neither.
+Another swipe returns to the map.
+
+The address, such as `https://hodiny:password@your-server.example.net/doprava.json`,
+goes into the **Traffic** tab; with a password it must start with `https://`.
+The screen is available only when switched on with an address. While visible
+it asks the server once a minute; hidden, only when it takes part in the
+automatic rotation, once every five minutes. After an error it waits twice as
+long as the last time, at most fifteen minutes. The map is drawn into the same
+pair of PSRAM frames as the planes and satellites, so it costs no extra frame
+memory.
+
 ### Color scales
 
 Each additional value supports up to ten `value → color` points. The firmware
@@ -976,8 +1016,8 @@ It can refresh data, control the backlight and invoke other supported actions.
 Treat the URL as a credential and never publish it in screenshots, logs or Git.
 
 `POST …/api/control/<secret>/screen/<name>` switches the screen, where the name
-is `clock`, `radar`, `rss`, `forecast`, `planes`, `agenda`, `sky`, `school` or
-`satellites`; a disabled screen answers 409. Useful in automations, for example
+is `clock`, `radar`, `rss`, `forecast`, `planes`, `agenda`, `sky`, `school`,
+`satellites` or `traffic`; a disabled screen answers 409. Useful in automations, for example
 the radar when it rains.
 
 ## Building from source

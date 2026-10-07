@@ -56,6 +56,8 @@ constexpr size_t CLOCK_WARNINGS_URL_LENGTH = 192;
 // Adresa serveru upozornění na telefon i se jménem a heslem pro basic_auth.
 constexpr size_t CLOCK_PUSH_URL_LENGTH = 192;
 constexpr size_t CLOCK_HISTORY_URL_LENGTH = 192;
+// Adresa dopravy (toulky /api/doprava?for=hodiny) i se jménem a heslem.
+constexpr size_t CLOCK_TRAFFIC_URL_LENGTH = 192;
 // Skupiny družic jako bity. Pořadí bitů je pořadí skupin na serveru
 // (SatelliteFeed.h), takže se nesmí měnit.
 constexpr uint8_t CLOCK_SATELLITE_GROUP_STATIONS = 0x01;
@@ -188,11 +190,16 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // page and left of "now" in the forecast chart. Empty after migration: the
 // chart keeps the model's values and the page stays off. The schema 52 record
 // stays an exact prefix.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 53;
+// Schema 54 appends the traffic screen (Doprava: the drives to Prague and
+// Benešov, the D1 both ways and the buses, already projected to display pixels
+// by the owner's server) and its tenth entry in the screen order, which lands
+// in the second order block. The schema 53 record stays an exact prefix; the
+// screen starts disabled without an address and goes to the end of the order.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 54;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
-constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 9;
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 10;
 
 // Kolik bajtů pořadí zabírá v konfiguraci. Schválně víc, než kolik je dnes
 // obrazovek: pole leží na konci schématu 37, takže dokud se do rezervy vejde
@@ -221,6 +228,7 @@ enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_SKY = 6,
   CLOCK_SCREEN_SCHOOL = 7,
   CLOCK_SCREEN_SATELLITES = 8,
+  CLOCK_SCREEN_TRAFFIC = 9,
 };
 
 enum ClockLanguage : uint8_t {
@@ -795,6 +803,24 @@ constexpr uint8_t CLOCK_LIGHTNING_COOLDOWN_MAX_MINUTES = 240;
 // Server srážek vrací široké okolí nejvýš do 150 km (infra/rain MAX_WIDE_KM).
 constexpr uint8_t CLOCK_RADAR_KEEP_RAIN_MAX_KM = 150;
 
+// Obrazovka Doprava: cesty do Prahy a do Benešova, D1 oběma směry, autobusy
+// a odjezdy. Všechno počítá server (toulky /api/doprava?for=hodiny) včetně
+// promítnutí do pixelů displeje; hodiny jen stahují a kreslí.
+//
+// Adresa naměřené historie má 192 bajtů a končí záznam schématu 53 bez
+// výplně, takže doprava začíná přesně na jeho konci.
+struct alignas(4) ClockTrafficConfig {
+  bool enabled = false;
+  bool automaticRotation = false;
+  uint16_t displaySeconds = 20;
+  char url[CLOCK_TRAFFIC_URL_LENGTH] = "";
+  // Rezerva pro další volby bez nového schématu; zatím nuly.
+  uint8_t reserved[4] = {};
+};
+
+static_assert(sizeof(ClockTrafficConfig) == 200,
+              "The traffic block is part of the stored record.");
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -953,6 +979,8 @@ struct ClockConfig {
   // Pole schématu 53. Adresa naměřených 24 hodin pro obrazovku předpovědi;
   // vybírá i čidla ("?temp=pracovna&wind=obyvak..."). Prázdná = jen model.
   char historyUrl[CLOCK_HISTORY_URL_LENGTH] = "";
+  // Pole schématu 54. Obrazovka Doprava; vypnutá bez adresy.
+  ClockTrafficConfig traffic;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1130,8 +1158,16 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_52_SIZE = offsetof(ClockConfig, historyUrl)
 
 static_assert(CLOCK_CONFIG_SCHEMA_52_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_52_SIZE + CLOCK_HISTORY_URL_LENGTH ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, traffic),
               "Schema 53 must preserve the complete schema 52 prefix.");
+
+// Schéma 53 končilo adresou historie: 192 bajtů, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_53_SIZE = offsetof(ClockConfig, traffic);
+
+static_assert(CLOCK_CONFIG_SCHEMA_53_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_53_SIZE + sizeof(ClockTrafficConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 54 must preserve the complete schema 53 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
@@ -1222,6 +1258,8 @@ bool clockConfigSchoolAvailable(const ClockConfig &config);
 bool clockConfigSatellitesAvailable(const ClockConfig &config);
 // Noční obloha je druhá stránka družic a ptá se téhož serveru.
 bool clockConfigNightSkyAvailable(const ClockConfig &config);
+// Doprava potřebuje zapnutou obrazovku i adresu serveru.
+bool clockConfigTrafficAvailable(const ClockConfig &config);
 // Výstrahy potřebují zapnutí, adresu serveru a meteoradar, na kterém se ukážou.
 bool clockConfigWarningsAvailable(const ClockConfig &config);
 // Adresa nese jméno a heslo ("https://user:heslo@server/..."). Po http:// by

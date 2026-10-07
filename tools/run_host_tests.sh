@@ -81,6 +81,40 @@ run_test sky_feed "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || fa
 run_test crash_log "$FIRMWARE_DIR/CrashLog.cpp" || failures=$((failures + 1))
 run_test remote_config "$FIRMWARE_DIR/RemoteConfig.cpp" || failures=$((failures + 1))
 run_test sky_render "$FIRMWARE_DIR/SkyRender.cpp" "$FIRMWARE_DIR/SkyCanvas.cpp" "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+TRAFFIC_FIXTURE="-DTRAFFIC_FIXTURE=\"$ROOT_DIR/tools/fixtures/doprava-hodiny.json\""
+run_test traffic_feed "$FIRMWARE_DIR/TrafficFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" "$TRAFFIC_FIXTURE" || failures=$((failures + 1))
+# Mapa dopravy píše jména míst písmem hodin, takže potřebuje kousek LVGL:
+# načtení glyfů (lv_font, lv_font_fmt_txt, lv_utils) a font ClockCzechFont14.
+# Ty jsou v C, proto se překládají zvlášť.
+LVGL_DIR="${LVGL_DIR:-$HOME/Documents/Arduino/libraries/lvgl}"
+if [[ -f "$LVGL_DIR/src/font/lv_font_fmt_txt.c" ]]; then
+  LVGL_DEFS="-DLV_CONF_PATH=$FIRMWARE_DIR/ClockLvglConfig.h"
+  lvgl_objects=()
+  lvgl_ok=1
+  for source in "$LVGL_DIR/src/font/lv_font.c" "$LVGL_DIR/src/font/lv_font_fmt_txt.c" \
+      "$LVGL_DIR/src/misc/lv_utils.c" "$FIRMWARE_DIR/ClockCzechFont14.c"; do
+    object="$BUILD_DIR/lvgl_$(basename "$source" .c).o"
+    if ! "${CC:-cc}" -c "$LVGL_DEFS" -I "$LVGL_DIR" -I "$LVGL_DIR/.." "$source" \
+        -o "$object" > "$BUILD_DIR/lvgl.log" 2>&1; then
+      lvgl_ok=0
+      break
+    fi
+    lvgl_objects+=("$object")
+  done
+  if [[ $lvgl_ok -eq 1 ]]; then
+    run_test traffic_render "$FIRMWARE_DIR/TrafficRender.cpp" "$FIRMWARE_DIR/TrafficFeed.cpp" \
+      "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/MapLabelFont.cpp" "$FIRMWARE_DIR/JsonScan.cpp" \
+      "${lvgl_objects[@]}" "$LVGL_DEFS" -I "$LVGL_DIR" -I "$LVGL_DIR/.." "$TRAFFIC_FIXTURE" \
+      || failures=$((failures + 1))
+  else
+    printf '%-24s %s\n' traffic_render "PŘEKLAD LVGL SELHAL"
+    sed 's/^/    /' "$BUILD_DIR/lvgl.log"
+    failures=$((failures + 1))
+  fi
+else
+  printf '%-24s %s\n' traffic_render "CHYBÍ LVGL (LVGL_DIR)"
+  failures=$((failures + 1))
+fi
 
 echo
 if [[ $failures -gt 0 ]]; then

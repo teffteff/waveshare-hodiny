@@ -1789,6 +1789,14 @@ void handleGetConfig() {
   result += config.satellites.displaySeconds;
   result += F(",\"satellitesAutomaticRotation\":");
   result += config.satellites.automaticRotation ? F("true") : F("false");
+  result += F(",\"trafficEnabled\":");
+  result += config.traffic.enabled ? F("true") : F("false");
+  result += F(",\"trafficUrl\":\"");
+  result += jsonEscape(config.traffic.url);
+  result += F("\",\"trafficDisplaySeconds\":");
+  result += config.traffic.displaySeconds;
+  result += F(",\"trafficAutomaticRotation\":");
+  result += config.traffic.automaticRotation ? F("true") : F("false");
   result += F(",\"agendaHiddenCalendars\":");
   result += config.agendaCalendars.hiddenMask;
   // Heslo samo se nevrací nikdy, stejně jako token Home Assistantu.
@@ -2687,6 +2695,42 @@ void handleSaveConfig() {
         static_cast<uint16_t>(satellitesDisplaySeconds);
     config.satellites.automaticRotation =
         server.arg("satellitesAutomaticRotation") == "1";
+  }
+
+  if (server.hasArg("trafficEnabled")) {
+    String trafficUrl = server.arg("trafficUrl");
+    trafficUrl.trim();
+    if (trafficUrl.length() >= CLOCK_TRAFFIC_URL_LENGTH) {
+      sendError(400, F("Adresa dopravy je příliš dlouhá."));
+      return;
+    }
+    if (!trafficUrl.isEmpty() && !trafficUrl.startsWith("http://") &&
+        !trafficUrl.startsWith("https://")) {
+      sendError(400, F("Adresa dopravy musí začínat http:// nebo https://."));
+      return;
+    }
+    if (trafficUrl.startsWith("http://") &&
+        clockConfigUrlHasCredentials(trafficUrl.c_str())) {
+      sendError(400, F("Adresa dopravy s heslem musí začínat https://."));
+      return;
+    }
+    const bool trafficEnabled = server.arg("trafficEnabled") == "1";
+    if (trafficEnabled && trafficUrl.isEmpty()) {
+      sendError(400, F("Pro zapnutou obrazovku Doprava doplň adresu dopravy."));
+      return;
+    }
+    const int trafficDisplaySeconds =
+        server.arg("trafficDisplaySeconds").toInt();
+    if (trafficDisplaySeconds < 10 || trafficDisplaySeconds > 3600) {
+      sendError(400,
+                F("Doba zobrazení dopravy musí být od 10 do 3600 sekund."));
+      return;
+    }
+    config.traffic.enabled = trafficEnabled;
+    clockConfigCopy(config.traffic.url, sizeof(config.traffic.url), trafficUrl);
+    config.traffic.displaySeconds = static_cast<uint16_t>(trafficDisplaySeconds);
+    config.traffic.automaticRotation =
+        server.arg("trafficAutomaticRotation") == "1";
   }
 
   if (server.hasArg("skyEnabled")) {

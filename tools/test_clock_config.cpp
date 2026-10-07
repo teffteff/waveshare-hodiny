@@ -934,30 +934,33 @@ void testScreenOrderRoundTripAndNormalization() {
   assert(clockConfigLoad(repaired));
   assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
   assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
-  // Agenda, Slunce s Měsícem, škola a družice ve druhém bloku přežily
-  // z výchozího pořadí, takže se doplňuje až za ně; teprve pak přijdou
+  // Agenda, Slunce s Měsícem, škola, a ve druhém bloku družice a doprava
+  // přežily z výchozího pořadí, takže se doplňuje až za ně; teprve pak přijdou
   // obrazovky, které v poli vůbec nebyly - i přes hranici obou bloků.
   assert(repaired.screenOrder[2] == CLOCK_SCREEN_AGENDA);
   assert(repaired.screenOrder[3] == CLOCK_SCREEN_SKY);
   assert(repaired.screenOrder[4] == CLOCK_SCREEN_SCHOOL);
   assert(repaired.screenOrder[5] == CLOCK_SCREEN_SATELLITES);
-  assert(repaired.screenOrder[6] == CLOCK_SCREEN_CLOCK);
-  assert(repaired.screenOrder[7] == CLOCK_SCREEN_RADAR);
-  assert(repaired.screenOrderTail[0] == CLOCK_SCREEN_FORECAST);
-  assert(clockConfigScreenAt(repaired, 8) == CLOCK_SCREEN_FORECAST);
-  assert(clockConfigScreenPosition(repaired, CLOCK_SCREEN_FORECAST) == 8);
+  assert(repaired.screenOrder[6] == CLOCK_SCREEN_TRAFFIC);
+  assert(repaired.screenOrder[7] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrderTail[0] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrderTail[1] == CLOCK_SCREEN_FORECAST);
+  assert(clockConfigScreenAt(repaired, 9) == CLOCK_SCREEN_FORECAST);
+  assert(clockConfigScreenPosition(repaired, CLOCK_SCREEN_FORECAST) == 9);
   for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
        index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
     assert(clockConfigScreenOrderSlot(repaired, index) ==
            CLOCK_SCREEN_ORDER_UNUSED);
   }
 
-  // Výchozí konfigurace má družice hned za školou, na začátku druhého bloku.
+  // Výchozí konfigurace má družice hned za školou, na začátku druhého bloku,
+  // a za nimi dopravu.
   ClockConfig defaults;
   clockConfigApplyDefaults(defaults);
   assert(defaults.screenOrder[7] == CLOCK_SCREEN_SCHOOL);
   assert(defaults.screenOrderTail[0] == CLOCK_SCREEN_SATELLITES);
-  assert(defaults.screenOrderTail[1] == CLOCK_SCREEN_ORDER_UNUSED);
+  assert(defaults.screenOrderTail[1] == CLOCK_SCREEN_TRAFFIC);
+  assert(defaults.screenOrderTail[2] == CLOCK_SCREEN_ORDER_UNUSED);
 }
 
 void testSecondValuePagePersistenceAndMigration() {
@@ -1675,6 +1678,75 @@ void testHistoryUrlPersistenceAndMigration() {
   assert(strlen(terminated.historyUrl) < sizeof(terminated.historyUrl));
 }
 
+void testTrafficPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.traffic.enabled);
+  assert(!defaults.traffic.automaticRotation);
+  assert(defaults.traffic.displaySeconds == 20);
+  assert(defaults.traffic.url[0] == '\0');
+  assert(!clockConfigTrafficAvailable(defaults));
+
+  // Schéma 53 je předponou 54: adresa historie zůstane, doprava je vypnutá
+  // bez adresy, ne smetí za koncem záznamu, a v pořadí obrazovek přibude na
+  // konci - i za pořadím, které si majitel poskládal sám.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  strcpy(source.historyUrl, "https://hodiny:heslo@example.net/history.json");
+  uint8_t order[CLOCK_SCREEN_ORDER_CAPACITY];
+  memset(order, CLOCK_SCREEN_ORDER_UNUSED, sizeof(order));
+  const uint8_t legacyOrder[] = {
+      CLOCK_SCREEN_SATELLITES, CLOCK_SCREEN_CLOCK, CLOCK_SCREEN_RADAR,
+      CLOCK_SCREEN_RSS,        CLOCK_SCREEN_FORECAST, CLOCK_SCREEN_PLANES,
+      CLOCK_SCREEN_AGENDA,     CLOCK_SCREEN_SKY,   CLOCK_SCREEN_SCHOOL};
+  memcpy(order, legacyOrder, sizeof(legacyOrder));
+  clockConfigWriteScreenOrder(source, order);
+  source.traffic.enabled = true;
+  source.traffic.displaySeconds = 77;
+  memset(source.traffic.url, 'x', sizeof(source.traffic.url));
+  seed(legacyRecord(source, 53, CLOCK_CONFIG_SCHEMA_53_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(strcmp(migrated.historyUrl,
+                "https://hodiny:heslo@example.net/history.json") == 0);
+  assert(!migrated.traffic.enabled);
+  assert(migrated.traffic.displaySeconds == 20);
+  assert(migrated.traffic.url[0] == '\0');
+  for (uint8_t position = 0; position < 9; ++position)
+    assert(clockConfigScreenAt(migrated, position) == legacyOrder[position]);
+  assert(clockConfigScreenAt(migrated, 9) == CLOCK_SCREEN_TRAFFIC);
+  assert(clockConfigScreenOrderSlot(migrated, 10) == CLOCK_SCREEN_ORDER_UNUSED);
+
+  migrated.traffic.enabled = true;
+  migrated.traffic.automaticRotation = true;
+  migrated.traffic.displaySeconds = 45;
+  strcpy(migrated.traffic.url,
+         "https://hodiny:heslo@example.net/api/doprava?for=hodiny");
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.traffic.enabled && loaded.traffic.automaticRotation);
+  assert(loaded.traffic.displaySeconds == 45);
+  assert(strcmp(loaded.traffic.url,
+                "https://hodiny:heslo@example.net/api/doprava?for=hodiny") == 0);
+  assert(clockConfigTrafficAvailable(loaded));
+
+  // Neukončený text se při načtení ukončí a doba se srovná do mezí.
+  memset(loaded.traffic.url, 'y', sizeof(loaded.traffic.url));
+  loaded.traffic.displaySeconds = 5;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(strlen(clamped.traffic.url) < sizeof(clamped.traffic.url));
+  assert(clamped.traffic.displaySeconds == 10);
+
+  // Zapnutá obrazovka bez adresy není k dispozici.
+  clamped.traffic.url[0] = '\0';
+  assert(!clockConfigTrafficAvailable(clamped));
+}
+
 void testRadarAlertsPersistenceAndMigration() {
   hostPreferencesReset();
   ClockConfig defaults;
@@ -1810,6 +1882,7 @@ int main() {
   testPushAlertsPersistenceAndMigration();
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();
+  testTrafficPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();

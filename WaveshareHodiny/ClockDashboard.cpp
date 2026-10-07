@@ -3,6 +3,8 @@
 #include "SchoolLayout.h"
 #include "SchoolService.h"
 #include "SatelliteService.h"
+#include "TrafficRender.h"
+#include "TrafficService.h"
 #include "Astronomy.h"
 #include "ClockDashboard.h"
 #include "OpenWeatherIcons.h"
@@ -151,6 +153,28 @@ constexpr uint8_t SATELLITES_DETAIL_ROW_COUNT = 6;
 lv_obj_t *satellitesDetailRows[SATELLITES_DETAIL_ROW_COUNT] = {};
 lv_obj_t *satellitesDetailLost = nullptr;
 bool satellitesFeatureAvailable = false;
+// Obrazovka Doprava: mapa přijde hotová z TrafficService, text kolem i obě
+// textové stránky jsou LVGL. Stránky se přepínají tažením prstu; tečka
+// obrazovky se nemění.
+enum TrafficPage : uint8_t {
+  TRAFFIC_PAGE_MAP = 0,
+  TRAFFIC_PAGE_DRIVES = 1,
+  TRAFFIC_PAGE_NOTICES = 2,
+  TRAFFIC_PAGE_COUNT = 3,
+};
+lv_obj_t *trafficPage = nullptr;
+lv_obj_t *trafficCanvas = nullptr;
+lv_obj_t *trafficClockLabel = nullptr;
+lv_obj_t *trafficTitleLabel = nullptr;
+lv_obj_t *trafficStatusLabel = nullptr;
+// Textové stránky: řádky se zakládají jednou a jen se plní a posouvají.
+lv_obj_t *trafficTextPanel = nullptr;
+constexpr uint8_t TRAFFIC_TEXT_ROW_COUNT = 16;
+lv_obj_t *trafficTextRows[TRAFFIC_TEXT_ROW_COUNT] = {};
+bool trafficFeatureAvailable = false;
+uint8_t trafficPageShown = TRAFFIC_PAGE_MAP;
+// Poslední snímek kvůli překreslení po přepnutí stránky. Leží v PSRAM.
+TrafficSnapshot *trafficLastSnapshot = nullptr;
 // Druhá stránka obrazovky družic: noční obloha. Přepíná se tažením prstu,
 // stejně jako stránky hodnot nebo školy; tečka obrazovky se nemění.
 bool nightSkyAvailable = false;
@@ -407,6 +431,7 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_SKY = CLOCK_SCREEN_SKY,
   DASHBOARD_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL,
   DASHBOARD_SCREEN_SATELLITES = CLOCK_SCREEN_SATELLITES,
+  DASHBOARD_SCREEN_TRAFFIC = CLOCK_SCREEN_TRAFFIC,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -523,6 +548,7 @@ ForecastVisibilityCallback forecastVisibilityCallback = nullptr;
 RadarRangeCallback radarRangeCallback = nullptr;
 RssVisibilityCallback planesVisibilityCallback = nullptr;
 RssVisibilityCallback satellitesVisibilityCallback = nullptr;
+RssVisibilityCallback trafficVisibilityCallback = nullptr;
 WebPasswordResetCallback webPasswordResetCallback = nullptr;
 bool webPasswordConfigured = false;
 // Smazání chce druhé klepnutí do pěti sekund; 0 = nepotvrzuje se.
@@ -570,6 +596,7 @@ const lv_font_t *configuredTimeFont() {
 void showSettingsSubpage(uint8_t page);
 void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber);
 void updateScreenDots();
+void updateTrafficClockLabel();
 void updateRadarClockLabel();
 void updatePlanesClockLabel();
 void updateSatellitesClockLabel();
@@ -800,6 +827,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
     case DASHBOARD_SCREEN_SKY: return skyPage;
     case DASHBOARD_SCREEN_SCHOOL: return schoolPage;
     case DASHBOARD_SCREEN_SATELLITES: return satellitesPage;
+    case DASHBOARD_SCREEN_TRAFFIC: return trafficPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
@@ -824,6 +852,8 @@ bool screenAvailable(uint8_t screen) {
       return schoolFeatureAvailable && schoolPage != nullptr;
     case DASHBOARD_SCREEN_SATELLITES:
       return satellitesFeatureAvailable && satellitesPage != nullptr;
+    case DASHBOARD_SCREEN_TRAFFIC:
+      return trafficFeatureAvailable && trafficPage != nullptr;
     default: return true;
   }
 }
@@ -918,6 +948,17 @@ void setActiveScreen(uint8_t screen) {
     }
     if (satellitesVisibilityCallback != nullptr)
       satellitesVisibilityCallback(isSatellites);
+  }
+  // Doprava stahuje viditelná každou minutu, schovaná jen ve střídání.
+  const bool wasTraffic = previous == DASHBOARD_SCREEN_TRAFFIC;
+  const bool isTraffic = screen == DASHBOARD_SCREEN_TRAFFIC;
+  if (wasTraffic != isTraffic) {
+    // Mapa se odkryje až s dalším snímkem: snímky mezitím mohly patřit
+    // letadlům nebo družicím. Stránka zůstává, jak ji majitel nechal.
+    if (!isTraffic && trafficCanvas != nullptr)
+      lv_obj_add_flag(trafficCanvas, LV_OBJ_FLAG_HIDDEN);
+    if (trafficVisibilityCallback != nullptr)
+      trafficVisibilityCallback(isTraffic);
   }
   // Stránka se právě vytáhla dopředu, takže ukazatel musí zpátky nad ni.
   updateScreenDots();
@@ -5972,6 +6013,7 @@ void updateOverlayStatusLabels() {
   updateRadarClockLabel();
   updatePlanesClockLabel();
   updateSatellitesClockLabel();
+  updateTrafficClockLabel();
   updateForecastHeaderLabel();
   updateAgendaHeaderLabel();
   updateSchoolHeaderLabel();
@@ -7112,6 +7154,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetSkyAvailable(clockConfigSkyAvailable(config));
   clockDashboardSetSchoolAvailable(clockConfigSchoolAvailable(config));
   clockDashboardSetSatellitesAvailable(clockConfigSatellitesAvailable(config));
+  clockDashboardSetTrafficAvailable(clockConfigTrafficAvailable(config));
   // Vypínač úkolů mění rozvržení bez nového stažení.
   layoutSchoolPage();
   if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
@@ -9471,6 +9514,8 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       lv_obj_add_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
     if (satellitesPage != nullptr)
       lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_HIDDEN);
+    if (trafficPage != nullptr)
+      lv_obj_add_flag(trafficPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     if (activeScreen == DASHBOARD_SCREEN_RADAR &&
         radarVisibilityCallback != nullptr)
@@ -9483,6 +9528,9 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     if (activeScreen == DASHBOARD_SCREEN_SATELLITES &&
         satellitesVisibilityCallback != nullptr)
       satellitesVisibilityCallback(false);
+    if (activeScreen == DASHBOARD_SCREEN_TRAFFIC &&
+        trafficVisibilityCallback != nullptr)
+      trafficVisibilityCallback(false);
     lv_obj_clear_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(firmwareUpdateOverlay);
     updateScreenDots();
@@ -9520,6 +9568,10 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       // Jinak by služba po přerušené aktualizaci zůstala vypnutá.
       if (satellitesVisibilityCallback != nullptr)
         satellitesVisibilityCallback(true);
+    } else if (activeScreen == DASHBOARD_SCREEN_TRAFFIC &&
+               trafficPage != nullptr) {
+      lv_obj_clear_flag(trafficPage, LV_OBJ_FLAG_HIDDEN);
+      if (trafficVisibilityCallback != nullptr) trafficVisibilityCallback(true);
     } else {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }
@@ -9682,4 +9734,390 @@ void clockDashboardSetTime(const char *timeText) {
     return;
   }
   renderTimeColon(millis(), true);
+}
+
+// --- Doprava ------------------------------------------------------------------
+// Mapa přijde hotová z TrafficService jako buffer RGB565 a podloží se pod
+// canvas; nadpis s časem dat, stavový řádek a dvě textové stránky (cesty a D1,
+// výstrahy a odjezdy) jsou popisky LVGL v českém písmu. Text drží uvnitř kruhu:
+// řádky jsou vystředěné, mají pevnou šířku i výšku a co se nevejde, skončí
+// třemi tečkami.
+namespace {
+
+// Řádky textových stránek. Šířka podle toho, kolik kruhu je v dané výšce.
+constexpr int TRAFFIC_TEXT_TOP_Y = -126;
+constexpr int TRAFFIC_TEXT_WIDTH = 340;
+constexpr int TRAFFIC_TEXT_NARROW_WIDTH = 310;
+constexpr int TRAFFIC_TEXT_GAP = 8;
+
+lv_color_t trafficRgb(uint32_t rgb) {
+  return lv_color_make((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+}
+
+lv_color_t trafficTone(lv_color_t color) {
+  return redNightVisualEnabled() ? COLOR_ERROR : color;
+}
+
+lv_color_t trafficMutedTone() {
+  return redNightVisualEnabled() ? lv_color_make(150, 0, 0) : COLOR_MUTED;
+}
+
+// Barva cesty podle zdržení proti obvyklé době: od pěti minut oranžová, od
+// deseti červená.
+lv_color_t trafficDriveColor(const TrafficDrive &drive) {
+  if (drive.minutes >= 0 && drive.usualMinutes >= 0) {
+    const int extra = drive.minutes - drive.usualMinutes;
+    if (extra >= 10) return trafficRgb(trafficLevelRgb(TRAFFIC_LEVEL_STANDING));
+    if (extra >= 5) return trafficRgb(trafficLevelRgb(TRAFFIC_LEVEL_JAM));
+  }
+  return COLOR_TEXT;
+}
+
+// Barva textu o D1 podle toho, co v něm server píše.
+lv_color_t trafficSentenceColor(const char *text) {
+  if (strstr(text, "stojí") != nullptr || strstr(text, "uzav") != nullptr ||
+      strstr(text, "stopped") != nullptr || strstr(text, "closed") != nullptr)
+    return trafficRgb(trafficLevelRgb(TRAFFIC_LEVEL_STANDING));
+  if (strstr(text, "kolon") != nullptr || strstr(text, "pomal") != nullptr ||
+      strstr(text, "jam") != nullptr || strstr(text, "slow") != nullptr)
+    return trafficRgb(trafficLevelRgb(TRAFFIC_LEVEL_JAM));
+  return COLOR_TEXT;
+}
+
+class TrafficPsramAllocations {
+ public:
+  TrafficPsramAllocations() { clockLvglPreferPsram(true); }
+  ~TrafficPsramAllocations() { clockLvglPreferPsram(false); }
+  TrafficPsramAllocations(const TrafficPsramAllocations &) = delete;
+  TrafficPsramAllocations &operator=(const TrafficPsramAllocations &) = delete;
+};
+
+void createTrafficPage(lv_obj_t *screen) {
+  TrafficPsramAllocations psramAllocations;
+  trafficPage = lv_obj_create(screen);
+  lv_obj_set_size(trafficPage, 480, 480);
+  lv_obj_center(trafficPage);
+  lv_obj_set_style_bg_color(trafficPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(trafficPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(trafficPage, 0, 0);
+  lv_obj_set_style_pad_all(trafficPage, 0, 0);
+  lv_obj_set_style_radius(trafficPage, 0, 0);
+  lv_obj_clear_flag(trafficPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  trafficCanvas = lv_canvas_create(trafficPage);
+  lv_obj_center(trafficCanvas);
+  lv_obj_add_flag(trafficCanvas, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(trafficCanvas, LV_OBJ_FLAG_CLICKABLE);
+
+  trafficTextPanel = lv_obj_create(trafficPage);
+  lv_obj_set_size(trafficTextPanel, 480, 480);
+  lv_obj_center(trafficTextPanel);
+  lv_obj_set_style_bg_opa(trafficTextPanel, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(trafficTextPanel, 0, 0);
+  lv_obj_set_style_pad_all(trafficTextPanel, 0, 0);
+  lv_obj_clear_flag(trafficTextPanel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(trafficTextPanel, LV_OBJ_FLAG_HIDDEN);
+  for (uint8_t index = 0; index < TRAFFIC_TEXT_ROW_COUNT; ++index) {
+    lv_obj_t *row = makeLabel(trafficTextPanel, &clock_czech_16, COLOR_TEXT);
+    lv_label_set_text(row, "");
+    lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    trafficTextRows[index] = row;
+  }
+
+  trafficClockLabel = makePlanesOverlayLabel(trafficPage, &clock_czech_20,
+                                             COLOR_TEXT, STATUS_LINE_Y);
+  lv_obj_add_flag(trafficClockLabel, LV_OBJ_FLAG_HIDDEN);
+  trafficTitleLabel = makePlanesOverlayLabel(
+      trafficPage, &clock_czech_14, COLOR_OUTSIDE, TRAFFIC_TITLE_OFFSET_Y);
+  lv_label_set_recolor(trafficTitleLabel, true);
+  trafficStatusLabel = makePlanesOverlayLabel(
+      trafficPage, &clock_czech_14, COLOR_ROOM, TRAFFIC_STATUS_OFFSET_Y);
+  lv_obj_add_flag(trafficStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  makeChildrenTapThrough(trafficPage);
+  lv_obj_add_flag(trafficPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(trafficPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+void updateTrafficClockLabel() {
+  if (trafficClockLabel == nullptr) return;
+  char text[48];
+  // Stejný přepínač stavového řádku jako na mapových obrazovkách.
+  if (!radarStatusLineEnabled ||
+      !composeStatusLineText(text, sizeof(text))) {
+    lv_obj_add_flag(trafficClockLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  setTextColor(trafficClockLabel, statusLineColor());
+  lv_label_set_text(trafficClockLabel, text);
+  alignCenter(trafficClockLabel, 0, STATUS_LINE_Y);
+  lv_obj_clear_flag(trafficClockLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Řádek textové stránky: vystředěný, pevná šířka a nejvýš `lines` řádků písma.
+// Vrací y pod ním.
+int placeTrafficRow(uint8_t &used, int top, const char *text,
+                    const lv_font_t *font, lv_color_t color, int width,
+                    uint8_t lines) {
+  if (used >= TRAFFIC_TEXT_ROW_COUNT || text == nullptr || text[0] == '\0')
+    return top;
+  lv_obj_t *row = trafficTextRows[used++];
+  const int lineHeight = lv_font_get_line_height(font);
+  const int height = lineHeight * lines;
+  lv_obj_set_style_text_font(row, font, 0);
+  setTextColor(row, color);
+  lv_obj_set_size(row, width, height);
+  lv_label_set_text(row, text);
+  // Jednořádkový text se nesmí zalomit, víceřádkový končí třemi tečkami.
+  lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+  lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 240 + top);
+  lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+  return top + height;
+}
+
+// Kolik řádků zabere text daným písmem v dané šířce (nejvýš `limit`).
+uint8_t trafficLineCount(const char *text, const lv_font_t *font, int width,
+                         uint8_t limit) {
+  lv_point_t size;
+  lv_txt_get_size(&size, text, font, 0, 0, width, LV_TEXT_FLAG_NONE);
+  const int lineHeight = lv_font_get_line_height(font);
+  int lines = lineHeight > 0 ? (size.y + lineHeight - 1) / lineHeight : 1;
+  if (lines < 1) lines = 1;
+  return static_cast<uint8_t>(lines > limit ? limit : lines);
+}
+
+void layoutTrafficDrives(const TrafficTexts &texts, bool english,
+                         uint8_t &used) {
+  int y = TRAFFIC_TEXT_TOP_Y;
+  char line[96];
+  for (uint8_t index = 0; index < texts.driveCount && index < 2; ++index) {
+    const TrafficDrive &drive = texts.drives[index];
+    if (drive.minutes >= 0)
+      snprintf(line, sizeof(line), "%s %d min", drive.to, drive.minutes);
+    else
+      snprintf(line, sizeof(line), "%s ?", drive.to);
+    y = placeTrafficRow(used, y, line, &clock_czech_20,
+                        trafficTone(trafficDriveColor(drive)),
+                        TRAFFIC_TEXT_WIDTH, 1);
+    line[0] = '\0';
+    if (drive.usualMinutes >= 0 && drive.backMinutes >= 0)
+      snprintf(line, sizeof(line), english ? "usually %d, back %d"
+                                           : "obvykle %d, zpět %d",
+               drive.usualMinutes, drive.backMinutes);
+    else if (drive.usualMinutes >= 0)
+      snprintf(line, sizeof(line), english ? "usually %d" : "obvykle %d",
+               drive.usualMinutes);
+    else if (drive.backMinutes >= 0)
+      snprintf(line, sizeof(line), english ? "back %d" : "zpět %d",
+               drive.backMinutes);
+    y = placeTrafficRow(used, y, line, &clock_czech_14, trafficMutedTone(),
+                        TRAFFIC_TEXT_WIDTH, 1);
+    if (drive.detail[0] != '\0') {
+      const uint8_t lines = trafficLineCount(drive.detail, &clock_czech_14,
+                                             TRAFFIC_TEXT_WIDTH, 2);
+      y = placeTrafficRow(used, y, drive.detail, &clock_czech_14,
+                          trafficTone(trafficSentenceColor(drive.detail)),
+                          TRAFFIC_TEXT_WIDTH, lines);
+    }
+    y += TRAFFIC_TEXT_GAP;
+  }
+  y += TRAFFIC_TEXT_GAP / 2;
+  for (uint8_t index = 0; index < texts.textCount && index < 3; ++index) {
+    const char *text = texts.texts[index];
+    const uint8_t lines =
+        trafficLineCount(text, &clock_czech_16, TRAFFIC_TEXT_NARROW_WIDTH, 2);
+    // Pod dolní okraj kruhu se nekreslí.
+    if (y + lines * lv_font_get_line_height(&clock_czech_16) > 172) break;
+    y = placeTrafficRow(used, y, text, &clock_czech_16,
+                        trafficTone(trafficSentenceColor(text)),
+                        TRAFFIC_TEXT_NARROW_WIDTH, lines);
+    y += TRAFFIC_TEXT_GAP / 2;
+  }
+  if (used == 0)
+    placeTrafficRow(used, -12, english ? "No drives yet" : "Cesty zatím nejsou",
+                    &clock_czech_16, trafficMutedTone(), TRAFFIC_TEXT_WIDTH, 1);
+}
+
+void layoutTrafficNotices(const TrafficTexts &texts, bool english,
+                          uint8_t &used) {
+  int y = TRAFFIC_TEXT_TOP_Y;
+  for (uint8_t index = 0; index < texts.warningCount && index < 3; ++index) {
+    const char *text = texts.warnings[index];
+    const uint8_t lines =
+        trafficLineCount(text, &clock_czech_16, TRAFFIC_TEXT_WIDTH, 2);
+    y = placeTrafficRow(used, y, text, &clock_czech_16, trafficTone(COLOR_ROOM),
+                        TRAFFIC_TEXT_WIDTH, lines);
+    y += TRAFFIC_TEXT_GAP / 2;
+  }
+  if (texts.departureCount > 0) {
+    if (texts.warningCount > 0) y += TRAFFIC_TEXT_GAP;
+    y = placeTrafficRow(used, y, english ? "Departures" : "Odjezdy",
+                        &clock_czech_16, trafficTone(COLOR_OUTSIDE),
+                        TRAFFIC_TEXT_WIDTH, 1);
+    for (uint8_t index = 0; index < texts.departureCount && index < 4; ++index) {
+      if (y + lv_font_get_line_height(&clock_czech_16) > 172) break;
+      y = placeTrafficRow(used, y, texts.departures[index], &clock_czech_16,
+                          trafficTone(COLOR_TEXT), TRAFFIC_TEXT_NARROW_WIDTH, 1);
+    }
+  }
+}
+
+// Třetí stránka má smysl jen s výstrahou nebo odjezdem.
+bool trafficNoticesAvailable(const TrafficSnapshot &snapshot) {
+  return snapshot.haveData && (snapshot.texts.warningCount > 0 ||
+                               snapshot.texts.departureCount > 0);
+}
+
+void applyTrafficSnapshot(const TrafficSnapshot &snapshot) {
+  if (trafficPage == nullptr) return;
+  const bool english = englishLanguage();
+  const bool redNight = redNightVisualEnabled();
+  if (trafficPageShown == TRAFFIC_PAGE_NOTICES &&
+      !trafficNoticesAvailable(snapshot))
+    trafficPageShown = TRAFFIC_PAGE_DRIVES;
+
+  // Mapa jen na první stránce.
+  if (trafficPageShown == TRAFFIC_PAGE_MAP && snapshot.pixels != nullptr) {
+    lv_canvas_set_buffer(trafficCanvas, const_cast<uint16_t *>(snapshot.pixels),
+                         TRAFFIC_FRAME_WIDTH, TRAFFIC_FRAME_HEIGHT,
+                         LV_IMG_CF_TRUE_COLOR);
+    lv_obj_clear_flag(trafficCanvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(trafficCanvas);
+  } else {
+    lv_obj_add_flag(trafficCanvas, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Nadpis: čas vzorku provozu, u starých dat s upozorněním.
+  char title[96];
+  const char *name = english ? "Traffic" : "Doprava";
+  char clock[8] = "";
+  const int64_t sampleTime =
+      snapshot.texts.sampleTime > 0 ? snapshot.texts.sampleTime : snapshot.texts.now;
+  if (snapshot.haveData && sampleTime > 0) {
+    const time_t when = static_cast<time_t>(sampleTime);
+    struct tm local;
+    if (localtime_r(&when, &local) != nullptr)
+      strftime(clock, sizeof(clock), "%H:%M", &local);
+  }
+  const char *muted = redNight ? "960000" : "B5B5B5";
+  if (clock[0] != '\0' && snapshot.texts.stale)
+    snprintf(title, sizeof(title), "%s  #%s %s#  #%s %s#", name, muted, clock,
+             redNight ? "FF4848" : "FFB843",
+             english ? "old data" : "stará data");
+  else if (clock[0] != '\0')
+    snprintf(title, sizeof(title), "%s  #%s %s#", name, muted, clock);
+  else
+    snprintf(title, sizeof(title), "%s", name);
+  setTextColor(trafficTitleLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
+  lv_label_set_text(trafficTitleLabel, title);
+  alignCenter(trafficTitleLabel, 0, TRAFFIC_TITLE_OFFSET_Y);
+
+  // Stavový řádek dole: chyba, načítání nebo nic.
+  const char *status = nullptr;
+  char statusText[96];
+  if (snapshot.message[0] != '\0') {
+    if (snapshot.haveData) {
+      status = snapshot.message;
+    } else {
+      snprintf(statusText, sizeof(statusText), "%s",
+               english ? "Traffic is not available right now"
+                       : "Doprava teď není k dispozici");
+      status = statusText;
+    }
+  } else if (!snapshot.haveData) {
+    status = snapshot.loading
+                 ? (english ? "Loading traffic..." : "Načítám dopravu...")
+                 : (english ? "Waiting for data" : "Čekám na data");
+  }
+  if (status != nullptr) {
+    setTextColor(trafficStatusLabel, redNight ? COLOR_ERROR : COLOR_ROOM);
+    lv_label_set_text(trafficStatusLabel, status);
+    alignCenter(trafficStatusLabel, 0, TRAFFIC_STATUS_OFFSET_Y);
+    lv_obj_clear_flag(trafficStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(trafficStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Textové stránky.
+  uint8_t used = 0;
+  if (trafficPageShown != TRAFFIC_PAGE_MAP && snapshot.haveData) {
+    if (trafficPageShown == TRAFFIC_PAGE_DRIVES)
+      layoutTrafficDrives(snapshot.texts, english, used);
+    else
+      layoutTrafficNotices(snapshot.texts, english, used);
+  }
+  for (uint8_t index = used; index < TRAFFIC_TEXT_ROW_COUNT; ++index)
+    lv_obj_add_flag(trafficTextRows[index], LV_OBJ_FLAG_HIDDEN);
+  if (trafficPageShown == TRAFFIC_PAGE_MAP)
+    lv_obj_add_flag(trafficTextPanel, LV_OBJ_FLAG_HIDDEN);
+  else
+    lv_obj_clear_flag(trafficTextPanel, LV_OBJ_FLAG_HIDDEN);
+
+  updateTrafficClockLabel();
+}
+
+}  // namespace
+
+bool clockDashboardTrafficVisible() {
+  return activeScreen == DASHBOARD_SCREEN_TRAFFIC;
+}
+
+void clockDashboardSetTrafficVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_TRAFFIC : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetTrafficVisibilityCallback(
+    RssVisibilityCallback visibility) {
+  trafficVisibilityCallback = visibility;
+}
+
+void clockDashboardSetTrafficAvailable(bool available) {
+  // Stránka se zakládá až s prvním zapnutím obrazovky.
+  if (available && trafficPage == nullptr && dashboardScreen != nullptr)
+    createTrafficPage(dashboardScreen);
+  if (trafficFeatureAvailable == available) return;
+  trafficFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_TRAFFIC) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (trafficPage != nullptr) lv_obj_add_flag(trafficPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (trafficVisibilityCallback != nullptr) trafficVisibilityCallback(false);
+  }
+  updateScreenDots();
+}
+
+void clockDashboardSetTrafficSnapshot(const TrafficSnapshot &snapshot) {
+  if (trafficPage == nullptr) return;
+  if (trafficLastSnapshot == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(TrafficSnapshot),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) trafficLastSnapshot = new (memory) TrafficSnapshot();
+  }
+  if (trafficLastSnapshot != nullptr && trafficLastSnapshot != &snapshot)
+    *trafficLastSnapshot = snapshot;
+  applyTrafficSnapshot(snapshot);
+}
+
+bool clockDashboardSwipeTraffic(int8_t direction) {
+  if (activeScreen != DASHBOARD_SCREEN_TRAFFIC || trafficPage == nullptr ||
+      settingsVisible || firmwareUpdateActive)
+    return false;
+  const bool notices =
+      trafficLastSnapshot != nullptr && trafficNoticesAvailable(*trafficLastSnapshot);
+  const uint8_t count = notices ? TRAFFIC_PAGE_COUNT : TRAFFIC_PAGE_COUNT - 1;
+  // Tažení doleva (+1) jde dál, doprava zpět; za poslední stránkou je mapa.
+  const int step = direction < 0 ? -1 : 1;
+  trafficPageShown =
+      static_cast<uint8_t>((trafficPageShown + count + step) % count);
+  if (trafficLastSnapshot != nullptr) applyTrafficSnapshot(*trafficLastSnapshot);
+  return true;
+}
+
+bool clockDashboardTrafficMapPage() {
+  return trafficPageShown == TRAFFIC_PAGE_MAP;
 }
