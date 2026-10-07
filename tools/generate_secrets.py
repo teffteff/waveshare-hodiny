@@ -32,6 +32,7 @@ PUBLIC_FIRMWARE_CONFIG = {
 # Adresa RSS kanálu se zprávami. Nezávislá na Home Assistantu: běží na vlastním
 # serveru, takže se předvyplňuje i tehdy, když HA sekce v .env chybí.
 NEWS_KEY = "NEWS_URL"
+TRAFFIC_KEY = "DOPRAVA_URL"
 HOME_ASSISTANT_KEYS = (
     "HOME_ASSISTANT_URL",
     "HOME_ASSISTANT_TOKEN",
@@ -180,6 +181,11 @@ def main() -> None:
     news_url = values.get(NEWS_KEY, "")
     if news_url:
         lines.extend(["", f"#define NEWS_URL {cpp_string(news_url)}"])
+    # Adresa obrazovky Doprava nese heslo (https://hodiny:heslo@host/doprava.json),
+    # proto jen v local/secrets.h mimo git a jen pro vývojové sestavení.
+    traffic_url = values.get(TRAFFIC_KEY, "")
+    if traffic_url:
+        lines.extend(["", f"#define DOPRAVA_URL {cpp_string(traffic_url)}"])
     lines.append("")
     temporary_file = OUTPUT_FILE.with_suffix(".h.tmp")
     temporary_file.write_text("\n".join(lines), encoding="utf-8")

@@ -870,7 +870,11 @@ automatické střídání.
 
 Adresa ve tvaru `https://hodiny:heslo@tvuj-server.example.net/doprava.json`
 se zadává v záložce **Doprava**; s heslem musí začínat `https://`. Obrazovka
-je k dispozici jen zapnutá a s vyplněnou adresou. Viditelná se ptá serveru
+je k dispozici jen zapnutá a s vyplněnou adresou. Vývojové sestavení ji umí
+předvyplnit: řádek `DOPRAVA_URL=https://hodiny:heslo@host/doprava.json`
+v `.env` (mimo git) zapíše `tools/generate_secrets.py` do
+`local/secrets.h`, a hodiny s prázdnou adresou ji při startu převezmou a
+obrazovku zapnou; ručně zadanou adresu nepřepíšou. Viditelná se ptá serveru
 jednou za minutu, schovaná jen tehdy, když je zapojená do automatického
 střídání, a to jednou za pět minut. Po chybě se čeká dvakrát déle než minule,
 nejvýš patnáct minut. Mapa se kreslí do stejného páru snímků v PSRAM jako

@@ -83,6 +83,14 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #define HAS_NEWS_SECRETS 0
 #endif
 
+// Adresa dopravy (toulky přes Caddy, /doprava.json) nese heslo, a proto ji
+// předvyplní jen vývojové sestavení z local/secrets.h.
+#if HAS_WIFI_SECRETS && defined(DOPRAVA_URL)
+#define HAS_TRAFFIC_SECRETS 1
+#else
+#define HAS_TRAFFIC_SECRETS 0
+#endif
+
 namespace {
 ClockValues sampleValues;
 // Šest kopií po 5,7 kB, viz clockConfigAllocate().
@@ -685,6 +693,14 @@ void applyDevelopmentDefaults(ClockConfig &config) {
   // adresu tím nepřepíšeme. Obrazovku samotnou nezapínáme, to je volba uživatele.
   if (config.rss.url[0] == '\0') {
     clockConfigCopy(config.rss.url, sizeof(config.rss.url), NEWS_URL);
+  }
+#endif
+#if HAS_TRAFFIC_SECRETS && defined(WAVESHARE_DEVELOPMENT_BUILD)
+  // Jen prázdné pole: ručně zadanou adresu nepřepíšeme. Na rozdíl od zpráv
+  // obrazovku při prvním předvyplnění zapneme, adresa slouží jen jí.
+  if (config.traffic.url[0] == '\0') {
+    clockConfigCopy(config.traffic.url, sizeof(config.traffic.url), DOPRAVA_URL);
+    config.traffic.enabled = true;
   }
 #endif
 }
