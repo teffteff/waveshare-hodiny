@@ -103,8 +103,8 @@ changes the system text and verbal date shown on the display.
   SATGUS, the household's own satellite; the orbits are computed by your own
   server from CelesTrak data,
 - a traffic screen: the drives to Prague and Benešov and the D1 both ways
-  coloured by traffic, buses with their delay, driving times, warnings and
-  departures from your own server,
+  coloured by traffic, driving times there and back with which way to take,
+  warnings and departures from your own server,
 - a night sky on the second page of the satellite screen (swipe): planets, the
   Moon with its phase and the path of its whole pass across the sky until it
   sets (at night faded after sunrise), by day the Sun's whole path from sunrise to sunset, bright stars, named
@@ -853,7 +853,7 @@ minimum elevation is a valid state.
 
 The **Traffic** screen shows the drives from Ondřejov to Prague (Tomíčkova)
 and to Benešov, the D1 motorway between exits 15 and 56 in both directions, the
-II/113 detour through Ondřejov and the buses of the Ondřejov lines. Everything
+II/113 detour through Ondřejov. Everything
 is computed by your own server (toulky, `/api/doprava?for=hodiny`) and arrives
 already projected to display pixels, so the clock only downloads and draws; a
 response is two to three kilobytes.
@@ -862,18 +862,24 @@ response is two to three kilobytes.
 jammed (40 km/h or less) or standing (15 km/h or less) are drawn yellow, orange
 and red; a closure is a dark red dashed line. The D1 shows both directions side
 by side, each on its right-hand side, and the detour is thinner. D1 exits are
-numbered circles, places are white dots with Czech names, and buses are blue
-circles with the line number and an orange (3 minutes late) or red (5 minutes)
-ring. At the top are the status line used on the radars and a title with the
+numbered circles and places are white dots with Czech names. (Buses would be
+blue circles with the line number; the server stopped sending them to the
+clocks on 7 October 2026.) At the top are the status line used on the radars and a title with the
 time of the traffic sample (marked **old data** when older than 25 minutes),
 at the bottom a colour legend. When the server does not answer, the last data
 stays on screen with the reason at the bottom; without any data the screen
 says that traffic is not available.
 
 **Swiping** (sideways or up and down) switches to the second page with the
-driving times — **Praha 30 min**, the usual time and the way back below it, and
-what delays the drive; orange from five extra minutes, red from ten — and the
-D1 texts for both directions. The third page lists warnings (up to three, in
+driving times: **Do Prahy**, **Z Prahy**, **Do Benešova** and **Z Benešova**
+(to and from Prague and Benešov), each with a line saying which way and how
+long the other way takes (to Prague by the D1 from Mirošovice or through
+Mnichovice and Strančice to exit 15; to Benešov by the E55 or through
+Chocerady, Vranov and Soběhrdy), the usual time and what delays the drive. A
+driving time is orange from five extra minutes, red from ten; the line is blue
+when one way is two minutes or more faster ("líp přes Vranov (E55 34)"). Below
+them the D1 texts for both directions, when they fit. (An older server sent
+two drives with the usual time and the way back; the clock shows those too.) The third page lists warnings (up to three, in
 orange) and the next bus departures; it is skipped when there are neither.
 Another swipe returns to the map.
 

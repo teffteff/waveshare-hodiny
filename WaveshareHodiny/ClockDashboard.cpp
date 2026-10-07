@@ -9892,7 +9892,10 @@ void layoutTrafficDrives(const TrafficTexts &texts, bool english,
                          uint8_t &used) {
   int y = TRAFFIC_TEXT_TOP_Y;
   char line[96];
-  for (uint8_t index = 0; index < texts.driveCount && index < 2; ++index) {
+  // Čtyři cesty (do Prahy, z Prahy, do Benešova, z Benešova), každá se svým
+  // řádkem, kudy jet; se starším serverem dvě s obvyklou dobou a zpáteční.
+  const uint8_t gap = texts.driveCount > 2 ? TRAFFIC_TEXT_GAP / 2 : TRAFFIC_TEXT_GAP;
+  for (uint8_t index = 0; index < texts.driveCount && index < 4; ++index) {
     const TrafficDrive &drive = texts.drives[index];
     if (drive.minutes >= 0)
       snprintf(line, sizeof(line), "%s %d min", drive.to, drive.minutes);
@@ -9901,6 +9904,22 @@ void layoutTrafficDrives(const TrafficTexts &texts, bool english,
     y = placeTrafficRow(used, y, line, &clock_czech_20,
                         trafficTone(trafficDriveColor(drive)),
                         TRAFFIC_TEXT_WIDTH, 1);
+    if (texts.driveCount > 2) {
+      // Řádek kudy jet: modře, když se jedna cesta vyplatí, barvou kolony,
+      // když v něm kolona je, jinak tlumeně.
+      if (drive.detail[0] != '\0') {
+        const lv_color_t sentence = trafficSentenceColor(drive.detail);
+        const lv_color_t color =
+            drive.better ? trafficTone(COLOR_OUTSIDE)
+            : lv_color_to32(sentence) == lv_color_to32(COLOR_TEXT)
+                ? trafficMutedTone()
+                : trafficTone(sentence);
+        y = placeTrafficRow(used, y, drive.detail, &clock_czech_14, color,
+                            TRAFFIC_TEXT_WIDTH, 1);
+      }
+      y += gap;
+      continue;
+    }
     line[0] = '\0';
     if (drive.usualMinutes >= 0 && drive.backMinutes >= 0)
       snprintf(line, sizeof(line), english ? "usually %d, back %d"
@@ -9921,7 +9940,7 @@ void layoutTrafficDrives(const TrafficTexts &texts, bool english,
                           trafficTone(trafficSentenceColor(drive.detail)),
                           TRAFFIC_TEXT_WIDTH, lines);
     }
-    y += TRAFFIC_TEXT_GAP;
+    y += gap;
   }
   y += TRAFFIC_TEXT_GAP / 2;
   for (uint8_t index = 0; index < texts.textCount && index < 3; ++index) {

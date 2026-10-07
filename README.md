@@ -104,7 +104,7 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   a časem příštího přeletu ISS nebo domácí družice SATGUS; dráhy počítá
   vlastní server z dat CelesTrak,
 - obrazovku Doprava: cesty do Prahy a do Benešova a D1 oběma směry obarvené
-  podle provozu, autobusy se zpožděním, doba jízdy, výstrahy a odjezdy
+  podle provozu, doba jízdy tam i zpět s tím, kudy jet, výstrahy a odjezdy
   z vlastního serveru,
 - noční oblohu na druhé stránce družic (tažením prstu): planety, Měsíc s fází
   a dráhou celého jeho přechodu oblohou až k západu (v noci po východu Slunce tlumeně), ve dne celou dráhu
@@ -843,8 +843,8 @@ stav.
 ### Doprava
 
 Obrazovka **Doprava** ukazuje cestu z Ondřejova do Prahy (Tomíčkova) a do
-Benešova, dálnici D1 mezi sjezdy 15 a 56 oběma směry, objížďku po II/113 přes
-Ondřejov a autobusy ondřejovských linek. Všechno počítá vlastní server
+Benešova, dálnici D1 mezi sjezdy 15 a 56 oběma směry a objížďku po II/113 přes
+Ondřejov. Všechno počítá vlastní server
 (toulky, `/api/doprava?for=hodiny`) a posílá to už promítnuté do pixelů
 displeje, takže hodiny jen stahují a kreslí; odpověď má dva až tři kilobajty.
 
@@ -853,17 +853,22 @@ stojí kolona (40 km/h a méně) nebo se stojí (15 km/h a méně), se přebarv�
 žlutě, oranžově a červeně; uzavírka je tmavě červená čárkovaná. D1 má oba
 směry vedle sebe, každý po své pravé straně (do Prahy na severovýchodní,
 na Brno na jihozápadní), objížďka je tenčí. Sjezdy D1 jsou kroužky s číslem,
-místa bílé tečky s českými jmény, autobusy modré kruhy s číslem linky
-a oranžovým (od 3 minut zpoždění) nebo červeným (od 5 minut) lemem. Nahoře je
+místa bílé tečky s českými jmény. (Autobusy by byly modré kruhy s číslem linky;
+server je hodinám od 7. 10. 2026 neposílá.) Nahoře je
 stavový řádek jako na radarech a nadpis s časem vzorku provozu (u dat starších
 než 25 minut s upozorněním **stará data**), dole legenda barev. Když server
 neodpoví, zůstanou na displeji poslední data a dole se objeví důvod; bez
 jakýchkoli dat hláška **Doprava teď není k dispozici**.
 
 **Tažením prstu** (do strany i nahoru a dolů) se přepíná na druhou stránku
-s dobou jízdy — **Praha 30 min**, pod tím obvyklá doba a cesta zpět, případně
-co cestu zdržuje; od pěti minut navíc oranžově, od deseti červeně — a texty
-o D1 oběma směry. Třetí stránka ukazuje výstrahy (nejvýš tři, oranžově)
+s dobou jízdy: **Do Prahy**, **Z Prahy**, **Do Benešova** a **Z Benešova**,
+každá s řádkem, kudy jet a za kolik ta druhá cesta (do Prahy po D1 od
+Mirošovic, nebo přes Mnichovice a Strančice k exitu 15; do Benešova po E55,
+nebo přes Chocerady, Vranov a Soběhrdy), obvyklou dobou a tím, co cestu
+zdržuje. Doba jízdy je od pěti minut navíc oranžově, od deseti červeně; řádek
+je modře, když se jedna cesta vyplatí o dvě minuty a víc („líp přes Vranov
+(E55 34)“). Pod cestami texty o D1 oběma směry, pokud se vejdou. (Starší
+server posílal dvě cesty s obvyklou dobou a cestou zpět; i ty hodiny ukážou.) Třetí stránka ukazuje výstrahy (nejvýš tři, oranžově)
 a nejbližší odjezdy autobusů; bez výstrah i odjezdů se přeskočí. Dalším
 tažením se vrací mapa. Stránka zůstává, jak ji majitel nechal, i přes
 automatické střídání.

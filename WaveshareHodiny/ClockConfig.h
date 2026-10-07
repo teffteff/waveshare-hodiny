@@ -803,7 +803,7 @@ constexpr uint8_t CLOCK_LIGHTNING_COOLDOWN_MAX_MINUTES = 240;
 // Server srážek vrací široké okolí nejvýš do 150 km (infra/rain MAX_WIDE_KM).
 constexpr uint8_t CLOCK_RADAR_KEEP_RAIN_MAX_KM = 150;
 
-// Obrazovka Doprava: cesty do Prahy a do Benešova, D1 oběma směry, autobusy
+// Obrazovka Doprava: cesty do Prahy a do Benešova, D1 oběma směry
 // a odjezdy. Všechno počítá server (toulky /api/doprava?for=hodiny) včetně
 // promítnutí do pixelů displeje; hodiny jen stahují a kreslí.
 //

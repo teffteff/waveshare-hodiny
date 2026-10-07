@@ -373,7 +373,10 @@ TrafficParseStatus trafficFeedParse(const char *json, size_t length,
     drive.minutes = readMinutes(cursor.itemBegin, cursor.itemEnd, "min");
     drive.usualMinutes = readMinutes(cursor.itemBegin, cursor.itemEnd, "usual");
     drive.backMinutes = readMinutes(cursor.itemBegin, cursor.itemEnd, "back");
-    drive.detail[0] = '\0';
+    copyText(jsonFindMember(cursor.itemBegin, cursor.itemEnd, "detail"),
+             drive.detail, sizeof(drive.detail));
+    drive.better =
+        jsonReadBoolMember(cursor.itemBegin, cursor.itemEnd, "better");
     ++data.driveCount;
   }
 

@@ -15,7 +15,9 @@
 //    "places": [{"name": "Benešov", "xy": [x,y]}],
 //    "exits": [{"n": 15, "xy": [x,y]}],
 //    "buses": [{"line": "383", "xy": [x,y], "delay": sekundy nebo null}],
-//    "drives": [{"to": "Praha", "min": 30, "usual": 29, "back": 30}],
+//    "drives": [{"to": "Do Prahy", "min": 30, "usual": 29,
+//                "detail": "přes Mirošovice (Strančice 31)", "better": false}],
+//    (starší server posílal "back" a důvod zdržení v textu cesty)
 //    "texts": [...], "warnings": [...], "departures": [...]}
 
 constexpr uint8_t TRAFFIC_MAX_LINES = 8;
@@ -98,9 +100,12 @@ struct TrafficDrive {
   int16_t minutes = -1;
   int16_t usualMinutes = -1;
   int16_t backMinutes = -1;
-  // Důvod zdržení z textu cesty ("stojí Chodov - Tomíčkova, 12 km/h"),
-  // jinak prázdné.
+  // Řádek pod cestou: kudy a za kolik ta druhá cesta, obvyklá doba, nejhorší
+  // úsek ("líp přes Vranov (E55 34) · obvykle 27"). Starší server ho neposílal;
+  // pak důvod zdržení z textu cesty, nebo prázdné.
   char detail[TRAFFIC_TEXT_LENGTH] = "";
+  // Druhá cesta je aspoň o 2 minuty pomalejší: vyplatí se jet tou první.
+  bool better = false;
 };
 
 struct TrafficData {
