@@ -874,7 +874,10 @@ je k dispozici jen zapnutá a s vyplněnou adresou. Vývojové sestavení ji um�
 předvyplnit: řádek `DOPRAVA_URL=https://hodiny:heslo@host/doprava.json`
 v `.env` (mimo git) zapíše `tools/generate_secrets.py` do
 `local/secrets.h`, a hodiny s prázdnou adresou ji při startu převezmou a
-obrazovku zapnou; ručně zadanou adresu nepřepíšou. Viditelná se ptá serveru
+obrazovku zapnou; ručně zadanou adresu nepřepíšou. Sériová linka hlásí každé
+stažení řádkem `[doprava] …` (OK s velikostí, nebo chyba). Screenshot
+stránky: `./capture-screenshot.sh --doprava-page 1` (2 cesty, 3 výstrahy a
+odjezdy); přes USB jdou i příkazy `TRAFFICSHOW` a `TRAFFICSWIPE`. Viditelná se ptá serveru
 jednou za minutu, schovaná jen tehdy, když je zapojená do automatického
 střídání, a to jednou za pět minut. Po chybě se čeká dvakrát déle než minule,
 nejvýš patnáct minut. Mapa se kreslí do stejného páru snímků v PSRAM jako

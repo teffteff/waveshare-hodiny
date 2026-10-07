@@ -2655,6 +2655,17 @@ void handleUsbCommands() {
         // takže ručně nalistovaná letadla by screenshot nikdy nezastihl.
         clockDashboardSetPlanesVisible(true);
         Serial.println("PLANES_SHOWN");
+      } else if (usbCommand == "TRAFFICSHOW" && !screenshotTransferActive) {
+        // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje.
+        // Viditelná doprava se hned ptá serveru, mapa přijde po stažení.
+        clockDashboardSetTrafficVisible(true);
+        applyTrafficState(runtimeConfig, true);
+        Serial.println("TRAFFIC_SHOWN");
+      } else if (usbCommand == "TRAFFICSWIPE" && !screenshotTransferActive) {
+        // Další stránka dopravy pro screenshot, jako tažení prstem.
+        clockDashboardSetTrafficVisible(true);
+        Serial.println(clockDashboardSwipeTraffic(1) ? "TRAFFIC_PAGE_SWITCHED"
+                                                     : "TRAFFIC_PAGE_UNAVAILABLE");
       } else if (usbCommand == "SATELLITESSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje.
         clockDashboardSetSatellitesVisible(true);
