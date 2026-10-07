@@ -22,6 +22,7 @@
 #include "RainAlertService.h"
 #include "WeatherWarningService.h"
 #include "SatelliteService.h"
+#include "TrafficService.h"
 #include "SharedFrames.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
@@ -161,6 +162,11 @@ uint32_t displayedSatellitesGeneration = UINT32_MAX;
 bool displayedSatellitesLoading = false;
 bool displayedSatellitesDetailOpen = false;
 char displayedSatellitesMessage[64] = "";
+// Doprava: mapa i texty se překreslují s generací služby; hláška a načítání
+// zvlášť, stejně jako u letadel.
+uint32_t displayedTrafficGeneration = UINT32_MAX;
+bool displayedTrafficLoading = false;
+char displayedTrafficMessage[64] = "";
 // Detail se překresluje mimo generaci snímku: klepnutí na letadlo mění panel,
 // ne mapu pod ním, takže by se jinak ukázal až s dalším stažením.
 bool displayedPlanesDetailOpen = false;
@@ -549,6 +555,20 @@ void applySatellitesState(const ClockConfig &config) {
   applySatellitesState(config, clockDashboardSatellitesVisible());
 }
 
+// Doprava stahuje viditelná každou minutu; schovaná jen tehdy, když je ve
+// střídání, a to po pěti minutách.
+void applyTrafficState(const ClockConfig &config, bool visible) {
+  const bool available = clockConfigTrafficAvailable(config);
+  trafficServiceSetActive(available && visible,
+                          available && config.traffic.automaticRotation,
+                          available ? config.traffic.url : "",
+                          config.language == CLOCK_LANGUAGE_ENGLISH);
+}
+
+void applyTrafficState(const ClockConfig &config) {
+  applyTrafficState(config, clockDashboardTrafficVisible());
+}
+
 // Upozornění na telefon hlídá server podle nastavení domácnosti; hodiny si ho
 // jen čtou (nízký přelet na obrazovce letadel, přehled na stránce nastavení).
 // Nezáleží na obrazovkách ani na radaru.
@@ -612,6 +632,7 @@ void applyPendingRuntimeConfiguration() {
       dashboardConfigBuffer.radarSource);
   applyPlaneRadarState(dashboardConfigBuffer);
   applySatellitesState(dashboardConfigBuffer);
+  applyTrafficState(dashboardConfigBuffer);
   applyRainAlertState(dashboardConfigBuffer);
   applyWarningState(dashboardConfigBuffer);
   applyPushAlertsState(dashboardConfigBuffer);
@@ -1045,6 +1066,14 @@ void handleSatellitesVisibility(bool visible) {
   applySatellitesState(loopConfigSnapshot(), visible);
 }
 
+void handleTrafficVisibility(bool visible) {
+  displayModeStartedAt = millis();
+  automaticRotationPaused = false;
+  // Canvas se při odchodu schová; vynulovaná generace ho po návratu odkryje.
+  if (visible) displayedTrafficGeneration = UINT32_MAX;
+  applyTrafficState(loopConfigSnapshot(), visible);
+}
+
 void handleRadarRangeChange(int8_t direction) {
   static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 200, 0};
   const ClockConfig &config = loopConfigSnapshot();
@@ -1146,6 +1175,7 @@ constexpr uint8_t ROTATION_SCREEN_AGENDA = CLOCK_SCREEN_AGENDA;
 constexpr uint8_t ROTATION_SCREEN_SKY = CLOCK_SCREEN_SKY;
 constexpr uint8_t ROTATION_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL;
 constexpr uint8_t ROTATION_SCREEN_SATELLITES = CLOCK_SCREEN_SATELLITES;
+constexpr uint8_t ROTATION_SCREEN_TRAFFIC = CLOCK_SCREEN_TRAFFIC;
 constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
 constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
 
@@ -1173,6 +1203,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardSkyVisible()) return ROTATION_SCREEN_SKY;
   if (clockDashboardSchoolVisible()) return ROTATION_SCREEN_SCHOOL;
   if (clockDashboardSatellitesVisible()) return ROTATION_SCREEN_SATELLITES;
+  if (clockDashboardTrafficVisible()) return ROTATION_SCREEN_TRAFFIC;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -1208,6 +1239,9 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_SATELLITES:
       clockDashboardSetSatellitesVisible(true);
       break;
+    case ROTATION_SCREEN_TRAFFIC:
+      clockDashboardSetTrafficVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
@@ -1218,6 +1252,7 @@ void showRotationScreen(uint8_t screen) {
       clockDashboardSetSkyVisible(false);
       clockDashboardSetSchoolVisible(false);
       clockDashboardSetSatellitesVisible(false);
+      clockDashboardSetTrafficVisible(false);
       break;
   }
 }
@@ -1279,6 +1314,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
       return clockConfigSchoolAvailable(config);
     case ROTATION_SCREEN_SATELLITES:
       return clockConfigSatellitesAvailable(config);
+    case ROTATION_SCREEN_TRAFFIC:
+      return clockConfigTrafficAvailable(config);
     default: return true;
   }
 }
@@ -1308,6 +1345,9 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_SATELLITES:
       return clockConfigSatellitesAvailable(config) &&
              config.satellites.automaticRotation;
+    case ROTATION_SCREEN_TRAFFIC:
+      return clockConfigTrafficAvailable(config) &&
+             config.traffic.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -1364,6 +1404,10 @@ bool rotationScreenReady(const ClockConfig &config, uint8_t screen) {
     // obloha nad nastavenou výškou je přitom platný stav.
     return satelliteServiceHasCurrentData();
   }
+  if (screen == ROTATION_SCREEN_TRAFFIC) {
+    // Mapa se po otevření nakreslí hned z dat v paměti; stačí, že nějaká jsou.
+    return trafficServiceHasData();
+  }
   if (screen == ROTATION_SCREEN_PLANES) {
     // Prázdná obloha je platný stav, takže se čeká jen na první vykreslený
     // snímek - ne na to, až nějaké letadlo přiletí. Snímek samotný tu být
@@ -1396,6 +1440,8 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_SATELLITES:
       return static_cast<unsigned long>(config.satellites.displaySeconds) *
              1000UL;
+    case ROTATION_SCREEN_TRAFFIC:
+      return static_cast<unsigned long>(config.traffic.displaySeconds) * 1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -1411,7 +1457,8 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_AGENDA) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SKY) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES);
+      rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_TRAFFIC);
   // Okno plánu i upozornění na déšť drží svou obrazovku; střídání se rozběhne
   // až po nich. Stejně tak rozečtený detail zprávy.
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
@@ -1498,6 +1545,9 @@ void maintainDisplayGestures() {
     if (clockDashboardSwipeValues() || clockDashboardSwipeSchool() ||
         clockDashboardSwipeRss() ||
         clockDashboardSwipeForecast(rangeSwipeDirection)) {
+      displayModeStartedAt = millis();
+    } else if (clockDashboardSwipeTraffic(rangeSwipeDirection)) {
+      // Stránku přepíná obrazovka sama; služba kreslí mapu dál.
       displayModeStartedAt = millis();
     } else if (clockDashboardSwipeSatellites()) {
       // Služba musí vědět, kterou stránku kreslit.
@@ -2033,6 +2083,29 @@ void maintainPlanesDisplay() {
   displayedPlanesLoading = snapshot.loading;
 }
 
+// Mapa a texty dopravy na obrazovku. Snímek nese přes dva kilobajty textů,
+// takže leží v PSRAM a texty se do něj kopírují jen při změně.
+void maintainTrafficDisplay() {
+  if (!clockDashboardTrafficVisible()) return;
+  static TrafficSnapshot *snapshot = nullptr;
+  if (snapshot == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(TrafficSnapshot),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr) return;
+    snapshot = new (memory) TrafficSnapshot();
+  }
+  trafficServiceSnapshot(*snapshot);
+  if (snapshot->generation == displayedTrafficGeneration &&
+      snapshot->loading == displayedTrafficLoading &&
+      strcmp(snapshot->message, displayedTrafficMessage) == 0)
+    return;
+  clockDashboardSetTrafficSnapshot(*snapshot);
+  displayedTrafficGeneration = snapshot->generation;
+  displayedTrafficLoading = snapshot->loading;
+  strlcpy(displayedTrafficMessage, snapshot->message,
+          sizeof(displayedTrafficMessage));
+}
+
 void maintainSatellitesDisplay() {
   if (!clockDashboardSatellitesVisible()) return;
   static SatelliteSnapshot snapshot;
@@ -2347,6 +2420,7 @@ void maintainRadarNightVisual() {
   chmiRadarServiceSetRedNightMode(enabled);
   planeRadarServiceSetRedNightMode(enabled);
   satelliteServiceSetRedNightMode(enabled);
+  trafficServiceSetRedNightMode(enabled);
 }
 
 void handleConfigurationWebStatus(bool active) {
@@ -2748,6 +2822,7 @@ void maintainNetworkTime() {
         config.radarLegend, config.radarPrecipitation, config.radarSource);
     applyPlaneRadarState(config);
     applySatellitesState(config);
+    applyTrafficState(config);
 #if !FIRMWARE_RELEASE
     Serial.println("NTP synchronizovano");
 #endif
@@ -2872,6 +2947,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     chmiRadarServicePrepareForFirmwareUpdate();
     planeRadarServicePrepareForFirmwareUpdate();
     satelliteServicePrepareForFirmwareUpdate();
+    trafficServicePrepareForFirmwareUpdate();
     lightningServicePrepareForFirmwareUpdate();
     rainAlertServicePrepareForFirmwareUpdate();
     weatherWarningServicePrepareForFirmwareUpdate();
@@ -2886,6 +2962,8 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     applyPlaneRadarState(loopConfigSnapshot());
     satelliteServiceBegin();
     applySatellitesState(loopConfigSnapshot());
+    trafficServiceBegin();
+    applyTrafficState(loopConfigSnapshot());
     // Ze stejného důvodu jako u letadel a družic: příprava na aktualizaci
     // úlohu zastavila a po přerušené aktualizaci by mlčela až do restartu.
     rainAlertServiceBegin();
@@ -4084,18 +4162,21 @@ void setup() {
   clockDashboardSetAgendaVisibilityCallback(handleAgendaVisibility);
   clockDashboardSetSchoolVisibilityCallback(handleSchoolVisibility);
   clockDashboardSetSatellitesVisibilityCallback(handleSatellitesVisibility);
+  clockDashboardSetTrafficVisibilityCallback(handleTrafficVisibility);
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
   // Snímky letadel a družic se berou hned, dokud je PSRAM celá: později ji
   // rozdrobí radar ČHMÚ a dva bloky po 461 kB by se už nemusely najít.
   if (clockConfigPlanesAvailable(runtimeConfig) ||
       clockConfigSatellitesAvailable(runtimeConfig) ||
-      clockConfigNightSkyAvailable(runtimeConfig)) {
+      clockConfigNightSkyAvailable(runtimeConfig) ||
+      clockConfigTrafficAvailable(runtimeConfig)) {
     sharedFramesReserve();
   }
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
   satelliteServiceBegin();
+  trafficServiceBegin();
   lightningServiceBegin();
   rainAlertServiceBegin();
   applyRainAlertState(runtimeConfig);
@@ -4228,6 +4309,7 @@ void loop() {
   maintainRadarDisplay();
   maintainPlanesDisplay();
   maintainSatellitesDisplay();
+  maintainTrafficDisplay();
   maintainRssDisplay();
   maintainAgendaDisplay();
   maintainSchoolDisplay();

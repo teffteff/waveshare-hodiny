@@ -240,6 +240,20 @@ bool clockDashboardSatellitesSkyPage();
 void clockDashboardSetSatellitesSkyPage(bool sky);
 void clockDashboardSetNightSkyAvailable(bool available);
 
+// --- Doprava -----------------------------------------------------------------
+bool clockDashboardTrafficVisible();
+void clockDashboardSetTrafficVisible(bool visible);
+// Vypnutá obrazovka nebo prázdná adresa se do rotace ani pod gesto nepustí;
+// stránka vzniká až při prvním zapnutí.
+void clockDashboardSetTrafficAvailable(bool available);
+void clockDashboardSetTrafficVisibilityCallback(RssVisibilityCallback visibility);
+struct TrafficSnapshot;
+void clockDashboardSetTrafficSnapshot(const TrafficSnapshot &snapshot);
+// Tažení prstu přepíná mapu, cesty s D1 a výstrahy s odjezdy (ta třetí jen
+// tehdy, když je co ukázat). Vrací false, když doprava není vidět.
+bool clockDashboardSwipeTraffic(int8_t direction);
+bool clockDashboardTrafficMapPage();
+
 bool clockDashboardAutomaticRotationAllowed();
 // Switch the bank inside the values clock without changing the screen/dot.
 bool clockDashboardSwipeValues();

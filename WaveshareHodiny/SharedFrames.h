@@ -4,7 +4,7 @@
 #include <cstdint>
 
 // Dva celoobrazovkové snímky 480x480 (RGB565) v PSRAM, o které se dělí radar
-// letadel a družice s noční oblohou. Nikdy nejsou vidět zároveň a do snímků se
+// letadel, družice s noční oblohou a mapa dopravy. Nikdy nejsou vidět zároveň a do snímků se
 // kreslí jen pro viditelnou obrazovku, takže jim stačí jeden pár místo dvou.
 //
 // Každá služba dřív držela vlastní pár (922 kB) napořád. S radarem ČHMÚ se
@@ -12,7 +12,7 @@
 // družice není dostatek PSRAM" při 766 kB volných a největším bloku 410 kB,
 // menším než jeden snímek. Pár se proto alokuje jednou při startu, dokud je
 // PSRAM celá, a už se neuvolňuje.
-enum class SharedFrameUser : uint8_t { None, Planes, Satellites };
+enum class SharedFrameUser : uint8_t { None, Planes, Satellites, Traffic };
 
 constexpr size_t SHARED_FRAME_COUNT = 2;
 constexpr size_t SHARED_FRAME_WIDTH = 480;

@@ -435,6 +435,7 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.rss.url);
   terminateText(config.radarStatusTemperatureEntityId);
   terminateText(config.historyUrl);
+  terminateText(config.traffic.url);
   terminateText(config.planes.watchCallsign);
   terminateText(config.agenda.url);
   terminateText(config.planesFeedUrl);
@@ -561,6 +562,8 @@ void normalizeConfig(ClockConfig &config) {
   if (config.satellites.topBearingDeg >= 360) config.satellites.topBearingDeg = 0;
   config.satellites.displaySeconds =
       constrain(config.satellites.displaySeconds, 10, 3600);
+  config.traffic.displaySeconds =
+      constrain(config.traffic.displaySeconds, 10, 3600);
   clockConfigNormalizeScreenSchedule(config.screenSchedule);
   // Bez adresy serveru se upozornění na déšť nedá zapnout: předpověď nemá
   // odkud vzít. Stejně jako u blesků.
@@ -761,6 +764,10 @@ bool clockConfigSchoolAvailable(const ClockConfig &config) {
 bool clockConfigSatellitesAvailable(const ClockConfig &config) {
   return config.satellites.enabled && config.satellites.url[0] != '\0' &&
          (config.satellites.groups & CLOCK_SATELLITE_GROUP_ALL) != 0;
+}
+
+bool clockConfigTrafficAvailable(const ClockConfig &config) {
+  return config.traffic.enabled && config.traffic.url[0] != '\0';
 }
 
 bool clockConfigNightSkyAvailable(const ClockConfig &config) {
@@ -1068,6 +1075,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV53 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_53_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV52 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1138,6 +1152,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV53) ||
          storedSize == sizeof(ConfigRecordV52) ||
          storedSize == sizeof(ConfigRecordV51) ||
          storedSize == sizeof(ConfigRecordV50) ||
@@ -1182,6 +1197,25 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 53 je přesnou předponou schématu 54; doprava si po zkopírování
+  // bajtů podrží výchozí hodnoty, tedy vypnutou bez adresy, a normalizace ji
+  // pošle na konec pořadí obrazovek.
+  const ConfigRecordV53 &legacyV53 =
+      *reinterpret_cast<const ConfigRecordV53 *>(&record);
+  uint32_t embeddedSchemaV53 = 0;
+  if (readComplete && storedSize == sizeof(legacyV53))
+    memcpy(&embeddedSchemaV53, legacyV53.config, sizeof(embeddedSchemaV53));
+  if (readComplete && storedSize == sizeof(legacyV53) &&
+      legacyV53.magic == CONFIG_MAGIC && legacyV53.schemaVersion == 53 &&
+      embeddedSchemaV53 == 53 &&
+      legacyV53.checksum ==
+          bytesChecksum(legacyV53.config, sizeof(legacyV53.config))) {
+    memcpy(&config, legacyV53.config, sizeof(legacyV53.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 52 je přesnou předponou schématu 53; adresa naměřené historie
