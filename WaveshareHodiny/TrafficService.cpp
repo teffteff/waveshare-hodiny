@@ -202,6 +202,7 @@ long download(const char *url, int &httpStatus, bool &tooLarge) {
 }
 
 bool fetchTraffic(const char *url) {
+  Serial.println("[doprava] stahuji");
   int httpStatus = 0;
   bool tooLarge = false;
   long length = -1;
@@ -224,6 +225,7 @@ bool fetchTraffic(const char *url) {
     else
       snprintf(message, sizeof(message), "Server dopravy neodpovídá");
     setStatusMessage(message);
+    Serial.printf("[doprava] chyba: %s\n", message);
     return false;
   }
   // Rozbor do pracovní kopie; rozbitá odpověď tak platná data nesmaže.
@@ -231,8 +233,10 @@ bool fetchTraffic(const char *url) {
                        static_cast<size_t>(length),
                        storage->scratch) != TrafficParseStatus::Ok) {
     setStatusMessage("Server dopravy poslal nečitelná data");
+    Serial.printf("[doprava] nečitelná data, %ld B\n", length);
     return false;
   }
+  Serial.printf("[doprava] OK, %ld B\n", length);
   return true;
 }
 
@@ -463,6 +467,7 @@ void trafficServiceSetActive(bool nowVisible, bool backgroundRefresh,
   }
   visible = nowVisible;
   active = (nowVisible || backgroundRefresh) && wantedUrl[0] != '\0';
+  const bool logActive = active, logChanged = active != wasActive || nowVisible != wasVisible;
   if (active && !wasActive) {
     fetchNowRequested = true;
     notify = true;
@@ -478,6 +483,9 @@ void trafficServiceSetActive(bool nowVisible, bool backgroundRefresh,
   }
   if (!active) statusMessage[0] = '\0';
   portEXIT_CRITICAL(&stateMux);
+  if (logChanged)
+    Serial.printf("[doprava] aktivni=%d viditelna=%d adresa=%s ukol=%d\n", logActive, nowVisible,
+                  wantedUrl[0] ? "ano" : "ne", taskHandle != nullptr);
   if (nowVisible && !wasVisible) sharedFramesClaim(SharedFrameUser::Traffic);
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }

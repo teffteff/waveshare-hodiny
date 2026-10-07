@@ -117,7 +117,24 @@ def enable_night_mode(connection: serial.Serial) -> None:
     raise TimeoutError("Displej nepotvrdil zapnutí nočního režimu")
 
 
-def capture(port: str, settings_page: int = 0, night_mode: bool = False) -> bytes:
+def open_traffic(connection: serial.Serial, page: int) -> None:
+    """Obrazovka Doprava a její stránka (1 mapa, 2 cesty, 3 výstrahy a odjezdy)."""
+    connection.reset_input_buffer()
+    connection.write(b"TRAFFICSHOW\n")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if connection.readline().strip() == b"TRAFFIC_SHOWN":
+            break
+    else:
+        raise TimeoutError("Displej nepotvrdil příkaz TRAFFICSHOW")
+    # Stažení z serveru a vykreslení mapy do sdíleného snímku.
+    time.sleep(15.0)
+    for _ in range(page - 1):
+        connection.write(b"TRAFFICSWIPE\n")
+        time.sleep(1.0)
+
+
+def capture(port: str, settings_page: int = 0, night_mode: bool = False, traffic_page: int = 0) -> bytes:
     connection = serial.Serial(baudrate=921600, timeout=1, dsrdtr=False, rtscts=False)
     connection.dtr = False
     connection.rts = False
@@ -132,6 +149,9 @@ def capture(port: str, settings_page: int = 0, night_mode: bool = False) -> byte
             time.sleep(0.5)
         elif night_mode:
             enable_night_mode(connection)
+            time.sleep(0.5)
+        elif traffic_page:
+            open_traffic(connection, traffic_page)
             time.sleep(0.5)
         # První přenos sjednotí oba plné LVGL buffery po startu. Uložíme až
         # druhý, stabilní framebuffer; nevzniknou tak artefakty při sekundové
@@ -162,10 +182,17 @@ def main() -> None:
         action="store_true",
         help="Před screenshotem zapne noční červený režim",
     )
+    parser.add_argument(
+        "--doprava-page",
+        type=int,
+        choices=(1, 2, 3),
+        help="Před screenshotem otevře obrazovku Doprava na vybrané stránce",
+    )
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "screenshots" / "latest.png")
     arguments = parser.parse_args()
     framebuffer = capture(
-        find_port(arguments.port), arguments.settings_page or (1 if arguments.settings else 0), arguments.night
+        find_port(arguments.port), arguments.settings_page or (1 if arguments.settings else 0), arguments.night,
+        arguments.doprava_page or 0,
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     rgb565_to_circular_png(framebuffer, arguments.output)
