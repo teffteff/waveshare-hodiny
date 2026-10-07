@@ -122,6 +122,33 @@ void testNullsDelaysAndStale() {
   assert(data.placeCount == 0 && data.exitCount == 0 && data.textCount == 0);
 }
 
+void testFourDrivesWithWays() {
+  static TrafficData data;
+  const std::string text =
+      "{\"now\":1791371126,\"t\":1791371100,\"stale\":false,\"lines\":[],"
+      "\"buses\":[],"
+      "\"drives\":[{\"to\":\"Do Prahy\",\"min\":30,\"usual\":28,"
+      "\"detail\":\"přes Mirošovice (Strančice 31) · obvykle 28\",\"better\":false},"
+      "{\"to\":\"Z Prahy\",\"min\":29,\"usual\":29,\"detail\":\"\",\"better\":false},"
+      "{\"to\":\"Do Benešova\",\"min\":26,\"usual\":27,"
+      "\"detail\":\"líp přes Vranov (E55 34)\",\"better\":true},"
+      "{\"to\":\"Z Benešova\",\"min\":27,\"usual\":27,"
+      "\"detail\":\"přes E55 (Vranov 27)\",\"better\":false}],"
+      "\"texts\":[\"D1 do Prahy: jede\",\"D1 na Brno: stojí Mirošovice – Hvězdonice\"]}";
+  assert(parse(text, data) == TrafficParseStatus::Ok);
+  assert(data.busCount == 0);
+  assert(data.driveCount == 4);
+  assert(strcmp(data.drives[0].to, "Do Prahy") == 0 && data.drives[0].minutes == 30);
+  // Řádek kudy jet přijde hotový, s interpunkcí, kterou písmo hodin umí.
+  assert(strcmp(data.drives[0].detail, "přes Mirošovice (Strančice 31), obvykle 28") == 0);
+  assert(!data.drives[0].better);
+  assert(data.drives[1].detail[0] == '\0');
+  assert(strcmp(data.drives[2].detail, "líp přes Vranov (E55 34)") == 0 && data.drives[2].better);
+  assert(data.drives[3].backMinutes == -1);
+  // Texty D1 k žádné cestě nepatří.
+  assert(data.textCount == 2);
+}
+
 void testMalformed() {
   static TrafficData data;
   assert(trafficFeedParse(nullptr, 0, data) == TrafficParseStatus::NotJson);
@@ -215,6 +242,7 @@ void testFoldText() {
 int main() {
   testFixture();
   testNullsDelaysAndStale();
+  testFourDrivesWithWays();
   testMalformed();
   testOversized();
   testFoldText();
