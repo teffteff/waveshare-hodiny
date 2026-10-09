@@ -242,6 +242,9 @@ constexpr uint32_t LOOP_WATCHDOG_TIMEOUT_MS = 20UL * 1000UL;
 constexpr uint32_t NTP_SYNC_INTERVAL_MS = 60UL * 60UL * 1000UL;
 constexpr uint32_t HOME_ASSISTANT_REFRESH_MS = 60UL * 1000UL;
 constexpr uint32_t HOME_ASSISTANT_RETRY_MS = 5UL * 1000UL;
+// Baterie čidel se mění po dnech, takže se jejich entity nečtou s každým
+// obnovením, ale jednou za delší dobu; ušetří to až 18 požadavků za minutu.
+constexpr uint32_t HOME_ASSISTANT_BATTERY_REFRESH_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t HOME_ASSISTANT_CONNECT_TIMEOUT_MS = 5000;
 constexpr uint32_t HOME_ASSISTANT_RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint8_t HOME_ASSISTANT_REQUEST_ATTEMPTS = 2;
@@ -2604,6 +2607,11 @@ void handleUsbCommands() {
         // takže ručně nalistovaná předpověď by screenshot nikdy nezastihl.
         clockDashboardSetForecastVisible(true);
         Serial.println("FORECAST_SHOWN");
+      } else if (usbCommand == "CLOCKSHOW" && !screenshotTransferActive) {
+        // Zpátky na ciferník pro screenshot: plán obrazovek může po startu
+        // otevřít třeba agendu, takže by ciferník screenshot nezastihl.
+        clockDashboardSetAgendaVisible(false);
+        Serial.println("CLOCK_SHOWN");
       } else if (usbCommand == "AGENDASHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
         // takže ručně nalistovaná agenda by screenshot nikdy nezastihl.
@@ -3253,6 +3261,16 @@ bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
       values.slotValues[index] = number;
       filledSlot = true;
     }
+    // Entita baterie slotu; jedna entita může hlídat víc slotů téhož čidla.
+    for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+      const ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
+      const char *batteryEntityId =
+          clockConfigValueSlotBatteryEntityId(config, index);
+      if (!slot.enabled || batteryEntityId[0] == '\0') continue;
+      if (entityId != batteryEntityId) continue;
+      values.slotBatteryPercent[index] = number;
+      filledSlot = true;
+    }
   }
   // Teplota pro radar se plní nezávisle na řetězci níže, stejně jako sloty:
   // jedna entita může krmit zároveň pozici na ciferníku i stavový řádek.
@@ -3430,11 +3448,12 @@ bool applySunState(const ClockConfig &config, const String &payload,
 }
 
 bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
-                              ClockValues &values) {
+                              ClockValues &values, bool includeBatteries) {
   networkDiagnosticsBegin(NetworkDiagnosticKind::HomeAssistantRuntime);
-  // Osm pevných entit plus entity zapnutých slotů. Duplicity se vynechají,
-  // aby se stejný senzor nestahoval dvakrát.
-  const char *entityIds[8 + CLOCK_VALUE_SLOT_COUNT] = {
+  // Osm pevných entit plus entity zapnutých slotů a jednou za čas i entity
+  // jejich baterií. Duplicity se vynechají, aby se stejný senzor nestahoval
+  // dvakrát.
+  const char *entityIds[8 + 2 * CLOCK_VALUE_SLOT_COUNT] = {
       config.weatherEntityId,
       config.leftSide.temperatureEntityId,
       config.rightSide.temperatureEntityId,
@@ -3458,6 +3477,25 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
       }
     }
     if (!alreadyListed) entityIds[entityCount++] = slot.entityId;
+  }
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    const ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
+    const char *batteryEntityId =
+        clockConfigValueSlotBatteryEntityId(config, index);
+    if (!slot.enabled || batteryEntityId[0] == '\0') {
+      // Bez entity nesmí u slotu viset baterie z dřívějšího nastavení.
+      values.slotBatteryPercent[index] = NAN;
+      continue;
+    }
+    if (!includeBatteries) continue;
+    bool alreadyListed = false;
+    for (size_t listed = 0; listed < entityCount; ++listed) {
+      if (strcmp(entityIds[listed], batteryEntityId) == 0) {
+        alreadyListed = true;
+        break;
+      }
+    }
+    if (!alreadyListed) entityIds[entityCount++] = batteryEntityId;
   }
   values.sunStateAvailable = false;
   values.dayNightLightStateAvailable = false;
@@ -3506,7 +3544,8 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
   return apiResponded;
 }
 
-bool fetchHomeAssistantStates(const ClockConfig &config, ClockValues &values) {
+bool fetchHomeAssistantStates(const ClockConfig &config, ClockValues &values,
+                              bool includeBatteries) {
   if (config.homeAssistantUrl[0] == '\0' ||
       config.homeAssistantToken[0] == '\0') {
     return false;
@@ -3515,10 +3554,10 @@ bool fetchHomeAssistantStates(const ClockConfig &config, ClockValues &values) {
     WiFiClientSecure client;
     client.setInsecure();
     client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
-    return fetchHomeAssistantStates(client, config, values);
+    return fetchHomeAssistantStates(client, config, values, includeBatteries);
   }
   WiFiClient client;
-  return fetchHomeAssistantStates(client, config, values);
+  return fetchHomeAssistantStates(client, config, values, includeBatteries);
 }
 
 bool fetchDayNightStates(NetworkClient &client, const ClockConfig &config,
@@ -3980,6 +4019,9 @@ void homeAssistantTask(void *) {
   ClockValues lastAvailableValues;
   unsigned long nextOpenMeteoRefreshAt = 0;
   unsigned long nextTmepRefreshAt = 0;
+  // Nula = baterie se přečtou hned: po startu, po ztrátě Wi-Fi i po uložení
+  // nastavení, kde se entity mohly změnit.
+  unsigned long nextBatteryRefreshAt = 0;
   bool tmepCatalogPrimed = false;
   for (;;) {
     const ClockConfig &config = homeAssistantConfigSnapshot();
@@ -3987,6 +4029,7 @@ void homeAssistantTask(void *) {
     if (WiFi.status() != WL_CONNECTED) {
       nextOpenMeteoRefreshAt = 0;
       nextTmepRefreshAt = 0;
+      nextBatteryRefreshAt = 0;
       tmepCatalogPrimed = false;
       publishHomeAssistantValues(ClockValues{});
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
@@ -4062,10 +4105,16 @@ void homeAssistantTask(void *) {
       continue;
     }
 
-    const bool apiResponded = fetchHomeAssistantStates(config, values);
+    const bool includeBatteries =
+        nextBatteryRefreshAt == 0 ||
+        static_cast<long>(millis() - nextBatteryRefreshAt) >= 0;
+    const bool apiResponded =
+        fetchHomeAssistantStates(config, values, includeBatteries);
     values.homeAssistantOnline = apiResponded;
     if (apiResponded) {
       lastAvailableValues = values;
+      if (includeBatteries)
+        nextBatteryRefreshAt = millis() + HOME_ASSISTANT_BATTERY_REFRESH_MS;
     }
     publishHomeAssistantValues(values);
     if (!apiResponded) {
@@ -4077,7 +4126,11 @@ void homeAssistantTask(void *) {
     while (static_cast<long>(millis() - fullRefreshAt) < 0) {
       const unsigned long remaining = fullRefreshAt - millis();
       if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(remaining)) == 0) break;
-      if (!consumeDayNightLightRefreshRequest()) break;
+      if (!consumeDayNightLightRefreshRequest()) {
+        // Uložené nastavení mohlo změnit entity baterií.
+        nextBatteryRefreshAt = 0;
+        break;
+      }
 
       static ClockConfig &lightConfig = clockConfigAllocate();
       static ClockValues lightValues;

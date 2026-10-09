@@ -122,6 +122,8 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
 - dvě další měřené veličiny, například CO₂, VOC, vlhkost, tlak nebo baterii,
 - devět nezávislých hodnot ciferníku HODNOTY, každou s vlastním názvem,
   entitou Home Assistantu, jednotkou, přesností a barevnou škálou,
+- prázdnou baterii vedle názvu hodnoty, když baterie jejího čidla klesne
+  pod 10 %, a pomlčky místo hodnoty, když je vybitá,
 - vlastní čidla TMEP.cz jako volitelný doplněk hodnot Open-Meteo,
 - vlastní jednotky, počet desetinných míst a plynulé barevné škály,
 - denní a noční jas s ručním přepínáním nebo automatikou podle východu a západu
@@ -304,6 +306,8 @@ Web umožňuje nastavit:
 - devět hodnot ciferníku HODNOTY, každou zvlášť zapínatelnou, s vlastní entitou,
   názvem, jednotkou, přesností a barevnou škálou; sekce se zobrazí jen se
   zdrojem dat Home Assistant, protože sloty čtou entity,
+- volitelnou entitu baterie ke každé hodnotě; pod 10 % se vedle názvu ukáže
+  prázdná baterie,
 - pořadí devíti hodnot přetažením za úchyt v záhlaví nebo tlačítky ↑ a ↓;
   pořadí odpovídá mřížce na displeji a stěhuje se celé nastavení slotu
   včetně barevné škály,
@@ -1328,3 +1332,7 @@ původní licenční podmínky nenahrazuje.
 ### Druhá obrazovka HODNOTY
 
 S Home Assistantem a ciferníkem HODNOTY přepneš tažením prstu mezi dvěma sadami po devíti hodnotách. Tečka nahoře zůstává stejná; podržení dál přepíná ostatní stránky. Na webu otevři Hodnoty: první obrazovka používá pozice 1–9, druhá 10–18. Každá pozice má vlastní entitu, název, jednotku, desetinná místa, zapnutí a barevnou škálu. Nové pozice jsou po aktualizaci vypnuté. Původní konfigurace a zálohy zůstávají kompatibilní; nové zálohy obsahují všech 18 hodnot.
+
+### Slabá baterie čidla
+
+Home Assistant podrží poslední naměřenou hodnotu i po tom, co čidlu dojde baterie, takže hodiny by dál ukazovaly zdánlivě živou teplotu. U každé hodnoty jde proto vyplnit **Entita baterie čidla** (nabídka ukáže entity s baterií v názvu, jinak všechna čidla v procentech). Při výběru entity hodnoty se baterie doplní sama podle ID: k `sensor.loznice_adam_teplota` patří `sensor.loznice_adam_baterie`; základna bez baterie žádnou nedostane. Tlačítko **Doplnit entity baterií** udělá totéž pro všechny hodnoty najednou a ručně vyplněná pole nechá být. Když entita hlásí méně než 10 %, nakreslí se vedle názvu hodnoty červená prázdná baterie; při 0 % je modul mrtvý a místo poslední hodnoty, kterou Home Assistant dál drží, se ukážou pomlčky. Baterie se čtou jednou za deset minut, hned po startu a po uložení nastavení; bez vyplněné entity se nic nestahuje.

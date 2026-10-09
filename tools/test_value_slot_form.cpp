@@ -346,6 +346,46 @@ void testInvalidScreenScheduleIsRejected() {
          ScreenScheduleFormResult::Invalid);
 }
 
+// Stránka ze starší verze pole valueSlot*BatteryEntity neposílá; uložená
+// entita baterie musí zůstat.
+void testMissingBatteryFieldKeepsStoredEntity() {
+  Fields fields = customSlotFields();
+  char entityId[CLOCK_ENTITY_ID_LENGTH] = "sensor.loznice_baterie";
+  const ConfigurationFormSource source = sourceFor(fields);
+  assert(readValueSlotBatteryFromSource(source, 0, entityId,
+                                        sizeof(entityId)) ==
+         ValueSlotFormResult::Missing);
+  assert(strcmp(entityId, "sensor.loznice_baterie") == 0);
+}
+
+// Entita baterie se čte z pole se stejným indexem jako slot, oříznutá o
+// mezery; prázdné pole hlídání vypne.
+void testBatteryEntityIsRead() {
+  Fields fields = customSlotFields();
+  fields["valueSlot0BatteryEntity"] = "  sensor.loznice_adam_baterie ";
+  fields["valueSlot1BatteryEntity"] = "sensor.jina_baterie";
+  char entityId[CLOCK_ENTITY_ID_LENGTH] = "sensor.stara";
+  const ConfigurationFormSource source = sourceFor(fields);
+  assert(readValueSlotBatteryFromSource(source, 0, entityId,
+                                        sizeof(entityId)) ==
+         ValueSlotFormResult::Applied);
+  assert(strcmp(entityId, "sensor.loznice_adam_baterie") == 0);
+
+  fields["valueSlot0BatteryEntity"] = "";
+  assert(readValueSlotBatteryFromSource(source, 0, entityId,
+                                        sizeof(entityId)) ==
+         ValueSlotFormResult::Applied);
+  assert(entityId[0] == '\0');
+
+  // Příliš dlouhá entita se zkrátí na kapacitu i s ukončením.
+  std::string longId = "sensor." + std::string(200, 'a');
+  fields["valueSlot0BatteryEntity"] = longId;
+  assert(readValueSlotBatteryFromSource(source, 0, entityId,
+                                        sizeof(entityId)) ==
+         ValueSlotFormResult::Applied);
+  assert(strlen(entityId) == CLOCK_ENTITY_ID_LENGTH - 1);
+}
+
 int main() {
   testScreenScheduleMissingKeepsStored();
   testScreenScheduleIsRead();
@@ -360,6 +400,8 @@ int main() {
   testDuplicateColorValuesAreRejected();
   testInvalidColorScaleIsRejected();
   testSlotIndexSelectsItsOwnFields();
+  testMissingBatteryFieldKeepsStoredEntity();
+  testBatteryEntityIsRead();
   testScreenOrderIsParsed();
   testIncompleteOrDuplicateScreenOrderIsRejected();
   return 0;

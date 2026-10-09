@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cctype>
 #include <string>
 
 #ifndef constrain
@@ -28,6 +29,14 @@ class String {
     return index < value_.size() ? value_[index] : '\0';
   }
   long toInt() const { return strtol(value_.c_str(), nullptr, 10); }
+  // Jako na Arduinu: ořízne bílé znaky na obou koncích.
+  void trim() {
+    const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+    while (!value_.empty() && isSpace(value_.back())) value_.pop_back();
+    size_t start = 0;
+    while (start < value_.size() && isSpace(value_[start])) ++start;
+    value_.erase(0, start);
+  }
   bool operator==(const String &other) const { return value_ == other.value_; }
   bool operator!=(const String &other) const { return value_ != other.value_; }
   String &operator+=(const String &other) {

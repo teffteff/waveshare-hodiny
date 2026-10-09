@@ -1678,6 +1678,56 @@ void testHistoryUrlPersistenceAndMigration() {
   assert(strlen(terminated.historyUrl) < sizeof(terminated.historyUrl));
 }
 
+void testSlotBatteryPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index)
+    assert(clockConfigValueSlotBatteryEntityId(defaults, index)[0] == '\0');
+
+  // Schéma 54 je předponou 55: doprava zůstane, entity baterií jsou prázdné,
+  // ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.traffic.enabled = true;
+  strcpy(source.traffic.url,
+         "https://hodiny:heslo@example.net/api/doprava?for=hodiny");
+  memset(source.slotBatteryEntityIds, 'x', sizeof(source.slotBatteryEntityIds));
+  seed(legacyRecord(source, 54, CLOCK_CONFIG_SCHEMA_54_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.traffic.enabled);
+  assert(strcmp(migrated.traffic.url,
+                "https://hodiny:heslo@example.net/api/doprava?for=hodiny") == 0);
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index)
+    assert(clockConfigValueSlotBatteryEntityId(migrated, index)[0] == '\0');
+
+  // Entita baterie se ukládá ke slotu se stejným indexem, i na druhé stránce.
+  strcpy(clockConfigValueSlotBatteryEntityId(migrated, 7),
+         "sensor.loznice_adam_baterie");
+  strcpy(clockConfigValueSlotBatteryEntityId(migrated, 17),
+         "sensor.koupelna_baterie");
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(strcmp(clockConfigValueSlotBatteryEntityId(loaded, 7),
+                "sensor.loznice_adam_baterie") == 0);
+  assert(strcmp(clockConfigValueSlotBatteryEntityId(loaded, 17),
+                "sensor.koupelna_baterie") == 0);
+  assert(clockConfigValueSlotBatteryEntityId(loaded, 6)[0] == '\0');
+  assert(clockConfigValueSlotBatteryEntityId(loaded, 8)[0] == '\0');
+
+  // Neukončený text se při načtení ukončí.
+  memset(loaded.slotBatteryEntityIds[3], 'y',
+         sizeof(loaded.slotBatteryEntityIds[3]));
+  assert(clockConfigSave(loaded));
+  ClockConfig terminated;
+  assert(clockConfigLoad(terminated));
+  assert(strlen(clockConfigValueSlotBatteryEntityId(terminated, 3)) <
+         CLOCK_ENTITY_ID_LENGTH);
+}
+
 void testTrafficPersistenceAndMigration() {
   hostPreferencesReset();
   ClockConfig defaults;
@@ -1883,6 +1933,7 @@ int main() {
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();
   testTrafficPersistenceAndMigration();
+  testSlotBatteryPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
   testScreenSchedulePersistenceAndMigration();
