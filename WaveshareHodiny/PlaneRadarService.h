@@ -34,6 +34,8 @@ struct PlaneRadarDetail {
   // své databázi nenajde.
   char description[40] = "";
   char registration[12] = "";
+  // Odkud letadlo je: vlastní přijímač (ADS-B doma), nebo jen internet.
+  bool ownReceiver = false;
   char squawk[6] = "";
   // Kód nouze, kterým letadlo vysílá, jinak prázdné.
   char emergency[6] = "";

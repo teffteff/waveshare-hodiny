@@ -8149,8 +8149,18 @@ void updatePlanesDetail(const PlaneRadarDetail &detail) {
   }
   lv_label_set_text(planesDetailRows[row++], line);
 
-  // Registrace pod typem, bez nadpisu - "OK-SCT" se pozná samo.
-  lv_label_set_text(planesDetailRegistration, detail.registration);
+  // Registrace pod typem, bez nadpisu - "OK-SCT" se pozná samo. Za ní zdroj:
+  // vlastní přijímač (ADS-B doma, "rx":1 od serveru), nebo jen internet.
+  // Řádek má volnou šířku, takže se vejde obojí a panel nemění rozměry.
+  const char *sourceText = detail.ownReceiver
+                               ? (english ? "own receiver" : "vlastní přijímač")
+                               : (english ? "internet" : "internet");
+  if (detail.registration[0] != '\0') {
+    snprintf(line, sizeof(line), "%s  ·  %s", detail.registration, sourceText);
+  } else {
+    snprintf(line, sizeof(line), "%s", sourceText);
+  }
+  lv_label_set_text(planesDetailRegistration, line);
 
   // Nouzový stav má vlastní řádek, ne náhradní místo po typu: letadlo, které
   // hlásí typ nebo registraci, by o něm jinak neřeklo vůbec nic.

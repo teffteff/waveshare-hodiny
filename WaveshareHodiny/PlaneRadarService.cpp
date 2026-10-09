@@ -1599,6 +1599,7 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
             sizeof(detail.description));
     strlcpy(detail.registration, aircraft.registration,
             sizeof(detail.registration));
+    detail.ownReceiver = aircraft.ownReceiver;
     strlcpy(detail.squawk, aircraft.squawk, sizeof(detail.squawk));
     const char *emergency = adsbEmergencyCode(aircraft);
     strlcpy(detail.emergency, emergency != nullptr ? emergency : "",

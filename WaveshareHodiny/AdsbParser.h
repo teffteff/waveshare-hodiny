@@ -66,6 +66,9 @@ struct AdsbAircraft {
   // Příznaky z databáze tar1090, kterou adsb.fi připojuje: bit 1 vojenské,
   // bit 2 zajímavé. Server je posílá jen nenulové.
   uint8_t dbFlags = 0;
+  // true = slyšel ho vlastní přijímač (planes-web posílá "rx":1), jinak
+  // letadlo zná jen internet (adsb.fi).
+  bool ownReceiver = false;
 };
 
 constexpr uint8_t ADSB_DB_FLAG_MILITARY = 0x01;

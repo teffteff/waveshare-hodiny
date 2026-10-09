@@ -97,6 +97,8 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
     if (jsonReadNumberMember(objectBegin, objectEnd, "dbFlags", value) &&
         value >= 0.0f && value <= 255.0f)
       target.dbFlags = static_cast<uint8_t>(value);
+    if (jsonReadNumberMember(objectBegin, objectEnd, "rx", value))
+      target.ownReceiver = value >= 1.0f;
     if (jsonReadNumberMember(objectBegin, objectEnd, "gs", value))
       target.groundSpeedKt = value;
     if (jsonReadNumberMember(objectBegin, objectEnd, "baro_rate", value))
