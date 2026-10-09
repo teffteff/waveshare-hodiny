@@ -27,6 +27,15 @@ jobs:
       - name: Install mbedTLS 3
         run: brew install mbedtls@3
 
+      # Mapa dopravy (test traffic_render) kreslí jména písmem hodin, takže
+      # potřebuje kousek zdrojáků LVGL; stejná verze, jakou instaluje release
+      # build. Adresář leží v "libraries/" jako u Arduina, protože se hlavičky
+      # hledají i o úroveň výš (-I "$LVGL_DIR/..").
+      - name: Install LVGL 8.3.10 sources
+        run: |
+          git clone --quiet --depth 1 --branch v8.3.10 https://github.com/lvgl/lvgl.git "$RUNNER_TEMP/libraries/lvgl"
+          echo "LVGL_DIR=$RUNNER_TEMP/libraries/lvgl" >> "$GITHUB_ENV"
+
       - name: Host tests
         run: bash tools/run_host_tests.sh
 
