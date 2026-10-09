@@ -114,8 +114,25 @@ jobs:
             --latest \
             --target "$GITHUB_SHA"
 
+      # Seznam release je za vytvořením o chvíli pozadu: 9. 10. 2026 Pages
+      # nasazené hned po "gh release create" ještě viděly jen předchozí verzi
+      # a ota.json zůstal starý. Proto se napřed počká, až se nová verze
+      # v seznamu objeví, a teprve pak se Pages spustí.
       - name: Trigger Pages deployment for published release
         if: ${{ inputs.publish_stable_release }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+          VERSION: ${{ inputs.version }}
+        run: |
+          for attempt in $(seq 1 30); do
+            if gh release list --repo "$GITHUB_REPOSITORY" --limit 5 --exclude-drafts --exclude-pre-releases --json tagName \
+                | jq -e --arg tag "v$VERSION" '.[0].tagName == $tag' >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              echo "Release v$VERSION is still not the latest in the release list." >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
