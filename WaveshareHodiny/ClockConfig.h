@@ -23,6 +23,14 @@ constexpr size_t CLOCK_METRIC_COLOR_POINT_COUNT = 10;
 constexpr size_t CLOCK_VALUE_GRID_SLOT_COUNT = 8;
 constexpr size_t CLOCK_VALUE_PAGE_SLOT_COUNT = CLOCK_VALUE_GRID_SLOT_COUNT + 1;
 constexpr size_t CLOCK_VALUE_SLOT_COUNT = 2 * CLOCK_VALUE_PAGE_SLOT_COUNT;
+// Pod touhle hodnotou baterie čidla se u názvu slotu HODNOT kreslí prázdná
+// baterie. Netatmo hlásí mrtvý modul jako 0 %, ale v posledních dnech před
+// tím klesá rychle, proto rezerva, ať je čas baterie vyměnit.
+constexpr uint8_t CLOCK_LOW_BATTERY_PERCENT = 10;
+// Na této hodnotě a pod ní je čidlo mrtvé: Home Assistant drží poslední
+// naměřenou hodnotu dál, takže by hodiny ukazovaly zdánlivě živou teplotu.
+// Místo hodnoty se proto kreslí pomlčky, ikona baterie zůstává.
+constexpr uint8_t CLOCK_DEAD_BATTERY_PERCENT = 0;
 constexpr size_t CLOCK_RSS_URL_LENGTH = 192;
 // Stejný strop jako u kanálu se zprávami: adresa míří na vlastní server, ne na
 // cizí službu s dlouhými parametry.
@@ -195,7 +203,11 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // by the owner's server) and its tenth entry in the screen order, which lands
 // in the second order block. The schema 53 record stays an exact prefix; the
 // screen starts disabled without an address and goes to the end of the order.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 54;
+// Schema 55 appends a battery entity for each of the 18 value slots. When the
+// entity reports under CLOCK_LOW_BATTERY_PERCENT, the VALUES face draws an
+// empty battery next to the slot name. The schema 54 record stays an exact
+// prefix; the entities start empty, so nothing is fetched or drawn.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 55;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -981,6 +993,10 @@ struct ClockConfig {
   char historyUrl[CLOCK_HISTORY_URL_LENGTH] = "";
   // Pole schématu 54. Obrazovka Doprava; vypnutá bez adresy.
   ClockTrafficConfig traffic;
+  // Pole schématu 55. Entita baterie ke každému slotu HODNOT; prázdná = slot
+  // baterii nehlídá. Leží mimo ClockValueSlotConfig, protože ten má pevných
+  // 292 bajtů (schéma 29) a starší záznamy by se jinak nedaly jen zkopírovat.
+  char slotBatteryEntityIds[CLOCK_VALUE_SLOT_COUNT][CLOCK_ENTITY_ID_LENGTH] = {};
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1166,8 +1182,18 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_53_SIZE = offsetof(ClockConfig, traffic);
 
 static_assert(CLOCK_CONFIG_SCHEMA_53_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_53_SIZE + sizeof(ClockTrafficConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, slotBatteryEntityIds),
               "Schema 54 must preserve the complete schema 53 prefix.");
+
+// Schéma 54 končilo dopravou, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_54_SIZE =
+    offsetof(ClockConfig, slotBatteryEntityIds);
+
+static_assert(CLOCK_CONFIG_SCHEMA_54_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_54_SIZE +
+                          CLOCK_VALUE_SLOT_COUNT * CLOCK_ENTITY_ID_LENGTH ==
+                      sizeof(ClockConfig),
+              "Schema 55 must preserve the complete schema 54 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
@@ -1201,6 +1227,18 @@ inline const ClockValueSlotConfig &clockConfigValueSlot(
     return config.secondPageSlots[index - CLOCK_VALUE_PAGE_SLOT_COUNT];
   return index < CLOCK_VALUE_GRID_SLOT_COUNT ? config.slots[index]
                                              : config.bottomSlot;
+}
+
+// Entita baterie ke slotu HODNOT se stejným indexem; prázdný řetězec znamená,
+// že slot baterii nehlídá.
+inline char *clockConfigValueSlotBatteryEntityId(ClockConfig &config,
+                                                 size_t index) {
+  return config.slotBatteryEntityIds[index];
+}
+
+inline const char *clockConfigValueSlotBatteryEntityId(
+    const ClockConfig &config, size_t index) {
+  return config.slotBatteryEntityIds[index];
 }
 
 // Jedna ClockConfig má 5,7 kB. Statické kopie po modulech dohromady ukrajovaly

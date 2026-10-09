@@ -70,3 +70,10 @@ enum class ValueSlotFormResult : uint8_t {
 ValueSlotFormResult readValueSlotFromSource(const ConfigurationFormSource &source,
                                             size_t index,
                                             ClockValueSlotConfig &slot);
+
+// Entita baterie slotu z pole valueSlot<i>BatteryEntity, oříznutá o mezery.
+// Stránka ze starší verze pole neposílá; uložená entita pak zůstane (Missing).
+// Barevnou škálu nečte, takže InvalidColorScale nikdy nevrátí.
+ValueSlotFormResult readValueSlotBatteryFromSource(
+    const ConfigurationFormSource &source, size_t index, char *entityId,
+    size_t capacity);

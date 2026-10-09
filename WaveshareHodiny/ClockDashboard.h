@@ -29,6 +29,12 @@ struct ClockValues {
                                               NAN, NAN, NAN, NAN,
                                               NAN, NAN, NAN, NAN, NAN,
                                               NAN, NAN, NAN, NAN};
+  // Baterie čidel slotů v procentech z entity baterie slotu; NAN = slot
+  // baterii nehlídá nebo se hodnota ještě nenačetla. Pod
+  // CLOCK_LOW_BATTERY_PERCENT se u názvu kreslí prázdná baterie.
+  float slotBatteryPercent[CLOCK_VALUE_SLOT_COUNT] = {
+      NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN,
+      NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN};
   bool homeAssistantOnline = false;
 };
 

@@ -115,6 +115,8 @@ lv_obj_t *valuesNamedayLabel = nullptr;
 lv_obj_t *valuesLightningLabel = nullptr;
 lv_obj_t *valueSlotTitleLabels[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 lv_obj_t *valueSlotValueLabels[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
+// Prázdná baterie vedle názvu slotu, viditelná jen při slabé baterii čidla.
+lv_obj_t *valueSlotBatteryIcons[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 // Kořen obrazovky se drží kvůli stránce předpovědi, která se zakládá až při
 // prvním zapnutí - do té doby nestojí ani jeden objekt LVGL.
 lv_obj_t *dashboardScreen = nullptr;
@@ -6766,6 +6768,53 @@ constexpr int VALUE_SLOT_COLUMN_X[2] = {-104, 104};
 constexpr int VALUE_SLOT_ROW_Y[4] = {-72, -12, 48, 108};
 constexpr int VALUE_SLOT_BOTTOM_Y = 168;
 constexpr int VALUE_SLOT_CELL_WIDTH = 190;
+constexpr int VALUE_SLOT_TITLE_OFFSET_Y = -17;
+// Prázdná baterie u názvu: tělo s obrysem a výstupek vpravo. Kreslí se
+// obdélníky, protože písmo názvů žádný symbol baterie nemá.
+constexpr int BATTERY_ICON_BODY_WIDTH = 18;
+constexpr int BATTERY_ICON_HEIGHT = 10;
+constexpr int BATTERY_ICON_CAP_WIDTH = 3;
+constexpr int BATTERY_ICON_CAP_HEIGHT = 4;
+constexpr int BATTERY_ICON_WIDTH =
+    BATTERY_ICON_BODY_WIDTH + BATTERY_ICON_CAP_WIDTH;
+constexpr int BATTERY_ICON_GAP = 6;
+// O tolik se název zúží a posune doleva, aby název s ikonou zůstaly
+// vystředěné v buňce a ikona nevyběhla z kulatého displeje.
+constexpr int BATTERY_ICON_SPACE = BATTERY_ICON_WIDTH + BATTERY_ICON_GAP;
+
+lv_obj_t *makeBatteryIcon(lv_obj_t *parent) {
+  lv_obj_t *icon = lv_obj_create(parent);
+  lv_obj_set_size(icon, BATTERY_ICON_WIDTH, BATTERY_ICON_HEIGHT);
+  lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(icon, 0, 0);
+  lv_obj_set_style_pad_all(icon, 0, 0);
+  lv_obj_set_style_radius(icon, 0, 0);
+  lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *body = lv_obj_create(icon);
+  lv_obj_set_size(body, BATTERY_ICON_BODY_WIDTH, BATTERY_ICON_HEIGHT);
+  lv_obj_set_pos(body, 0, 0);
+  lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(body, 2, 0);
+  lv_obj_set_style_border_color(body, COLOR_ERROR, 0);
+  lv_obj_set_style_radius(body, 2, 0);
+  lv_obj_set_style_pad_all(body, 0, 0);
+  lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *cap = lv_obj_create(icon);
+  lv_obj_set_size(cap, BATTERY_ICON_CAP_WIDTH, BATTERY_ICON_CAP_HEIGHT);
+  lv_obj_set_pos(cap, BATTERY_ICON_BODY_WIDTH,
+                 (BATTERY_ICON_HEIGHT - BATTERY_ICON_CAP_HEIGHT) / 2);
+  lv_obj_set_style_bg_color(cap, COLOR_ERROR, 0);
+  lv_obj_set_style_bg_opa(cap, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(cap, 0, 0);
+  lv_obj_set_style_radius(cap, 1, 0);
+  lv_obj_set_style_pad_all(cap, 0, 0);
+  lv_obj_clear_flag(cap, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+  return icon;
+}
 
 struct ValueSlotPosition {
   int x;
@@ -6830,8 +6879,9 @@ void makeValuesPage(lv_obj_t *screen) {
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(title, "");
-    alignCenter(title, x, y - 17);
+    alignCenter(title, x, y + VALUE_SLOT_TITLE_OFFSET_Y);
     valueSlotTitleLabels[index] = title;
+    valueSlotBatteryIcons[index] = makeBatteryIcon(valuesPage);
 
     lv_obj_t *value = makeLabel(valuesPage, &lv_font_montserrat_28, COLOR_TEXT);
     lv_obj_set_width(value, VALUE_SLOT_CELL_WIDTH);
@@ -6896,7 +6946,8 @@ void updateValuesPage() {
   for (size_t index = 0; index < CLOCK_VALUE_PAGE_SLOT_COUNT; ++index) {
     lv_obj_t *title = valueSlotTitleLabels[index];
     lv_obj_t *value = valueSlotValueLabels[index];
-    if (title == nullptr || value == nullptr) continue;
+    lv_obj_t *battery = valueSlotBatteryIcons[index];
+    if (title == nullptr || value == nullptr || battery == nullptr) continue;
     const size_t slotIndex = index + activeValuesPage * CLOCK_VALUE_PAGE_SLOT_COUNT;
     const ClockValueSlotConfig &slot =
         clockConfigValueSlot(dashboardRuntimeConfig, slotIndex);
@@ -6905,6 +6956,7 @@ void updateValuesPage() {
     if (!slot.enabled || (openMeteo && index > 3)) {
       setObjectVisible(title, false);
       setObjectVisible(value, false);
+      setObjectVisible(battery, false);
       continue;
     }
     setObjectVisible(title, true);
@@ -6913,7 +6965,38 @@ void updateValuesPage() {
     const ValueSlotDisplay display = valueSlotDisplay(slotIndex, slot);
     lv_label_set_text(title, display.name);
 
-    const float reading = valueSlotReading(slotIndex);
+    // Slabá baterie čidla: název se zúží a posune doleva, ikona sedí hned za
+    // jeho textem, takže dvojice zůstane vystředěná v buňce. Open-Meteo žádné
+    // entity nečte, proto tam baterie nikdy nesvítí.
+    const float batteryPercent = currentValues.slotBatteryPercent[slotIndex];
+    const bool batteryLow = !openMeteo && !std::isnan(batteryPercent) &&
+                            batteryPercent < CLOCK_LOW_BATTERY_PERCENT;
+    const ValueSlotPosition position = valueSlotPosition(index);
+    const int titleY = position.y + VALUE_SLOT_TITLE_OFFSET_Y;
+    setObjectVisible(battery, batteryLow);
+    if (batteryLow) {
+      const int titleWidth = VALUE_SLOT_CELL_WIDTH - BATTERY_ICON_SPACE;
+      const int titleX = position.x - BATTERY_ICON_SPACE / 2;
+      lv_obj_set_width(title, titleWidth);
+      alignCenter(title, titleX, titleY);
+      lv_point_t size;
+      lv_txt_get_size(&size, display.name, &clock_czech_16, 0, 0, LV_COORD_MAX,
+                      LV_TEXT_FLAG_NONE);
+      const int textWidth = size.x < titleWidth ? size.x : titleWidth;
+      alignCenter(battery,
+                  titleX + textWidth / 2 + BATTERY_ICON_GAP +
+                      BATTERY_ICON_WIDTH / 2,
+                  titleY);
+    } else {
+      lv_obj_set_width(title, VALUE_SLOT_CELL_WIDTH);
+      alignCenter(title, position.x, titleY);
+    }
+
+    // Vybitá baterie: Home Assistant podrží poslední naměřenou hodnotu, ta by
+    // tu visela jako živá. Pomlčky říkají, že čidlo mlčí.
+    const bool batteryDead =
+        batteryLow && batteryPercent <= CLOCK_DEAD_BATTERY_PERCENT;
+    const float reading = batteryDead ? NAN : valueSlotReading(slotIndex);
     char number[16];
     formatMetricValue(number, sizeof(number), reading, display.decimals);
     char suffix[CLOCK_METRIC_SUFFIX_LENGTH];

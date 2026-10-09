@@ -124,6 +124,8 @@ changes the system text and verbal date shown on the display.
   pressure or battery level,
 - eight independent values on the VALUES face, each with its own name, Home
   Assistant entity, unit, precision and color scale,
+- an empty battery next to a value's name when its sensor battery drops
+  below 10 %, and dashes instead of the value once it is flat,
 - personal TMEP.cz sensors as an optional extension to Open-Meteo values,
 - custom units, decimal precision and smooth color scales,
 - independent day and night brightness with manual or automatic switching; with
@@ -290,6 +292,8 @@ The web interface configures:
 - the nine values of the VALUES face, each separately enabled, with its own
   entity, name, unit, precision and color scale; the section only appears with
   the Home Assistant data source, because the slots read entities,
+- an optional battery entity for each value; below 10 % an empty battery
+  appears next to the name,
 - the order of the nine values, by dragging the handle in the header or with
   the up and down buttons; the order matches the grid on the display and the
   whole slot setting moves along, including the color scale,
@@ -1201,3 +1205,7 @@ and assets are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 ### Second VALUES screen
 
 With Home Assistant and the VALUES clock style, swipe across the display to switch between two banks of nine values. Both banks share the same top screen dot; long press still moves through the other pages. In the web configuration, open Values and configure slots 1–9 under First screen and 10–18 under Second screen. Each slot has its own entity, name, unit, decimals, enabled state and colour scale. The new slots start disabled after upgrading. Existing configuration and backups remain compatible; new backups include all 18 slots.
+
+### Low sensor battery
+
+Home Assistant keeps the last reading after a sensor's battery dies, so the clock would keep showing a seemingly live temperature. Each value can therefore name a **Sensor battery entity** (the picker lists entities with battery in their name, otherwise every percent sensor). Picking a value's entity fills in the battery by ID: `sensor.bedroom_adam_temperature` gets `sensor.bedroom_adam_battery`, and a mains-powered base station gets none. The **Fill in battery entities** button does the same for all values at once and leaves hand-filled fields alone. When that entity reports below 10 %, a red empty battery is drawn next to the value's name; at 0 % the module is dead and dashes replace the last reading that Home Assistant keeps holding. Batteries are read every ten minutes, right after start-up and after saving settings; nothing is fetched without an entity.

@@ -289,3 +289,14 @@ ValueSlotFormResult readValueSlotFromSource(const ConfigurationFormSource &sourc
   slot.color = slot.colorScale.points[0].color;
   return ValueSlotFormResult::Applied;
 }
+
+ValueSlotFormResult readValueSlotBatteryFromSource(
+    const ConfigurationFormSource &source, size_t index, char *entityId,
+    size_t capacity) {
+  const String name = String("valueSlot") + index + "BatteryEntity";
+  if (!source.has(source.context, name)) return ValueSlotFormResult::Missing;
+  String value = field(source, name);
+  value.trim();
+  clockConfigCopy(entityId, capacity, value);
+  return ValueSlotFormResult::Applied;
+}

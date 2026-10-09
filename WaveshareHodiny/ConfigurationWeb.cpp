@@ -953,7 +953,8 @@ String colorScaleJson(const ClockMetricColorScale &scale) {
   return result;
 }
 
-String valueSlotJson(const ClockValueSlotConfig &slot) {
+String valueSlotJson(const ClockValueSlotConfig &slot,
+                     const char *batteryEntityId) {
   String result = F("{\"enabled\":");
   result += slot.enabled ? F("true") : F("false");
   result += F(",\"custom\":");
@@ -966,6 +967,8 @@ String valueSlotJson(const ClockValueSlotConfig &slot) {
   result += jsonEscape(slot.entityId);
   result += F("\",\"suffix\":\"");
   result += jsonEscape(slot.suffix);
+  result += F("\",\"batteryEntityId\":\"");
+  result += jsonEscape(batteryEntityId);
   result += F("\",\"decimals\":");
   result += slot.decimals;
   result += F(",\"colorScale\":");
@@ -1290,6 +1293,12 @@ bool readValueSlotFromForm(size_t index, ClockValueSlotConfig &slot) {
   const ConfigurationFormSource source = serverFormSource();
   return readValueSlotFromSource(source, index, slot) !=
          ValueSlotFormResult::InvalidColorScale;
+}
+
+void readValueSlotBatteryFromForm(size_t index, char *entityId,
+                                  size_t capacity) {
+  const ConfigurationFormSource source = serverFormSource();
+  readValueSlotBatteryFromSource(source, index, entityId, capacity);
 }
 
 void readSideFromForm(const char *prefix, ClockSideConfig &side,
@@ -2005,7 +2014,8 @@ void handleGetConfig() {
   result += F(",\"valueSlots\":[");
   for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
     if (index > 0) result += ',';
-    result += valueSlotJson(clockConfigValueSlot(config, index));
+    result += valueSlotJson(clockConfigValueSlot(config, index),
+                            clockConfigValueSlotBatteryEntityId(config, index));
   }
   result += ']';
   result += F(",\"dayBrightness\":");
@@ -3060,6 +3070,9 @@ void handleSaveConfig() {
                   "bez duplicitních hodnot."));
       return;
     }
+    readValueSlotBatteryFromForm(
+        index, clockConfigValueSlotBatteryEntityId(config, index),
+        CLOCK_ENTITY_ID_LENGTH);
   }
   config.dayBrightness =
       constrain(server.arg("dayBrightness").toInt(), 1, 100);

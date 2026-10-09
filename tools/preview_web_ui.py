@@ -78,6 +78,7 @@ def value_slots() -> list[dict]:
                 "entityId": entity,
                 "suffix": suffix,
                 "decimals": decimals,
+                "batteryEntityId": "sensor.obyvak_baterie" if index == 1 else "",
                 "colorScale": [{"value": 0.0, "color": color}],
             }
         )

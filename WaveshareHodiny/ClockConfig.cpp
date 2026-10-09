@@ -430,8 +430,10 @@ void terminateConfigTexts(ClockConfig &config) {
     terminateText(value->preset);
     terminateText(value->suffix);
   }
-  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index)
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
     terminateValueSlotTexts(clockConfigValueSlot(config, index));
+    terminateText(config.slotBatteryEntityIds[index]);
+  }
   terminateText(config.rss.url);
   terminateText(config.radarStatusTemperatureEntityId);
   terminateText(config.historyUrl);
@@ -1075,6 +1077,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV54 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_54_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV53 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1152,6 +1161,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV54) ||
          storedSize == sizeof(ConfigRecordV53) ||
          storedSize == sizeof(ConfigRecordV52) ||
          storedSize == sizeof(ConfigRecordV51) ||
@@ -1197,6 +1207,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 54 je přesnou předponou schématu 55; entity baterií zůstanou po
+  // zkopírování bajtů prázdné, takže se nic nestahuje ani nekreslí.
+  const ConfigRecordV54 &legacyV54 =
+      *reinterpret_cast<const ConfigRecordV54 *>(&record);
+  uint32_t embeddedSchemaV54 = 0;
+  if (readComplete && storedSize == sizeof(legacyV54))
+    memcpy(&embeddedSchemaV54, legacyV54.config, sizeof(embeddedSchemaV54));
+  if (readComplete && storedSize == sizeof(legacyV54) &&
+      legacyV54.magic == CONFIG_MAGIC && legacyV54.schemaVersion == 54 &&
+      embeddedSchemaV54 == 54 &&
+      legacyV54.checksum ==
+          bytesChecksum(legacyV54.config, sizeof(legacyV54.config))) {
+    memcpy(&config, legacyV54.config, sizeof(legacyV54.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 53 je přesnou předponou schématu 54; doprava si po zkopírování
