@@ -5,9 +5,14 @@
 #include "Board.h"
 
 // Kulatý 2,1" kreslí radar do čtverce 480 x 480 s kruhovým výřezem. Na 7"
-// je mapa obdélník 640 x 480 vlevo od úzkého sloupce, bez kruhu.
-constexpr uint16_t CHMI_RADAR_WIDTH = HODINY_BOARD_LCD7 ? 640 : 480;
-constexpr uint16_t CHMI_RADAR_HEIGHT = 480;
+// je mapa obdélník 640 x 480 vlevo od úzkého sloupce, bez kruhu. Snímky se
+// tam drží v polovičním rozlišení 320 x 240 a zobrazují se dvakrát zvětšené:
+// knihovny ESP-IDF, se kterými se obraz 7" neposouvá, berou 3 MB PSRAM na
+// kód a celé rozlišení by se do zbytku nevešlo. Data ČHMÚ mají kolem 1 km na
+// pixel, takže ani v rozsahu 100 km se poloviční rozlišení neztrácí.
+constexpr uint16_t CHMI_RADAR_WIDTH = HODINY_BOARD_LCD7 ? 320 : 480;
+constexpr uint16_t CHMI_RADAR_HEIGHT = HODINY_BOARD_LCD7 ? 240 : 480;
+constexpr uint8_t CHMI_RADAR_ZOOM = HODINY_BOARD_LCD7 ? 2 : 1;
 
 struct ChmiRadarSnapshot {
   const uint16_t *pixels = nullptr;

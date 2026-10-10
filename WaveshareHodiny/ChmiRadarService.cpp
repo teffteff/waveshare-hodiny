@@ -41,10 +41,11 @@ constexpr size_t RADAR_PIXEL_COUNT = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
 
 // Leží bod (od středu obrázku) na displeji? Na kulatém uvnitř kruhu o
 // poloměru radius, na obdélníkovém 7" uvnitř obdélníku se stejným okrajem,
-// jaký kruh nechává u kraje čtverce 480 x 480.
+// jaký kruh nechává u kraje čtverce 480 x 480 (přepočteným na rozlišení
+// snímku).
 inline bool radarInsideView(int dx, int dy, int radius) {
   if (SCREEN_ROUND) return dx * dx + dy * dy <= radius * radius;
-  const int margin = CHMI_RADAR_HEIGHT / 2 - radius;
+  const int margin = (CHMI_RADAR_HEIGHT / 2 - radius * CHMI_RADAR_HEIGHT / 480);
   return abs(dx) <= CHMI_RADAR_WIDTH / 2 - margin &&
          abs(dy) <= CHMI_RADAR_HEIGHT / 2 - margin;
 }

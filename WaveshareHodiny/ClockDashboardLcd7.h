@@ -1326,11 +1326,11 @@ void syncForecast(const Palette &p) {
 }
 
 // --- Meteoradar: mapa 640 x 480 vlevo, úzký sloupec vpravo ---------------
-// Snímek kreslí ChmiRadarService do obdélníku CHMI_RADAR_WIDTH x 480; tady
-// se jen ukáže na vlastním plátně. Popisky kulaté stránky (čas, rozsah,
+// Snímek kreslí ChmiRadarService v polovičním rozlišení (CHMI_RADAR_WIDTH x
+// CHMI_RADAR_HEIGHT); tady se zvětšený ukáže na vlastním plátně. Popisky kulaté stránky (čas, rozsah,
 // snímek) přebírá sloupec vpravo.
 
-constexpr int RADAR_COLUMN_X = CHMI_RADAR_WIDTH;
+constexpr int RADAR_COLUMN_X = CHMI_RADAR_WIDTH * CHMI_RADAR_ZOOM;
 constexpr int RADAR_COLUMN_W = SCREEN_WIDTH - RADAR_COLUMN_X;
 constexpr int RADAR_PAD = 14;
 constexpr int RADAR_CONTENT = RADAR_COLUMN_W - 2 * RADAR_PAD;
@@ -1364,8 +1364,13 @@ void createRadar(lv_obj_t *screen) {
   v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
   v.canvas = lv_canvas_create(v.root);
   lv_obj_set_pos(v.canvas, 0, 0);
+  // Snímek v polovičním rozlišení, zvětšený bez vyhlazování (ostré pixely,
+  // levnější kreslení).
+  lv_img_set_pivot(v.canvas, 0, 0);
+  lv_img_set_zoom(v.canvas, LV_IMG_ZOOM_NONE * CHMI_RADAR_ZOOM);
+  lv_img_set_antialias(v.canvas, false);
   lv_obj_add_flag(v.canvas, LV_OBJ_FLAG_HIDDEN);
-  v.status = label(v.root, &lcd7_text22, 0, SCREEN_HEIGHT / 2 - 14, CHMI_RADAR_WIDTH);
+  v.status = label(v.root, &lcd7_text22, 0, SCREEN_HEIGHT / 2 - 14, RADAR_COLUMN_X);
   lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
   v.column = panel(v.root, RADAR_COLUMN_X, 0, RADAR_COLUMN_W, SCREEN_HEIGHT);
   lv_obj_t *c = v.column;
@@ -1398,6 +1403,9 @@ void radarFrameChanged(const uint16_t *pixels) {
   if (pixels != nullptr && pixels != v.pixels) {
     lv_canvas_set_buffer(v.canvas, const_cast<uint16_t *>(pixels),
                          CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT, LV_IMG_CF_TRUE_COLOR);
+    // Nový zdroj obrázku vrací střed zvětšení doprostřed; zvětšuje se od
+    // levého horního rohu.
+    lv_img_set_pivot(v.canvas, 0, 0);
     v.pixels = pixels;
   }
   if (pixels != nullptr && !lv_obj_has_flag(v.root, LV_OBJ_FLAG_HIDDEN))
