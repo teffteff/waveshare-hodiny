@@ -40,6 +40,7 @@ void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
 void rssTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
+bool stageAtLeft();
 }  // namespace lcd7
 #endif
 
@@ -8125,6 +8126,13 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   // spolklo nejbližší dvojklepnutí, kterým se přepíná denní režim.
   if (consumeSuppressedTap()) return;
   if (activeScreen == DASHBOARD_SCREEN_SATELLITES) {
+#if HODINY_BOARD_LCD7
+    // Kulaté družice stojí na 7" u levého okraje, ne na místě jeviště.
+    if (lcd7::stageAtLeft()) {
+      x = static_cast<int16_t>(x + STAGE_X);
+      if (x >= STAGE_SIZE) return;
+    }
+#endif
     satelliteServiceHandleTap(x, y);
     return;
   }

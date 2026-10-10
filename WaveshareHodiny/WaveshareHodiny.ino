@@ -2608,6 +2608,11 @@ void handleUsbCommands() {
         config.rss.enabled = true;
         Serial.println(saveRuntimeConfig(config, true) ? "RSS_ON"
                                                        : "RSS_ON_FAILED");
+      } else if ((usbCommand == "SKYON" || usbCommand == "SKYOFF") &&
+                 !screenshotTransferActive) {
+        ClockConfig &config = loopConfigSnapshot();
+        config.sky.enabled = usbCommand == "SKYON";
+        Serial.println(saveRuntimeConfig(config, true) ? "SKY_SET" : "SKY_SET_FAILED");
       } else if ((usbCommand == "PLANESON" || usbCommand == "PLANESOFF") &&
                  !screenshotTransferActive) {
         // Radar letadel bez webu, stejně jako RSSON/RSSOFF.

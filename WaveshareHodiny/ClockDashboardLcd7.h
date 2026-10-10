@@ -20,7 +20,8 @@ namespace lcd7 {
 bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
-                               Agenda, Rss, School, Planes };
+                               Agenda, Rss, School, Planes,
+                               RoundLeft };
 HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
@@ -2677,6 +2678,11 @@ HomeMode desiredMode() {
     return HomeMode::School;
   if (activeScreen == DASHBOARD_SCREEN_PLANES && planesPage != nullptr)
     return HomeMode::Planes;
+  // Slunce a Měsíc i družice (s noční oblohou) zůstávají kulaté: jeviště
+  // vlevo a vpravo sloupec domovské obrazovky s hodnotami.
+  if ((activeScreen == DASHBOARD_SCREEN_SKY && skyPage != nullptr) ||
+      (activeScreen == DASHBOARD_SCREEN_SATELLITES && satellitesPage != nullptr))
+    return HomeMode::RoundLeft;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
@@ -2707,7 +2713,7 @@ void create() {
 void applyMode(HomeMode mode) {
   lv_obj_t *stage = displayDriverStage();
   setVisible(digital.root, mode == HomeMode::Digital);
-  setVisible(analog.root, mode == HomeMode::Analog);
+  setVisible(analog.root, mode == HomeMode::Analog || mode == HomeMode::RoundLeft);
   setVisible(values.root, mode == HomeMode::Values);
   setVisible(forecast.root, mode == HomeMode::Forecast);
   if (mode == HomeMode::Forecast) forecast.signature = 0;
@@ -2727,10 +2733,15 @@ void applyMode(HomeMode mode) {
   setVisible(school.root, mode == HomeMode::School);
   if (mode == HomeMode::Planes && planes.pixels != nullptr) lv_obj_invalidate(planes.canvas);
   setVisible(planes.root, mode == HomeMode::Planes);
-  const bool stageLeft = mode == HomeMode::Analog;
+  const bool stageLeft = mode == HomeMode::Analog || mode == HomeMode::RoundLeft;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
   shownMode = mode;
+}
+
+// Leží jeviště u levého okraje? Klepnutí pak nesmí odečítat STAGE_X.
+bool stageAtLeft() {
+  return shownMode == HomeMode::Analog || shownMode == HomeMode::RoundLeft;
 }
 
 void sync(bool force) {
@@ -2759,6 +2770,11 @@ void sync(bool force) {
     case HomeMode::Rss: syncRss(p); break;
     case HomeMode::School: syncSchool(p); break;
     case HomeMode::Planes: syncPlanes(p); break;
+    case HomeMode::RoundLeft:
+      syncAnalog(p);
+      // Kulatá stránka má tečky obrazovek sama nahoře.
+      for (lv_obj_t *dot : analog.dots.dots) setVisible(dot, false);
+      break;
     case HomeMode::None: break;
   }
 }
