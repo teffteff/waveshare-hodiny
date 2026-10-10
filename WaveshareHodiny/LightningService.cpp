@@ -15,6 +15,7 @@
 #include "ClockConfig.h"
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "PsramGrowBuffer.h"
 
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
@@ -25,8 +26,12 @@ constexpr uint32_t CONNECT_TIMEOUT_MS = 6000;
 constexpr uint32_t RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint32_t NETWORK_GUARD_MS = 10000;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
-// Server vrací nejvýš tisíc úderů, po ~60 bajtech.
+// Server vrací nejvýš tisíc úderů, po ~60 bajtech. Běžně jich za dvacet vteřin
+// přijde pár, takže buffer začíná malý a doroste, až když se odpověď nevejde
+// (viz PsramGrowBuffer).
 constexpr size_t MAX_RESPONSE_BYTES = 96 * 1024;
+constexpr size_t INITIAL_RESPONSE_BYTES = 16 * 1024;
+constexpr size_t MIN_RESPONSE_BYTES = 8 * 1024;
 // Silná bouřka nad celou republikou dá za půl hodiny i tisíce úderů; při
 // přetečení se přepíšou nejstarší, které už radar skoro nekreslí.
 constexpr size_t STROKE_CAPACITY = 2048;
@@ -105,7 +110,8 @@ LightningStroke *strokes = nullptr;
 size_t strokeCount = 0;
 size_t strokeWrite = 0;
 uint32_t generation = 0;
-uint8_t *responseBuffer = nullptr;
+PsramGrowBuffer responseBuffer(INITIAL_RESPONSE_BYTES, MIN_RESPONSE_BYTES,
+                               MAX_RESPONSE_BYTES);
 
 // Stav posledního dotazu; zapisuje úloha, čtou diagnostika a výstraha.
 bool live = false;
@@ -133,11 +139,7 @@ bool ensureStorage() {
         STROKE_CAPACITY, sizeof(LightningStroke),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  if (responseBuffer == nullptr) {
-    responseBuffer = static_cast<uint8_t *>(heap_caps_malloc(
-        MAX_RESPONSE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  }
-  return strokes != nullptr && responseBuffer != nullptr;
+  return strokes != nullptr && responseBuffer.ensure();
 }
 
 void releaseStorage() {
@@ -148,8 +150,7 @@ void releaseStorage() {
   strokeWrite = 0;
   ++generation;
   xSemaphoreGive(strokeMutex);
-  if (responseBuffer != nullptr) heap_caps_free(responseBuffer);
-  responseBuffer = nullptr;
+  responseBuffer.release();
 }
 
 // Volá se se zamčeným strokeMutex z rozboru odpovědi.
@@ -182,7 +183,10 @@ void requestCircle(const Request &current, float &latitude, float &longitude,
   radiusKm = std::max(current.viewRadiusKm, toAlarm + current.alarmRadiusKm);
 }
 
-// Stáhne odpověď do responseBuffer. Vrací počet bajtů, nebo -1.
+// Stáhne odpověď do responseBuffer. Vrací počet bajtů, -1 při chybě, nebo
+// DOWNLOAD_OVERFLOWED, když se tělo do bufferu nevešlo.
+constexpr long DOWNLOAD_OVERFLOWED = -2;
+
 long download(const char *url, int &httpStatus) {
   httpStatus = 0;
   long result = -1;
@@ -212,12 +216,15 @@ long download(const char *url, int &httpStatus) {
       http.addHeader("Accept", "application/json");
       httpStatus = http.GET();
       if (httpStatus == HTTP_CODE_OK) {
-        BoundedBufferStream response(responseBuffer, MAX_RESPONSE_BYTES - 1);
+        uint8_t *buffer = responseBuffer.data();
+        BoundedBufferStream response(buffer, responseBuffer.capacity() - 1);
         // Ne writeToStream(): u chunked odpovědi se nemusí nikdy vrátit.
         const int bytesRead =
             httpDownloadBody(http, response, RESPONSE_TIMEOUT_MS);
-        if (!response.overflowed() && bytesRead >= 0) {
-          responseBuffer[response.length()] = '\0';
+        if (response.overflowed()) {
+          result = DOWNLOAD_OVERFLOWED;
+        } else if (bytesRead >= 0) {
+          buffer[response.length()] = '\0';
           result = static_cast<long>(response.length());
         }
       }
@@ -249,20 +256,28 @@ bool fetchStrokes(const char *baseUrl, float latitude, float longitude,
   }
   int httpStatus = 0;
   long length = -1;
-  {
-    NetworkOperationGuard guard(NETWORK_GUARD_MS);
-    networkBusy = !guard;
-    if (!guard) {
-      setStatus("Síť je zaneprázdněná");
-      return false;
+  // Přetečení zvětší buffer a zeptá se znovu; zvětšený buffer zůstává.
+  for (;;) {
+    {
+      NetworkOperationGuard guard(NETWORK_GUARD_MS);
+      networkBusy = !guard;
+      if (!guard) {
+        setStatus("Síť je zaneprázdněná");
+        return false;
+      }
+      length = download(url, httpStatus);
     }
-    length = download(url, httpStatus);
+    if (length != DOWNLOAD_OVERFLOWED || !responseBuffer.grow()) break;
   }
   portENTER_CRITICAL(&stateMux);
   ++attempts;
   lastHttpStatus = httpStatus;
   lastDownloadedBytes = length > 0 ? static_cast<uint32_t>(length) : 0;
   portEXIT_CRITICAL(&stateMux);
+  if (length == DOWNLOAD_OVERFLOWED) {
+    setStatus("Odpověď serveru blesků je příliš velká");
+    return false;
+  }
   if (length < 0) {
     setStatus(httpStatus == 401 ? "Server blesků odmítl heslo"
               : httpStatus > 0  ? "Server blesků odpověděl chybou"
@@ -274,8 +289,8 @@ bool fetchStrokes(const char *baseUrl, float latitude, float longitude,
   uint32_t added = 0;
   xSemaphoreTake(strokeMutex, portMAX_DELAY);
   const LightningMessageKind kind = lightningParseMessage(
-      reinterpret_cast<const char *>(responseBuffer),
-      reinterpret_cast<const char *>(responseBuffer) + length, info,
+      reinterpret_cast<const char *>(responseBuffer.data()),
+      reinterpret_cast<const char *>(responseBuffer.data()) + length, info,
       storeStroke, &added);
   if (added > 0) ++generation;
   xSemaphoreGive(strokeMutex);
