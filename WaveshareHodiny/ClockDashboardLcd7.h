@@ -20,7 +20,7 @@ namespace lcd7 {
 bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
-                               Agenda, Rss };
+                               Agenda, Rss, School };
 HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
@@ -1955,6 +1955,474 @@ void rssTap(int16_t x, int16_t y) {
   sync(true);
 }
 
+// --- Škola ----------------------------------------------------------------
+// Vlevo rozvrh dnů, které server posílá (dnešek nebo příští školní den a den
+// po něm), každý den jako sloupec dlaždic: číslo hodiny, předmět celým
+// názvem (zkratka, když se nevejde) a pod ním čas nebo poznámka. Probíhající
+// či nejbližší hodina má modrý rámeček a "teď · do 9:40", změněná oranžový,
+// odpadlá je přeškrtnutá a tlumená. Vpravo pod sebou obědy, testy, úkoly,
+// známky a zprávy, dokud je místo - 7" nepotřebuje druhou a třetí stránku
+// kulatého, takže tažení vede rovnou na další obrazovku.
+
+constexpr int SCHOOL7_LEFT = 18;
+constexpr int SCHOOL7_LEFT_END = 532;
+constexpr int SCHOOL7_COLUMN_GAP = 12;
+constexpr int SCHOOL7_TOP = BAR_HEIGHT + 12;
+constexpr int SCHOOL7_BOTTOM = SCREEN_HEIGHT - 12;
+constexpr int SCHOOL7_HEAD_H = 32;
+constexpr int SCHOOL7_ROW_GAP = 6;
+constexpr int SCHOOL7_ROW_MAX = 58;
+constexpr int SCHOOL7_TWO_LINE_ROW = 48;
+constexpr int SCHOOL7_HOUR_W = 34;
+constexpr int SCHOOL7_DIVIDER_X = 548;
+constexpr int SCHOOL7_SIDE_X = 566;
+constexpr int SCHOOL7_SIDE_W = SCREEN_WIDTH - SCHOOL7_SIDE_X - 18;
+constexpr int SCHOOL7_SIDE_ROWS = 14;
+constexpr int SCHOOL7_SIDE_SECTIONS = 5;
+constexpr int SCHOOL7_MARK_BOX = 26;
+const lv_color_t SCHOOL7_CELL = LV_COLOR_MAKE(11, 11, 11);
+const lv_color_t SCHOOL7_CELL_BORDER = LV_COLOR_MAKE(28, 28, 28);
+const lv_color_t SCHOOL7_NOW_FILL = LV_COLOR_MAKE(14, 26, 31);
+const lv_color_t SCHOOL7_TEST = LV_COLOR_MAKE(255, 176, 32);
+const lv_color_t SCHOOL7_MARK_2 = LV_COLOR_MAKE(255, 194, 26);
+
+struct SchoolCell {
+  lv_obj_t *box;
+  lv_obj_t *hour;
+  lv_obj_t *subject;
+  lv_obj_t *sub;
+};
+
+struct SchoolSideRow {
+  lv_obj_t *text;
+  lv_obj_t *markBox;
+  lv_obj_t *mark;
+};
+
+struct SchoolView {
+  lv_obj_t *root;
+  TopBar bar;
+  lv_obj_t *status;
+  lv_obj_t *heads[SCHOOL_MAX_DAYS];
+  lv_obj_t *ends[SCHOOL_MAX_DAYS];
+  SchoolCell cells[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS];
+  lv_obj_t *divider;
+  lv_obj_t *sectionHeads[SCHOOL7_SIDE_SECTIONS];
+  SchoolSideRow side[SCHOOL7_SIDE_ROWS];
+  lv_obj_t *updated;
+  uint32_t drawnRevision;
+  int drawnMinute;
+  bool drawnNight;
+  bool drawnEnglish;
+} school;
+
+void createSchool(lv_obj_t *screen) {
+  SchoolView &v = school;
+  v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
+  v.status = label(v.root, &lcd7_text22, SCHOOL7_LEFT, SCREEN_HEIGHT / 2 - 14,
+                   SCHOOL7_LEFT_END - SCHOOL7_LEFT);
+  lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+    v.heads[day] = label(v.root, &lcd7_text18, 0, SCHOOL7_TOP + 4, 1);
+    lv_obj_set_style_text_letter_space(v.heads[day], 1, 0);
+    v.ends[day] = label(v.root, &lcd7_text15, 0, SCHOOL7_TOP + 7);
+    for (SchoolCell &cell : v.cells[day]) {
+      cell.box = panel(v.root, 0, 0, 1, 1);
+      lv_obj_set_style_radius(cell.box, 8, 0);
+      lv_obj_set_style_border_width(cell.box, 2, 0);
+      cell.hour = label(cell.box, &lcd7_text15, 0, 0, SCHOOL7_HOUR_W);
+      lv_obj_set_style_text_align(cell.hour, LV_TEXT_ALIGN_RIGHT, 0);
+      cell.subject = label(cell.box, &lcd7_text22, 0, 0, 1);
+      cell.sub = label(cell.box, &lcd7_text15, 0, 0, 1);
+    }
+  }
+  v.divider = line(v.root, SCHOOL7_DIVIDER_X, SCHOOL7_TOP, 1, SCHOOL7_BOTTOM - SCHOOL7_TOP);
+  for (lv_obj_t *&head : v.sectionHeads) {
+    head = label(v.root, &lcd7_text15, SCHOOL7_SIDE_X, 0);
+    lv_obj_set_style_text_letter_space(head, 2, 0);
+  }
+  for (SchoolSideRow &row : v.side) {
+    row.text = label(v.root, &lcd7_text18, SCHOOL7_SIDE_X, 0, SCHOOL7_SIDE_W);
+    lv_label_set_recolor(row.text, true);
+    row.markBox = panel(v.root, SCHOOL7_SIDE_X, 0, SCHOOL7_MARK_BOX, SCHOOL7_MARK_BOX);
+    lv_obj_set_style_radius(row.markBox, 6, 0);
+    row.mark = label(row.markBox, &lcd7_text18, 0, 1, SCHOOL7_MARK_BOX);
+    lv_obj_set_style_text_align(row.mark, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(row.mark, COLOR_BACKGROUND, 0);
+  }
+  v.updated = label(v.root, &lcd7_text15, SCHOOL7_SIDE_X, SCHOOL7_BOTTOM - 18);
+  v.drawnRevision = UINT32_MAX;
+}
+
+void setDecor(lv_obj_t *object, lv_text_decor_t decor) {
+  if (lv_obj_get_style_text_decor(object, LV_PART_MAIN) != decor)
+    lv_obj_set_style_text_decor(object, decor, LV_PART_MAIN);
+}
+
+void setSize(lv_obj_t *object, lv_coord_t w, lv_coord_t h) {
+  if (lv_obj_get_width(object) != w || lv_obj_get_height(object) != h)
+    lv_obj_set_size(object, w, h);
+}
+
+// "9:40" z minut dne.
+void formatMinutes(char *output, size_t capacity, int minutes) {
+  snprintf(output, capacity, "%d:%02d", minutes / 60, minutes % 60);
+}
+
+void syncSchoolDay(const Palette &p, size_t dayIndex, const SchoolFeed *feed,
+                   lv_coord_t x, lv_coord_t width, int minute) {
+  SchoolView &v = school;
+  const bool present = feed != nullptr && dayIndex < feed->dayCount;
+  setVisible(v.heads[dayIndex], present);
+  setVisible(v.ends[dayIndex], present);
+  const size_t count = present ? feed->days[dayIndex].lessonCount : 0;
+  for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index)
+    setVisible(v.cells[dayIndex][index].box, index < count);
+  if (!present) return;
+  const SchoolDay &day = feed->days[dayIndex];
+  const bool english = englishLanguage();
+
+  char text[SCHOOL_TITLE_LENGTH + 32];
+  if (day.weekday[0] != '\0')
+    snprintf(text, sizeof(text), "%s · %s", day.day, day.weekday);
+  else
+    strlcpy(text, day.day, sizeof(text));
+  setText(v.heads[dayIndex], text);
+  setColor(v.heads[dayIndex], p.night ? COLOR_ERROR : (day.today ? COLOR_OUTSIDE : COLOR_TEXT));
+  setPosition(v.heads[dayIndex], x, SCHOOL7_TOP + 4);
+  if (day.end[0] != '\0')
+    snprintf(text, sizeof(text), english ? "until %s" : "do %s", day.end);
+  else
+    strlcpy(text, english ? "all off" : "vše odpadá", sizeof(text));
+  setText(v.ends[dayIndex], text);
+  setColor(v.ends[dayIndex], p.muted);
+  lv_obj_update_layout(v.ends[dayIndex]);
+  const lv_coord_t endWidth = lv_obj_get_width(v.ends[dayIndex]);
+  setPosition(v.ends[dayIndex], x + width - endWidth, SCHOOL7_TOP + 7);
+  setWidth(v.heads[dayIndex], std::max<lv_coord_t>(1, width - endWidth - 10));
+
+  // Zvýrazněná hodina jen v dnešním rozvrhu, stejně jako na kulatém.
+  SchoolLessonTime times[SCHOOL_MAX_LESSONS];
+  for (size_t index = 0; index < count; ++index) times[index] = schoolLessonTime(day.lessons[index]);
+  const int current = day.today ? schoolCurrentLesson(times, count, minute) : -1;
+
+  const lv_coord_t top = SCHOOL7_TOP + SCHOOL7_HEAD_H;
+  const lv_coord_t room = SCHOOL7_BOTTOM - top;
+  const lv_coord_t rowHeight = count == 0 ? 0
+      : std::min<lv_coord_t>(SCHOOL7_ROW_MAX,
+                             (room + SCHOOL7_ROW_GAP) / count - SCHOOL7_ROW_GAP);
+  const bool twoLines = rowHeight >= SCHOOL7_TWO_LINE_ROW;
+  const lv_coord_t subjectX = SCHOOL7_HOUR_W + 10;
+  const lv_coord_t subjectWidth = width - subjectX - 10;
+  for (size_t index = 0; index < count; ++index) {
+    const SchoolLesson &lesson = day.lessons[index];
+    SchoolCell &cell = v.cells[dayIndex][index];
+    const bool canceled = lesson.state == SchoolLessonState::Canceled;
+    const bool changed = lesson.state == SchoolLessonState::Changed;
+    const bool now = static_cast<int>(index) == current;
+    setSize(cell.box, width, rowHeight);
+    setPosition(cell.box, x, top + index * (rowHeight + SCHOOL7_ROW_GAP));
+    lv_color_t border = SCHOOL7_CELL_BORDER;
+    lv_color_t subjectColor = COLOR_TEXT;
+    lv_color_t subColor = COLOR_MUTED;
+    if (now) border = subColor = COLOR_OUTSIDE;
+    else if (changed) border = subjectColor = subColor = COLOR_ROOM;
+    if (canceled) subjectColor = COLOR_MUTED;
+    if (p.night) {
+      border = now || changed ? COLOR_ERROR : NIGHT_LINE;
+      subjectColor = canceled ? NIGHT_MUTED : COLOR_ERROR;
+      subColor = NIGHT_MUTED;
+    }
+    setBackground(cell.box, now && !p.night ? SCHOOL7_NOW_FILL : SCHOOL7_CELL);
+    setBorder(cell.box, border);
+
+    setText(cell.hour, lesson.hour);
+    setColor(cell.hour, p.muted);
+    setPosition(cell.hour, 0, (rowHeight - 4) / 2 - 10);
+
+    // Plný název, dokud se vejde; zkratka řekne víc než useknutý název.
+    const char *subject = lesson.subject;
+    if (lesson.abbrev[0] != '\0' &&
+        lv_txt_get_width(subject, strlen(subject), &lcd7_text22, 0, LV_TEXT_FLAG_NONE) >
+            subjectWidth)
+      subject = lesson.abbrev;
+    setText(cell.subject, subject);
+    setColor(cell.subject, subjectColor);
+    setDecor(cell.subject, canceled ? LV_TEXT_DECOR_STRIKETHROUGH : LV_TEXT_DECOR_NONE);
+    setWidth(cell.subject, subjectWidth);
+
+    // Druhý řádek: u probíhající hodiny do kdy, u příští odkdy, jinak
+    // poznámka serveru (suplování), u odpadlé "odpadá", jinak čas hodiny.
+    char sub[SCHOOL_NOTE_LENGTH + 32];
+    char from[8];
+    char to[8];
+    sub[0] = '\0';
+    if (now && times[index].start >= 0) {
+      const bool running = minute >= times[index].start;
+      if (running && times[index].end >= 0) {
+        formatMinutes(to, sizeof(to), times[index].end);
+        snprintf(sub, sizeof(sub), english ? "now · until %s" : "teď · do %s", to);
+      } else {
+        formatMinutes(from, sizeof(from), times[index].start);
+        snprintf(sub, sizeof(sub), english ? "next · %s" : "příští · %s", from);
+      }
+    } else if (lesson.note[0] != '\0') {
+      strlcpy(sub, lesson.note, sizeof(sub));
+    } else if (canceled) {
+      strlcpy(sub, english ? "off" : "odpadá", sizeof(sub));
+    } else if (lesson.start[0] != '\0') {
+      snprintf(sub, sizeof(sub), "%s – %s", lesson.start, lesson.end);
+    }
+    const lv_coord_t subjectHeight = lv_font_get_line_height(&lcd7_text22);
+    const lv_coord_t subHeight = lv_font_get_line_height(&lcd7_text15);
+    if (twoLines && sub[0] != '\0') {
+      const lv_coord_t blockTop = (rowHeight - 4 - subjectHeight - subHeight) / 2;
+      setPosition(cell.subject, subjectX, blockTop);
+      setPosition(cell.sub, subjectX, blockTop + subjectHeight);
+      setWidth(cell.sub, subjectWidth);
+      setText(cell.sub, sub);
+      setColor(cell.sub, subColor);
+      setVisible(cell.sub, true);
+    } else {
+      setPosition(cell.subject, subjectX, (rowHeight - 4 - subjectHeight) / 2);
+      setVisible(cell.sub, false);
+    }
+  }
+}
+
+// Text do recolor popisku: mřížka v textu ze serveru se zdvojí.
+void appendEscaped(char *output, size_t capacity, const char *text) {
+  size_t length = strlen(output);
+  for (const char *c = text; *c != '\0' && length + 2 < capacity; ++c) {
+    output[length++] = *c;
+    if (*c == '#') output[length++] = '#';
+  }
+  output[length] = '\0';
+}
+
+// "#RRGGBB KDY# text" - kdy v barvě sekce, zbytek v barvě textu.
+void composeSideRow(char *output, size_t capacity, const char *when,
+                    lv_color_t whenColor, const char *first, const char *second) {
+  if (redNightVisualEnabled()) whenColor = NIGHT_MUTED;
+  output[0] = '\0';
+  if (when != nullptr && when[0] != '\0') {
+    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+    agendaBuildColorTag(tag, whenColor);
+    strlcat(output, tag, capacity);
+    appendEscaped(output, capacity, when);
+    strlcat(output, "#  ", capacity);
+  }
+  if (first != nullptr && first[0] != '\0') {
+    appendEscaped(output, capacity, first);
+    if (second != nullptr && second[0] != '\0') strlcat(output, " · ", capacity);
+  }
+  if (second != nullptr) appendEscaped(output, capacity, second);
+}
+
+lv_color_t markColor(const char *mark) {
+  switch (mark[0]) {
+    case '1': return COLOR_AIR;
+    case '2': return SCHOOL7_MARK_2;
+    case '3': return COLOR_ROOM;
+    case '4':
+    case '5': return COLOR_ERROR;
+    default: return COLOR_MUTED;
+  }
+}
+
+// Pravý sloupec: sekce pod sebou, dokud se vejdou. Řádek se láme nejvýš na
+// dva řádky; sekce bez jediného řádku, který by se vešel, se vynechá celá.
+class SchoolSide {
+ public:
+  SchoolSide(const Palette &p) : p_(p), y_(SCHOOL7_TOP + 2) {}
+
+  bool beginSection(const char *title, lv_color_t color) {
+    if (section_ >= SCHOOL7_SIDE_SECTIONS) return false;
+    const lv_coord_t head = lv_font_get_line_height(&lcd7_text15) + 4;
+    const lv_coord_t gap = section_ > 0 ? 14 : 0;
+    if (y_ + gap + head + lineHeight() > bottom()) return false;
+    lv_obj_t *label = school.sectionHeads[section_++];
+    y_ += gap;
+    setText(label, title);
+    setColor(label, p_.night ? COLOR_ERROR : color);
+    setPosition(label, SCHOOL7_SIDE_X, y_);
+    setVisible(label, true);
+    y_ += head;
+    return true;
+  }
+
+  // Vrací false, když se řádek už nevešel.
+  bool addRow(const char *text, const char *mark = nullptr) {
+    if (row_ >= SCHOOL7_SIDE_ROWS) return false;
+    SchoolSideRow &row = school.side[row_];
+    const lv_coord_t indent = mark != nullptr ? SCHOOL7_MARK_BOX + 10 : 0;
+    const lv_coord_t width = SCHOOL7_SIDE_W - indent;
+    lv_point_t size;
+    lv_txt_get_size(&size, text, &lcd7_text18, 0, 0, width, LV_TEXT_FLAG_RECOLOR);
+    lv_coord_t lines = size.y > lineHeight() ? 2 : 1;
+    if (y_ + lines * lineHeight() > bottom()) lines = 1;
+    if (y_ + lineHeight() > bottom()) return false;
+    setWidth(row.text, width);
+    if (lv_obj_get_height(row.text) != lines * lineHeight())
+      lv_obj_set_height(row.text, lines * lineHeight());
+    setText(row.text, text);
+    setColor(row.text, p_.night ? COLOR_ERROR : COLOR_TEXT);
+    setPosition(row.text, SCHOOL7_SIDE_X + indent, y_);
+    setVisible(row.text, true);
+    setVisible(row.markBox, mark != nullptr);
+    if (mark != nullptr) {
+      setText(row.mark, mark);
+      setBackground(row.markBox, p_.night ? COLOR_ERROR : markColor(mark));
+      setPosition(row.markBox, SCHOOL7_SIDE_X, y_ - 2);
+    }
+    y_ += lines * lineHeight() + 4;
+    ++row_;
+    return true;
+  }
+
+  void finish() {
+    for (size_t index = section_; index < SCHOOL7_SIDE_SECTIONS; ++index)
+      setVisible(school.sectionHeads[index], false);
+    for (size_t index = row_; index < SCHOOL7_SIDE_ROWS; ++index) {
+      setVisible(school.side[index].text, false);
+      setVisible(school.side[index].markBox, false);
+    }
+  }
+
+  bool empty() const { return section_ == 0; }
+
+ private:
+  static lv_coord_t lineHeight() { return lv_font_get_line_height(&lcd7_text18); }
+  static lv_coord_t bottom() { return SCHOOL7_BOTTOM - 26; }
+
+  const Palette &p_;
+  lv_coord_t y_;
+  size_t section_ = 0;
+  size_t row_ = 0;
+};
+
+void syncSchoolSide(const Palette &p, const SchoolFeed *feed, int minute) {
+  SchoolSide side(p);
+  const bool english = englishLanguage();
+  char text[SCHOOL_TITLE_LENGTH * 2 + 48];
+  if (feed != nullptr && feed->hasMeals && feed->mealCount > 0) {
+    bool today[SCHOOL_MAX_MEALS];
+    for (size_t index = 0; index < feed->mealCount; ++index)
+      today[index] = feed->meals[index].today;
+    const size_t hidden = schoolMealsHiddenByHour(
+        today, feed->mealCount, minute, dashboardRuntimeConfig.school.mealNextDayHour);
+    if (hidden < feed->mealCount && side.beginSection(english ? "LUNCH" : "OBĚDY", COLOR_AIR)) {
+      for (size_t index = hidden; index < feed->mealCount; ++index) {
+        const SchoolMeal &meal = feed->meals[index];
+        const bool newDay =
+            index == hidden || strcmp(meal.when, feed->meals[index - 1].when) != 0;
+        char what[SCHOOL_MEAL_WHO_LENGTH + SCHOOL_TITLE_LENGTH + 4];
+        if (meal.who[0] != '\0')
+          snprintf(what, sizeof(what), "%s: %s", meal.who, meal.text);
+        else
+          strlcpy(what, meal.text, sizeof(what));
+        composeSideRow(text, sizeof(text), newDay ? meal.when : "",
+                       COLOR_TEXT, nullptr, what);
+        if (!side.addRow(text)) break;
+      }
+    }
+  }
+  if (feed != nullptr && feed->hasTests && feed->testCount > 0 &&
+      side.beginSection(english ? "TESTS" : "TESTY", SCHOOL7_TEST)) {
+    for (size_t index = 0; index < feed->testCount; ++index) {
+      const SchoolTest &test = feed->tests[index];
+      composeSideRow(text, sizeof(text), test.when,
+                     test.done ? COLOR_MUTED : SCHOOL7_TEST,
+                     test.abbrev[0] != '\0' ? test.abbrev : test.subject, test.theme);
+      if (!side.addRow(text)) break;
+    }
+  }
+  if (feed != nullptr && feed->hasHomework && feed->homeworkCount > 0 &&
+      side.beginSection(english ? "HOMEWORK" : "ÚKOLY", COLOR_OUTSIDE)) {
+    for (size_t index = 0; index < feed->homeworkCount; ++index) {
+      const SchoolHomework &task = feed->homework[index];
+      composeSideRow(text, sizeof(text), task.due, COLOR_OUTSIDE,
+                     task.abbrev[0] != '\0' ? task.abbrev : task.subject, task.title);
+      if (!side.addRow(text)) break;
+    }
+  }
+  if (feed != nullptr && feed->hasMarks && feed->markCount > 0 &&
+      side.beginSection(english ? "MARKS" : "ZNÁMKY", COLOR_MUTED)) {
+    for (size_t index = 0; index < feed->markCount; ++index) {
+      const SchoolMark &mark = feed->marks[index];
+      composeSideRow(text, sizeof(text), "", COLOR_TEXT,
+                     mark.abbrev[0] != '\0' ? mark.abbrev : mark.subject, mark.theme);
+      if (!side.addRow(text, mark.mark)) break;
+    }
+  }
+  const bool messages = feed != nullptr && feed->hasMessages && feed->messageCount > 0;
+  const bool notices = feed != nullptr && feed->hasNotices && feed->noticeCount > 0;
+  if ((messages || notices) &&
+      side.beginSection(english ? "MESSAGES" : "ZPRÁVY", COLOR_MUTED)) {
+    bool room = true;
+    for (size_t index = 0; messages && room && index < feed->messageCount; ++index) {
+      const SchoolMessage &message = feed->messages[index];
+      composeSideRow(text, sizeof(text), message.when, COLOR_MUTED, message.sender,
+                     message.title);
+      room = side.addRow(text);
+    }
+    for (size_t index = 0; notices && room && index < feed->noticeCount; ++index) {
+      const SchoolNotice &notice = feed->notices[index];
+      composeSideRow(text, sizeof(text), notice.when, COLOR_MUTED, nullptr, notice.title);
+      room = side.addRow(text);
+    }
+  }
+  side.finish();
+  setVisible(school.divider, !side.empty());
+  setBackground(school.divider, p.line);
+
+  const bool haveUpdated = feed != nullptr && feed->timetableUpdated[0] != '\0';
+  setVisible(school.updated, haveUpdated);
+  if (haveUpdated) {
+    formatUpdatedText(feed->timetableUpdated, text, sizeof(text));
+    setText(school.updated, text);
+  }
+  setColor(school.updated, p.muted);
+}
+
+void syncSchool(const Palette &p) {
+  SchoolView &v = school;
+  syncTopBar(v.bar, p);
+  const int minute = schoolMinuteOfDay();
+  const bool english = englishLanguage();
+  if (v.drawnRevision == schoolRevision && v.drawnMinute == minute &&
+      v.drawnNight == p.night && v.drawnEnglish == english)
+    return;
+  v.drawnRevision = schoolRevision;
+  v.drawnMinute = minute;
+  v.drawnNight = p.night;
+  v.drawnEnglish = english;
+
+  const SchoolFeed *feed = schoolReady ? schoolLcd7Feed : nullptr;
+  const size_t days = feed != nullptr ? std::min(feed->dayCount, SCHOOL_MAX_DAYS) : 0;
+  const lv_coord_t area = SCHOOL7_LEFT_END - SCHOOL7_LEFT;
+  const lv_coord_t width =
+      days > 1 ? (area - SCHOOL7_COLUMN_GAP * (days - 1)) / days : area;
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day)
+    syncSchoolDay(p, day, feed, SCHOOL7_LEFT + day * (width + SCHOOL7_COLUMN_GAP), width,
+                  minute);
+
+  setVisible(v.status, days == 0);
+  if (days == 0) {
+    const char *text;
+    if (!schoolReady && schoolMessage[0] != '\0')
+      text = schoolMessage;
+    else if (schoolReady)
+      text = english ? "No school coming up" : "Žádné vyučování";
+    else
+      text = english ? "Loading timetable..." : "Načítám rozvrh...";
+    setText(v.status, text);
+    setColor(v.status, p.muted);
+  }
+  syncSchoolSide(p, feed, minute);
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -1980,6 +2448,8 @@ HomeMode desiredMode() {
     return HomeMode::Agenda;
   if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr)
     return HomeMode::Rss;
+  if (activeScreen == DASHBOARD_SCREEN_SCHOOL && schoolPage != nullptr)
+    return HomeMode::School;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
@@ -1997,8 +2467,9 @@ void create() {
   createRadar(screen);
   createAgenda(screen);
   createRss(screen);
+  createSchool(screen);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
-                         radar.root, agenda.root, rss.root})
+                         radar.root, agenda.root, rss.root, school.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -2024,6 +2495,8 @@ void applyMode(HomeMode mode) {
     rss.drawnRevision = UINT32_MAX;
   }
   setVisible(rss.root, mode == HomeMode::Rss);
+  if (mode == HomeMode::School) school.drawnRevision = UINT32_MAX;
+  setVisible(school.root, mode == HomeMode::School);
   const bool stageLeft = mode == HomeMode::Analog;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -2054,6 +2527,7 @@ void sync(bool force) {
     case HomeMode::Radar: syncRadar(p); break;
     case HomeMode::Agenda: syncAgenda(p); break;
     case HomeMode::Rss: syncRss(p); break;
+    case HomeMode::School: syncSchool(p); break;
     case HomeMode::None: break;
   }
 }

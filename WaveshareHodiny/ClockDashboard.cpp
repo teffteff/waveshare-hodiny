@@ -3677,6 +3677,13 @@ int schoolRowTextWidth(const char *text) {
 }
 
 // Aktuální minuta dne, nebo -1 před synchronizací času.
+#if HODINY_BOARD_LCD7
+// Celá poslední odpověď pro školu 7", která kreslí všechno najednou a ne
+// z popisků kulaté stránky. V PSRAM, zabírá kolem 12 kB.
+SchoolFeed *schoolLcd7Feed = nullptr;
+#endif
+uint32_t schoolRevision = 0;
+
 int schoolMinuteOfDay() {
   const time_t now = time(nullptr);
   if (now < 1700000000) return -1;
@@ -9285,6 +9292,10 @@ bool clockDashboardSwipeForecast(int8_t direction) {
 }
 
 bool clockDashboardSwipeSchool() {
+#if HODINY_BOARD_LCD7
+  // 7" má všechno na jedné stránce; tažení vede na další obrazovku.
+  return false;
+#endif
   if (activeScreen != DASHBOARD_SCREEN_SCHOOL || schoolPage == nullptr ||
       settingsVisible || firmwareUpdateActive)
     return false;
@@ -9333,6 +9344,15 @@ void clockDashboardSetSchoolAvailable(bool available) {
 
 bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   if (schoolPage == nullptr) return false;
+  ++schoolRevision;
+#if HODINY_BOARD_LCD7
+  if (feed != nullptr) {
+    if (schoolLcd7Feed == nullptr)
+      schoolLcd7Feed = static_cast<SchoolFeed *>(
+          heap_caps_malloc(sizeof(SchoolFeed), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (schoolLcd7Feed != nullptr) memcpy(schoolLcd7Feed, feed, sizeof(SchoolFeed));
+  }
+#endif
   schoolReady = feed != nullptr;
   strlcpy(schoolMessage, message != nullptr ? message : "",
           sizeof(schoolMessage));
@@ -10397,5 +10417,71 @@ void clockDashboardLcd7RssDemo(uint8_t variant) {
     const Story &story = STORIES[variant == 1 ? 5 - index : index];
     clockDashboardSetRssItem(index, story.title, story.time, story.summary);
   }
+}
+
+void clockDashboardLcd7SchoolDemo() {
+  // Dnešní hodiny kolem aktuálního času, aby bylo vidět zvýraznění.
+  const int now = schoolMinuteOfDay() >= 0 ? schoolMinuteOfDay() : 9 * 60;
+  const int first = now - 70;
+  static const char *const SUBJECTS[][2] = {
+      {"Český jazyk", "Čj"}, {"Matematika", "M"}, {"Anglický jazyk", "Aj"},
+      {"Prvouka", "Prv"}, {"Hudební výchova", "Hv"}, {"Tělesná výchova", "Tv"}};
+  String json;
+  json.reserve(4096);
+  json += "{\"days\":[{\"day\":\"DNES\",\"weekday\":\"SOBOTA\",\"today\":true,"
+          "\"lessons\":[";
+  char lesson[256];
+  for (int index = 0; index < 5; ++index) {
+    const int start = first + index * 55;
+    const int end = start + 45;
+    const int state = index == 2 ? 1 : (index == 4 ? 2 : 0);
+    snprintf(lesson, sizeof(lesson),
+             "%s{\"hour\":\"%d.\",\"start\":\"%d:%02d\",\"end\":\"%d:%02d\","
+             "\"subject\":\"%s\",\"abbrev\":\"%s\",\"note\":\"%s\",\"state\":%d}",
+             index > 0 ? "," : "", index + 1, (start / 60) % 24, start % 60,
+             (end / 60) % 24, end % 60, SUBJECTS[index][0], SUBJECTS[index][1],
+             state == 1 ? "supl. Nováková" : "", state);
+    json += lesson;
+  }
+  // Poslední hodina odpadá, vyučování tedy končí se čtvrtou.
+  const int lastEnd = first + 3 * 55 + 45;
+  snprintf(lesson, sizeof(lesson), "],\"end\":\"%d:%02d\"},", (lastEnd / 60) % 24,
+           lastEnd % 60);
+  json += lesson;
+  json += "{\"day\":\"PO 12.10.\",\"lessons\":[";
+  for (int index = 0; index < 6; ++index) {
+    const int start = 8 * 60 + index * 55;
+    snprintf(lesson, sizeof(lesson),
+             "%s{\"hour\":\"%d.\",\"start\":\"%d:%02d\",\"end\":\"%d:%02d\","
+             "\"subject\":\"%s\",\"abbrev\":\"%s\",\"state\":0}",
+             index > 0 ? "," : "", index + 1, start / 60, start % 60,
+             (start + 45) / 60, (start + 45) % 60, SUBJECTS[(index + 1) % 6][0],
+             SUBJECTS[(index + 1) % 6][1]);
+    json += lesson;
+  }
+  json += "],\"end\":\"13:15\"}],"
+          "\"homework\":[{\"due\":\"PO\",\"subject\":\"Anglický jazyk\",\"abbrev\":\"Aj\","
+          "\"title\":\"slovíčka lekce 3\"},{\"due\":\"ÚT\",\"subject\":\"Český jazyk\","
+          "\"abbrev\":\"Čj\",\"title\":\"pracovní sešit str. 14, cvičení 3 a 4\"}],"
+          "\"testCount\":2,\"tests\":[{\"when\":\"PÁ 16.10.\",\"subject\":\"Matematika\","
+          "\"abbrev\":\"M\",\"theme\":\"Násobilka 7 a 8\"},{\"when\":\"VČERA\","
+          "\"subject\":\"Český jazyk\",\"abbrev\":\"Čj\",\"theme\":\"Diktát\",\"done\":true}],"
+          "\"markCount\":2,\"marks\":[{\"when\":\"DNES\",\"subject\":\"Matematika\","
+          "\"abbrev\":\"M\",\"mark\":\"1\",\"theme\":\"převody jednotek\"},"
+          "{\"when\":\"VČERA\",\"subject\":\"Český jazyk\",\"abbrev\":\"Čj\",\"mark\":\"2\","
+          "\"theme\":\"diktát\"}],"
+          "\"messageCount\":1,\"messages\":[{\"when\":\"VČERA\",\"sender\":\"Nováková\","
+          "\"title\":\"Třídní schůzky\"}],"
+          "\"meals\":[{\"when\":\"PO\",\"who\":\"ZŠ\",\"text\":\"Kuřecí rizoto se sýrem, "
+          "okurkový salát\"},{\"when\":\"PO\",\"who\":\"MŠ\",\"text\":\"Svíčková na smetaně\"}],"
+          "\"timetableUpdated\":\"20:05\"}";
+  SchoolFeed *feed = static_cast<SchoolFeed *>(
+      heap_caps_malloc(sizeof(SchoolFeed), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (feed == nullptr) return;
+  new (feed) SchoolFeed();
+  schoolParseFeed(json.c_str(), json.length(), *feed);
+  clockDashboardSetSchoolAvailable(true);
+  clockDashboardSetSchool(feed, nullptr);
+  heap_caps_free(feed);
 }
 #endif

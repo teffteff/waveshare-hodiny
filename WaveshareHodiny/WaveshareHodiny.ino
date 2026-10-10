@@ -2567,6 +2567,9 @@ void handleUsbCommands() {
       } else if (usbCommand.startsWith("RSSDEMO") && !screenshotTransferActive) {
         clockDashboardLcd7RssDemo(static_cast<uint8_t>(usbCommand.substring(7).toInt()));
         Serial.println("RSS_DEMO");
+      } else if (usbCommand == "SCHOOLDEMO" && !screenshotTransferActive) {
+        clockDashboardLcd7SchoolDemo();
+        Serial.println("SCHOOL_DEMO");
 #endif
       } else if ((usbCommand == "RADARRANGE+" || usbCommand == "RADARRANGE-") &&
                  !screenshotTransferActive) {
@@ -2579,6 +2582,10 @@ void handleUsbCommands() {
       } else if (usbCommand == "NIGHT" && !screenshotTransferActive) {
         clockDashboardSetNightMode(true);
         Serial.println("NIGHT_OPEN");
+      } else if (usbCommand == "DAY" && !screenshotTransferActive) {
+        // Opak NIGHT: denní vzhled pro screenshot i večer.
+        clockDashboardSetNightMode(false);
+        Serial.println("DAY_OPEN");
       } else if (usbCommand == "NIGHTTEST" && !screenshotTransferActive) {
         forceNightTestActive = true;
         sampleValues.weatherIsDay = false;

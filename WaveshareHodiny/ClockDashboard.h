@@ -308,4 +308,6 @@ void clockDashboardLcd7HistoryDemo();
 void clockDashboardLcd7AgendaDemo(uint8_t variant);
 // Ukázkové zprávy pro screenshot: 0 pět z návrhu, 1 šest s dlouhým textem.
 void clockDashboardLcd7RssDemo(uint8_t variant);
+// Ukázkový rozvrh se školními zprávami pro screenshot.
+void clockDashboardLcd7SchoolDemo();
 #endif
