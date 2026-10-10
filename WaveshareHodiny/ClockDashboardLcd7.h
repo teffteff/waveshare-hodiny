@@ -1318,6 +1318,17 @@ void syncForecast(const Palette &p) {
 
 // --- Přepínání ------------------------------------------------------------
 
+// Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
+// přes dvě stě a interní RAM potřebuje Wi-Fi a TLS (handshake si bere dva
+// šestnáctikilobajtové buffery). Bez toho zbylo 10 kB a hodiny vypadly ze sítě.
+class PsramAllocations {
+ public:
+  PsramAllocations() { clockLvglPreferPsram(true); }
+  ~PsramAllocations() { clockLvglPreferPsram(false); }
+  PsramAllocations(const PsramAllocations &) = delete;
+  PsramAllocations &operator=(const PsramAllocations &) = delete;
+};
+
 HomeMode shownMode = HomeMode::None;
 uint32_t lastSyncAt = 0;
 bool created = false;
@@ -1333,6 +1344,7 @@ HomeMode desiredMode() {
 }
 
 void create() {
+  const PsramAllocations psram;
   allocateHistory();
   lv_obj_t *screen = lv_scr_act();
   createDigital(screen);
@@ -1360,6 +1372,7 @@ void applyMode(HomeMode mode) {
 
 void sync(bool force) {
   if (!created) return;
+  const PsramAllocations psram;
   maintainHistory();
   const HomeMode mode = desiredMode();
   if (mode != shownMode) {
