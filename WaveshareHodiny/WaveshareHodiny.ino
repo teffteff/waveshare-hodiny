@@ -2560,6 +2560,10 @@ void handleUsbCommands() {
       } else if (usbCommand == "HISTORYDEMO" && !screenshotTransferActive) {
         clockDashboardLcd7HistoryDemo();
         Serial.println("HISTORY_DEMO");
+      } else if (usbCommand.startsWith("AGENDADEMO") && !screenshotTransferActive) {
+        clockDashboardLcd7AgendaDemo(
+            static_cast<uint8_t>(usbCommand.substring(10).toInt()));
+        Serial.println("AGENDA_DEMO");
 #endif
       } else if ((usbCommand == "RADARRANGE+" || usbCommand == "RADARRANGE-") &&
                  !screenshotTransferActive) {

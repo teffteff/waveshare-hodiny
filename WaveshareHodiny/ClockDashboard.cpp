@@ -221,6 +221,9 @@ uint8_t agendaVisibleItemCount = 0;
 // Řádek, který místo události nese tři tečky, protože poslední zobrazený den
 // pokračuje za okrajem. -1 = žádný. Drží se kvůli přebarvení v noční paletě.
 int agendaEllipsisRow = -1;
+// Roste s každou změnou obsahu agendy; agenda 7" podle něj pozná, kdy znovu
+// rozmístit řádky, a nemusí porovnávat texty.
+uint32_t agendaRevision = 0;
 size_t agendaCalendarCount = 0;
 char agendaCalendarNames[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 lv_obj_t *rssHeaderLabel = nullptr;
@@ -3211,6 +3214,12 @@ void agendaAppendEscaped(String &target, const char *text) {
 // není známo, kde jsou hranice dnů, a řádek s hlavičkou je o její výšku vyšší.
 void layoutAgendaItems() {
   if (agendaPage == nullptr) return;
+  ++agendaRevision;
+#if HODINY_BOARD_LCD7
+  // 7" rozmisťuje agendu sám (ClockDashboardLcd7.h) a potřebuje celé titulky;
+  // tři tečky by tu titulek přepsaly natrvalo.
+  return;
+#endif
   const int lineHeight = agendaLineHeight();
   const int dayHeight = agendaDayHeight();
   const AgendaLayoutResult fitted = agendaLayout(
@@ -9162,6 +9171,7 @@ void clockDashboardSetAgendaAvailable(bool available) {
 void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
                                    bool ready) {
   if (agendaPage == nullptr) return;
+  ++agendaRevision;
   if (count > CLOCK_AGENDA_MAX_ITEMS) count = CLOCK_AGENDA_MAX_ITEMS;
   agendaVisibleItemCount = count;
   agendaEllipsisRow = -1;
@@ -9218,6 +9228,7 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
 
 void clockDashboardSetAgendaCalendars(const char *const *names, size_t count,
                                       const char *updated) {
+  ++agendaRevision;
   strlcpy(agendaUpdated, updated != nullptr ? updated : "",
           sizeof(agendaUpdated));
   if (count > AGENDA_MAX_CALENDARS) count = AGENDA_MAX_CALENDARS;
@@ -10294,4 +10305,57 @@ bool clockDashboardTrafficMapPage() {
 
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
 void clockDashboardLcd7HistoryDemo() { lcd7::fillHistoryDemo(); }
+
+void clockDashboardLcd7AgendaDemo(uint8_t variant) {
+  struct Event {
+    const char *day;
+    const char *time;
+    const char *title;
+    uint8_t calendar;
+  };
+  // 0: týden jako v návrhu; 1: přeplněný dnešek, který pokračuje vpravo
+  // a nevejde se celý.
+  static const Event WEEK[] = {
+      {"DNES", "15:00", "Streetdance", 1},
+      {"", "18:00", "Popelnice – která?", 0},
+      {"ZÍTRA", "", "N s Bocanovou", 0},
+      {"", "08:00", "Školení", 0},
+      {"", "17:00", "Daník hasiči Tremblaty", 1},
+      {"čt 15.10.", "07:30", "Výlet 1. třída", 1},
+      {"", "19:00", "Volejbal", 0},
+      {"pá 16.10.", "14:00", "Mléko", 0},
+      {"", "15:00", "Florbal boty, pití", 1},
+      {"", "16:00", "Sokol", 1},
+      {"so 17.10.", "10:00", "Trh na náměstí", 0},
+      {"ne 18.10.", "", "Babička 80", 0},
+  };
+  static const Event BUSY[] = {
+      {"DNES", "", "Celodenní školení v Brně a večeře s týmem", 0},
+      {"", "07:00", "Snídaně", 1},
+      {"", "08:00", "Školka", 1},
+      {"", "09:30", "Zubař", 0},
+      {"", "11:00", "Porada", 0},
+      {"", "12:30", "Oběd s Petrem", 0},
+      {"", "14:00", "Streetdance", 1},
+      {"", "15:30", "Nákup", 0},
+      {"", "16:00", "Sokol", 1},
+      {"", "17:30", "Florbal", 1},
+      {"", "18:00", "Popelnice", 0},
+      {"", "19:00", "Volejbal", 0},
+      {"ZÍTRA", "08:00", "Školení", 0},
+      {"", "10:00", "Kadeřník", 2},
+      {"pá 16.10.", "14:00", "Mléko", 0},
+      {"so 17.10.", "10:00", "Trh na náměstí", 3},
+  };
+  const Event *events = variant == 1 ? BUSY : WEEK;
+  const size_t count = variant == 1 ? sizeof(BUSY) / sizeof(BUSY[0])
+                                    : sizeof(WEEK) / sizeof(WEEK[0]);
+  clockDashboardSetAgendaAvailable(true);
+  const char *names[] = {"Neumannovi", "Adámek", "Škola", "Práce"};
+  clockDashboardSetAgendaCalendars(names, variant == 1 ? 4 : 2, "14:56");
+  clockDashboardSetAgendaStatus(nullptr, static_cast<uint8_t>(count), true);
+  for (size_t index = 0; index < count; ++index)
+    clockDashboardSetAgendaItem(index, events[index].day, events[index].time,
+                                events[index].title, events[index].calendar);
+}
 #endif

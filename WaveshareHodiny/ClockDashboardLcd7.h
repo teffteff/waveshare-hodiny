@@ -19,7 +19,8 @@ namespace lcd7 {
 
 bool created = false;
 
-enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar };
+enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
+                               Agenda };
 
 constexpr int SIDE_X = 480;
 constexpr int SIDE_WIDTH = SCREEN_WIDTH - SIDE_X;
@@ -1456,6 +1457,284 @@ void syncRadar(const Palette &p) {
   showPageDots(v.dots, p, -(RADAR_PAD + 5), SCREEN_HEIGHT - 22);
 }
 
+// --- Agenda ---------------------------------------------------------------
+// Pod lištou dva sloupce: vlevo první dva dny větším písmem (dnes a zítra,
+// na které se člověk dívá nejčastěji), vpravo další dny menším. Když se pravý
+// sloupec nevejde a levý má místo, přejde doleva i další den. Den delší než
+// levý sloupec pokračuje vpravo pod zopakovanou hlavičkou. Co se nevejde
+// nikam, nahradí tři tečky na posledním řádku. Dole legenda kalendářů
+// s barevnými tečkami a kdy server kalendáře naposled stáhl.
+//
+// Texty drží popisky kulaté stránky agendy (kulatý je na 7" nerozmisťuje
+// a nezkracuje), tady se jen čtou.
+
+constexpr int AGENDA_X = 28;
+constexpr int AGENDA_TOP = BAR_HEIGHT + 18;
+constexpr int AGENDA_LEGEND_H = 40;
+constexpr int AGENDA_BOTTOM = SCREEN_HEIGHT - AGENDA_LEGEND_H;
+constexpr int AGENDA_COLUMN_GAP_7 = 40;
+constexpr int AGENDA_LEFT_W = 352;
+constexpr int AGENDA_DIVIDER_X = AGENDA_X + AGENDA_LEFT_W + AGENDA_COLUMN_GAP_7 / 2;
+constexpr int AGENDA_RIGHT_X = AGENDA_DIVIDER_X + 32;
+constexpr int AGENDA_RIGHT_W = SCREEN_WIDTH - AGENDA_X - AGENDA_RIGHT_X;
+constexpr int AGENDA_GROUP_GAP = 14;
+constexpr size_t AGENDA_ROWS = CLOCK_AGENDA_MAX_ITEMS;
+
+struct AgendaColumnStyle {
+  lv_coord_t x;
+  lv_coord_t width;
+  lv_coord_t timeWidth;
+  lv_coord_t timeGap;
+  const lv_font_t *font;
+  lv_coord_t rowGap;
+  lv_coord_t headGap;
+};
+
+const AgendaColumnStyle AGENDA_COLUMNS[2] = {
+    {AGENDA_X, AGENDA_LEFT_W, 64, 16, &lcd7_text22, 4, 6},
+    {AGENDA_RIGHT_X, AGENDA_RIGHT_W, 54, 14, &lcd7_text18, 4, 5},
+};
+
+struct AgendaView {
+  lv_obj_t *root;
+  TopBar bar;
+  lv_obj_t *divider;
+  lv_obj_t *status;
+  lv_obj_t *heads[AGENDA_ROWS];
+  lv_obj_t *times[AGENDA_ROWS];
+  lv_obj_t *titles[AGENDA_ROWS];
+  lv_obj_t *legendDots[AGENDA_MAX_CALENDARS];
+  lv_obj_t *legendNames[AGENDA_MAX_CALENDARS];
+  lv_obj_t *updated;
+  uint32_t drawnRevision;
+  bool drawnNight;
+  bool drawnEnglish;
+} agenda;
+
+// Kam padne každý řádek: sloupec, svislá poloha, jestli nad ním stojí
+// hlavička (začátek dne nebo pokračování v pravém sloupci) a jestli místo
+// události nese tři tečky.
+struct AgendaPlacement {
+  int8_t column[AGENDA_ROWS];
+  lv_coord_t y[AGENDA_ROWS];
+  bool head[AGENDA_ROWS];
+  bool more[AGENDA_ROWS];
+  bool overflow;
+};
+
+lv_coord_t agendaRowHeight(uint8_t column) {
+  const AgendaColumnStyle &style = AGENDA_COLUMNS[column];
+  return lv_font_get_line_height(style.font) + style.rowGap;
+}
+
+lv_coord_t agendaHeadHeight(uint8_t column) {
+  return lv_font_get_line_height(&lcd7_text15) + AGENDA_COLUMNS[column].headGap;
+}
+
+// Rozmístí řádky, když levý sloupec bere prvních "leftGroups" dnů.
+AgendaPlacement placeAgenda(uint8_t count, uint8_t leftGroups) {
+  AgendaPlacement result = {};
+  lv_coord_t cursor[2] = {AGENDA_TOP, AGENDA_TOP};
+  bool started[2] = {false, false};
+  int8_t group = -1;
+  uint8_t column = 0;
+  int lastShown = -1;
+  for (uint8_t index = 0; index < count; ++index) {
+    const bool startsDay = agendaRowStartsDay[index] || index == 0;
+    if (startsDay) ++group;
+    if (column == 0 && group >= leftGroups) column = 1;
+    // Řádek se musí vejít celý; v levém sloupci i s hlavičkou dne.
+    for (;;) {
+      // Pravý sloupec začíná vždycky hlavičkou, i když den pokračuje zleva.
+      const bool head = startsDay || !started[column];
+      const lv_coord_t gap = head && started[column] ? AGENDA_GROUP_GAP : 0;
+      const lv_coord_t headHeight = head ? agendaHeadHeight(column) : 0;
+      const lv_coord_t bottom = cursor[column] + gap + headHeight + agendaRowHeight(column);
+      if (bottom <= AGENDA_BOTTOM) {
+        result.head[index] = head;
+        result.column[index] = column;
+        result.y[index] = cursor[column] + gap + headHeight;
+        cursor[column] = bottom;
+        started[column] = true;
+        lastShown = index;
+        break;
+      }
+      if (column == 0) {
+        column = 1;
+        continue;
+      }
+      result.overflow = true;
+      break;
+    }
+    if (result.overflow) break;
+  }
+  for (uint8_t index = lastShown + 1; index < AGENDA_ROWS; ++index)
+    result.column[index] = -1;
+  // Tři tečky místo posledního řádku; hlavička nad ním zůstane, pokud
+  // nestojí sama bez jediné události.
+  if (result.overflow && lastShown >= 0) {
+    result.more[lastShown] = true;
+    if (result.head[lastShown] && lastShown > 0) result.head[lastShown] = false;
+  }
+  return result;
+}
+
+AgendaPlacement layoutAgenda(uint8_t count) {
+  uint8_t groups = 0;
+  for (uint8_t index = 0; index < count; ++index)
+    if (agendaRowStartsDay[index] || index == 0) ++groups;
+  uint8_t leftGroups = std::min<uint8_t>(2, groups);
+  AgendaPlacement placement = placeAgenda(count, leftGroups);
+  // Další den doleva, dokud se tím zbavíme přetečení a vlevo se vejde celý.
+  while (placement.overflow && leftGroups < groups) {
+    AgendaPlacement wider = placeAgenda(count, leftGroups + 1);
+    bool leftFits = true;
+    uint8_t group = 0;
+    for (uint8_t index = 0; index < count; ++index) {
+      if (index > 0 && agendaRowStartsDay[index]) ++group;
+      if (group <= leftGroups && wider.column[index] != 0) leftFits = false;
+    }
+    if (!leftFits) break;
+    ++leftGroups;
+    placement = wider;
+  }
+  return placement;
+}
+
+void setFont(lv_obj_t *object, const lv_font_t *font) {
+  if (lv_obj_get_style_text_font(object, LV_PART_MAIN) != font)
+    lv_obj_set_style_text_font(object, font, LV_PART_MAIN);
+}
+
+void setWidth(lv_obj_t *object, lv_coord_t width) {
+  if (lv_obj_get_width(object) != width) lv_obj_set_width(object, width);
+}
+
+void createAgenda(lv_obj_t *screen) {
+  AgendaView &v = agenda;
+  v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
+  v.divider = line(v.root, AGENDA_DIVIDER_X, AGENDA_TOP, 1, AGENDA_BOTTOM - AGENDA_TOP);
+  v.status = label(v.root, &lcd7_text22, 0, (AGENDA_TOP + AGENDA_BOTTOM) / 2 - 14,
+                   SCREEN_WIDTH);
+  lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
+  for (size_t index = 0; index < AGENDA_ROWS; ++index) {
+    v.heads[index] = label(v.root, &lcd7_text15, 0, 0, 1);
+    lv_obj_set_style_text_letter_space(v.heads[index], 2, 0);
+    v.times[index] = label(v.root, &lcd7_text22, 0, 0);
+    v.titles[index] = label(v.root, &lcd7_text22, 0, 0, 1);
+  }
+  for (size_t index = 0; index < AGENDA_MAX_CALENDARS; ++index) {
+    v.legendDots[index] = panel(v.root, 0, 0, 9, 9);
+    lv_obj_set_style_radius(v.legendDots[index], LV_RADIUS_CIRCLE, 0);
+    v.legendNames[index] = label(v.root, &lcd7_text18, 0, 0);
+  }
+  v.updated = label(v.root, &lcd7_text15, 0, 0);
+  v.drawnRevision = UINT32_MAX;
+}
+
+// "DNES" a "TODAY" mají světlejší hlavičku, ostatní dny tlumenou.
+bool agendaDayIsToday(const char *day) {
+  return strcmp(day, "DNES") == 0 || strcmp(day, "TODAY") == 0;
+}
+
+// Den, ke kterému řádek patří (popisek nese jen první řádek dne).
+const char *agendaDayOf(uint8_t index) {
+  while (index > 0 && !agendaRowStartsDay[index]) --index;
+  return lv_label_get_text(agendaDayLabels[index]);
+}
+
+void syncAgendaLegend(const Palette &p) {
+  AgendaView &v = agenda;
+  constexpr lv_coord_t GAP = 24;
+  constexpr lv_coord_t DOT_GAP = 7;
+  const lv_coord_t centerY = AGENDA_BOTTOM + AGENDA_LEGEND_H / 2;
+  lv_coord_t x = AGENDA_X;
+  for (size_t index = 0; index < AGENDA_MAX_CALENDARS; ++index) {
+    const bool shown = index < agendaCalendarCount && agendaCalendarNames[index][0] != '\0';
+    setVisible(v.legendDots[index], shown);
+    setVisible(v.legendNames[index], shown);
+    if (!shown) continue;
+    const lv_color_t color = agendaCalendarColor(static_cast<uint8_t>(index));
+    setBackground(v.legendDots[index], color);
+    setPosition(v.legendDots[index], x, centerY - 4);
+    setText(v.legendNames[index], agendaCalendarNames[index]);
+    setColor(v.legendNames[index], color);
+    setPosition(v.legendNames[index], x + 9 + DOT_GAP,
+                centerY - lv_font_get_line_height(&lcd7_text18) / 2);
+    lv_obj_update_layout(v.legendNames[index]);
+    x += 9 + DOT_GAP + lv_obj_get_width(v.legendNames[index]) + GAP;
+  }
+  char text[AGENDA_UPDATED_LENGTH + 24];
+  if (agendaUpdated[0] != '\0')
+    formatUpdatedText(agendaUpdated, text, sizeof(text));
+  else
+    text[0] = '\0';
+  setText(v.updated, text);
+  setColor(v.updated, p.muted);
+  lv_obj_update_layout(v.updated);
+  setPosition(v.updated, SCREEN_WIDTH - AGENDA_X - lv_obj_get_width(v.updated),
+              centerY - lv_font_get_line_height(&lcd7_text15) / 2);
+}
+
+void syncAgenda(const Palette &p) {
+  AgendaView &v = agenda;
+  syncTopBar(v.bar, p);
+  const bool english = englishLanguage();
+  if (v.drawnRevision == agendaRevision && v.drawnNight == p.night &&
+      v.drawnEnglish == english)
+    return;
+  v.drawnRevision = agendaRevision;
+  v.drawnNight = p.night;
+  v.drawnEnglish = english;
+
+  const uint8_t count = agendaVisibleItemCount;
+  setVisible(v.status, count == 0);
+  setText(v.status, lv_label_get_text(agendaStatusLabel));
+  setColor(v.status, p.muted);
+  const AgendaPlacement placement = layoutAgenda(count);
+  bool rightUsed = false;
+  for (uint8_t index = 0; index < AGENDA_ROWS; ++index) {
+    const int8_t column = index < count ? placement.column[index] : -1;
+    lv_obj_t *head = v.heads[index];
+    lv_obj_t *time = v.times[index];
+    lv_obj_t *title = v.titles[index];
+    if (column < 0) {
+      setVisible(head, false);
+      setVisible(time, false);
+      setVisible(title, false);
+      continue;
+    }
+    if (column == 1) rightUsed = true;
+    const AgendaColumnStyle &style = AGENDA_COLUMNS[column];
+    const lv_coord_t y = placement.y[index];
+    const char *day = agendaDayOf(index);
+    setVisible(head, placement.head[index]);
+    if (placement.head[index]) {
+      setText(head, day);
+      setColor(head, agendaDayIsToday(day) ? p.text : p.muted);
+      setWidth(head, style.width);
+      setPosition(head, style.x, y - agendaHeadHeight(column));
+    }
+    const bool more = placement.more[index];
+    setVisible(time, !more);
+    setFont(time, style.font);
+    const char *timeText = lv_label_get_text(agendaTimeLabels[index]);
+    setText(time, strcmp(timeText, AGENDA_ALL_DAY_MARK) == 0 ? "–" : timeText);
+    setColor(time, p.night ? COLOR_ERROR : agendaCalendarColor(agendaRowCalendar[index]));
+    setPosition(time, style.x, y);
+    setVisible(title, true);
+    setFont(title, style.font);
+    setText(title, more ? "…" : lv_label_get_text(agendaTitleLabels[index]));
+    setColor(title, more ? p.muted : p.text);
+    setWidth(title, style.width - style.timeWidth - style.timeGap);
+    setPosition(title, more ? style.x : style.x + style.timeWidth + style.timeGap, y);
+  }
+  setVisible(v.divider, rightUsed);
+  setBackground(v.divider, p.line);
+  syncAgendaLegend(p);
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -1478,6 +1757,8 @@ HomeMode desiredMode() {
     return HomeMode::Forecast;
   if (activeScreen == DASHBOARD_SCREEN_RADAR && radarPage != nullptr)
     return HomeMode::Radar;
+  if (activeScreen == DASHBOARD_SCREEN_AGENDA && agendaPage != nullptr)
+    return HomeMode::Agenda;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
@@ -1493,8 +1774,9 @@ void create() {
   createValues(screen);
   createForecast(screen);
   createRadar(screen);
-  for (lv_obj_t *root :
-       {digital.root, analog.root, values.root, forecast.root, radar.root})
+  createAgenda(screen);
+  for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
+                         radar.root, agenda.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -1510,6 +1792,8 @@ void applyMode(HomeMode mode) {
   if (mode == HomeMode::Forecast) forecast.signature = 0;
   if (mode == HomeMode::Radar && radar.pixels != nullptr) lv_obj_invalidate(radar.canvas);
   setVisible(radar.root, mode == HomeMode::Radar);
+  if (mode == HomeMode::Agenda) agenda.drawnRevision = UINT32_MAX;
+  setVisible(agenda.root, mode == HomeMode::Agenda);
   const bool stageLeft = mode == HomeMode::Analog;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -1538,6 +1822,7 @@ void sync(bool force) {
     case HomeMode::Values: syncValues(p); break;
     case HomeMode::Forecast: syncForecast(p); break;
     case HomeMode::Radar: syncRadar(p); break;
+    case HomeMode::Agenda: syncAgenda(p); break;
     case HomeMode::None: break;
   }
 }

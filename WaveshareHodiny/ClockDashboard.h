@@ -304,4 +304,6 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
 // Vyplní průběh hodnot ukázkou, aby šel screenshot dlaždic bez čekání 24 h.
 void clockDashboardLcd7HistoryDemo();
+// Ukázková agenda pro screenshot: 0 týden z návrhu, 1 přeplněný dnešek.
+void clockDashboardLcd7AgendaDemo(uint8_t variant);
 #endif
