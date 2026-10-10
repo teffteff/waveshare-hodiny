@@ -1,4 +1,6 @@
 #include "ConfigurationWeb.h"
+#include "MemoryCensus.h"
+#include "MemTrace.h"
 
 #include "ConfigurationForm.h"
 
@@ -4312,6 +4314,53 @@ void handleDiagnostics() {
                 ? 0
                 : static_cast<uint32_t>(
                       uxTaskGetStackHighWaterMark(schoolTaskForDiagnostics));
+  result += F("},\"memoryCensus\":{\"lvglPsram\":");
+  {
+    uint32_t lvglPsram = 0;
+    uint32_t lvglInternal = 0;
+    memoryCensusLvgl(lvglPsram, lvglInternal);
+    result += lvglPsram;
+    result += F(",\"lvglInternal\":");
+    result += lvglInternal;
+    result += F(",\"checkpoints\":[");
+    const MemoryCheckpoint *checkpoints = nullptr;
+    const size_t count = memoryCensusCheckpoints(checkpoints);
+    for (size_t index = 0; index < count; ++index) {
+      if (index > 0) result += ',';
+      result += F("{\"name\":\"");
+      result += checkpoints[index].name;
+      result += F("\",\"atMs\":");
+      result += checkpoints[index].atMs;
+      result += F(",\"psramFree\":");
+      result += checkpoints[index].psramFree;
+      result += F(",\"internalFree\":");
+      result += checkpoints[index].internalFree;
+      result += '}';
+    }
+    result += ']';
+#if HODINY_MEMTRACE
+    static MemTraceEntry traced[MEMTRACE_CAPACITY];
+    uint32_t dropped = 0;
+    const size_t tracedCount = memTraceSnapshot(traced, MEMTRACE_CAPACITY, dropped);
+    result += F(",\"traceDropped\":");
+    result += dropped;
+    result += F(",\"trace\":[");
+    for (size_t index = 0; index < tracedCount; ++index) {
+      if (index > 0) result += ',';
+      result += F("{\"size\":");
+      result += static_cast<uint32_t>(traced[index].size);
+      result += F(",\"psram\":");
+      result += traced[index].psram ? F("true") : F("false");
+      result += F(",\"pc\":[");
+      for (int depth = 0; depth < MEMTRACE_DEPTH; ++depth) {
+        if (depth > 0) result += ',';
+        result += traced[index].pcs[depth];
+      }
+      result += F("]}");
+    }
+    result += ']';
+#endif
+  }
   result += F("},\"minimumMemory\":{\"internalFree\":");
   result += static_cast<unsigned long>(heap_caps_get_minimum_free_size(
       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));

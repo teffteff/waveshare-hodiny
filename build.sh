@@ -14,6 +14,16 @@ case "$BOARD" in
   lcd7) BOARD_SUFFIX="-lcd7"; BOARD_FLAGS=" -DHODINY_BOARD_LCD7=1" ;;
   *) echo "Neznámá deska: $BOARD (lcd21 nebo lcd7)" >&2; exit 1 ;;
 esac
+# MEMTRACE=1 přidá sledování velkých alokací (MemTrace.cpp) do diagnostiky.
+LINK_FLAGS=()
+if [[ "${MEMTRACE:-0}" == "1" ]]; then
+  BOARD_FLAGS="$BOARD_FLAGS -DHODINY_MEMTRACE=1"
+  WRAP=""
+  for symbol in heap_caps_malloc heap_caps_calloc heap_caps_realloc heap_caps_free malloc calloc realloc free; do
+    WRAP="$WRAP \"-Wl,--wrap=$symbol\""
+  done
+  LINK_FLAGS=(--build-property "compiler.c.elf.extra_flags=\"-Wl,--Map={build.path}/{build.project_name}.map\" \"-L{compiler.sdk.path}/lib\" \"-L{compiler.sdk.path}/ld\" \"-L{compiler.sdk.path}/{build.memory_type}\" \"-Wl,--wrap=esp_panic_handler\"$WRAP")
+fi
 if [[ "$BOARD" == "lcd7" ]]; then
   # 7" potřebuje knihovny ESP-IDF, které spouštějí kód z PSRAM: jinak sdílí
   # přerušení RGB panelu sběrnici s flash a při práci radaru obraz ujíždí
@@ -47,6 +57,7 @@ fi
   --build-property "compiler.c.extra_flags=-MMD -c -DLV_CONF_PATH=ClockLvglConfig.h$BOARD_FLAGS" \
   --build-property "compiler.cpp.extra_flags=-MMD -c -DLV_CONF_PATH=ClockLvglConfig.h -DWAVESHARE_DEVELOPMENT_BUILD=1$BOARD_FLAGS" \
   --build-property 'upload.maximum_size=6291456' \
+  ${LINK_FLAGS[@]+"${LINK_FLAGS[@]}"} \
   --build-path "$BUILD_PATH" \
   --output-dir "$OUTPUT_DIR" \
   "$ROOT_DIR/WaveshareHodiny"

@@ -1,4 +1,5 @@
 #include "AgendaLayout.h"
+#include "MemoryCensus.h"
 #include "AgendaParser.h"
 #include "SchoolLayout.h"
 #include "SchoolService.h"
@@ -7290,7 +7291,9 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   displayDriverSetPartialRefresh(analogLayoutEnabled(),
                                  analogLayoutEnabled());
 #if HODINY_BOARD_LCD7
+  memoryCensusCheckpoint("round-pages");
   lcd7::create();
+  memoryCensusCheckpoint("lcd7-pages");
   lcd7::sync(true);
 #endif
 }

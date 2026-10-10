@@ -24,6 +24,7 @@
 #include "SatelliteService.h"
 #include "TrafficService.h"
 #include "SharedFrames.h"
+#include "MemoryCensus.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
 #include "Astronomy.h"
@@ -4233,6 +4234,7 @@ void setup() {
   // Dřív než cokoli otevře první TLS spojení: handshaky pak berou paměť
   // z PSRAM a vnitřní SRAM nerozdrobí.
   tlsMemoryBegin();
+  memoryCensusCheckpoint("start");
 
   boardInit();
   runtimeConfigMutex = xSemaphoreCreateMutex();
@@ -4248,6 +4250,7 @@ void setup() {
   // Výpis pádu se po přečtení maže z flash, takže stejně jako migrace
   // konfigurace musí proběhnout před spuštěním displeje.
   crashLogBegin();
+  memoryCensusCheckpoint("config");
   uint32_t legacyWeatherIconColor = persistedConfig.leftWeatherIconColor;
   if (persistedConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO) {
     legacyWeatherIconColor = persistedConfig.openMeteoSlots[0].color;
@@ -4267,10 +4270,12 @@ void setup() {
   schoolServiceBegin();
   weatherForecastServiceBegin();
   weatherHistoryServiceBegin();
+  memoryCensusCheckpoint("services-text");
   LCD_Init();
   currentDisplayBrightness = runtimeConfig.dayBrightness;
   Set_Backlight(currentDisplayBrightness);
   displayDriverInit();
+  memoryCensusCheckpoint("display");
   deviceNameLoad(networkDeviceName, sizeof(networkDeviceName));
   // Jméno pro DHCP se předává při startu rozhraní, proto před Wi-Fi.
   WiFi.setHostname(networkDeviceName);
@@ -4278,6 +4283,7 @@ void setup() {
   improvSerialServiceInit(wifiProvisioningStart);
 #endif
   wifiProvisioningBegin();
+  memoryCensusCheckpoint("wifi");
   // Release bez dosažitelné sítě zůstane v nastavovacím portálu (QR kód,
   // přístupový bod) a po zadání sítě se restartuje. Vývojové buildy pokračují.
   wifiOnboardingRequireConnection();
@@ -4297,6 +4303,7 @@ void setup() {
   clockDashboardSetTrafficVisibilityCallback(handleTrafficVisibility);
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
+  memoryCensusCheckpoint("dashboard");
   // Snímky letadel a družic se berou hned, dokud je PSRAM celá: později ji
   // rozdrobí radar ČHMÚ a dva bloky po 461 kB by se už nemusely najít. Na 7"
   // do nich skládá obraz i meteoradar.
@@ -4307,11 +4314,14 @@ void setup() {
       clockConfigTrafficAvailable(runtimeConfig)) {
     sharedFramesReserve();
   }
+  memoryCensusCheckpoint("shared-frames");
   if (clockConfigPlanesAvailable(runtimeConfig)) planeRadarServiceReserveStorage();
+  memoryCensusCheckpoint("planes-reserve");
   if (clockConfigSatellitesAvailable(runtimeConfig) ||
       clockConfigNightSkyAvailable(runtimeConfig)) {
     satelliteServiceReserveStorage();
   }
+  memoryCensusCheckpoint("satellites-reserve");
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
   satelliteServiceBegin();
@@ -4323,6 +4333,7 @@ void setup() {
   applyWarningState(runtimeConfig);
   pushAlertsServiceBegin();
   applyPushAlertsState(runtimeConfig);
+  memoryCensusCheckpoint("services-map");
   chmiRadarServiceSetActive(
       false, false,
       runtimeConfig.openMeteoLatitude, runtimeConfig.openMeteoLongitude,
@@ -4408,6 +4419,9 @@ void setup() {
 }
 
 void loop() {
+  // Paměť po ustálení: obrazovky si své buffery berou až při prvním načtení.
+  if (millis() > 120000) memoryCensusCheckpoint("after-2min");
+  if (millis() > 600000) memoryCensusCheckpoint("after-10min");
   firmwareUpdateServiceParkLoopBeforeRestart();
 #if FIRMWARE_RELEASE
   improvSerialServiceLoop();
