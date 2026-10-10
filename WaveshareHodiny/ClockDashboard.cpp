@@ -7043,11 +7043,12 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   radarRangeCallback = radarRange;
   rssVisibilityCallback = rssVisibility;
   forecastVisibilityCallback = forecastVisibility;
-  lv_obj_t *screen = lv_scr_act();
+  // Pozadí patří celé obrazovce, stránky jevišti (na 7" vpravo od pruhu).
+  lv_obj_set_style_bg_color(lv_scr_act(), COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
+  lv_obj_clear_flag(lv_scr_act(), LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *screen = displayDriverStage();
   dashboardScreen = screen;
-  lv_obj_set_style_bg_color(screen, COLOR_BACKGROUND, 0);
-  lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
   makeSecondRing(screen);
 

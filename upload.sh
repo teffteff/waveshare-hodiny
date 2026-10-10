@@ -6,6 +6,7 @@ ROOT_DIR="${0:A:h}"
 BOARD_SUFFIX=""
 [[ "${BOARD:-lcd21}" == "lcd7" ]] && BOARD_SUFFIX="-lcd7"
 BUILD_PATH="$ROOT_DIR/.arduino/build-waveshare-hodiny-develop$BOARD_SUFFIX"
+# UPLOAD_SPEED=115200, když přes USB hub vyšší rychlost hlásí šum.
 ARDUINO_CONFIG_FILE="${ARDUINO_CONFIG_FILE:-$ROOT_DIR/WaveshareHodiny/local/arduino-cli.yaml}"
 if [[ ! -f "$ARDUINO_CONFIG_FILE" ]]; then
   ARDUINO_CONFIG_FILE="$ROOT_DIR/arduino-cli.yaml"
@@ -18,7 +19,7 @@ fi
 
 /opt/homebrew/bin/arduino-cli \
   --config-file "$ARDUINO_CONFIG_FILE" \
-  upload --fqbn esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=custom,PSRAM=opi,USBMode=hwcdc,CDCOnBoot=default \
+  upload --fqbn "esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=custom,PSRAM=opi,USBMode=hwcdc,CDCOnBoot=default${UPLOAD_SPEED:+,UploadSpeed=$UPLOAD_SPEED}" \
   --build-path "$BUILD_PATH" \
   --port "$PORT" \
   "$ROOT_DIR/WaveshareHodiny"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stáhne RGB565 framebuffer z Waveshare displeje a uloží kruhové PNG."""
+"""Stáhne RGB565 framebuffer z Waveshare displeje a uloží PNG (kulatý 2,1" s průhlednými rohy)."""
 
 from __future__ import annotations
 
@@ -23,10 +23,9 @@ except ImportError as error:
     raise SystemExit("Chybí pyserial 3.5.") from error
 
 
-WIDTH = 480
-HEIGHT = 480
-FRAMEBUFFER_BYTES = WIDTH * HEIGHT * 2
-HEADER = b"WSFB1 480 480 RGB565LE 460800"
+# Rozměr obrazovky posílá displej v hlavičce: "WSFB1 480 480 RGB565LE 460800"
+# pro kulatý 2,1", "WSFB1 800 480 RGB565LE 768000" pro 7".
+HEADER_PREFIX = b"WSFB1 "
 
 
 def png_chunk(kind: bytes, payload: bytes) -> bytes:
@@ -35,23 +34,25 @@ def png_chunk(kind: bytes, payload: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
 
 
-def rgb565_to_circular_png(framebuffer: bytes, output_path: Path) -> None:
+def rgb565_to_png(framebuffer: bytes, width: int, height: int, output_path: Path) -> None:
+    """Čtvercový snímek je z kulatého displeje, rohy mimo kruh budou průhledné."""
+    round_screen = width == height
     rows = bytearray()
-    center = (WIDTH - 1) / 2
-    radius_squared = (WIDTH / 2) ** 2
-    for y in range(HEIGHT):
+    center = (width - 1) / 2
+    radius_squared = (width / 2) ** 2
+    for y in range(height):
         rows.append(0)
         dy_squared = (y - center) ** 2
-        for x in range(WIDTH):
-            offset = (y * WIDTH + x) * 2
+        for x in range(width):
+            offset = (y * width + x) * 2
             value = framebuffer[offset] | (framebuffer[offset + 1] << 8)
             red = ((value >> 11) & 0x1F) * 255 // 31
             green = ((value >> 5) & 0x3F) * 255 // 63
             blue = (value & 0x1F) * 255 // 31
-            alpha = 255 if (x - center) ** 2 + dy_squared <= radius_squared else 0
+            alpha = 255 if not round_screen or (x - center) ** 2 + dy_squared <= radius_squared else 0
             rows.extend((red, green, blue, alpha))
     png = bytearray(b"\x89PNG\r\n\x1a\n")
-    png.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 6, 0, 0, 0)))
+    png.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)))
     png.extend(png_chunk(b"IDAT", zlib.compress(bytes(rows), level=9)))
     png.extend(png_chunk(b"IEND", b""))
     output_path.write_bytes(png)
@@ -78,7 +79,7 @@ def read_exact(connection: serial.Serial, byte_count: int) -> bytes:
     return bytes(data)
 
 
-def request_framebuffer(connection: serial.Serial) -> bytes:
+def request_framebuffer(connection: serial.Serial) -> tuple[int, int, bytes]:
     connection.reset_input_buffer()
     connection.write(b"SCREENSHOT\n")
     connection.flush()
@@ -89,9 +90,12 @@ def request_framebuffer(connection: serial.Serial) -> bytes:
     else:
         raise TimeoutError("Displej nepotvrdil příkaz SCREENSHOT")
     metadata = connection.readline().strip()
-    if metadata != HEADER:
+    fields = metadata.split()
+    if (not metadata.startswith(HEADER_PREFIX) or len(fields) != 5 or fields[3] != b"RGB565LE"
+            or int(fields[4]) != int(fields[1]) * int(fields[2]) * 2):
         raise RuntimeError(f"Neočekávaná hlavička framebufferu: {metadata!r}")
-    return read_exact(connection, FRAMEBUFFER_BYTES)
+    width, height = int(fields[1]), int(fields[2])
+    return width, height, read_exact(connection, width * height * 2)
 
 
 def open_settings(connection: serial.Serial, page: int = 1) -> None:
@@ -134,7 +138,7 @@ def open_traffic(connection: serial.Serial, page: int) -> None:
         time.sleep(1.0)
 
 
-def capture(port: str, settings_page: int = 0, night_mode: bool = False, traffic_page: int = 0) -> bytes:
+def capture(port: str, settings_page: int = 0, night_mode: bool = False, traffic_page: int = 0) -> tuple[int, int, bytes]:
     connection = serial.Serial(baudrate=921600, timeout=1, dsrdtr=False, rtscts=False)
     connection.dtr = False
     connection.rts = False
@@ -190,12 +194,12 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "screenshots" / "latest.png")
     arguments = parser.parse_args()
-    framebuffer = capture(
+    width, height, framebuffer = capture(
         find_port(arguments.port), arguments.settings_page or (1 if arguments.settings else 0), arguments.night,
         arguments.doprava_page or 0,
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
-    rgb565_to_circular_png(framebuffer, arguments.output)
+    rgb565_to_png(framebuffer, width, height, arguments.output)
     print(os.fspath(arguments.output.resolve()))
 
 

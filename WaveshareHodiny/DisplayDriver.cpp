@@ -227,6 +227,10 @@ void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
   }
 }
 
+lv_obj_t *stage = nullptr;
+
+void forgetStage(lv_event_t *) { stage = nullptr; }
+
 void increaseTick(void *) {
   lv_tick_inc(2);
 }
@@ -286,6 +290,24 @@ void displayDriverLoop() {
 
 void displayDriverRefresh() {
   lv_obj_invalidate(lv_scr_act());
+}
+
+lv_obj_t *displayDriverStage() {
+  lv_obj_t *screen = lv_scr_act();
+  if (SCREEN_WIDTH == STAGE_SIZE && SCREEN_HEIGHT == STAGE_SIZE) return screen;
+  if (stage != nullptr && lv_obj_get_parent(stage) == screen) return stage;
+  stage = lv_obj_create(screen);
+  lv_obj_set_size(stage, STAGE_SIZE, STAGE_SIZE);
+  lv_obj_set_pos(stage, STAGE_X, STAGE_Y);
+  lv_obj_set_style_bg_opa(stage, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(stage, 0, 0);
+  lv_obj_set_style_pad_all(stage, 0, 0);
+  lv_obj_set_style_radius(stage, 0, 0);
+  lv_obj_clear_flag(stage, LV_OBJ_FLAG_SCROLLABLE);
+  // Obsah jeviště nesmí přetéct do levého pruhu.
+  lv_obj_clear_flag(stage, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_add_event_cb(stage, forgetStage, LV_EVENT_DELETE, nullptr);
+  return stage;
 }
 
 void displayDriverSetPartialRefresh(bool enabled, bool rebuildBuffers) {

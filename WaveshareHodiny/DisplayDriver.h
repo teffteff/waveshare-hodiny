@@ -6,6 +6,10 @@
 void displayDriverInit();
 void displayDriverLoop();
 void displayDriverRefresh();
+// Čtverec 480 x 480, do kterého se kreslí stránky navržené pro kulatý
+// displej. Na 2,1" je to přímo aktivní obrazovka, na 7" její pravá část
+// (STAGE_X, STAGE_Y z Board.h). Vytvoří se při prvním volání.
+lv_obj_t *displayDriverStage();
 void displayDriverSetPartialRefresh(bool enabled, bool rebuildBuffers = false);
 // Gesta se rozpoznávají v software z hrubých souřadnic dotyku; gestový
 // registr řadiče CST820 se nepoužívá. Vyhodnocení proběhne až po zvednutí
