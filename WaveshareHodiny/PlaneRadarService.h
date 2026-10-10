@@ -94,6 +94,9 @@ struct PlaneRadarDiagnostics {
   char serverMessage[48] = "";
 };
 
+// Seznamy letadel a buffer odpovědi hned při startu, dokud PSRAM ještě
+// nerozdrobil radar ČHMÚ. Volá se před planeRadarServiceBegin.
+void planeRadarServiceReserveStorage();
 void planeRadarServiceBegin();
 void planeRadarServicePrepareForFirmwareUpdate();
 

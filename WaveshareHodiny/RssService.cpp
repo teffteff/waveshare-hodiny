@@ -11,6 +11,7 @@
 
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "PsramGrowBuffer.h"
 #include "RssFeedUrl.h"
 
 // Kořenové certifikáty Mozilly slinkované v mbedTLS. Adresu kanálu zadává
@@ -24,8 +25,11 @@ namespace {
 constexpr uint32_t RSS_CONNECT_TIMEOUT_MS = 5000;
 constexpr uint32_t RSS_RESPONSE_TIMEOUT_MS = 8000;
 // Kanál iROZHLAS.cz má kolem 18 kB. Strop je s velkou rezervou, protože jiné
-// redakce posílají v description celé články.
+// redakce posílají v description celé články. Buffer začíná menší a doroste,
+// až když se kanál nevejde (viz PsramGrowBuffer).
 constexpr size_t RSS_MAX_RESPONSE_BYTES = 160 * 1024;
+constexpr size_t RSS_INITIAL_RESPONSE_BYTES = 32 * 1024;
+constexpr size_t RSS_MIN_RESPONSE_BYTES = 16 * 1024;
 constexpr uint32_t RSS_NETWORK_GUARD_MS = 10000;
 
 StaticSemaphore_t rssMutexStorage;
@@ -53,7 +57,8 @@ struct RssCache {
 };
 
 RssCache *rssCache = nullptr;
-uint8_t *rssBuffer = nullptr;
+PsramGrowBuffer rssBuffer(RSS_INITIAL_RESPONSE_BYTES, RSS_MIN_RESPONSE_BYTES,
+                          RSS_MAX_RESPONSE_BYTES);
 bool rssLoading = false;
 // Stahování běží mimo zámek, aby smyčka displeje mohla dál číst starý obsah.
 // Po tu dobu se mezipaměť ani buffer nesmí uvolnit, takže požadavek na
@@ -71,10 +76,7 @@ void releaseStorage() {
     memset(rssCache, 0, sizeof(*rssCache));
     rssCache->generation = generation + 1;
   }
-  if (rssBuffer != nullptr) {
-    heap_caps_free(rssBuffer);
-    rssBuffer = nullptr;
-  }
+  rssBuffer.release();
   rssLastSuccessAt = 0;
 }
 
@@ -84,14 +86,6 @@ RssCache *ensureCache() {
         1, sizeof(RssCache), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   return rssCache;
-}
-
-uint8_t *ensureBuffer() {
-  if (rssBuffer == nullptr) {
-    rssBuffer = static_cast<uint8_t *>(heap_caps_malloc(
-        RSS_MAX_RESPONSE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  }
-  return rssBuffer;
 }
 
 // Zapisuje tělo odpovědi do bufferu v PSRAM. Nad strop se přestane přijímat a
@@ -273,8 +267,7 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   rssLoading = true;
   rssFetchActive = true;
   RssCache *cache = ensureCache();
-  uint8_t *buffer = ensureBuffer();
-  if (cache == nullptr || buffer == nullptr) {
+  if (cache == nullptr || !rssBuffer.ensure()) {
     rssLoading = false;
     rssFetchActive = false;
     // Úklid odložený na dobu stahování se nesmí ztratit ani tady.
@@ -297,70 +290,87 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   if (!urlReady) {
     error = F("Adresa kanálu je po doplnění polohy příliš dlouhá.");
   } else {
-    WiFiClientSecure secureClient;
-    WiFiClient plainClient;
-    // Adresu kanálu zadává uživatel, takže se certifikát ověřuje proti svazku
-    // kořenů Mozilly; připnout jeden kořen jako u ostatních služeb nejde.
-    // Svazek paměť nestojí: dřívější propad interní RAM po stažení
-    // (87 -> 37 kB) nezpůsobilo ověřování ani TLS, ale zaseknuté
-    // HTTPClient::writeToStream(), které nechalo relaci otevřenou.
-    if (secure) {
-      secureClient.setCACertBundle(
-          rootca_crt_bundle_start,
-          static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
-      secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
-    }
-    HTTPClient http;
-    http.setConnectTimeout(RSS_CONNECT_TIMEOUT_MS);
-    http.setTimeout(RSS_RESPONSE_TIMEOUT_MS);
-    // Bez tohoto si HTTPClient::end() spojení schová pro další použití
-    // ("tcp keep open for reuse") a nezavolá na klientovi stop(). Destruktor
-    // NetworkClientSecure ho nezavolá také, takže kontexty mbedTLS včetně
-    // dvou šestnáctikilobajtových bufferů zůstanou navždy alokované. Na tomto
-    // zařízení to znamená přes 50 kB interní RAM, o kterou pak přijde
-    // Wi-Fi zásobník a přestane přenášet data.
-    http.setReuse(false);
-    // Zpravodajské servery běžně přesměrovávají na kanonickou adresu.
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setUserAgent(F("WaveshareHodiny"));
-    WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
-                                : plainClient;
-    httpDownloadPrepare(http);
-    if (http.begin(client, cache->url)) {
-      httpStatus = http.GET();
-      if (httpStatus == HTTP_CODE_OK) {
-        const int declaredSize = http.getSize();
-        if (declaredSize > static_cast<int>(RSS_MAX_RESPONSE_BYTES)) {
-          error = F("Kanál je příliš velký.");
-        } else {
-          BoundedBufferStream response(buffer, RSS_MAX_RESPONSE_BYTES);
-          // Ne writeToStream(): u chunked odpovědi iROZHLASu se nikdy
-          // nevrátila a držela TLS relaci i s interní RAM až do restartu.
-          const int bytesRead =
-              httpDownloadBody(http, response, RSS_RESPONSE_TIMEOUT_MS);
-          payloadLength = response.length();
-          if (response.overflowed()) {
-            error = F("Kanál je příliš velký.");
-          } else if (bytesRead < 0) {
-            // Useknuté tělo se nerozebírá: rozebralo by se jako kratší kanál a
-            // vypadalo by to jako správně načtené zprávy.
-            error = F("Kanál nyní není dostupný.");
-          }
+    // Přetečení zvětší buffer a stáhne kanál znovu; zvětšený buffer zůstává.
+    for (;;) {
+      bool overflowed = false;
+      {
+        WiFiClientSecure secureClient;
+        WiFiClient plainClient;
+        // Adresu kanálu zadává uživatel, takže se certifikát ověřuje proti svazku
+        // kořenů Mozilly; připnout jeden kořen jako u ostatních služeb nejde.
+        // Svazek paměť nestojí: dřívější propad interní RAM po stažení
+        // (87 -> 37 kB) nezpůsobilo ověřování ani TLS, ale zaseknuté
+        // HTTPClient::writeToStream(), které nechalo relaci otevřenou.
+        if (secure) {
+          secureClient.setCACertBundle(
+              rootca_crt_bundle_start,
+              static_cast<size_t>(rootca_crt_bundle_end -
+                                  rootca_crt_bundle_start));
+          secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
         }
+        HTTPClient http;
+        http.setConnectTimeout(RSS_CONNECT_TIMEOUT_MS);
+        http.setTimeout(RSS_RESPONSE_TIMEOUT_MS);
+        // Bez tohoto si HTTPClient::end() spojení schová pro další použití
+        // ("tcp keep open for reuse") a nezavolá na klientovi stop(). Destruktor
+        // NetworkClientSecure ho nezavolá také, takže kontexty mbedTLS včetně
+        // dvou šestnáctikilobajtových bufferů zůstanou navždy alokované. Na tomto
+        // zařízení to znamená přes 50 kB interní RAM, o kterou pak přijde
+        // Wi-Fi zásobník a přestane přenášet data.
+        http.setReuse(false);
+        // Zpravodajské servery běžně přesměrovávají na kanonickou adresu.
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        http.setUserAgent(F("WaveshareHodiny"));
+        WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
+                                    : plainClient;
+        httpDownloadPrepare(http);
+        if (http.begin(client, cache->url)) {
+          httpStatus = http.GET();
+          if (httpStatus == HTTP_CODE_OK) {
+            // Známou délku si buffer připraví předem; chunked odpověď bez délky
+            // se po přetečení stáhne znovu do zvětšeného.
+            const int declaredSize = http.getSize();
+            if (declaredSize > static_cast<int>(RSS_MAX_RESPONSE_BYTES)) {
+              error = F("Kanál je příliš velký.");
+            } else if (declaredSize > 0 &&
+                       !rssBuffer.reserve(static_cast<size_t>(declaredSize))) {
+              error = F("Pro kanál zpráv není dostatek PSRAM.");
+            } else {
+              BoundedBufferStream response(rssBuffer.data(),
+                                           rssBuffer.capacity());
+              // Ne writeToStream(): u chunked odpovědi iROZHLASu se nikdy
+              // nevrátila a držela TLS relaci i s interní RAM až do restartu.
+              const int bytesRead =
+                  httpDownloadBody(http, response, RSS_RESPONSE_TIMEOUT_MS);
+              payloadLength = response.length();
+              if (response.overflowed()) {
+                error = F("Kanál je příliš velký.");
+                overflowed = true;
+              } else if (bytesRead < 0) {
+                // Useknuté tělo se nerozebírá: rozebralo by se jako kratší kanál a
+                // vypadalo by to jako správně načtené zprávy.
+                error = F("Kanál nyní není dostupný.");
+              }
+            }
+          }
+          http.end();
+        }
+        // Pojistka pro případ, že spojení vůbec nevzniklo nebo skončilo chybou:
+        // uvolnění TLS kontextů se nesmí spoléhat na destruktor, který ho nedělá.
+        client.stop();
       }
-      http.end();
+      // Arduino core 3.0.7 připojuje svazek kořenů při každém spojení
+      // (ssl_client.cpp řádek 206), ale stop_ssl_socket() ho nikdy neodpojí -
+      // uvolní jen struktury mbedTLS. Bez tohoto odpojení každé stažení kanálu
+      // ukousne kus interní RAM, až na ni nezbude pro web server. Odpojuje se až
+      // po zániku klienta, aby si ověřovací callback a uvolněný svazek nemohly
+      // překážet.
+      if (secure) esp_crt_bundle_detach(nullptr);
+      if (!overflowed || !rssBuffer.grow()) break;
+      error = "";
+      payloadLength = 0;
     }
-    // Pojistka pro případ, že spojení vůbec nevzniklo nebo skončilo chybou:
-    // uvolnění TLS kontextů se nesmí spoléhat na destruktor, který ho nedělá.
-    client.stop();
   }
-  // Arduino core 3.0.7 připojuje svazek kořenů při každém spojení
-  // (ssl_client.cpp řádek 206), ale stop_ssl_socket() ho nikdy neodpojí -
-  // uvolní jen struktury mbedTLS. Bez tohoto odpojení každé stažení kanálu
-  // ukousne kus interní RAM, až na ni nezbude pro web server. Odpojuje se až
-  // po zániku klienta, aby si ověřovací callback a uvolněný svazek nemohly
-  // překážet.
-  if (secure && urlReady) esp_crt_bundle_detach(nullptr);
 
   if (error.isEmpty() && httpStatus != HTTP_CODE_OK) {
     error = httpStatus == HTTP_CODE_NOT_FOUND
@@ -372,8 +382,8 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   char parseError[RSS_MESSAGE_LENGTH];
   parseError[0] = '\0';
   if (error.isEmpty() &&
-      !rssParseFeed(reinterpret_cast<const char *>(buffer), payloadLength,
-                    config.itemCount, parsed, parseError,
+      !rssParseFeed(reinterpret_cast<const char *>(rssBuffer.data()),
+                    payloadLength, config.itemCount, parsed, parseError,
                     sizeof(parseError))) {
     error = parseError;
   }

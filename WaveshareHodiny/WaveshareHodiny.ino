@@ -4259,6 +4259,11 @@ void setup() {
       clockConfigTrafficAvailable(runtimeConfig)) {
     sharedFramesReserve();
   }
+  if (clockConfigPlanesAvailable(runtimeConfig)) planeRadarServiceReserveStorage();
+  if (clockConfigSatellitesAvailable(runtimeConfig) ||
+      clockConfigNightSkyAvailable(runtimeConfig)) {
+    satelliteServiceReserveStorage();
+  }
   chmiRadarServiceBegin();
   planeRadarServiceBegin();
   satelliteServiceBegin();

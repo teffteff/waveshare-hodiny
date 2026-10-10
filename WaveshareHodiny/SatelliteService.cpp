@@ -19,6 +19,7 @@
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
 #include "SkyCanvas.h"
+#include "PsramGrowBuffer.h"
 #include "SharedFrames.h"
 #include "SkyRender.h"
 
@@ -34,9 +35,12 @@ constexpr char USER_AGENT[] =
 constexpr uint32_t CONNECT_TIMEOUT_MS = 6000;
 constexpr uint32_t RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint32_t NETWORK_GUARD_MS = 10000;
-// Sto padesát družic po třinácti bodech je kolem 27 kB. Buffer leží v PSRAM
-// a používá se dokola; přes strop se odpověď zahodí celá.
+// Sto padesát družic po třinácti bodech je kolem 27 kB. Buffer leží v PSRAM,
+// začíná menší a do stropu doroste, až když se odpověď nevejde (viz
+// PsramGrowBuffer); přes strop se odpověď zahodí celá.
 constexpr size_t MAX_RESPONSE_BYTES = 96 * 1024;
+constexpr size_t INITIAL_RESPONSE_BYTES = 32 * 1024;
+constexpr size_t MIN_RESPONSE_BYTES = 16 * 1024;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 
 // Bez sítě nebo času se zkouší znovu po patnácti vteřinách.
@@ -109,7 +113,8 @@ int handedOutBuffer = -1;
 uint16_t *pixels = nullptr;
 SatelliteTrack *liveTracks = nullptr;
 SatelliteTrack *scratchTracks = nullptr;
-uint8_t *responseBuffer = nullptr;
+PsramGrowBuffer responseBuffer(INITIAL_RESPONSE_BYTES, MIN_RESPONSE_BYTES,
+                               MAX_RESPONSE_BYTES);
 MapLabelFont labelFont;
 // Jména obrazců souhvězdí a roje na noční obloze: české písmo s diakritikou.
 MapLabelFont skyNameFont(&clock_czech_14, false);
@@ -220,12 +225,8 @@ bool ensureStorage() {
         heap_caps_calloc(SATELLITE_MAX_TRACKS, sizeof(SatelliteTrack),
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  if (responseBuffer == nullptr) {
-    responseBuffer = static_cast<uint8_t *>(heap_caps_malloc(
-        MAX_RESPONSE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  }
   return liveTracks != nullptr && scratchTracks != nullptr &&
-         responseBuffer != nullptr;
+         responseBuffer.ensure();
 }
 
 void releaseStorage() {
@@ -236,10 +237,7 @@ void releaseStorage() {
     heap_caps_free(*list);
     *list = nullptr;
   }
-  if (responseBuffer != nullptr) {
-    heap_caps_free(responseBuffer);
-    responseBuffer = nullptr;
-  }
+  responseBuffer.release();
 }
 
 // Unixový čas se zlomkem sekundy. Dráha se mezi body interpoluje, takže celé
@@ -295,7 +293,10 @@ class BoundedBufferStream : public Stream {
   bool overflowed_ = false;
 };
 
-// Stáhne odpověď do bufferu. Vrací počet bajtů, nebo -1.
+// Stáhne odpověď do bufferu. Vrací počet bajtů, -1 při chybě, nebo
+// DOWNLOAD_OVERFLOWED, když se tělo do bufferu nevešlo.
+constexpr long DOWNLOAD_OVERFLOWED = -3;
+
 long download(const char *url, int &httpStatus, uint8_t *buffer,
               size_t capacity) {
   httpStatus = 0;
@@ -328,7 +329,9 @@ long download(const char *url, int &httpStatus, uint8_t *buffer,
         // Ne writeToStream(): u chunked odpovědi se nemusí nikdy vrátit.
         const int bytesRead =
             httpDownloadBody(http, response, RESPONSE_TIMEOUT_MS);
-        if (!response.overflowed() && bytesRead >= 0) {
+        if (response.overflowed()) {
+          result = DOWNLOAD_OVERFLOWED;
+        } else if (bytesRead >= 0) {
           buffer[response.length()] = '\0';
           result = static_cast<long>(response.length());
         }
@@ -369,13 +372,20 @@ long fetchInto(const ClockSatellitesConfig &config, float latitude,
     return -1;
   }
   long length = -1;
-  {
-    NetworkOperationGuard guard(NETWORK_GUARD_MS);
-    if (!guard) return -2;
-    length = download(url, httpStatus, responseBuffer, MAX_RESPONSE_BYTES);
+  // Přetečení zvětší buffer a zeptá se znovu; zvětšený buffer zůstává.
+  for (;;) {
+    {
+      NetworkOperationGuard guard(NETWORK_GUARD_MS);
+      if (!guard) return -2;
+      length = download(url, httpStatus, responseBuffer.data(),
+                        responseBuffer.capacity());
+    }
+    if (length != DOWNLOAD_OVERFLOWED || !responseBuffer.grow()) break;
   }
+  // Ani strop nestačil, nebo se větší buffer nenašel: hláška "příliš velká".
+  if (length == DOWNLOAD_OVERFLOWED) length = -1;
   if (length < 0) return length;
-  const char *text = reinterpret_cast<const char *>(responseBuffer);
+  const char *text = reinterpret_cast<const char *>(responseBuffer.data());
   parseStatus = satelliteParseFeed(text, text + length, scratchTracks,
                                    SATELLITE_MAX_TRACKS, info);
   return length;
@@ -1094,6 +1104,12 @@ void satelliteTask(void *) {
 }
 
 }  // namespace
+
+void satelliteServiceReserveStorage() {
+  // Volá se ze startu před satelliteServiceBegin, takže úloha ještě neběží.
+  if (taskHandle != nullptr) return;
+  ensureStorage();
+}
 
 void satelliteServiceBegin() {
   if (taskHandle != nullptr) return;

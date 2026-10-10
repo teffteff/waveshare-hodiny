@@ -8,4 +8,7 @@
 #define MALLOC_CAP_SPIRAM 0x0400
 
 inline void *heap_caps_malloc(size_t size, uint32_t) { return malloc(size); }
+inline void *heap_caps_realloc(void *pointer, size_t size, uint32_t) {
+  return realloc(pointer, size);
+}
 inline void heap_caps_free(void *pointer) { free(pointer); }
