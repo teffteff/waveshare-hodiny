@@ -7,8 +7,15 @@ if [[ "$WIFI_PROFILE" != "home" && "$WIFI_PROFILE" != "work" ]]; then
   echo "Použití: ./build.sh [home|work]" >&2
   exit 1
 fi
-BUILD_PATH="$ROOT_DIR/.arduino/build-waveshare-hodiny-develop"
-OUTPUT_DIR="$ROOT_DIR/build/waveshare-hodiny-develop"
+# BOARD=lcd7 přeloží firmware pro ESP32-S3-Touch-LCD-7, jinak pro kulatý 2,1".
+BOARD="${BOARD:-lcd21}"
+case "$BOARD" in
+  lcd21) BOARD_SUFFIX=""; BOARD_FLAGS="" ;;
+  lcd7) BOARD_SUFFIX="-lcd7"; BOARD_FLAGS=" -DHODINY_BOARD_LCD7=1" ;;
+  *) echo "Neznámá deska: $BOARD (lcd21 nebo lcd7)" >&2; exit 1 ;;
+esac
+BUILD_PATH="$ROOT_DIR/.arduino/build-waveshare-hodiny-develop$BOARD_SUFFIX"
+OUTPUT_DIR="$ROOT_DIR/build/waveshare-hodiny-develop$BOARD_SUFFIX"
 ARDUINO_CLI_BIN="${ARDUINO_CLI_BIN:-$(command -v arduino-cli || true)}"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
 if [[ -z "$ARDUINO_CLI_BIN" || -z "$PYTHON_BIN" ]]; then
@@ -30,8 +37,8 @@ fi
   --config-file "$ARDUINO_CONFIG_FILE" \
   compile \
   --fqbn esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=custom,PSRAM=opi,USBMode=hwcdc,CDCOnBoot=default \
-  --build-property 'compiler.c.extra_flags=-MMD -c -DLV_CONF_PATH=ClockLvglConfig.h' \
-  --build-property 'compiler.cpp.extra_flags=-MMD -c -DLV_CONF_PATH=ClockLvglConfig.h -DWAVESHARE_DEVELOPMENT_BUILD=1' \
+  --build-property "compiler.c.extra_flags=-MMD -c -DLV_CONF_PATH=ClockLvglConfig.h$BOARD_FLAGS" \
+  --build-property "compiler.cpp.extra_flags=-MMD -c -DLV_CONF_PATH=ClockLvglConfig.h -DWAVESHARE_DEVELOPMENT_BUILD=1$BOARD_FLAGS" \
   --build-property 'upload.maximum_size=6291456' \
   --build-path "$BUILD_PATH" \
   --output-dir "$OUTPUT_DIR" \

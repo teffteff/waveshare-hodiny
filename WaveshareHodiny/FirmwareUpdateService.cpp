@@ -10,6 +10,7 @@
 #include <mbedtls/sha256.h>
 #include <time.h>
 
+#include "Board.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "NetworkCoordinator.h"
@@ -364,6 +365,15 @@ bool checkFirmware(bool installWhenAvailable) {
       chipFamily != FIRMWARE_CHIP_VARIANT || !validSha256(sha256)) {
     setMessage(FirmwareUpdateState::Failed,
                "OTA metadata ze serveru nejsou platná.", false);
+    return false;
+  }
+  // Obě desky mají stejný čip, takže chipFamily je nerozliší. Metadata bez
+  // pole "board" vznikla před 7" verzí a patří kulaté 2,1".
+  String board;
+  if (!extractJsonString(payload, "board", board)) board = "lcd21";
+  if (board != BOARD_ID) {
+    setMessage(FirmwareUpdateState::Failed,
+               "OTA obraz ze serveru je pro jinou desku.", false);
     return false;
   }
   url = normalizedDownloadUrl(url);

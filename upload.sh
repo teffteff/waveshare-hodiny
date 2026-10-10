@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="${0:A:h}"
-BUILD_PATH="$ROOT_DIR/.arduino/build-waveshare-hodiny-develop"
+# BOARD=lcd7 nahraje sestavení pro ESP32-S3-Touch-LCD-7 (viz build.sh).
+BOARD_SUFFIX=""
+[[ "${BOARD:-lcd21}" == "lcd7" ]] && BOARD_SUFFIX="-lcd7"
+BUILD_PATH="$ROOT_DIR/.arduino/build-waveshare-hodiny-develop$BOARD_SUFFIX"
 ARDUINO_CONFIG_FILE="${ARDUINO_CONFIG_FILE:-$ROOT_DIR/WaveshareHodiny/local/arduino-cli.yaml}"
 if [[ ! -f "$ARDUINO_CONFIG_FILE" ]]; then
   ARDUINO_CONFIG_FILE="$ROOT_DIR/arduino-cli.yaml"
