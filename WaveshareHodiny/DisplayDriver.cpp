@@ -311,6 +311,12 @@ lv_obj_t *displayDriverStage() {
 }
 
 void displayDriverSetPartialRefresh(bool enabled, bool rebuildBuffers) {
+#if HODINY_BOARD_LCD7
+  // Plný render 800 x 480 při každé změně zahltí PSRAM a RGB panel nestihne
+  // doplňovat bounce buffery: při přechodu mezi obrazovkami obraz poskakoval.
+  // Na 7" proto kreslíme vždy jen změněné oblasti.
+  enabled = true;
+#endif
   if (enabled) {
     if (!rebuildBuffers &&
         (displayDriver.direct_mode || partialRefreshWarmupFrames > 0)) {

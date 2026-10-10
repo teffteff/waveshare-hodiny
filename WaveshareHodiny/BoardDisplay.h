@@ -17,6 +17,9 @@ void LCD_Resync();
 // resynchronizuje. Volat průběžně z hlavní smyčky; vrací true při opravě.
 bool LCD_MaintainSync();
 uint32_t LCD_SyncRepairCount();
+// Počet jednotlivých snímků odeslaných mimo správnou fázi (i krátkých
+// škubnutí, která se srovnají sama).
+uint32_t LCD_PhaseGlitchCount();
 bool LCD_SetPixelClock(uint32_t frequencyHz);
 uint32_t LCD_GetPixelClock();
 void LCD_Sleep();

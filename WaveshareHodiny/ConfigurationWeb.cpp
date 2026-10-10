@@ -4249,6 +4249,8 @@ void handleDiagnostics() {
   result += LCD_GetPixelClock();
   result += F(",\"displaySyncRepairs\":");
   result += LCD_SyncRepairCount();
+  result += F(",\"displayPhaseGlitches\":");
+  result += LCD_PhaseGlitchCount();
   result += F(",\"resetReason\":");
   result += static_cast<int>(esp_reset_reason());
   result += F(",\"crashes\":");

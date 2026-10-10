@@ -2548,7 +2548,8 @@ void handleUsbCommands() {
         portENABLE_INTERRUPTS();
         Serial.println("LCD_SLIP");
       } else if (usbCommand == "LCDSYNC") {
-        Serial.printf("LCD_SYNC_REPAIRS=%" PRIu32 "\n", LCD_SyncRepairCount());
+        Serial.printf("LCD_SYNC_REPAIRS=%" PRIu32 " GLITCHES=%" PRIu32 "\n",
+                      LCD_SyncRepairCount(), LCD_PhaseGlitchCount());
       } else if (usbCommand == "NIGHT" && !screenshotTransferActive) {
         clockDashboardSetNightMode(true);
         Serial.println("NIGHT_OPEN");

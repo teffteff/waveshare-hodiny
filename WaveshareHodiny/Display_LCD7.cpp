@@ -21,10 +21,13 @@ constexpr int LCD_PCLK_PIN = 7;
 // data11..15 = R3..R7.
 constexpr int LCD_DATA_PINS[16] = {14, 38, 18, 17, 10, 39, 0,  45,
                                    48, 47, 21, 1,  2,  42, 41, 40};
+// Při 12 MHz panel po pár minutách přestal obraz přijímat a přešel do
+// vlastního testu (střídání plných barev); 16 MHz drží.
 constexpr uint32_t LCD_PIXEL_CLOCK_HZ = 16 * 1000 * 1000;
-// Deset řádků (2 x 16 kB vnitřní RAM) stačilo v bring-up testu na stabilní
-// obraz při stahování přes TLS; víc by ubralo paměť TLS spojením.
-constexpr int LCD_BOUNCE_ROWS = 10;
+// Šestnáct řádků (2 x 25 kB vnitřní RAM, 480 = 30 x 16). Deset stačilo
+// v bring-up testu, ale ne při dekódování radaru na druhém jádře: doplnění
+// nestihlo přístup do PSRAM a obraz se posouval.
+constexpr int LCD_BOUNCE_ROWS = 16;
 
 constexpr int TOUCH_INT_PIN = 4;
 

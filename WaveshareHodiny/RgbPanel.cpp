@@ -42,6 +42,40 @@ uint32_t phaseBaselineUs = 0;
 bool phaseBaselineValid = false;
 uint8_t phaseStrikes = 0;
 uint32_t syncRepairCount = 0;
+// Kopie výchozí fáze pro přerušení a počet jednotlivých snímků mimo ni.
+// Hlídání v LCD_MaintainSync krátké výpadky záměrně filtruje, tady se počítá
+// každý snímek, aby šlo měřit, kolik škubnutí je opravdu vidět.
+volatile uint32_t isrPhaseBaselineUs = PHASE_INVALID;
+volatile uint32_t isrFrameUs = 0;
+volatile uint32_t isrToleranceUs = 0;
+volatile uint32_t phaseGlitchCount = 0;
+
+uint32_t lineDurationUs() {
+  return (panelTimings.h_res + panelTimings.hsync_pulse_width +
+          panelTimings.hsync_back_porch + panelTimings.hsync_front_porch) *
+         1000000ULL / currentPixelClockFrequencyHz;
+}
+
+uint32_t frameDurationUs() {
+  return lineDurationUs() *
+         (panelTimings.v_res + panelTimings.vsync_pulse_width +
+          panelTimings.vsync_back_porch + panelTimings.vsync_front_porch);
+}
+
+void updateIsrPhaseLimits() {
+  isrFrameUs = frameDurationUs();
+  isrToleranceUs = lineDurationUs() * panelBounceRows / 2;
+}
+
+// Odchylka fáze od výchozí, srovnaná do rozsahu +-půl snímku.
+int32_t IRAM_ATTR phaseDrift(uint32_t phaseUs, uint32_t baselineUs,
+                             uint32_t frameUs) {
+  int32_t drift = static_cast<int32_t>(phaseUs - baselineUs);
+  drift %= static_cast<int32_t>(frameUs);
+  if (drift > static_cast<int32_t>(frameUs / 2)) drift -= frameUs;
+  if (drift < -static_cast<int32_t>(frameUs / 2)) drift += frameUs;
+  return drift;
+}
 
 bool IRAM_ATTR onVsync(
     esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t*, void*) {
@@ -60,11 +94,18 @@ bool IRAM_ATTR onBounceFrameFinished(
   ++finishedFrameCount;
   const int64_t sinceVsync = now - lastVsyncUs;
   // Chybějící VSYNC (dlouho zakázaná přerušení) by dal nesmyslnou fázi.
-  phaseSamples[phaseSampleCount % PHASE_WINDOW] =
+  const uint32_t phase =
       lastVsyncUs != 0 && sinceVsync >= 0 && sinceVsync < 100000
           ? static_cast<uint32_t>(sinceVsync)
           : PHASE_INVALID;
+  phaseSamples[phaseSampleCount % PHASE_WINDOW] = phase;
   ++phaseSampleCount;
+  const uint32_t baseline = isrPhaseBaselineUs;
+  if (phase != PHASE_INVALID && baseline != PHASE_INVALID && isrFrameUs != 0 &&
+      static_cast<uint32_t>(abs(phaseDrift(phase, baseline, isrFrameUs))) >
+          isrToleranceUs) {
+    ++phaseGlitchCount;
+  }
   portEXIT_CRITICAL_ISR(&frameFinishedMux);
   if (frameFinishedSemaphore != nullptr) {
     xSemaphoreGiveFromISR(frameFinishedSemaphore, &highPriorityTaskWoken);
@@ -78,6 +119,7 @@ void rgbPanelCreate(const esp_lcd_rgb_panel_config_t &config) {
   currentPixelClockFrequencyHz = config.timings.pclk_hz;
   panelBounceRows =
       std::max<size_t>(1, config.bounce_buffer_size_px / config.timings.h_res);
+  updateIsrPhaseLimits();
   ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&config, &panel_handle));
   frameFinishedSemaphore =
       xSemaphoreCreateBinaryStatic(&frameFinishedSemaphoreStorage);
@@ -101,6 +143,7 @@ void LCD_Resync() {
   phaseCheckedCount = phaseSampleCount + 2;
   portEXIT_CRITICAL(&frameFinishedMux);
   phaseBaselineValid = false;
+  isrPhaseBaselineUs = PHASE_INVALID;
   phaseStrikes = 0;
 }
 
@@ -132,22 +175,13 @@ bool LCD_MaintainSync() {
     // fáze je ta správná.
     phaseBaselineUs = phaseUs;
     phaseBaselineValid = true;
+    isrPhaseBaselineUs = phaseUs;
     return false;
   }
 
-  const uint32_t lineUs =
-      (panelTimings.h_res + panelTimings.hsync_pulse_width +
-       panelTimings.hsync_back_porch + panelTimings.hsync_front_porch) *
-      1000000ULL / currentPixelClockFrequencyHz;
-  const uint32_t frameUs =
-      lineUs * (panelTimings.v_res + panelTimings.vsync_pulse_width +
-                panelTimings.vsync_back_porch + panelTimings.vsync_front_porch);
   // Fáze se měří od posledního VSYNC, takže je periodická po snímcích.
-  int32_t drift = static_cast<int32_t>(phaseUs - phaseBaselineUs);
-  drift %= static_cast<int32_t>(frameUs);
-  if (drift > static_cast<int32_t>(frameUs / 2)) drift -= frameUs;
-  if (drift < -static_cast<int32_t>(frameUs / 2)) drift += frameUs;
-  const uint32_t toleranceUs = lineUs * panelBounceRows / 2;
+  const int32_t drift = phaseDrift(phaseUs, phaseBaselineUs, frameDurationUs());
+  const uint32_t toleranceUs = lineDurationUs() * panelBounceRows / 2;
   if (static_cast<uint32_t>(abs(drift)) <= toleranceUs) {
     phaseStrikes = 0;
     return false;
@@ -165,12 +199,17 @@ bool LCD_MaintainSync() {
 
 uint32_t LCD_SyncRepairCount() { return syncRepairCount; }
 
+uint32_t LCD_PhaseGlitchCount() { return phaseGlitchCount; }
+
 bool LCD_SetPixelClock(uint32_t frequencyHz) {
   if (panel_handle == nullptr) return false;
   if (frequencyHz == currentPixelClockFrequencyHz) return true;
   if (esp_lcd_rgb_panel_set_pclk(panel_handle, frequencyHz) != ESP_OK)
     return false;
   currentPixelClockFrequencyHz = frequencyHz;
+  updateIsrPhaseLimits();
+  // Jiný takt posune i správnou fázi; změřit znovu.
+  LCD_Resync();
   return true;
 }
 
