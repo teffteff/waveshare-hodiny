@@ -41,10 +41,22 @@ constexpr uint32_t RESPONSE_TIMEOUT_MS = 8000;
 constexpr uint32_t NETWORK_GUARD_MS = 10000;
 // Při dosahu 100 km nad hustou Evropou má odpověď desítky až stovky kB. Přes
 // strop se zahazuje celá - useknutý JSON se rozebrat nedá - takže by těsný
-// limit znamenal, že nejširší dosah nad rušnou oblohou nefunguje vůbec. Buffer
-// leží v PSRAM a používá se dokola, takže velkorysost tady nic nestojí.
+// limit znamenal, že nejširší dosah nad rušnou oblohou nefunguje vůbec.
+//
+// Buffer ale nesmí chtít celý strop hned: dřív se bralo 512 kB naráz při
+// prvním otevření obrazovky a barvpravo 10. 10. 2026 po sedmnácti hodinách
+// běhu hlásilo "Pro radar letadel není dostatek PSRAM" při 764 kB volných a
+// největším bloku 434 kB - radar ČHMÚ a ostatní PSRAM mezitím rozdrobily.
+// Skutečné odpovědi mají jednotky kB (vlastní server) až zhruba sto kB
+// (adsb.fi na 100 km), takže se začíná malým bufferem a zvětšuje se, až když
+// odpověď opravdu přeteče. Zvětšený buffer zůstává, takže se dotaz opakuje
+// nanejvýš párkrát za běh.
 constexpr size_t MAX_RESPONSE_BYTES = 512 * 1024;
+// Pokusy o první alokaci od největšího; nejmenší se vejde i do rozdrobené PSRAM.
+constexpr size_t INITIAL_RESPONSE_BYTES[] = {128 * 1024, 64 * 1024, 32 * 1024};
 constexpr size_t MAX_ROUTE_RESPONSE_BYTES = 8 * 1024;
+static_assert(MAX_ROUTE_RESPONSE_BYTES <= 32 * 1024,
+              "Trasa se stahuje do bufferu odpovědi nejmenší velikosti");
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 
 // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný".
@@ -114,6 +126,7 @@ uint16_t *pixels = nullptr;
 AdsbAircraft *liveList = nullptr;
 AdsbAircraft *scratchList = nullptr;
 uint8_t *responseBuffer = nullptr;
+size_t responseCapacity = 0;
 
 // Požadavek z obrazovky.
 bool active = false;
@@ -278,6 +291,8 @@ void setStatusMessage(const char *text) {
   portEXIT_CRITICAL(&stateMux);
 }
 
+// Snímky a seznamy letadel - to, bez čeho se nedá kreslit. Buffer odpovědi
+// sem nepatří: bez něj se jen nestahuje, mapa se nakreslit musí.
 bool ensureStorage() {
   if (!sharedFramesReserve()) return false;
   if (liveList == nullptr) {
@@ -290,12 +305,34 @@ bool ensureStorage() {
         heap_caps_calloc(ADSB_MAX_AIRCRAFT, sizeof(AdsbAircraft),
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  if (responseBuffer == nullptr) {
-    responseBuffer = static_cast<uint8_t *>(heap_caps_malloc(
-        MAX_RESPONSE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  return liveList != nullptr && scratchList != nullptr;
+}
+
+bool ensureResponseBuffer() {
+  if (responseBuffer != nullptr) return true;
+  for (const size_t size : INITIAL_RESPONSE_BYTES) {
+    responseBuffer = static_cast<uint8_t *>(
+        heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (responseBuffer != nullptr) {
+      responseCapacity = size;
+      return true;
+    }
   }
-  return liveList != nullptr && scratchList != nullptr &&
-         responseBuffer != nullptr;
+  return false;
+}
+
+// Zdvojnásobí buffer odpovědi až po strop. Při neúspěchu zůstává původní.
+bool growResponseBuffer() {
+  if (responseBuffer == nullptr || responseCapacity >= MAX_RESPONSE_BYTES)
+    return false;
+  size_t wanted = responseCapacity * 2;
+  if (wanted > MAX_RESPONSE_BYTES) wanted = MAX_RESPONSE_BYTES;
+  auto *grown = static_cast<uint8_t *>(heap_caps_realloc(
+      responseBuffer, wanted, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (grown == nullptr) return false;
+  responseBuffer = grown;
+  responseCapacity = wanted;
+  return true;
 }
 
 void releaseStorage() {
@@ -315,6 +352,7 @@ void releaseStorage() {
     heap_caps_free(responseBuffer);
     responseBuffer = nullptr;
   }
+  responseCapacity = 0;
 }
 
 // Zapisuje tělo odpovědi do bufferu v PSRAM. Nad strop se přestane přijímat a
@@ -1056,7 +1094,10 @@ void renderFrame(const ClockPlanesConfig &planes, float latitude,
 }
 
 // --- Stahování --------------------------------------------------------------
-// Jeden GET přes společný svazek kořenů. Vrací počet bajtů těla, nebo -1.
+// Jeden GET přes společný svazek kořenů. Vrací počet bajtů těla, -1 při
+// chybě, nebo DOWNLOAD_OVERFLOWED, když se tělo nevešlo do bufferu.
+constexpr long DOWNLOAD_OVERFLOWED = -2;
+
 long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
                   int &httpStatus) {
   httpStatus = 0;
@@ -1086,7 +1127,9 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
         // TLS relaci i s interní RAM až do restartu.
         const int bytesRead =
             httpDownloadBody(http, response, RESPONSE_TIMEOUT_MS);
-        if (!response.overflowed() && bytesRead >= 0) {
+        if (response.overflowed()) {
+          result = DOWNLOAD_OVERFLOWED;
+        } else if (bytesRead >= 0) {
           buffer[response.length()] = '\0';
           result = static_cast<long>(response.length());
         }
@@ -1113,15 +1156,25 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
     return false;
   }
 
+  if (!ensureResponseBuffer()) {
+    setStatusMessage("Pro radar letadel není dostatek PSRAM");
+    return false;
+  }
+
   int httpStatus = 0;
   long length = -1;
-  {
-    NetworkOperationGuard guard(NETWORK_GUARD_MS);
-    if (!guard) {
-      setStatusMessage("Síť je zaneprázdněná");
-      return false;
+  // Přetečení zvětší buffer a zeptá se znovu; buffer už zůstane velký, takže
+  // se to stane nanejvýš párkrát za běh, ne při každém dotazu.
+  for (;;) {
+    {
+      NetworkOperationGuard guard(NETWORK_GUARD_MS);
+      if (!guard) {
+        setStatusMessage("Síť je zaneprázdněná");
+        return false;
+      }
+      length = downloadJson(url, responseBuffer, responseCapacity, httpStatus);
     }
-    length = downloadJson(url, responseBuffer, MAX_RESPONSE_BYTES, httpStatus);
+    if (length != DOWNLOAD_OVERFLOWED || !growResponseBuffer()) break;
   }
 
   portENTER_CRITICAL(&stateMux);
@@ -1129,6 +1182,11 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
   lastDownloadedBytes = length > 0 ? static_cast<size_t>(length) : 0;
   portEXIT_CRITICAL(&stateMux);
 
+  if (length == DOWNLOAD_OVERFLOWED) {
+    // Strop, nebo se větší buffer v PSRAM nenašel. Menší dosah pomůže hned.
+    setStatusMessage("Letadel je moc, zmenši dosah");
+    return false;
+  }
   if (length < 0) {
     // Předchozí snímek zůstává na obrazovce - prázdná obloha po jednom
     // nepovedeném stažení vypadá jako pravda, ale není.
@@ -1212,6 +1270,8 @@ void fetchRouteIfPending(const char *feedUrl, float aircraftLatitude,
     portEXIT_CRITICAL(&stateMux);
     return;
   }
+
+  if (!ensureResponseBuffer()) return;  // zkusí se znovu při dalším průchodu
 
   int httpStatus = 0;
   long length = -1;
@@ -1444,6 +1504,13 @@ void planeRadarTask(void *) {
 }
 
 }  // namespace
+
+void planeRadarServiceReserveStorage() {
+  // Volá se ze startu před planeRadarServiceBegin, takže úloha ještě neběží.
+  if (taskHandle != nullptr) return;
+  ensureStorage();
+  ensureResponseBuffer();
+}
 
 void planeRadarServiceBegin() {
   if (taskHandle != nullptr) return;
