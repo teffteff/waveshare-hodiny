@@ -51,6 +51,18 @@ constexpr size_t RADAR_PIXEL_COUNT = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
 // skládá při každém kroku animace do sdíleného páru snímků (SharedFrames):
 // zvětšené srážky, přes ně ostrá mapa a blesky.
 constexpr bool LAYERED_VIEW = HODINY_BOARD_LCD7;
+// Kopie stažených PNG drží kulatý, aby změna rozsahu jen přepočítala výřez.
+// Na 7" je to ~140 kB PSRAM, která chybí; změna rozsahu tam snímky stáhne znovu.
+constexpr bool CACHE_PNG = !LAYERED_VIEW;
+// Kolik nových snímků se smí doplnit posunem animace. Na 7" jen jeden, a jeho
+// buffer se drží od začátku (ensureBuffers): po delší době by se 77 kB v kuse
+// v rozdrobené PSRAM nenašlo a obnova by se zasekla. Víc nových snímků najednou
+// (radar dlouho schovaný) se přepíše do stávajících snímků celým načtením.
+constexpr size_t MAX_REFRESH_SHIFT = LAYERED_VIEW ? 1 : MAX_PENDING_REFRESH_FRAMES;
+// Stupně odrazivosti ČHMÚ na 7" stačí po bajtu na pixel; RainViewer dekóduje
+// barvy po dvou bajtech a buffer si při prvním použití zvětší.
+constexpr size_t LEVEL_DECODE_BYTES = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
+constexpr size_t COLOR_DECODE_BYTES = LEVEL_DECODE_BYTES * sizeof(uint16_t);
 constexpr int VIEW_WIDTH = CHMI_RADAR_VIEW_WIDTH;
 constexpr int VIEW_HEIGHT = CHMI_RADAR_VIEW_HEIGHT;
 constexpr size_t VIEW_PIXEL_COUNT = VIEW_WIDTH * VIEW_HEIGHT;
@@ -113,6 +125,7 @@ uint8_t mapOpacity = 100;
 uint8_t pauseSeconds = 5;
 uint16_t *displayBuffers[DISPLAY_BUFFER_COUNT] = {};
 uint16_t *decodeBuffer = nullptr;
+size_t decodeBufferBytes = 0;
 uint8_t *preparedFrames[MAX_ANIMATION_FRAME_COUNT] = {};
 bool preparedFrameReady[MAX_ANIMATION_FRAME_COUNT] = {};
 uint32_t preparedFrameRevisions[MAX_ANIMATION_FRAME_COUNT] = {};
@@ -281,6 +294,16 @@ void setStatus(bool isLoading, const char *message) {
   portEXIT_CRITICAL(&stateMux);
 }
 
+// Buffer dekódování aspoň o velikosti bytes; menší se nahradí větším.
+bool ensureDecodeBuffer(size_t bytes) {
+  if (decodeBuffer != nullptr && decodeBufferBytes >= bytes) return true;
+  if (decodeBuffer != nullptr) heap_caps_free(decodeBuffer);
+  decodeBuffer = static_cast<uint16_t *>(
+      heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  decodeBufferBytes = decodeBuffer != nullptr ? bytes : 0;
+  return decodeBuffer != nullptr;
+}
+
 bool ensureBuffers() {
   // Na 7" se obraz skládá do sdílených snímků (composeView).
   for (uint16_t *&buffer : displayBuffers) {
@@ -292,10 +315,11 @@ bool ensureBuffers() {
     }
     if (buffer == nullptr) return false;
   }
-  if (decodeBuffer == nullptr) {
-    decodeBuffer = static_cast<uint16_t *>(heap_caps_malloc(
-        RADAR_PIXEL_COUNT * sizeof(uint16_t),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  ensureDecodeBuffer(LAYERED_VIEW ? LEVEL_DECODE_BYTES : COLOR_DECODE_BYTES);
+  if (LAYERED_VIEW && pendingPreparedFrames[0] == nullptr) {
+    pendingPreparedFrames[0] = static_cast<uint8_t *>(heap_caps_malloc(
+        RADAR_PIXEL_COUNT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (pendingPreparedFrames[0] == nullptr) return false;
   }
   if (pngBuffer == nullptr) {
     pngBuffer = static_cast<uint8_t *>(heap_caps_malloc(
@@ -316,6 +340,12 @@ bool ensurePreparedFrame(size_t index) {
 bool cacheDownloadedPng(size_t index, size_t size, const char *fileName) {
   if (index >= MAX_ANIMATION_FRAME_COUNT || size == 0 || size > PNG_CAPACITY)
     return false;
+  if (!CACHE_PNG) {
+    // Jen jméno a velikost; data zůstávají v pngBuffer do dalšího stažení.
+    cachedPngSizes[index] = size;
+    strlcpy(cachedPngNames[index], fileName, FILE_NAME_CAPACITY);
+    return true;
+  }
   if (cachedPngCapacities[index] < size) {
     uint8_t *replacement = static_cast<uint8_t *>(heap_caps_malloc(
         size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -1458,8 +1488,7 @@ bool decodeRadar(const uint8_t *pngData, size_t pngSize, float latitude,
   decodeBufferHoldsLevels = LAYERED_VIEW;
   dataX1 = longitudeToX(LON_DATA_RIGHT);
   dataY0 = latitudeToY(LAT_DATA_TOP);
-  memset(target, 0,
-         CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT * sizeof(uint16_t));
+  memset(target, 0, decodeBufferHoldsLevels ? LEVEL_DECODE_BYTES : COLOR_DECODE_BYTES);
   decodedLineCount = 0;
   decodedLinesSequential = true;
   decodeTarget = target;
@@ -1635,6 +1664,10 @@ bool packPendingFrame(size_t slot) {
 bool cachePendingPng(size_t slot, size_t size) {
   if (slot >= MAX_PENDING_REFRESH_FRAMES || size == 0 || size > PNG_CAPACITY)
     return false;
+  if (!CACHE_PNG) {
+    pendingPngSizes[slot] = size;
+    return true;
+  }
   if (pendingPngCapacities[slot] < size) {
     uint8_t *replacement = static_cast<uint8_t *>(heap_caps_malloc(
         size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -1750,6 +1783,8 @@ void releaseUnusedFrames(size_t usedCount) {
 bool rebuildAnimationFromCache(float latitude, float longitude,
                                uint16_t radiusKm, uint8_t wantedFrameCount,
                                uint8_t mapOpacityValue, uint32_t revision) {
+  // Bez kopií PNG se nemá z čeho přepočítat; volající pak snímky stáhne znovu.
+  if (!CACHE_PNG) return false;
   if (!ensureBuffers()) {
     setStatus(false, "Nedostatek pameti pro radar");
     return false;
@@ -1894,7 +1929,7 @@ bool loadAnimation(float latitude, float longitude, uint16_t radiusKm,
       setStatus(false, "Nedostatek pameti pro radar");
       return false;
     }
-    if (!prepareFrame(index, cachedPngFrames[index], cachedPngSizes[index],
+    if (!prepareFrame(index, CACHE_PNG ? cachedPngFrames[index] : pngBuffer, cachedPngSizes[index],
                       cachedPngNames[index], latitude, longitude, radiusKm,
                       mapOpacityValue, revision)) {
       setStatus(false, "Snimek CHMU se nepodarilo pripravit");
@@ -1948,7 +1983,7 @@ bool loadRainViewerAnimation(float latitude, float longitude,
     setStatus(false, "Wi-Fi neni pripojena");
     return false;
   }
-  if (!ensureBuffers()) {
+  if (!ensureBuffers() || !ensureDecodeBuffer(COLOR_DECODE_BYTES)) {
     setStatus(false, "Nedostatek pameti pro radar");
     return false;
   }
@@ -2114,7 +2149,7 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
   }
   size_t shift = 0;
   for (size_t candidate = 1;
-       candidate < selectedCount && candidate <= MAX_PENDING_REFRESH_FRAMES;
+       candidate < selectedCount && candidate <= MAX_REFRESH_SHIFT;
        ++candidate) {
     bool overlapMatches = true;
     for (size_t index = 0; index + candidate < selectedCount; ++index) {
@@ -2165,6 +2200,10 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
         !packPendingFrame(slot) || !requestMatches(revision)) {
       setStatus(false, "Nove snimky CHMU se nepodarilo pripravit");
       pendingRefreshCount = 0;
+      // Na 7" radši celé načtení do stávajících snímků než viset na starých.
+      if (LAYERED_VIEW && requestMatches(revision))
+        return loadAnimation(latitude, longitude, radiusKm, wantedFrameCount,
+                             mapOpacityValue, revision);
       return false;
     }
     strlcpy(pendingFrameNames[slot], fileName,
@@ -2511,6 +2550,7 @@ void chmiRadarServicePrepareForFirmwareUpdate() {
   }
   if (decodeBuffer != nullptr) heap_caps_free(decodeBuffer);
   decodeBuffer = nullptr;
+  decodeBufferBytes = 0;
   if (pngBuffer != nullptr) heap_caps_free(pngBuffer);
   pngBuffer = nullptr;
   if (lineBuffer != nullptr) heap_caps_free(lineBuffer);

@@ -2,6 +2,7 @@
 
 #include <esp_heap_caps.h>
 
+#include "Board.h"
 #include "MemoryCensus.h"
 
 namespace {
@@ -11,6 +12,9 @@ constexpr size_t PSRAM_ALLOCATION_THRESHOLD = 4096;
 bool preferPsram = false;
 
 uint32_t capabilitiesForSize(size_t size) {
+  // 7" má všechny objekty LVGL v PSRAM: vnitřní RAM potřebuje Wi-Fi a TLS
+  // a kulaté stránky, které tu slouží jen jako zdroj dat, si jí braly 77 kB.
+  if (HODINY_BOARD_LCD7) return MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
   return preferPsram || size >= PSRAM_ALLOCATION_THRESHOLD
              ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
              : MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;

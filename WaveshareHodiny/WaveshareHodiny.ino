@@ -4224,6 +4224,11 @@ void applyPendingHomeAssistantValues() {
 }
 }  // namespace
 
+// Zásobník úloh zpráv, agendy a školy. Diagnostika (taskStacks) ukazuje, že
+// i s TLS a parsováním jim z 20 kB zbývá přes 15 kB; na 7", kde PSRAM chybí,
+// stačí 12 kB s rezervou přes 7 kB.
+constexpr uint32_t TEXT_TASK_STACK = HODINY_BOARD_LCD7 ? 12288 : 20480;
+
 void setup() {
   Serial.setTxBufferSize(4096);
   Serial.begin(FIRMWARE_RELEASE ? 115200 : 921600);
@@ -4315,7 +4320,8 @@ void setup() {
     sharedFramesReserve();
   }
   memoryCensusCheckpoint("shared-frames");
-  if (clockConfigPlanesAvailable(runtimeConfig)) planeRadarServiceReserveStorage();
+  if (clockConfigPlanesAvailable(runtimeConfig))
+    planeRadarServiceReserveStorage(runtimeConfig.planesFeedUrl[0] != '\0');
   memoryCensusCheckpoint("planes-reserve");
   if (clockConfigSatellitesAvailable(runtimeConfig) ||
       clockConfigNightSkyAvailable(runtimeConfig)) {
@@ -4368,21 +4374,21 @@ void setup() {
   // který používají ostatní služby. Rezervu hlídá diagnostika: "Zásobník
   // zpráv" ukazuje, kolik úloze nejméně zbývalo.
   xTaskCreatePinnedToCoreWithCaps(
-      rssTask, "rss", 20480, nullptr, 1, &rssTaskHandle, 0,
+      rssTask, "rss", TEXT_TASK_STACK, nullptr, 1, &rssTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetRssTask(rssTaskHandle);
   configurationWebSetRssProbe(runRssProbeFromWeb);
   // Agenda se ověřuje proti svazku kořenů Mozilly, takže její handshake stojí
   // stejně zásobníku jako u kanálu zpráv.
   xTaskCreatePinnedToCoreWithCaps(
-      agendaTask, "agenda", 20480, nullptr, 1, &agendaTaskHandle, 0,
+      agendaTask, "agenda", TEXT_TASK_STACK, nullptr, 1, &agendaTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetAgendaTask(agendaTaskHandle);
   configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
   configurationWebSetSettingsShare(runSettingsShareFromWeb);
   // Rozvrh se ověřuje proti svazku kořenů Mozilly stejně jako agenda.
   xTaskCreatePinnedToCoreWithCaps(
-      schoolTask, "school", 20480, nullptr, 1, &schoolTaskHandle, 0,
+      schoolTask, "school", TEXT_TASK_STACK, nullptr, 1, &schoolTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetSchoolTask(schoolTaskHandle);
   configurationWebSetSchoolProbe(runSchoolProbeFromWeb);

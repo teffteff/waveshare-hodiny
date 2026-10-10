@@ -1512,11 +1512,11 @@ void planeRadarTask(void *) {
 
 }  // namespace
 
-void planeRadarServiceReserveStorage() {
+void planeRadarServiceReserveStorage(bool ownFeed) {
   // Volá se ze startu před planeRadarServiceBegin, takže úloha ještě neběží.
   if (taskHandle != nullptr) return;
   ensureStorage();
-  responseBuffer.ensure();
+  responseBuffer.ensure(ownFeed ? MIN_RESPONSE_BYTES : INITIAL_RESPONSE_BYTES);
 }
 
 void planeRadarServiceBegin() {

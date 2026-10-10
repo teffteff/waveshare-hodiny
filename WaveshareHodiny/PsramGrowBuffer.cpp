@@ -6,9 +6,11 @@ namespace {
 constexpr uint32_t PSRAM_CAPS = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
 }
 
-bool PsramGrowBuffer::ensure() {
+bool PsramGrowBuffer::ensure() { return ensure(initial_); }
+
+bool PsramGrowBuffer::ensure(size_t first) {
   if (data_ != nullptr) return true;
-  size_t size = initial_ < maximum_ ? initial_ : maximum_;
+  size_t size = first < maximum_ ? first : maximum_;
   while (size >= minimum_ && size > 0) {
     data_ = static_cast<uint8_t *>(heap_caps_malloc(size, PSRAM_CAPS));
     if (data_ != nullptr) {

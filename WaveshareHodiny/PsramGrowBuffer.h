@@ -26,6 +26,9 @@ class PsramGrowBuffer {
 
   // Alokuje, pokud ještě nic nemá; true, když buffer je.
   bool ensure();
+  // Totéž, ale první pokus je `first` bajtů místo initial (menší rezerva
+  // tam, kde odpovědi bývají malé).
+  bool ensure(size_t first);
   // Zvětší buffer aspoň na `size` bajtů (nejvýš na strop). Při neúspěchu
   // zůstává původní buffer i s obsahem.
   bool reserve(size_t size);

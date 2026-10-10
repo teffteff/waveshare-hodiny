@@ -100,7 +100,10 @@ struct PlaneRadarDiagnostics {
 
 // Seznamy letadel a buffer odpovědi hned při startu, dokud PSRAM ještě
 // nerozdrobil radar ČHMÚ. Volá se před planeRadarServiceBegin.
-void planeRadarServiceReserveStorage();
+// ownFeed: letadla vozí vlastní server (infra/planes, třeba Raspberry Pi
+// s anténou), který odpověď ořeže na stovky bajtů; rezerva pak stačí malá
+// a přes PsramGrowBuffer případně doroste.
+void planeRadarServiceReserveStorage(bool ownFeed);
 void planeRadarServiceBegin();
 void planeRadarServicePrepareForFirmwareUpdate();
 

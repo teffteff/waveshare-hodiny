@@ -57,8 +57,10 @@ namespace {
 constexpr size_t MAX_POST_BODY_BYTES = 32 * 1024;
 constexpr size_t MAX_POST_KEY_BYTES = 64;
 constexpr size_t MAX_POST_VALUE_BYTES = 1024;
-// Každé pole potřebuje aspoň "k=" a oddělovač, víc se jich do těla nevejde.
-constexpr size_t MAX_POST_FIELD_COUNT = MAX_POST_BODY_BYTES / 3 + 1;
+// Skutečný strop je mnohem níž: formulář nastavení posílá i se všemi
+// barevnými škálami kolem 900 polí, záloha nejvýš 128 částí. Index pro
+// teoretických 11 000 polí stál 87 kB PSRAM; 2048 polí stojí 16 kB.
+constexpr size_t MAX_POST_FIELD_COUNT = 2048;
 
 // Pole těla formuláře: dekódované jméno leží v postKeys_, hodnota zůstává
 // zakódovaná v postBody_. Tělo je nejvýš 32 kB, takže offsety se vejdou do
