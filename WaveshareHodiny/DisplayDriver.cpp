@@ -59,8 +59,8 @@ constexpr int32_t TOUCH_STILL_PX = 60;
 constexpr int32_t TOUCH_SWIPE_PX = 70;
 constexpr int32_t TOUCH_SWIPE_CROSS_PX = 90;
 constexpr uint32_t TOUCH_SWIPE_MS = 700;
-// Svislá osa jeviště; podržení vlevo od ní znamená zpět, vpravo vpřed.
-constexpr int32_t TOUCH_MIDDLE_X = STAGE_X + STAGE_SIZE / 2;
+// Svislá osa obrazovky; podržení vlevo od ní znamená zpět, vpravo vpřed.
+constexpr int32_t TOUCH_MIDDLE_X = SCREEN_WIDTH / 2;
 // Do kdy po prvním klepnutí musí dorazit druhé, aby z nich bylo dvojklepnutí.
 // Měří se od posledního vzorku prvního dotyku po poslední vzorek druhého, takže
 // se do okna vejde i doba, po kterou prst leží podruhé - proto je delší, než

@@ -25,8 +25,18 @@
 #include "RssParser.h"
 #include "WeatherForecastChart.h"
 #include "WeatherForecastLayout.h"
+#include "Board.h"
 #include "DisplayDriver.h"
 #include "FirmwareUpdateService.h"
+
+
+#if HODINY_BOARD_LCD7
+// Domovská obrazovka 7" displeje, viz ClockDashboardLcd7.h na konci souboru.
+namespace lcd7 {
+void create();
+void sync(bool force);
+}  // namespace lcd7
+#endif
 
 namespace {
 const lv_color_t COLOR_BACKGROUND = LV_COLOR_MAKE(0, 0, 0);
@@ -7223,6 +7233,10 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   // ciferníkem. Teprve potom se vrátíme k částečnému direct-mode renderu.
   displayDriverSetPartialRefresh(analogLayoutEnabled(),
                                  analogLayoutEnabled());
+#if HODINY_BOARD_LCD7
+  lcd7::create();
+  lcd7::sync(true);
+#endif
 }
 
 void clockDashboardApplyConfiguration(const ClockConfig &config) {
@@ -7805,6 +7819,10 @@ void clockDashboardSetWeatherAnimation(const uint8_t *gifData, size_t size,
 }
 
 void clockDashboardLoop() {
+#if HODINY_BOARD_LCD7
+  // I při aktualizaci firmwaru: domovská obrazovka se musí schovat za overlay.
+  lcd7::sync(false);
+#endif
   if (firmwareUpdateActive) return;
   const unsigned long now = millis();
   if (webPasswordResetArmedUntil != 0 && !webPasswordResetArmed())
@@ -10234,3 +10252,7 @@ bool clockDashboardSwipeTraffic(int8_t direction) {
 bool clockDashboardTrafficMapPage() {
   return trafficPageShown == TRAFFIC_PAGE_MAP;
 }
+
+#if HODINY_BOARD_LCD7
+#include "ClockDashboardLcd7.h"
+#endif

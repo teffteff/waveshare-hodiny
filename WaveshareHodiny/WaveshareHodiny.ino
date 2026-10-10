@@ -2547,6 +2547,15 @@ void handleUsbCommands() {
         esp_rom_delay_us(3000);
         portENABLE_INTERRUPTS();
         Serial.println("LCD_SLIP");
+      } else if (usbCommand.startsWith("CLOCKSTYLE") &&
+                 !screenshotTransferActive) {
+        // Náhled vzhledu pro screenshot bez uložení: CLOCKSTYLE0 digitální,
+        // 1 analogový, 2 hodnoty. Přes web to nejde - otevření portu desku
+        // resetuje a náhled by zmizel.
+        ClockAppearanceConfig appearance = activeAppearance;
+        appearance.style = static_cast<uint8_t>(usbCommand.substring(10).toInt());
+        previewClockAppearanceFromWeb(appearance);
+        Serial.println("CLOCKSTYLE_SET");
       } else if (usbCommand == "LCDSYNC") {
         Serial.printf("LCD_SYNC_REPAIRS=%" PRIu32 " GLITCHES=%" PRIu32 "\n",
                       LCD_SyncRepairCount(), LCD_PhaseGlitchCount());
