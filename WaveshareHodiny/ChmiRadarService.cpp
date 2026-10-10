@@ -1,5 +1,12 @@
 #include "ChmiRadarService.h"
 
+// LVGL (písmo popisků) před PNGdec: jeho zlib si definuje makro local, se
+// kterým by se hlavičky LVGL nepřeložily.
+#include "MapLabelFont.h"
+#if HODINY_BOARD_LCD7
+#include "Lcd7Fonts.h"
+#endif
+
 #include <HTTPClient.h>
 #include <PNGdec.h>
 #include <WiFi.h>
@@ -22,6 +29,7 @@
 #include "MapCanvas.h"
 #include "RainViewerSource.h"
 #include "NetworkCoordinator.h"
+#include "SharedFrames.h"
 
 namespace {
 constexpr char FRAME_BASE_URL[] =
@@ -38,16 +46,35 @@ static_assert(RAIN_VIEWER_MAX_FRAMES <= MAX_ANIMATION_FRAME_COUNT,
 constexpr size_t MAX_PENDING_REFRESH_FRAMES = 4;
 constexpr size_t DISPLAY_BUFFER_COUNT = 2;
 constexpr size_t RADAR_PIXEL_COUNT = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
+// Obraz na displeji. Na kulatém je to přímo snímek s mapou zapečenou při
+// dekódování. Na 7" (LAYERED_VIEW) drží snímky jen srážky a obraz 640 x 480 se
+// skládá při každém kroku animace do sdíleného páru snímků (SharedFrames):
+// zvětšené srážky, přes ně ostrá mapa a blesky.
+constexpr bool LAYERED_VIEW = HODINY_BOARD_LCD7;
+constexpr int VIEW_WIDTH = CHMI_RADAR_VIEW_WIDTH;
+constexpr int VIEW_HEIGHT = CHMI_RADAR_VIEW_HEIGHT;
+constexpr size_t VIEW_PIXEL_COUNT = VIEW_WIDTH * VIEW_HEIGHT;
+static_assert(!LAYERED_VIEW || VIEW_PIXEL_COUNT <= SHARED_FRAME_PIXELS,
+              "Obraz radaru 7\" se skládá do sdílených snímků");
 
-// Leží bod (od středu obrázku) na displeji? Na kulatém uvnitř kruhu o
-// poloměru radius, na obdélníkovém 7" uvnitř obdélníku se stejným okrajem,
-// jaký kruh nechává u kraje čtverce 480 x 480 (přepočteným na rozlišení
-// snímku).
-inline bool radarInsideView(int dx, int dy, int radius) {
+// Leží bod (od středu obrázku width x height) na displeji? Na kulatém uvnitř
+// kruhu o poloměru radius, na obdélníkovém 7" uvnitř obdélníku se stejným
+// okrajem, jaký kruh nechává u kraje čtverce 480 x 480 (přepočteným na
+// rozlišení obrázku).
+inline bool radarInside(int dx, int dy, int radius, int width, int height) {
   if (SCREEN_ROUND) return dx * dx + dy * dy <= radius * radius;
-  const int margin = (CHMI_RADAR_HEIGHT / 2 - radius * CHMI_RADAR_HEIGHT / 480);
-  return abs(dx) <= CHMI_RADAR_WIDTH / 2 - margin &&
-         abs(dy) <= CHMI_RADAR_HEIGHT / 2 - margin;
+  const int margin = height / 2 - radius * height / 480;
+  return abs(dx) <= width / 2 - margin && abs(dy) <= height / 2 - margin;
+}
+
+// Ve snímku srážek.
+inline bool radarInsideView(int dx, int dy, int radius) {
+  return radarInside(dx, dy, radius, CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT);
+}
+
+// V obrazu, kam se kreslí mapa a blesky.
+inline bool mapInsideView(int dx, int dy, int radius) {
+  return radarInside(dx, dy, radius, VIEW_WIDTH, VIEW_HEIGHT);
 }
 constexpr unsigned long REFRESH_INTERVAL_MS = 300000;
 constexpr unsigned long RETRY_INTERVAL_MS = 60000;
@@ -157,10 +184,20 @@ size_t pendingRefreshCount = 0;
 uint16_t *lineBuffer = nullptr;
 size_t lineCapacity = 0;
 uint16_t *decodeTarget = nullptr;
+// Na 7" se kompozice ČHMÚ nedekóduje do barev, ale do stupňů odrazivosti
+// (viz chmiLevel): decodeBuffer pak drží po bajtu na pixel a snímek se do
+// prepared/pending snímků jen zkopíruje. RainViewer posílá hotové barvy
+// a dekóduje se postaru.
+bool decodeBufferHoldsLevels = false;
+// Stupně dvou posledních řádků zdroje pro vyhlazené vzorkování.
+uint8_t *levelLines[2] = {};
 int imageWidth = 0;
 int imageHeight = 0;
 int sourceX[CHMI_RADAR_WIDTH] = {};
 int sourceY[CHMI_RADAR_HEIGHT] = {};
+// Středy pixelů snímku ve zdroji, v 1/256 pixelu (vyhlazené vzorkování).
+int32_t sourceXFixed[CHMI_RADAR_WIDTH] = {};
+int32_t sourceYFixed[CHMI_RADAR_HEIGHT] = {};
 int dataX1 = 0;
 int dataY0 = 0;
 uint16_t decodedLineCount = 0;
@@ -245,7 +282,9 @@ void setStatus(bool isLoading, const char *message) {
 }
 
 bool ensureBuffers() {
+  // Na 7" se obraz skládá do sdílených snímků (composeView).
   for (uint16_t *&buffer : displayBuffers) {
+    if (LAYERED_VIEW) break;
     if (buffer == nullptr) {
       buffer = static_cast<uint16_t *>(heap_caps_malloc(
           RADAR_PIXEL_COUNT * sizeof(uint16_t),
@@ -458,12 +497,112 @@ bool downloadPngWithRetry(HTTPClient &http, const char *fileName,
   return false;
 }
 
+// Paleta ČHMÚ: patnáct stupňů odrazivosti po 4 dBZ od nejslabšího (1) po
+// nejsilnější (15) a šedá pro oblast bez dat. Ve snímku 7" leží stupeň
+// krát LEVEL_STEP, aby se při vzorkování dal držet i zlomek stupně.
+constexpr uint16_t rgb565(uint8_t red, uint8_t green, uint8_t blue) {
+  return static_cast<uint16_t>(((red >> 3) << 11) | ((green >> 2) << 5) |
+                               (blue >> 3));
+}
+constexpr uint16_t CHMI_LEVEL_COLORS[16] = {
+    0x0000,
+    rgb565(56, 0, 112),   rgb565(48, 0, 168),    rgb565(0, 0, 252),
+    rgb565(0, 108, 192),  rgb565(0, 160, 0),     rgb565(0, 188, 0),
+    rgb565(52, 216, 0),   rgb565(156, 220, 0),   rgb565(224, 220, 0),
+    rgb565(252, 176, 0),  rgb565(252, 132, 0),   rgb565(252, 88, 0),
+    rgb565(252, 0, 0),    rgb565(160, 0, 0),     rgb565(252, 252, 252)};
+constexpr uint16_t CHMI_NO_DATA_COLOR = rgb565(196, 196, 196);
+constexpr uint8_t LEVEL_STEP = 16;
+constexpr uint8_t LEVEL_NO_DATA = 255;
+
+uint8_t chmiLevel(uint16_t color) {
+  if (color == 0) return 0;
+  for (uint8_t level = 1; level < 16; ++level)
+    if (CHMI_LEVEL_COLORS[level] == color) return level * LEVEL_STEP;
+  return color == CHMI_NO_DATA_COLOR ? LEVEL_NO_DATA : 0;
+}
+
+// Jeden pixel snímku z okolních čtyř pixelů zdroje. Vyhlazuje se stupeň, ne
+// barva: mezi modrou a červenou tak vyjdou stupně mezi nimi, ne fialová,
+// a okraj srážek leží na půl cesty k nule místo zubatých schodů.
+inline uint8_t blendLevels(uint8_t topLeft, uint8_t topRight,
+                           uint8_t bottomLeft, uint8_t bottomRight,
+                           uint32_t weightX, uint32_t weightY) {
+  const uint8_t nearest = weightY < 128 ? (weightX < 128 ? topLeft : topRight)
+                                        : (weightX < 128 ? bottomLeft
+                                                         : bottomRight);
+  const auto rain = [](uint8_t value) -> uint32_t {
+    return value == LEVEL_NO_DATA ? 0 : value;
+  };
+  const uint32_t top =
+      rain(topLeft) * (256 - weightX) + rain(topRight) * weightX;
+  const uint32_t bottom =
+      rain(bottomLeft) * (256 - weightX) + rain(bottomRight) * weightX;
+  const uint8_t value =
+      static_cast<uint8_t>((top * (256 - weightY) + bottom * weightY) >> 16);
+  return value < LEVEL_STEP / 2 && nearest == LEVEL_NO_DATA ? LEVEL_NO_DATA
+                                                            : value;
+}
+
+void drawDecodedLevelLine(PNGDRAW *draw) {
+  uint8_t *current = levelLines[draw->y & 1];
+  const uint8_t *previous = levelLines[(draw->y + 1) & 1];
+  const bool lineHasData = draw->y >= dataY0;
+  for (int x = 0; x < imageWidth; ++x)
+    current[x] =
+        lineHasData && x <= dataX1 ? chmiLevel(lineBuffer[x]) : 0;
+  uint8_t *target = reinterpret_cast<uint8_t *>(decodeTarget);
+  for (int targetY = 0; targetY < CHMI_RADAR_HEIGHT; ++targetY) {
+    // Řádek snímku leží mezi řádky zdroje upper a upper + 1. Kreslí se, jakmile
+    // dorazí ten spodní; u horního a dolního kraje zdroje se řádek zopakuje.
+    const int32_t fixedY = sourceYFixed[targetY];
+    const int upper = fixedY >> 8;
+    const uint8_t *upperLine = nullptr;
+    const uint8_t *lowerLine = nullptr;
+    if (upper == draw->y - 1 && draw->y > 0) {
+      upperLine = previous;
+      lowerLine = current;
+    } else if ((upper == -1 && draw->y == 0) ||
+               (upper == draw->y && draw->y == imageHeight - 1)) {
+      upperLine = current;
+      lowerLine = current;
+    } else {
+      continue;
+    }
+    const uint32_t weightY = static_cast<uint32_t>(fixedY & 0xff);
+    uint8_t *row = target + targetY * CHMI_RADAR_WIDTH;
+    const long dy = targetY - CHMI_RADAR_HEIGHT / 2;
+    for (int targetX = 0; targetX < CHMI_RADAR_WIDTH; ++targetX) {
+      const long dx = targetX - CHMI_RADAR_WIDTH / 2;
+      if (!radarInsideView(dx, dy, 238)) continue;
+      const int32_t fixedX = sourceXFixed[targetX];
+      int left = fixedX >> 8;
+      if (left < -1 || left >= imageWidth) continue;
+      int right = left + 1;
+      if (left < 0) left = 0;
+      if (right >= imageWidth) right = imageWidth - 1;
+      row[targetX] = blendLevels(upperLine[left], upperLine[right],
+                                 lowerLine[left], lowerLine[right],
+                                 static_cast<uint32_t>(fixedX & 0xff),
+                                 weightY);
+    }
+    if ((targetY & 7) == 0) {
+      advanceAnimation(millis());
+      delay(1);
+    }
+  }
+}
+
 void drawDecodedLine(PNGDRAW *draw) {
   if (decodeTarget == nullptr || lineBuffer == nullptr) return;
   if (draw->y != decodedLineCount) decodedLinesSequential = false;
   ++decodedLineCount;
   pngDecoder->getLineAsRGB565(draw, lineBuffer, PNG_RGB565_LITTLE_ENDIAN,
                               0x00000000);
+  if (decodeBufferHoldsLevels) {
+    drawDecodedLevelLine(draw);
+    return;
+  }
   for (int targetY = 0; targetY < CHMI_RADAR_HEIGHT; ++targetY) {
     if (sourceY[targetY] != draw->y) continue;
     uint16_t *row = decodeTarget + targetY * CHMI_RADAR_WIDTH;
@@ -495,28 +634,85 @@ struct RadarProjection {
   int cropY2 = 0;
 };
 
+// Bod mapy v pixelech obrazu (VIEW_WIDTH x VIEW_HEIGHT).
 void projectRadarPoint(const RadarProjection &projection, float latitude,
                        float longitude, int &x, int &y) {
   if (projection.rainViewer) {
+    // RainViewer promítá do snímku srážek; obraz je CHMI_RADAR_ZOOM větší.
     rainViewerProject(latitude, longitude, x, y);
+    x *= CHMI_RADAR_ZOOM;
+    y *= CHMI_RADAR_ZOOM;
     return;
   }
   x = static_cast<int64_t>(longitudeToX(longitude) - projection.cropX1) *
-      CHMI_RADAR_WIDTH / (projection.cropX2 - projection.cropX1 + 1);
+      VIEW_WIDTH / (projection.cropX2 - projection.cropX1 + 1);
   y = static_cast<int64_t>(latitudeToY(latitude) - projection.cropY1) *
-      CHMI_RADAR_HEIGHT / (projection.cropY2 - projection.cropY1 + 1);
+      VIEW_HEIGHT / (projection.cropY2 - projection.cropY1 + 1);
+}
+
+// Mapa 7" se kreslí až do hotového obrazu, tedy po noční paletě srážek; její
+// barvy proto noční paletou prochází hned při kreslení. Na kulatém se
+// paleta použije na celý snímek najednou a mapNight zůstává vypnuté.
+bool mapNight = false;
+uint16_t nightRadarColor(uint8_t color);
+uint16_t mapTint(uint16_t color) {
+  return mapNight ? nightRadarColor(rgb565ToRgb332(color)) : color;
+}
+
+#if HODINY_BOARD_LCD7
+// Popisky 7" Barlow (jako zbytek rozhraní), malými písmeny. Patří úloze radaru.
+MapLabelFont mapLabelFont(&lcd7_text15, false);
+#endif
+
+void drawMapLabel(uint16_t *buffer, int x, int y, const char *text,
+                  uint16_t color, uint8_t opacity) {
+#if HODINY_BOARD_LCD7
+  mapLabelFont.draw(buffer, x, y, text, color, opacity);
+#else
+  drawMapText(buffer, x, y, text, color, opacity);
+#endif
+}
+
+int mapLabelWidth(const char *text) {
+#if HODINY_BOARD_LCD7
+  return mapLabelFont.width(text);
+#else
+  return mapTextWidth(text);
+#endif
+}
+
+// Výška verzálek písma popisků.
+int mapLabelCapHeight() {
+#if HODINY_BOARD_LCD7
+  return mapLabelFont.labelHeight() - 6;
+#else
+  return MAP_CANVAS_GLYPH_HEIGHT;
+#endif
+}
+
+// Úsečka mapy. Na 7" dvojitá: jednopixelová hranice v plném rozlišení by
+// byla proti zvětšeným srážkám skoro neviditelná.
+void drawMapStroke(uint16_t *buffer, int x0, int y0, int x1, int y1,
+                   uint16_t color, uint8_t opacity) {
+  drawMapLine(buffer, x0, y0, x1, y1, color, opacity);
+  if (CHMI_RADAR_ZOOM > 1)
+    drawMapLine(buffer, x0 + 1, y0 + 1, x1 + 1, y1 + 1, color, opacity);
 }
 
 // Stupnice intenzity srážek. Šest odstínů palety ČHMÚ od nejsilnějšího po
 // nejslabší, u každého odrazivost v dBZ a jí odpovídající srážky v mm/h podle
 // Marshallova-Palmerova vztahu. Odstíny jsou přesně ty, které dorazí z PNG,
 // takže je noční paleta obarví stejně jako samotné srážky na mapě.
-constexpr int LEGEND_X = 30;
-constexpr int LEGEND_Y = 142;
-constexpr int LEGEND_WIDTH = 96;
 // Bez řádku se jménem zdroje: ten se vybírá v nastavení a na každém snímku by
-// jen ubíral místo. Stupnici popisují její vlastní čísla.
-constexpr int LEGEND_HEIGHT = 12 + 6 * 13 + 2;
+// jen ubíral místo. Stupnici popisují její vlastní čísla. Na 7" leží vlevo
+// dole, Barlow, s většími vzorky.
+constexpr int LEGEND_ROW = LAYERED_VIEW ? 19 : 13;
+constexpr int LEGEND_SWATCH = LAYERED_VIEW ? 12 : 9;
+constexpr int LEGEND_HEADER = LAYERED_VIEW ? 18 : 12;
+constexpr int LEGEND_WIDTH = LAYERED_VIEW ? 112 : 96;
+constexpr int LEGEND_HEIGHT = LEGEND_HEADER + 6 * LEGEND_ROW + 2;
+constexpr int LEGEND_X = LAYERED_VIEW ? 12 : 30;
+constexpr int LEGEND_Y = LAYERED_VIEW ? VIEW_HEIGHT - LEGEND_HEIGHT - 8 : 142;
 
 void drawIntensityLegend(uint16_t *buffer, bool rainViewerSource) {
   // Paleta musí sedět s tím, co je zrovna na displeji - stejná žlutá znamená
@@ -534,23 +730,28 @@ void drawIntensityLegend(uint16_t *buffer, bool rainViewerSource) {
   const uint16_t *levelColors = rainViewerSource ? rainViewerColors : chmiColors;
   const char *const *levelLabels =
       rainViewerSource ? rainViewerLabels : chmiLabels;
-  constexpr uint16_t unitColor = 0x8410;
-  constexpr uint16_t labelColor = 0xffff;
-  constexpr uint16_t swatchEdge = 0x4208;
+  const uint16_t unitColor = mapTint(0x8410);
+  const uint16_t labelColor = mapTint(0xffff);
+  const uint16_t swatchEdge = mapTint(0x4208);
+  constexpr int swatch = LEGEND_SWATCH;
+  // Text se svisle vystředí na vzorek.
+  const int textOffset = (swatch - mapLabelCapHeight() + 1) / 2;
   fillMapRect(buffer, LEGEND_X - 2, LEGEND_Y - 2, LEGEND_WIDTH, LEGEND_HEIGHT,
               0x0000, 100);
-  drawMapText(buffer, LEGEND_X, LEGEND_Y, "DBZ / MM/H", unitColor, 100);
+  drawMapLabel(buffer, LEGEND_X, LEGEND_Y + (LAYERED_VIEW ? 2 : 0),
+               LAYERED_VIEW ? "dBZ / mm/h" : "DBZ / MM/H", unitColor, 100);
   for (int level = 0; level < 6; ++level) {
-    const int rowY = LEGEND_Y + 12 + level * 13;
-    fillMapRect(buffer, LEGEND_X, rowY, 9, 9, levelColors[level], 100);
-    for (int offset = 0; offset < 9; ++offset) {
+    const int rowY = LEGEND_Y + LEGEND_HEADER + level * LEGEND_ROW;
+    fillMapRect(buffer, LEGEND_X, rowY, swatch, swatch,
+                mapTint(levelColors[level]), 100);
+    for (int offset = 0; offset < swatch; ++offset) {
       setMapPixel(buffer, LEGEND_X + offset, rowY, swatchEdge, 100);
-      setMapPixel(buffer, LEGEND_X + offset, rowY + 8, swatchEdge, 100);
+      setMapPixel(buffer, LEGEND_X + offset, rowY + swatch - 1, swatchEdge, 100);
       setMapPixel(buffer, LEGEND_X, rowY + offset, swatchEdge, 100);
-      setMapPixel(buffer, LEGEND_X + 8, rowY + offset, swatchEdge, 100);
+      setMapPixel(buffer, LEGEND_X + swatch - 1, rowY + offset, swatchEdge, 100);
     }
-    drawMapText(buffer, LEGEND_X + 13, rowY + 1, levelLabels[level],
-                labelColor, 100);
+    drawMapLabel(buffer, LEGEND_X + swatch + 5, rowY + textOffset,
+                 levelLabels[level], labelColor, 100);
   }
 }
 
@@ -562,25 +763,31 @@ bool drawMapCity(uint16_t *buffer, const RadarProjection &projection,
   int x = 0;
   int y = 0;
   projectRadarPoint(projection, latitude, longitude, x, y);
-  const int deltaX = x - CHMI_RADAR_WIDTH / 2;
-  const int deltaY = y - CHMI_RADAR_HEIGHT / 2;
-  if (!radarInsideView(deltaX, deltaY, 225)) return false;
+  const int deltaX = x - VIEW_WIDTH / 2;
+  const int deltaY = y - VIEW_HEIGHT / 2;
+  if (!mapInsideView(deltaX, deltaY, 225)) return false;
 
-  const int textWidth = strlen(label) * 6 - 1;
-  MapLabelBox box = {x + 6, y - 5, textWidth + 4, 11};
-  if (box.x + box.width >= CHMI_RADAR_WIDTH) box.x = x - 6 - box.width;
+  const int capHeight = mapLabelCapHeight();
+  const int padding = LAYERED_VIEW ? 3 : 2;
+  const int dot = LAYERED_VIEW ? 3 : 2;
+  const int textWidth = mapLabelWidth(label);
+  MapLabelBox box = {x + dot + 4, y - capHeight / 2 - padding,
+                     textWidth + 2 * padding, capHeight + 2 * padding};
+  if (box.x + box.width >= VIEW_WIDTH) box.x = x - dot - 4 - box.width;
   // Na kulatém nahoře leží řádek s časem; na 7" je čas ve sloupci vedle.
   const int topLimit = SCREEN_ROUND ? 54 : 4;
-  if (box.x < 0 || box.y < topLimit || box.y + box.height >= CHMI_RADAR_HEIGHT)
+  if (box.x < 0 || box.y < topLimit || box.y + box.height >= VIEW_HEIGHT)
     return false;
   if (!placer.claim(box)) return false;
 
-  for (int offsetY = -2; offsetY <= 2; ++offsetY)
-    for (int offsetX = -2; offsetX <= 2; ++offsetX)
-      if (offsetX * offsetX + offsetY * offsetY <= 4)
-        setMapPixel(buffer, x + offsetX, y + offsetY, 0xffff, opacity);
+  const uint16_t white = mapTint(0xffff);
+  for (int offsetY = -dot; offsetY <= dot; ++offsetY)
+    for (int offsetX = -dot; offsetX <= dot; ++offsetX)
+      if (offsetX * offsetX + offsetY * offsetY <= dot * dot)
+        setMapPixel(buffer, x + offsetX, y + offsetY, white, opacity);
   fillMapRect(buffer, box.x, box.y, box.width, box.height, 0x0000, opacity);
-  drawMapText(buffer, box.x + 2, box.y + 2, label, cityColor, opacity);
+  drawMapLabel(buffer, box.x + padding, box.y + padding, label, cityColor,
+               opacity);
   return true;
 }
 
@@ -605,12 +812,13 @@ void drawCzechMapLayer(uint16_t *buffer, const RadarProjection &projection,
     int y = 0;
     projectRadarPoint(projection, latitude, longitude, x, y);
     if (index > 0)
-      drawMapLine(buffer, previousX, previousY, x, y, borderColor, opacity);
+      drawMapStroke(buffer, previousX, previousY, x, y, borderColor, opacity);
     previousX = x;
     previousY = y;
   }
 
-  const bool showFullNames = radiusKm > 0 && radiusKm <= 50;
+  // Na 7" je na celá jména místa dost; kdo se nevejde, toho placer vynechá.
+  const bool showFullNames = LAYERED_VIEW || (radiusKm > 0 && radiusKm <= 50);
   for (uint8_t tier = 1; tier <= 2; ++tier)
     for (const CzechMapCity &city : CZECH_MAP_CITIES) {
       if (city.tier != tier) continue;
@@ -695,7 +903,8 @@ void drawEuropeMapLayer(uint16_t *buffer, const RadarProjection &projection,
       int y = 0;
       projectRadarPoint(projection, latitude, longitude, x, y);
       if (!firstPoint && (inside || previousInside))
-        drawMapLine(buffer, previousX, previousY, x, y, borderColor, opacity);
+        drawMapStroke(buffer, previousX, previousY, x, y, borderColor,
+                      opacity);
       previousX = x;
       previousY = y;
       previousInside = inside;
@@ -707,7 +916,7 @@ void drawEuropeMapLayer(uint16_t *buffer, const RadarProjection &projection,
   const uint8_t maxTier = radiusKm > 0 && radiusKm <= 50    ? 3
                           : radiusKm > 0 && radiusKm <= 100 ? 2
                                                             : 1;
-  const bool showFullNames = radiusKm > 0 && radiusKm <= 50;
+  const bool showFullNames = LAYERED_VIEW || (radiusKm > 0 && radiusKm <= 50);
   for (uint8_t tier = 1; tier <= maxTier; ++tier) {
     for (const EuCity &city : EU_CITIES) {
       if (city.tier != tier) continue;
@@ -732,10 +941,10 @@ void drawEuropeMapLayer(uint16_t *buffer, const RadarProjection &projection,
 void drawMapOverlay(uint16_t *buffer, float markerLatitude,
                     float markerLongitude, uint16_t radiusKm,
                     const RadarProjection &projection, uint8_t opacity) {
-  const MapCanvasSize canvasSize(CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT);
+  const MapCanvasSize canvasSize(VIEW_WIDTH, VIEW_HEIGHT);
   if (opacity == 0) return;
-  constexpr uint16_t borderColor = 0xbdf7;
-  constexpr uint16_t cityColor = 0x07ff;
+  const uint16_t borderColor = mapTint(0xbdf7);
+  const uint16_t cityColor = mapTint(0x07ff);
 
   // Stupnice vysvětluje barvy srážek; bez nich by jen zabírala místo.
   portENTER_CRITICAL(&stateMux);
@@ -762,14 +971,18 @@ void drawMapOverlay(uint16_t *buffer, float markerLatitude,
   int markerY = 0;
   projectRadarPoint(projection, markerLatitude, markerLongitude, markerX,
                     markerY);
-  constexpr uint16_t white = 0xffff;
-  const int markerDeltaX = markerX - CHMI_RADAR_WIDTH / 2;
-  const int markerDeltaY = markerY - CHMI_RADAR_HEIGHT / 2;
-  if (radarInsideView(markerDeltaX, markerDeltaY, 225)) {
-    for (int offset = -9; offset <= 9; ++offset) {
-      setMapPixel(buffer, markerX + offset, markerY, white, opacity);
-      setMapPixel(buffer, markerX, markerY + offset, white, opacity);
-    }
+  const uint16_t white = mapTint(0xffff);
+  const int markerDeltaX = markerX - VIEW_WIDTH / 2;
+  const int markerDeltaY = markerY - VIEW_HEIGHT / 2;
+  if (mapInsideView(markerDeltaX, markerDeltaY, 225)) {
+    // Na 7" kříž o dva pixely tlustý a delší, jinak by se v plném rozlišení
+    // ztrácel.
+    const int arm = LAYERED_VIEW ? 12 : 9;
+    for (int offset = -arm; offset <= arm; ++offset)
+      for (int width = 0; width < CHMI_RADAR_ZOOM; ++width) {
+        setMapPixel(buffer, markerX + offset, markerY + width, white, opacity);
+        setMapPixel(buffer, markerX + width, markerY + offset, white, opacity);
+      }
   }
 
   if (showLegend) drawIntensityLegend(buffer, projection.rainViewer);
@@ -824,6 +1037,8 @@ bool projectStroke(const RadarProjection &projection, float latitude,
                    float longitude, int &x, int &y) {
   if (projection.rainViewer) {
     rainViewerProject(latitude, longitude, x, y);
+    x *= CHMI_RADAR_ZOOM;
+    y *= CHMI_RADAR_ZOOM;
   } else {
     const float sourceX = (longitude - LON_LEFT) * (imageWidth - 1) /
                           (LON_RIGHT - LON_LEFT);
@@ -831,14 +1046,14 @@ bool projectStroke(const RadarProjection &projection, float latitude,
     const float bottom = mercatorY(LAT_BOTTOM);
     const float sourceY =
         (top - mercatorY(latitude)) * (imageHeight - 1) / (top - bottom);
-    x = lroundf((sourceX - projection.cropX1) * CHMI_RADAR_WIDTH /
+    x = lroundf((sourceX - projection.cropX1) * VIEW_WIDTH /
                 (projection.cropX2 - projection.cropX1 + 1));
-    y = lroundf((sourceY - projection.cropY1) * CHMI_RADAR_HEIGHT /
+    y = lroundf((sourceY - projection.cropY1) * VIEW_HEIGHT /
                 (projection.cropY2 - projection.cropY1 + 1));
   }
-  const int dx = x - CHMI_RADAR_WIDTH / 2;
-  const int dy = y - CHMI_RADAR_HEIGHT / 2;
-  return radarInsideView(dx, dy, DISPLAY_RADIUS_PX);
+  const int dx = x - VIEW_WIDTH / 2;
+  const int dy = y - VIEW_HEIGHT / 2;
+  return mapInsideView(dx, dy, DISPLAY_RADIUS_PX);
 }
 
 void drawStroke(uint16_t *buffer, int x, int y, uint32_t ageSeconds,
@@ -848,13 +1063,21 @@ void drawStroke(uint16_t *buffer, int x, int y, uint32_t ageSeconds,
     // Čerstvý úder jako malý blesk se stínem, aby byl vidět i přes žlutou
     // a červenou srážku. Je jen devět pixelů vysoký: husté bouřkové buňky by
     // jinak splynuly do svislých pruhů.
+    // Na 7" se kreslí v plném rozlišení, a tak dvakrát větší a s dvojitou
+    // čarou, aby měl na displeji stejnou velikost jako dřív.
     const uint16_t color = overlayColor(0xFFFF, nightVisual);
-    drawMapLine(buffer, x + 3, y - 4, x, y - 1, shadow, 100);
-    drawMapLine(buffer, x, y - 1, x + 2, y - 1, shadow, 100);
-    drawMapLine(buffer, x + 2, y - 1, x - 1, y + 5, shadow, 100);
-    drawMapLine(buffer, x + 2, y - 5, x - 1, y - 2, color, 100);
-    drawMapLine(buffer, x - 1, y - 2, x + 1, y - 2, color, 100);
-    drawMapLine(buffer, x + 1, y - 2, x - 2, y + 4, color, 100);
+    constexpr int s = CHMI_RADAR_ZOOM;
+    const auto bolt = [&](int x0, int y0, int x1, int y1, uint16_t lineColor) {
+      for (int width = 0; width < s; ++width)
+        drawMapLine(buffer, x + x0 * s + width, y + y0 * s, x + x1 * s + width,
+                    y + y1 * s, lineColor, 100);
+    };
+    bolt(3, -4, 0, -1, shadow);
+    bolt(0, -1, 2, -1, shadow);
+    bolt(2, -1, -1, 5, shadow);
+    bolt(2, -5, -1, -2, color);
+    bolt(-1, -2, 1, -2, color);
+    bolt(1, -2, -2, 4, color);
     return;
   }
   // Starší údery jsou jen křížky: blesk opakovaný stokrát by z bouřkové linie
@@ -864,19 +1087,21 @@ void drawStroke(uint16_t *buffer, int x, int y, uint32_t ageSeconds,
       : ageSeconds <= STROKE_ORANGE_SECONDS ? 0xFC00
                                             : 0xF945,
       nightVisual);
-  const int arm = ageSeconds <= STROKE_ORANGE_SECONDS ? 2 : 1;
-  setMapPixel(buffer, x + 1, y + 1, shadow, 100);
-  for (int offset = -arm; offset <= arm; ++offset) {
-    setMapPixel(buffer, x + offset, y, color, 100);
-    setMapPixel(buffer, x, y + offset, color, 100);
-  }
+  constexpr int s = CHMI_RADAR_ZOOM;
+  const int arm = (ageSeconds <= STROKE_ORANGE_SECONDS ? 2 : 1) * s;
+  fillMapRect(buffer, x + s, y + s, s, s, shadow, 100);
+  for (int offset = -arm; offset <= arm + s - 1; ++offset)
+    for (int width = 0; width < s; ++width) {
+      setMapPixel(buffer, x + offset, y + width, color, 100);
+      setMapPixel(buffer, x + width, y + offset, color, 100);
+    }
 }
 
 // Kreslí se až po mapě a srážkách. Obrys displeje už ve snímku je; údery se
 // ořezávají pár pixelů před ním, aby přes něj nepřečuhovaly.
 void drawLightningOverlay(uint16_t *buffer, const RadarProjection &projection,
                           bool nightVisual) {
-  const MapCanvasSize canvasSize(CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT);
+  const MapCanvasSize canvasSize(VIEW_WIDTH, VIEW_HEIGHT);
   portENTER_CRITICAL(&stateMux);
   const bool enabled = lightningOverlayEnabled;
   const float alarmLatitude = lightningAlarmLatitude;
@@ -979,31 +1204,188 @@ RadarProjection currentProjection(float latitude, float longitude,
   return projection;
 }
 
+// --- Obraz 7" -------------------------------------------------------------
+// Zápůjčka sdílených snímků, pod kterou vznikl obraz v activeDisplayBuffer.
+// Když si pár mezitím vzala jiná obrazovka, obraz už neplatí.
+uint32_t displayLease = 0;
+
+uint16_t rgb332ToRgb565(uint8_t color);
+
+// Stupně ČHMÚ ze snímku dvakrát zvětšené do obrazu. Pixel obrazu leží mezi
+// čtyřmi pixely snímku a bere je s váhami 9 : 3 : 3 : 1 (dvojnásobné
+// bilineární zvětšení); vyhlazuje se stupeň, takže hranice mezi barvami
+// zůstávají ostré, jen bez schodů.
+void composeLevels(uint16_t *target, const uint8_t *source, bool night) {
+  static_assert(CHMI_RADAR_ZOOM == 2 || !LAYERED_VIEW,
+                "Vyhlazené zvětšení počítá s dvojnásobkem");
+  uint16_t colors[16];
+  for (size_t level = 0; level < 16; ++level)
+    colors[level] = night ? nightRadarColor(rgb565ToRgb332(
+                                CHMI_LEVEL_COLORS[level]))
+                          : CHMI_LEVEL_COLORS[level];
+  colors[0] = 0;
+  const uint16_t noData =
+      night ? nightRadarColor(rgb565ToRgb332(CHMI_NO_DATA_COLOR))
+            : CHMI_NO_DATA_COLOR;
+  const auto rain = [](uint8_t value) -> uint32_t {
+    return value == LEVEL_NO_DATA ? 0 : value;
+  };
+  for (int y = 0; y < VIEW_HEIGHT; ++y) {
+    const int nearY = y >> 1;
+    const int farY = constrain((y & 1) ? nearY + 1 : nearY - 1, 0,
+                               CHMI_RADAR_HEIGHT - 1);
+    const uint8_t *nearRow = source + nearY * CHMI_RADAR_WIDTH;
+    const uint8_t *farRow = source + farY * CHMI_RADAR_WIDTH;
+    uint16_t *output = target + y * VIEW_WIDTH;
+    for (int x = 0; x < VIEW_WIDTH; ++x) {
+      const int nearX = x >> 1;
+      const int farX = constrain((x & 1) ? nearX + 1 : nearX - 1, 0,
+                                 CHMI_RADAR_WIDTH - 1);
+      const uint8_t nearest = nearRow[nearX];
+      const uint32_t value =
+          (rain(nearest) * 9 + rain(nearRow[farX]) * 3 +
+           rain(farRow[nearX]) * 3 + rain(farRow[farX])) >> 4;
+      const uint32_t level = (value + LEVEL_STEP / 2) / LEVEL_STEP;
+      output[x] = level == 0 && nearest == LEVEL_NO_DATA
+                      ? noData
+                      : colors[level > 15 ? 15 : level];
+    }
+  }
+}
+
+// Snímek RainVieweru (RGB332, hotové barvy) dvakrát zvětšený. Stupně tu
+// nejsou, takže se vyhlazuje barva, se stejnými vahami 9 : 3 : 3 : 1 jako
+// u ČHMÚ. Černá je průhledná: barva je průměr jen barevných sousedů a pixel
+// se vybarví, když na ně připadne aspoň polovina váhy. Okraj srážek tak leží
+// na půl cesty jako u ČHMÚ a netáhne se za ním tmavý lem.
+//
+// Dlaždice RainVieweru mají poloprůhledné okraje. Po složení na černou
+// a převodu do RGB332 z nich zbudou tmavé olivové a hnědé pixely, které by
+// vyhlazení rozmazalo do špinavého lemu; všechny barvy srážek jsou světlé,
+// takže se tmavé pixely počítají za prázdné.
+void composeColors(uint16_t *target, const uint8_t *source, bool night) {
+  uint16_t palette[256];
+  for (size_t color = 0; color < 256; ++color) {
+    const uint16_t day = rgb332ToRgb565(static_cast<uint8_t>(color));
+    const uint8_t brightest =
+        max(max((day >> 11) << 3, ((day >> 5) & 0x3f) << 2), (day & 0x1f) << 3);
+    palette[color] =
+        brightest < 64 ? 0
+        : night        ? nightRadarColor(static_cast<uint8_t>(color))
+                       : day;
+  }
+  for (int y = 0; y < VIEW_HEIGHT; ++y) {
+    const int nearY = y >> 1;
+    const int farY = constrain((y & 1) ? nearY + 1 : nearY - 1, 0,
+                               CHMI_RADAR_HEIGHT - 1);
+    const uint8_t *nearRow = source + nearY * CHMI_RADAR_WIDTH;
+    const uint8_t *farRow = source + farY * CHMI_RADAR_WIDTH;
+    uint16_t *output = target + y * VIEW_WIDTH;
+    for (int x = 0; x < VIEW_WIDTH; ++x) {
+      const int nearX = x >> 1;
+      const int farX = constrain((x & 1) ? nearX + 1 : nearX - 1, 0,
+                                 CHMI_RADAR_WIDTH - 1);
+      const uint8_t samples[4] = {nearRow[nearX], nearRow[farX],
+                                  farRow[nearX], farRow[farX]};
+      // Nejčastější případ - všude stejně (i všude prázdno) - bez počítání.
+      if (samples[0] == samples[1] && samples[0] == samples[2] &&
+          samples[0] == samples[3]) {
+        output[x] = palette[samples[0]];
+        continue;
+      }
+      static constexpr uint32_t weights[4] = {9, 3, 3, 1};
+      uint32_t coverage = 0;
+      uint32_t red = 0;
+      uint32_t green = 0;
+      uint32_t blue = 0;
+      for (size_t sample = 0; sample < 4; ++sample) {
+        const uint16_t color = palette[samples[sample]];
+        if (color == 0) continue;
+        const uint32_t weight = weights[sample];
+        coverage += weight;
+        red += (color >> 11) * weight;
+        green += ((color >> 5) & 0x3f) * weight;
+        blue += (color & 0x1f) * weight;
+      }
+      if (coverage < 8) {
+        output[x] = 0;
+        continue;
+      }
+      output[x] = static_cast<uint16_t>(((red / coverage) << 11) |
+                                        ((green / coverage) << 5) |
+                                        (blue / coverage));
+    }
+  }
+}
+
+// Složí obraz 7" do sdíleného snímku targetBuffer: srážky (bez snímku jen
+// černé pozadí), přes ně mapa a blesky. False, když pár zrovna patří jiné
+// obrazovce nebo si ho během skládání vzala.
+bool composeView(uint8_t targetBuffer, const uint8_t *frame, bool nightVisual,
+                 float latitude, float longitude, uint16_t radiusKm,
+                 uint8_t mapOpacityValue, bool overlay, uint32_t &lease) {
+  if (!sharedFramesReserve()) return false;
+  lease = sharedFramesBeginRender(SharedFrameUser::Radar);
+  if (lease == 0) return false;
+  uint16_t *target = sharedFrame(targetBuffer);
+  portENTER_CRITICAL(&stateMux);
+  const bool rainViewer = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
+  portEXIT_CRITICAL(&stateMux);
+  if (frame == nullptr)
+    memset(target, 0, VIEW_PIXEL_COUNT * sizeof(uint16_t));
+  else if (rainViewer)
+    composeColors(target, frame, nightVisual);
+  else
+    composeLevels(target, frame, nightVisual);
+  // Rozměr kompozice se nastavuje při dekódování; snímek z cache ho zná.
+  if (imageWidth <= 0 || imageHeight <= 0) {
+    imageWidth = RADAR_SOURCE_WIDTH;
+    imageHeight = RADAR_SOURCE_HEIGHT;
+  }
+  const RadarProjection projection =
+      currentProjection(latitude, longitude, radiusKm);
+  mapNight = nightVisual;
+  drawMapOverlay(target, latitude, longitude, radiusKm, projection,
+                 mapOpacityValue);
+  mapNight = false;
+  if (overlay) drawLightningOverlay(target, projection, nightVisual);
+  sharedFramesEndRender(SharedFrameUser::Radar);
+  return sharedFramesLeaseValid(SharedFrameUser::Radar, lease);
+}
+
 bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
                  uint8_t mapOpacityValue, uint32_t revision) {
   if (!ensureBuffers()) return false;
   imageWidth = RADAR_SOURCE_WIDTH;
   imageHeight = RADAR_SOURCE_HEIGHT;
-  const RadarProjection projection =
-      currentProjection(latitude, longitude, radiusKm);
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;
-  uint16_t *target = displayBuffers[targetBuffer];
-  memset(target, 0, RADAR_PIXEL_COUNT * sizeof(uint16_t));
-  drawMapOverlay(target, latitude, longitude, radiusKm, projection,
-                 mapOpacityValue);
-  drawDisplayRing(target);
-  // Denními barvami: noční paleta se na celý snímek použije až potom.
-  drawLightningOverlay(target, projection, false);
   portENTER_CRITICAL(&stateMux);
   const bool nightVisual = redNightMode;
   portEXIT_CRITICAL(&stateMux);
-  if (nightVisual) applyNightRadarPalette(target);
+  uint32_t lease = 0;
+  if (LAYERED_VIEW) {
+    if (!composeView(targetBuffer, nullptr, nightVisual, latitude, longitude,
+                     radiusKm, mapOpacityValue, true, lease))
+      return false;
+  } else {
+    const RadarProjection projection =
+        currentProjection(latitude, longitude, radiusKm);
+    uint16_t *target = displayBuffers[targetBuffer];
+    memset(target, 0, RADAR_PIXEL_COUNT * sizeof(uint16_t));
+    drawMapOverlay(target, latitude, longitude, radiusKm, projection,
+                   mapOpacityValue);
+    drawDisplayRing(target);
+    // Denními barvami: noční paleta se na celý snímek použije až potom.
+    drawLightningOverlay(target, projection, false);
+    if (nightVisual) applyNightRadarPalette(target);
+  }
   portENTER_CRITICAL(&stateMux);
   if (!active || revision != requestRevision) {
     portEXIT_CRITICAL(&stateMux);
     return false;
   }
   activeDisplayBuffer = targetBuffer;
+  displayLease = lease;
   activeRadiusKm = radiusKm;
   displayedFrame = -2;
   ready = false;
@@ -1031,9 +1413,18 @@ bool decodeRadar(const uint8_t *pngData, size_t pngSize, float latitude,
     if (lineBuffer != nullptr) heap_caps_free(lineBuffer);
     lineBuffer = static_cast<uint16_t *>(heap_caps_malloc(
         imageWidth * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    lineCapacity = lineBuffer == nullptr ? 0 : imageWidth;
+    for (uint8_t *&levels : levelLines) {
+      if (levels != nullptr) heap_caps_free(levels);
+      levels = LAYERED_VIEW ? static_cast<uint8_t *>(heap_caps_malloc(
+                                  imageWidth, MALLOC_CAP_SPIRAM |
+                                                  MALLOC_CAP_8BIT))
+                            : nullptr;
+    }
+    const bool levelsReady =
+        !LAYERED_VIEW || (levelLines[0] != nullptr && levelLines[1] != nullptr);
+    lineCapacity = lineBuffer == nullptr || !levelsReady ? 0 : imageWidth;
   }
-  if (lineBuffer == nullptr) {
+  if (lineBuffer == nullptr || lineCapacity == 0) {
     pngDecoder->close();
     return false;
   }
@@ -1054,6 +1445,17 @@ bool decodeRadar(const uint8_t *pngData, size_t pngSize, float latitude,
     sourceY[y] = cropY1 + static_cast<int64_t>(y) * (cropY2 - cropY1 + 1) /
                               CHMI_RADAR_HEIGHT;
   }
+  for (int x = 0; x < CHMI_RADAR_WIDTH; ++x) {
+    sourceXFixed[x] = cropX1 * 256 - 128 +
+                      static_cast<int32_t>((2LL * x + 1) * (cropX2 - cropX1 + 1) *
+                                           128 / CHMI_RADAR_WIDTH);
+  }
+  for (int y = 0; y < CHMI_RADAR_HEIGHT; ++y) {
+    sourceYFixed[y] = cropY1 * 256 - 128 +
+                      static_cast<int32_t>((2LL * y + 1) * (cropY2 - cropY1 + 1) *
+                                           128 / CHMI_RADAR_HEIGHT);
+  }
+  decodeBufferHoldsLevels = LAYERED_VIEW;
   dataX1 = longitudeToX(LON_DATA_RIGHT);
   dataY0 = latitudeToY(LAT_DATA_TOP);
   memset(target, 0,
@@ -1076,6 +1478,8 @@ bool decodeRadar(const uint8_t *pngData, size_t pngSize, float latitude,
   // přesně celý neprokládaný obraz; částečný nebo neuspořádaný výstup dál
   // odmítáme.
   if (result != PNG_SUCCESS && !completeImage) return false;
+  // Na 7" se mapa kreslí až do obrazu, ostře a přes zvětšené srážky.
+  if (LAYERED_VIEW) return true;
   RadarProjection projection;
   projection.cropX1 = cropX1;
   projection.cropX2 = cropX2;
@@ -1202,11 +1606,18 @@ void applyNightRadarPalette(uint16_t *buffer) {
     buffer[pixel] = nightRadarColor(rgb565ToRgb332(buffer[pixel]));
 }
 
-bool packDecodedFrame(size_t index) {
-  if (!ensurePreparedFrame(index)) return false;
-  uint8_t *target = preparedFrames[index];
+void packDecodeBuffer(uint8_t *target) {
+  if (decodeBufferHoldsLevels) {
+    memcpy(target, decodeBuffer, RADAR_PIXEL_COUNT);
+    return;
+  }
   for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
     target[pixel] = rgb565ToRgb332(decodeBuffer[pixel]);
+}
+
+bool packDecodedFrame(size_t index) {
+  if (!ensurePreparedFrame(index)) return false;
+  packDecodeBuffer(preparedFrames[index]);
   return true;
 }
 
@@ -1217,8 +1628,7 @@ bool packPendingFrame(size_t slot) {
         RADAR_PIXEL_COUNT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (pendingPreparedFrames[slot] == nullptr) return false;
-  for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
-    pendingPreparedFrames[slot][pixel] = rgb565ToRgb332(decodeBuffer[pixel]);
+  packDecodeBuffer(pendingPreparedFrames[slot]);
   return true;
 }
 
@@ -1573,12 +1983,15 @@ bool loadRainViewerAnimation(float latitude, float longitude,
   portEXIT_CRITICAL(&stateMux);
 
   for (size_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+    decodeBufferHoldsLevels = false;
     if (!rainViewerBuildFrame(index.frames[frameIndex], decodeBuffer,
                               revision))
       return giveUp("Snimek RainVieweru se nepodarilo stahnout");
-    drawMapOverlay(decodeBuffer, latitude, longitude, radiusKm, projection,
-                   mapOpacityValue);
-    drawDisplayRing(decodeBuffer);
+    if (!LAYERED_VIEW) {
+      drawMapOverlay(decodeBuffer, latitude, longitude, radiusKm, projection,
+                     mapOpacityValue);
+      drawDisplayRing(decodeBuffer);
+    }
     if (!packDecodedFrame(frameIndex) || !requestMatches(revision))
       return giveUp("Snimek RainVieweru se nepodarilo pripravit");
 
@@ -1795,22 +2208,31 @@ bool showPreparedFrame(size_t index, unsigned long now) {
   const float longitude = centerLongitude;
   const uint16_t radiusKm = centerRadiusKm;
   const bool overlay = lightningOverlayEnabled;
+  const uint8_t mapOpacityValue = mapOpacity;
   portEXIT_CRITICAL(&stateMux);
   if (!valid) return false;
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;
-  uint16_t *target = displayBuffers[targetBuffer];
   const uint8_t *source = preparedFrames[index];
-  for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
-    target[pixel] = nightVisual ? nightRadarColor(source[pixel])
-                                : rgb332ToRgb565(source[pixel]);
-  if (overlay) {
-    // Rozměr kompozice se nastavuje při dekódování; snímek z cache ho zná.
-    if (imageWidth <= 0 || imageHeight <= 0) {
-      imageWidth = RADAR_SOURCE_WIDTH;
-      imageHeight = RADAR_SOURCE_HEIGHT;
+  uint32_t lease = 0;
+  if (LAYERED_VIEW) {
+    if (!composeView(targetBuffer, source, nightVisual, latitude, longitude,
+                     radiusKm, mapOpacityValue, overlay, lease))
+      return false;
+  } else {
+    uint16_t *target = displayBuffers[targetBuffer];
+    for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
+      target[pixel] = nightVisual ? nightRadarColor(source[pixel])
+                                  : rgb332ToRgb565(source[pixel]);
+    if (overlay) {
+      // Rozměr kompozice se nastavuje při dekódování; snímek z cache ho zná.
+      if (imageWidth <= 0 || imageHeight <= 0) {
+        imageWidth = RADAR_SOURCE_WIDTH;
+        imageHeight = RADAR_SOURCE_HEIGHT;
+      }
+      drawLightningOverlay(
+          target, currentProjection(latitude, longitude, radiusKm),
+          nightVisual);
     }
-    drawLightningOverlay(
-        target, currentProjection(latitude, longitude, radiusKm), nightVisual);
   }
   portENTER_CRITICAL(&stateMux);
   if (!active || index >= animationFrameCount || !preparedFrameReady[index] ||
@@ -1819,6 +2241,7 @@ bool showPreparedFrame(size_t index, unsigned long now) {
     return false;
   }
   activeDisplayBuffer = targetBuffer;
+  displayLease = lease;
   displayedFrame = static_cast<int>(index);
   strlcpy(frameTime, preparedFrameTimes[index], sizeof(frameTime));
   ++generation;
@@ -2092,6 +2515,10 @@ void chmiRadarServicePrepareForFirmwareUpdate() {
   pngBuffer = nullptr;
   if (lineBuffer != nullptr) heap_caps_free(lineBuffer);
   lineBuffer = nullptr;
+  for (uint8_t *&levels : levelLines) {
+    if (levels != nullptr) heap_caps_free(levels);
+    levels = nullptr;
+  }
   lineCapacity = 0;
   for (size_t index = 0; index < MAX_ANIMATION_FRAME_COUNT; ++index) {
     if (preparedFrames[index] != nullptr) heap_caps_free(preparedFrames[index]);
@@ -2234,6 +2661,9 @@ void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
     restartAnimationRequested = false;
   }
   portEXIT_CRITICAL(&stateMux);
+  // Sdílené snímky patří obrazovce, která je vidět.
+  if (LAYERED_VIEW && requestedVisible && !wasVisible)
+    sharedFramesClaim(SharedFrameUser::Radar);
   if (requestedEnabled && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
@@ -2280,8 +2710,11 @@ void chmiRadarServiceSetRedNightMode(bool enabled) {
 
 void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot) {
   portENTER_CRITICAL(&stateMux);
-  snapshot.pixels = displayedFrame != -1 ? displayBuffers[activeDisplayBuffer]
-                                          : nullptr;
+  const bool haveDisplay = displayedFrame != -1;
+  const uint8_t displayIndex = activeDisplayBuffer;
+  const uint32_t lease = displayLease;
+  snapshot.pixels = haveDisplay && !LAYERED_VIEW ? displayBuffers[displayIndex]
+                                                 : nullptr;
   snapshot.generation = generation;
   snapshot.completedAnimationCycles = completedAnimationCycles;
   // Podkladová mapa se ukáže dřív, než úloha stahování vůbec rozjede, takže
@@ -2313,6 +2746,11 @@ void chmiRadarServiceSnapshot(ChmiRadarSnapshot &snapshot) {
     snapshot.frameTime[0] = '\0';
   }
   portEXIT_CRITICAL(&stateMux);
+  // Sdílený snímek, který si mezitím vzala jiná obrazovka, ukazuje její obraz.
+  // Radar ho po návratu složí znovu; do té doby obraz nemá.
+  if (LAYERED_VIEW && haveDisplay &&
+      sharedFramesLeaseValid(SharedFrameUser::Radar, lease))
+    snapshot.pixels = sharedFrame(displayIndex);
   // Efektivní poloměr si drží modul RainVieweru; čte se mimo kritickou sekci,
   // protože ho zapisuje jen úloha radaru při přepočtu mřížky.
   snapshot.effectiveRadiusKm = snapshot.rainViewerSource && snapshot.radiusKm > 0

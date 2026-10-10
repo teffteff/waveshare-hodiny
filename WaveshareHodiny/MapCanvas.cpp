@@ -259,19 +259,56 @@ void fillMapTriangle(uint16_t *buffer, int x0, int y0, int x1, int y1, int x2,
   }
 }
 
+namespace {
+// Další znak textu v UTF-8 jako verzálka bez diakritiky: pixelové písmo háčky
+// a čárky nemá, jména měst je ale nesou (7" je píše Barlow celá). Znak mimo
+// češtinu dá nulu - zabere místo, ale nic se nenakreslí.
+char nextFoldedLetter(const char *text, size_t &index) {
+  const uint8_t lead = static_cast<uint8_t>(text[index++]);
+  if (lead < 0x80) return static_cast<char>(toupper(lead));
+  uint32_t letter = 0;
+  if ((lead & 0xE0) == 0xC0 && (text[index] & 0xC0) == 0x80) {
+    letter = ((lead & 0x1F) << 6) | (text[index++] & 0x3F);
+  } else {
+    // Delší sekvence přeskočíme celou.
+    while ((text[index] & 0xC0) == 0x80) ++index;
+    return 0;
+  }
+  switch (letter) {
+    case 0xC1: case 0xE1: return 'A';
+    case 0x10C: case 0x10D: return 'C';
+    case 0x10E: case 0x10F: return 'D';
+    case 0xC9: case 0xE9: case 0x11A: case 0x11B: return 'E';
+    case 0xCD: case 0xED: return 'I';
+    case 0x147: case 0x148: return 'N';
+    case 0xD3: case 0xF3: return 'O';
+    case 0x158: case 0x159: return 'R';
+    case 0x160: case 0x161: return 'S';
+    case 0x164: case 0x165: return 'T';
+    case 0xDA: case 0xFA: case 0x16E: case 0x16F: return 'U';
+    case 0xDD: case 0xFD: return 'Y';
+    case 0x17D: case 0x17E: return 'Z';
+    default: return 0;
+  }
+}
+}  // namespace
+
 void drawMapText(uint16_t *buffer, int x, int y, const char *text,
                  uint16_t color, uint8_t opacity) {
-  for (size_t index = 0; text[index] != '\0'; ++index) {
-    const char character = static_cast<char>(
-        toupper(static_cast<unsigned char>(text[index])));
-    drawGlyph(buffer, x + static_cast<int>(index) * MAP_CANVAS_GLYPH_ADVANCE, y,
-              character, color, opacity);
+  int position = 0;
+  for (size_t index = 0; text[index] != '\0'; ++position) {
+    const char character = nextFoldedLetter(text, index);
+    drawGlyph(buffer, x + position * MAP_CANVAS_GLYPH_ADVANCE, y, character,
+              color, opacity);
   }
 }
 
 int mapTextWidth(const char *text) {
   if (text == nullptr || text[0] == '\0') return 0;
-  return static_cast<int>(strlen(text)) * MAP_CANVAS_GLYPH_ADVANCE - 1;
+  int count = 0;
+  for (size_t index = 0; text[index] != '\0'; ++count)
+    nextFoldedLetter(text, index);
+  return count * MAP_CANVAS_GLYPH_ADVANCE - 1;
 }
 
 bool mapBoxesOverlap(const MapLabelBox &left, const MapLabelBox &right) {

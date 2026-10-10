@@ -9544,7 +9544,7 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
   const bool haveFrame = pixels != nullptr;
   if (haveFrame) {
     lv_canvas_set_buffer(radarCanvas, const_cast<uint16_t *>(pixels),
-                         CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT,
+                         CHMI_RADAR_VIEW_WIDTH, CHMI_RADAR_VIEW_HEIGHT,
                          LV_IMG_CF_TRUE_COLOR);
     lv_obj_clear_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(radarCanvas);

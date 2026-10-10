@@ -2615,6 +2615,16 @@ void handleUsbCommands() {
         config.forecast.enabled = true;
         Serial.println(saveRuntimeConfig(config, true) ? "FORECAST_ON"
                                                        : "FORECAST_ON_FAILED");
+      } else if ((usbCommand == "RADARCHMI" ||
+                  usbCommand == "RADARRAINVIEWER") &&
+                 !screenshotTransferActive) {
+        // Zdroj radaru pro test obou cest kreslení bez webového formuláře.
+        ClockConfig &config = loopConfigSnapshot();
+        config.radarSource = usbCommand == "RADARCHMI"
+                                 ? CLOCK_RADAR_SOURCE_CHMI
+                                 : CLOCK_RADAR_SOURCE_RAINVIEWER;
+        Serial.println(saveRuntimeConfig(config, true) ? "RADAR_SOURCE_SET"
+                                                       : "RADAR_SOURCE_FAILED");
       } else if (usbCommand == "FORECASTFETCH" && !screenshotTransferActive) {
         // Notifikace ve forecastTask nuluje deadline, takže tohle opravdu
         // vynutí stažení i uprostřed nastaveného intervalu.
@@ -4262,8 +4272,10 @@ void setup() {
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
   // Snímky letadel a družic se berou hned, dokud je PSRAM celá: později ji
-  // rozdrobí radar ČHMÚ a dva bloky po 461 kB by se už nemusely najít.
-  if (clockConfigPlanesAvailable(runtimeConfig) ||
+  // rozdrobí radar ČHMÚ a dva bloky po 461 kB by se už nemusely najít. Na 7"
+  // do nich skládá obraz i meteoradar.
+  if ((HODINY_BOARD_LCD7 && clockConfigRadarAvailable(runtimeConfig)) ||
+      clockConfigPlanesAvailable(runtimeConfig) ||
       clockConfigSatellitesAvailable(runtimeConfig) ||
       clockConfigNightSkyAvailable(runtimeConfig) ||
       clockConfigTrafficAvailable(runtimeConfig)) {

@@ -29,7 +29,7 @@ bool sharedFramesReserve() {
     portEXIT_CRITICAL(&framesMux);
     if (have) continue;
     auto *buffer = static_cast<uint16_t *>(heap_caps_calloc(
-        SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT, sizeof(uint16_t),
+        SHARED_FRAME_PIXELS, sizeof(uint16_t),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (buffer == nullptr) return false;
     portENTER_CRITICAL(&framesMux);
