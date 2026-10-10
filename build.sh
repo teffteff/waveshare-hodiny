@@ -14,12 +14,6 @@ case "$BOARD" in
   lcd7) BOARD_SUFFIX="-lcd7"; BOARD_FLAGS=" -DHODINY_BOARD_LCD7=1" ;;
   *) echo "Neznámá deska: $BOARD (lcd21 nebo lcd7)" >&2; exit 1 ;;
 esac
-if [[ "$BOARD" == "lcd7" ]]; then
-  # 7" potřebuje knihovny ESP-IDF s rychlejším přístupem do PSRAM, jinak se
-  # při práci radaru posouvá obraz (viz tools/setup_lcd7_sdk.sh).
-  "$ROOT_DIR/tools/setup_lcd7_sdk.sh" >/dev/null
-  export ARDUINO_DIRECTORIES_DATA="$ROOT_DIR/.arduino/sdk-lcd7"
-fi
 BUILD_PATH="$ROOT_DIR/.arduino/build-waveshare-hodiny-develop$BOARD_SUFFIX"
 OUTPUT_DIR="$ROOT_DIR/build/waveshare-hodiny-develop$BOARD_SUFFIX"
 ARDUINO_CLI_BIN="${ARDUINO_CLI_BIN:-$(command -v arduino-cli || true)}"

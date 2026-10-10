@@ -5882,7 +5882,14 @@ lv_color_t radarDotAccentColor() {
   return radarFullPreparationInProgress ? COLOR_ERROR : COLOR_OUTSIDE;
 }
 
+// Kolik snímků radar ukazuje a který je právě vidět; 7" je kreslí ve
+// sloupci vedle mapy.
+uint8_t radarShownFrameCount = 0;
+uint8_t radarShownFrameNumber = 0;
+
 void updateRadarFrameDots(uint8_t frameCount, uint8_t currentFrameNumber) {
+  radarShownFrameCount = frameCount;
+  radarShownFrameNumber = currentFrameNumber;
   // Jediný snímek není animace, řada teček by o něm nic neřekla.
   const bool visibleRow = frameCount > 1 && currentFrameNumber > 0;
   const uint8_t shown =

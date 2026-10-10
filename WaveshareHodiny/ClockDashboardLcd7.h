@@ -17,7 +17,7 @@
 
 namespace lcd7 {
 
-enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast };
+enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar };
 
 constexpr int SIDE_X = 480;
 constexpr int SIDE_WIDTH = SCREEN_WIDTH - SIDE_X;
@@ -454,6 +454,12 @@ void createDigital(lv_obj_t *screen) {
 
 void showWarningAndRain(lv_obj_t *icon, lv_obj_t *event, lv_obj_t *tail,
                         lv_obj_t *rain, const Palette &p) {
+  // Bez výstrahy ikona chybí a text začíná tam, kde by stála.
+  lv_obj_update_layout(icon);
+  const lv_coord_t textX =
+      lv_obj_get_x(icon) + (warningActive() ? lv_obj_get_width(icon) + 10 : 0);
+  setPosition(event, textX, lv_obj_get_y(event));
+  if (tail != nullptr) setPosition(tail, textX, lv_obj_get_y(tail));
   if (warningActive()) {
     setVisible(icon, true);
     setText(event, radarWarningEvent);
@@ -653,6 +659,7 @@ void syncAnalog(const Palette &p) {
     char text[96];
     snprintf(text, sizeof(text), "%s · %s", radarWarningEvent, radarWarningTail);
     setVisible(v.warningIcon, true);
+    setPosition(v.warningEvent, SIDE_PAD + 24, lv_obj_get_y(v.warningEvent));
     setText(v.warningEvent, text);
     setColor(v.warningIcon, warningColor(p));
     setColor(v.warningEvent, warningColor(p));
@@ -1316,6 +1323,118 @@ void syncForecast(const Palette &p) {
   syncForecastAir(p);
 }
 
+// --- Meteoradar: mapa 480 x 480 vlevo, sloupec vpravo --------------------
+// Mapu kreslí kulatá stránka radaru na jevišti posunutém k levému okraji
+// (jako analogový ciferník). Její popisky nad mapou se schovají a jejich
+// obsah ukáže pravý sloupec.
+
+constexpr int RADAR_FRAME_DOTS = 16;
+
+struct RadarView {
+  lv_obj_t *root;
+  lv_obj_t *time;
+  lv_obj_t *date;
+  lv_obj_t *outside;
+  lv_obj_t *lines[2];
+  lv_obj_t *title;
+  lv_obj_t *range;
+  lv_obj_t *frame;
+  lv_obj_t *frameDots[RADAR_FRAME_DOTS];
+  lv_obj_t *warningIcon;
+  lv_obj_t *warningEvent;
+  lv_obj_t *warningTail;
+  lv_obj_t *rain;
+  StatusIcons status;
+  PageDots dots;
+} radar;
+
+void createRadar(lv_obj_t *screen) {
+  RadarView &v = radar;
+  v.root = panel(screen, SIDE_X, 0, SIDE_WIDTH, SCREEN_HEIGHT);
+  v.time = label(v.root, &lcd7_text28, SIDE_PAD, 14);
+  v.date = label(v.root, &lcd7_text15, SIDE_PAD, 52, SIDE_CONTENT);
+  lv_obj_set_style_text_letter_space(v.date, 2, 0);
+  v.outside = label(v.root, &lcd7_text22, SIDE_PAD, 18);
+  v.lines[0] = line(v.root, SIDE_PAD, 82, SIDE_CONTENT, 1);
+  v.title = label(v.root, &lcd7_text15, SIDE_PAD, 94, SIDE_CONTENT);
+  lv_obj_set_style_text_letter_space(v.title, 2, 0);
+  lv_label_set_text(v.title, "METEORADAR");
+  v.range = label(v.root, &lcd7_text28, SIDE_PAD, 116, SIDE_CONTENT);
+  v.frame = label(v.root, &lcd7_text22, SIDE_PAD, 158, SIDE_CONTENT);
+  lv_label_set_recolor(v.frame, true);
+  for (lv_obj_t *&dot : v.frameDots) {
+    dot = panel(v.root, 0, 196, 10, 10);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+  }
+  v.lines[1] = line(v.root, SIDE_PAD, 226, SIDE_CONTENT, 1);
+  v.warningIcon = label(v.root, &lv_font_montserrat_20, SIDE_PAD, 242);
+  lv_label_set_text(v.warningIcon, LV_SYMBOL_WARNING);
+  v.warningEvent = label(v.root, &lcd7_text22, SIDE_PAD + 30, 238, SIDE_CONTENT - 30);
+  v.warningTail = label(v.root, &lcd7_text15, SIDE_PAD + 30, 268, SIDE_CONTENT - 30);
+  v.rain = label(v.root, &lcd7_text28, SIDE_PAD, 304, SIDE_CONTENT);
+  v.status = makeStatusIcons(v.root);
+  v.dots = makePageDots(v.root);
+}
+
+void syncRadar(const Palette &p) {
+  RadarView &v = radar;
+  setText(v.time, displayedTimeText);
+  setColor(v.time, p.text);
+  setText(v.date, lv_label_get_text(dateLabel));
+  setColor(v.date, p.muted);
+  char number[16];
+  char text[48];
+  formatValue(number, sizeof(number), currentValues.outsideTemperatureC, 1);
+  snprintf(text, sizeof(text), "%s °C", number);
+  setText(v.outside, text);
+  setColor(v.outside, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  setVisible(v.outside, !std::isnan(currentValues.outsideTemperatureC));
+  lv_obj_update_layout(v.outside);
+  setPosition(v.outside, SIDE_WIDTH - SIDE_PAD - lv_obj_get_width(v.outside), 18);
+
+  setColor(v.title, p.muted);
+  const bool haveFrame = !lv_obj_has_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
+  setText(v.range, haveFrame ? lv_label_get_text(radarRangeLabel) : "");
+  setColor(v.range, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  setText(v.frame, haveFrame ? lv_label_get_text(radarTitleLabel)
+                             : lv_label_get_text(radarStatusLabel));
+  setColor(v.frame, p.text);
+
+  // Snímky jako tečky, právě zobrazený větší a zvýrazněný.
+  const uint8_t count = std::min<uint8_t>(radarShownFrameCount, RADAR_FRAME_DOTS);
+  for (uint8_t index = 0; index < RADAR_FRAME_DOTS; ++index) {
+    lv_obj_t *dot = v.frameDots[index];
+    if (count < 2 || index >= count) {
+      setVisible(dot, false);
+      continue;
+    }
+    const bool current = index + 1 == radarShownFrameNumber;
+    const lv_coord_t size = current ? 12 : 8;
+    if (lv_obj_get_width(dot) != size) lv_obj_set_size(dot, size, size);
+    setBackground(dot, current ? (p.night ? COLOR_ERROR : COLOR_AIR) : p.dotOff);
+    setPosition(dot, SIDE_PAD + index * 18 - (size - 8) / 2, 200 - size / 2);
+    setVisible(dot, true);
+  }
+
+  showWarningAndRain(v.warningIcon, v.warningEvent, v.warningTail, v.rain, p);
+  for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
+  showPageDots(v.dots, p, -(SIDE_PAD + 5), SCREEN_HEIGHT - 24);
+  showStatusIcons(v.status, p, SIDE_WIDTH - SIDE_PAD, SCREEN_HEIGHT - 32, true);
+}
+
+// Popisky kulaté stránky radaru, které na 7" nahrazuje pravý sloupec.
+void hideRoundRadarOverlays() {
+  lv_obj_t *objects[] = {radarClockLabel,       radarRainLabel,
+                         radarWarningLabel,     radarTitleLabel,
+                         radarRangeLabel,       radarFrameDotsBacking,
+                         radarRangeDotsBacking, screenDotsBacking};
+  for (lv_obj_t *object : objects) setVisible(object, false);
+  for (lv_obj_t *dot : radarFrameDots) setVisible(dot, false);
+  for (lv_obj_t *dot : radarRangeDots) setVisible(dot, false);
+  for (lv_obj_t *dot : screenDots) setVisible(dot, false);
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -1337,6 +1456,8 @@ HomeMode desiredMode() {
   if (settingsVisible || firmwareUpdateActive) return HomeMode::None;
   if (activeScreen == DASHBOARD_SCREEN_FORECAST && forecastPage != nullptr)
     return HomeMode::Forecast;
+  if (activeScreen == DASHBOARD_SCREEN_RADAR && radarPage != nullptr)
+    return HomeMode::Radar;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
@@ -1351,7 +1472,9 @@ void create() {
   createAnalog(screen);
   createValues(screen);
   createForecast(screen);
-  for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root})
+  createRadar(screen);
+  for (lv_obj_t *root :
+       {digital.root, analog.root, values.root, forecast.root, radar.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -1365,8 +1488,10 @@ void applyMode(HomeMode mode) {
   setVisible(values.root, mode == HomeMode::Values);
   setVisible(forecast.root, mode == HomeMode::Forecast);
   if (mode == HomeMode::Forecast) forecast.signature = 0;
-  setVisible(stage, mode == HomeMode::None || mode == HomeMode::Analog);
-  setPosition(stage, mode == HomeMode::Analog ? 0 : STAGE_X, STAGE_Y);
+  setVisible(radar.root, mode == HomeMode::Radar);
+  const bool stageLeft = mode == HomeMode::Analog || mode == HomeMode::Radar;
+  setVisible(stage, mode == HomeMode::None || stageLeft);
+  setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
   shownMode = mode;
 }
 
@@ -1382,6 +1507,7 @@ void sync(bool force) {
   // Kulatý kód při každé změně hodnot odkrývá své popisky v ciferníku; skrýt
   // je musí ještě před vykreslením, ne až s další synchronizací.
   if (mode == HomeMode::Analog) hideRoundDialContent();
+  if (mode == HomeMode::Radar) hideRoundRadarOverlays();
   const uint32_t now = millis();
   if (!force && now - lastSyncAt < SYNC_INTERVAL_MS) return;
   lastSyncAt = now;
@@ -1391,6 +1517,7 @@ void sync(bool force) {
     case HomeMode::Analog: syncAnalog(p); break;
     case HomeMode::Values: syncValues(p); break;
     case HomeMode::Forecast: syncForecast(p); break;
+    case HomeMode::Radar: syncRadar(p); break;
     case HomeMode::None: break;
   }
 }

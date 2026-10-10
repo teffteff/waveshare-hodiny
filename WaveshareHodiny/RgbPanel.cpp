@@ -49,6 +49,14 @@ volatile uint32_t isrPhaseBaselineUs = PHASE_INVALID;
 volatile uint32_t isrFrameUs = 0;
 volatile uint32_t isrToleranceUs = 0;
 volatile uint32_t phaseGlitchCount = 0;
+// Oprava přímo v přerušení: dva snímky po sobě mimo fázi znamenají trvalý
+// posun a panel se restartuje s příštím VSYNC. Obraz je tak posunutý dva až
+// tři snímky místo desítek, než by posun našla hlavní smyčka.
+constexpr uint8_t ISR_STRIKES_TO_RESTART = 2;
+constexpr uint8_t ISR_RESTART_SETTLE_FRAMES = 3;
+volatile uint8_t isrStrikes = 0;
+volatile uint8_t isrSettleFrames = 0;
+volatile uint32_t isrRepairCount = 0;
 
 uint32_t lineDurationUs() {
   return (panelTimings.h_res + panelTimings.hsync_pulse_width +
@@ -101,12 +109,26 @@ bool IRAM_ATTR onBounceFrameFinished(
   phaseSamples[phaseSampleCount % PHASE_WINDOW] = phase;
   ++phaseSampleCount;
   const uint32_t baseline = isrPhaseBaselineUs;
-  if (phase != PHASE_INVALID && baseline != PHASE_INVALID && isrFrameUs != 0 &&
-      static_cast<uint32_t>(abs(phaseDrift(phase, baseline, isrFrameUs))) >
-          isrToleranceUs) {
+  bool restart = false;
+  if (isrSettleFrames > 0) {
+    --isrSettleFrames;
+  } else if (phase != PHASE_INVALID && baseline != PHASE_INVALID &&
+             isrFrameUs != 0 &&
+             static_cast<uint32_t>(abs(phaseDrift(phase, baseline, isrFrameUs))) >
+                 isrToleranceUs) {
     ++phaseGlitchCount;
+    if (++isrStrikes >= ISR_STRIKES_TO_RESTART) {
+      isrStrikes = 0;
+      isrSettleFrames = ISR_RESTART_SETTLE_FRAMES;
+      ++isrRepairCount;
+      restart = true;
+    }
+  } else {
+    isrStrikes = 0;
   }
   portEXIT_CRITICAL_ISR(&frameFinishedMux);
+  // Restart jen nastaví příznak; driver ho provede na konci snímku (VSYNC).
+  if (restart) esp_lcd_rgb_panel_restart(panel_handle);
   if (frameFinishedSemaphore != nullptr) {
     xSemaphoreGiveFromISR(frameFinishedSemaphore, &highPriorityTaskWoken);
   }
@@ -197,7 +219,7 @@ bool LCD_MaintainSync() {
   return true;
 }
 
-uint32_t LCD_SyncRepairCount() { return syncRepairCount; }
+uint32_t LCD_SyncRepairCount() { return syncRepairCount + isrRepairCount; }
 
 uint32_t LCD_PhaseGlitchCount() { return phaseGlitchCount; }
 

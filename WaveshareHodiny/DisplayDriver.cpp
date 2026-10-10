@@ -241,7 +241,7 @@ void displayDriverInit() {
 
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(
       panel_handle, 2, &frameBuffer1, &frameBuffer2));
-#if !FIRMWARE_RELEASE
+#if !FIRMWARE_RELEASE && !HODINY_BOARD_LCD7
   screenshotBuffer = static_cast<uint8_t *>(heap_caps_malloc(
       FRAMEBUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #endif
@@ -276,6 +276,11 @@ void displayDriverInit() {
 }
 
 void displayDriverLoop() {
+#if HODINY_BOARD_LCD7
+  // Screenshot se posílá přímo ze zobrazeného framebufferu (viz
+  // displayDriverBeginFramebufferCapture); kreslit do něj se nesmí.
+  if (screenshotBuffer != nullptr) return;
+#endif
   lv_timer_handler();
   if (partialRefreshEnableRequested) {
     partialRefreshEnableRequested = false;
@@ -369,16 +374,20 @@ bool displayDriverTakeShortTap(int16_t &x, int16_t &y) {
 }
 
 bool displayDriverBeginFramebufferCapture(Print &output) {
-  if (drawBuffer.buf1 == nullptr || drawBuffer.buf2 == nullptr ||
-      screenshotBuffer == nullptr) {
-    return false;
-  }
+  if (drawBuffer.buf1 == nullptr || drawBuffer.buf2 == nullptr) return false;
 
   // LVGL kreslí do buf_act; druhý plný framebuffer je právě zobrazený panelem.
   const void *displayedBuffer = drawBuffer.buf_act == drawBuffer.buf1
                                     ? drawBuffer.buf2
                                     : drawBuffer.buf1;
+#if HODINY_BOARD_LCD7
+  // Kopie 800 x 480 by trvale vzala 768 kB PSRAM, které chybí radaru. Posílá
+  // se přímo zobrazený framebuffer a LVGL po dobu přenosu nekreslí.
+  screenshotBuffer = static_cast<uint8_t *>(const_cast<void *>(displayedBuffer));
+#else
+  if (screenshotBuffer == nullptr) return false;
   memcpy(screenshotBuffer, displayedBuffer, FRAMEBUFFER_BYTES);
+#endif
   screenshotOffset = 0;
 
   output.printf("WSFB1 %d %d RGB565LE %u\r\n", SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -399,5 +408,9 @@ bool displayDriverStreamFramebufferChunk(Print &output) {
   // stejného bloku odešleme v některém z dalších průchodů hlavní smyčkou.
   screenshotOffset +=
       output.write(screenshotBuffer + screenshotOffset, count);
-  return screenshotOffset >= FRAMEBUFFER_BYTES;
+  const bool done = screenshotOffset >= FRAMEBUFFER_BYTES;
+#if HODINY_BOARD_LCD7
+  if (done) screenshotBuffer = nullptr;
+#endif
+  return done;
 }
