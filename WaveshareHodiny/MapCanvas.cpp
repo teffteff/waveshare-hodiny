@@ -7,9 +7,12 @@
 
 namespace {
 
+thread_local int canvasWidth = MAP_CANVAS_WIDTH;
+thread_local int canvasHeight = MAP_CANVAS_HEIGHT;
+
 uint8_t lineOutCode(int x, int y) {
-  return (x < 0 ? 1 : 0) | (x >= MAP_CANVAS_WIDTH ? 2 : 0) |
-         (y < 0 ? 4 : 0) | (y >= MAP_CANVAS_HEIGHT ? 8 : 0);
+  return (x < 0 ? 1 : 0) | (x >= canvasWidth ? 2 : 0) |
+         (y < 0 ? 4 : 0) | (y >= canvasHeight ? 8 : 0);
 }
 
 // Písmo 5x7, sloupec po sloupci, bit 0 je horní řádek. Číslice a interpunkce
@@ -106,8 +109,8 @@ uint16_t blendRgb565(uint16_t background, uint16_t foreground,
 
 void setMapPixel(uint16_t *buffer, int x, int y, uint16_t color,
                  uint8_t opacity) {
-  if (x >= 0 && x < MAP_CANVAS_WIDTH && y >= 0 && y < MAP_CANVAS_HEIGHT) {
-    uint16_t &pixel = buffer[y * MAP_CANVAS_WIDTH + x];
+  if (x >= 0 && x < canvasWidth && y >= 0 && y < canvasHeight) {
+    uint16_t &pixel = buffer[y * canvasWidth + x];
     pixel = blendRgb565(pixel, color, opacity);
   }
 }
@@ -122,13 +125,13 @@ void drawMapLine(uint16_t *buffer, int x0, int y0, int x1, int y1,
     int x = 0;
     int y = 0;
     if (code & 8) {
-      y = MAP_CANVAS_HEIGHT - 1;
+      y = canvasHeight - 1;
       x = x0 + static_cast<int64_t>(x1 - x0) * (y - y0) / (y1 - y0);
     } else if (code & 4) {
       y = 0;
       x = x0 + static_cast<int64_t>(x1 - x0) * (y - y0) / (y1 - y0);
     } else if (code & 2) {
-      x = MAP_CANVAS_WIDTH - 1;
+      x = canvasWidth - 1;
       y = y0 + static_cast<int64_t>(y1 - y0) * (x - x0) / (x1 - x0);
     } else {
       x = 0;
@@ -299,8 +302,8 @@ bool mapPlaceIconLabel(MapLabelPlacer &placer, int x, int y, int textWidth,
   };
   for (const MapLabelBox &candidate : candidates) {
     if (candidate.x < 0 || candidate.y < 0 ||
-        candidate.x + candidate.width > MAP_CANVAS_WIDTH ||
-        candidate.y + candidate.height > MAP_CANVAS_HEIGHT)
+        candidate.x + candidate.width > canvasWidth ||
+        candidate.y + candidate.height > canvasHeight)
       continue;
     if (placer.claim(candidate)) {
       box = candidate;
@@ -308,4 +311,18 @@ bool mapPlaceIconLabel(MapLabelPlacer &placer, int x, int y, int textWidth,
     }
   }
   return false;
+}
+
+int mapCanvasWidth() { return canvasWidth; }
+int mapCanvasHeight() { return canvasHeight; }
+
+MapCanvasSize::MapCanvasSize(int width, int height)
+    : previousWidth(canvasWidth), previousHeight(canvasHeight) {
+  canvasWidth = width;
+  canvasHeight = height;
+}
+
+MapCanvasSize::~MapCanvasSize() {
+  canvasWidth = previousWidth;
+  canvasHeight = previousHeight;
 }

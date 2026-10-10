@@ -2561,6 +2561,11 @@ void handleUsbCommands() {
         clockDashboardLcd7HistoryDemo();
         Serial.println("HISTORY_DEMO");
 #endif
+      } else if ((usbCommand == "RADARRANGE+" || usbCommand == "RADARRANGE-") &&
+                 !screenshotTransferActive) {
+        // Změna rozsahu jako tažením po radaru, pro měření posunu obrazu.
+        handleRadarRangeChange(usbCommand.endsWith("+") ? 1 : -1);
+        Serial.println("RADAR_RANGE");
       } else if (usbCommand == "LCDSYNC") {
         Serial.printf("LCD_SYNC_REPAIRS=%" PRIu32 " GLITCHES=%" PRIu32 "\n",
                       LCD_SyncRepairCount(), LCD_PhaseGlitchCount());

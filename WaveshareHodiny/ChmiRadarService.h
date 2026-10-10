@@ -2,7 +2,11 @@
 
 #include <Arduino.h>
 
-constexpr uint16_t CHMI_RADAR_WIDTH = 480;
+#include "Board.h"
+
+// Kulatý 2,1" kreslí radar do čtverce 480 x 480 s kruhovým výřezem. Na 7"
+// je mapa obdélník 640 x 480 vlevo od úzkého sloupce, bez kruhu.
+constexpr uint16_t CHMI_RADAR_WIDTH = HODINY_BOARD_LCD7 ? 640 : 480;
 constexpr uint16_t CHMI_RADAR_HEIGHT = 480;
 
 struct ChmiRadarSnapshot {

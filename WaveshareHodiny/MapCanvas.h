@@ -8,9 +8,27 @@
 // obdélník a drobné písmo. Dřív je měl každý svoje, takže se stejná Bresenhamova
 // úsečka a stejná tabulka glyfů překládaly dvakrát.
 //
-// Rozměr je pevný: obě obrazovky kreslí přes celý kruhový displej.
+// Výchozí rozměr: obě obrazovky kreslí přes celý kruhový displej.
 constexpr int MAP_CANVAS_WIDTH = 480;
 constexpr int MAP_CANVAS_HEIGHT = 480;
+
+// Rozměr rámce, do kterého se právě kreslí. Platí pro úlohu FreeRTOS, která
+// ho nastavila, takže radar 7" (640 x 480) nekoliduje s radarem letadel nebo
+// dopravou ve vlastních úlohách (480 x 480).
+int mapCanvasWidth();
+int mapCanvasHeight();
+
+class MapCanvasSize {
+ public:
+  MapCanvasSize(int width, int height);
+  ~MapCanvasSize();
+  MapCanvasSize(const MapCanvasSize &) = delete;
+  MapCanvasSize &operator=(const MapCanvasSize &) = delete;
+
+ private:
+  int previousWidth;
+  int previousHeight;
+};
 
 // Šířka jednoho znaku i s mezerou. Písmo je 5 px široké, mezera je šestý.
 constexpr int MAP_CANVAS_GLYPH_ADVANCE = 6;

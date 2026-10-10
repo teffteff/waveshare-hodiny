@@ -26,6 +26,7 @@
 #include "WeatherForecastChart.h"
 #include "WeatherForecastLayout.h"
 #include "Board.h"
+#include "ChmiRadarService.h"
 #include "DisplayDriver.h"
 #include "FirmwareUpdateService.h"
 
@@ -36,6 +37,7 @@ namespace lcd7 {
 void create();
 void sync(bool force);
 void fillHistoryDemo();
+void radarFrameChanged(const uint16_t *pixels);
 }  // namespace lcd7
 #endif
 
@@ -9541,11 +9543,15 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
   radarFullPreparationInProgress = fullPreparationInProgress;
   const bool haveFrame = pixels != nullptr;
   if (haveFrame) {
-    lv_canvas_set_buffer(radarCanvas, const_cast<uint16_t *>(pixels), 480, 480,
+    lv_canvas_set_buffer(radarCanvas, const_cast<uint16_t *>(pixels),
+                         CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT,
                          LV_IMG_CF_TRUE_COLOR);
     lv_obj_clear_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(radarCanvas);
   }
+#if HODINY_BOARD_LCD7
+  lcd7::radarFrameChanged(pixels);
+#endif
   updateRadarFrameDots(haveFrame ? animationFrameCount : 0, currentFrameNumber);
   updateRadarRangeDots(radiusKm);
   updateOverlayStatusLabels();

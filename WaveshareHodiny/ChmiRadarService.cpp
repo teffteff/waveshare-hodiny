@@ -38,6 +38,16 @@ static_assert(RAIN_VIEWER_MAX_FRAMES <= MAX_ANIMATION_FRAME_COUNT,
 constexpr size_t MAX_PENDING_REFRESH_FRAMES = 4;
 constexpr size_t DISPLAY_BUFFER_COUNT = 2;
 constexpr size_t RADAR_PIXEL_COUNT = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
+
+// Leží bod (od středu obrázku) na displeji? Na kulatém uvnitř kruhu o
+// poloměru radius, na obdélníkovém 7" uvnitř obdélníku se stejným okrajem,
+// jaký kruh nechává u kraje čtverce 480 x 480.
+inline bool radarInsideView(int dx, int dy, int radius) {
+  if (SCREEN_ROUND) return dx * dx + dy * dy <= radius * radius;
+  const int margin = CHMI_RADAR_HEIGHT / 2 - radius;
+  return abs(dx) <= CHMI_RADAR_WIDTH / 2 - margin &&
+         abs(dy) <= CHMI_RADAR_HEIGHT / 2 - margin;
+}
 constexpr unsigned long REFRESH_INTERVAL_MS = 300000;
 constexpr unsigned long RETRY_INTERVAL_MS = 60000;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
@@ -459,7 +469,7 @@ void drawDecodedLine(PNGDRAW *draw) {
     const long dy = targetY - CHMI_RADAR_HEIGHT / 2;
     for (int targetX = 0; targetX < CHMI_RADAR_WIDTH; ++targetX) {
       const long dx = targetX - CHMI_RADAR_WIDTH / 2;
-      if (dx * dx + dy * dy > 238L * 238L) continue;
+      if (!radarInsideView(dx, dy, 238)) continue;
       const int source = sourceX[targetX];
       if (source >= 0 && source < imageWidth && source <= dataX1 &&
           draw->y >= dataY0) {
@@ -553,12 +563,14 @@ bool drawMapCity(uint16_t *buffer, const RadarProjection &projection,
   projectRadarPoint(projection, latitude, longitude, x, y);
   const int deltaX = x - CHMI_RADAR_WIDTH / 2;
   const int deltaY = y - CHMI_RADAR_HEIGHT / 2;
-  if (deltaX * deltaX + deltaY * deltaY > 225 * 225) return false;
+  if (!radarInsideView(deltaX, deltaY, 225)) return false;
 
   const int textWidth = strlen(label) * 6 - 1;
   MapLabelBox box = {x + 6, y - 5, textWidth + 4, 11};
   if (box.x + box.width >= CHMI_RADAR_WIDTH) box.x = x - 6 - box.width;
-  if (box.x < 0 || box.y < 54 || box.y + box.height >= CHMI_RADAR_HEIGHT)
+  // Na kulatém nahoře leží řádek s časem; na 7" je čas ve sloupci vedle.
+  const int topLimit = SCREEN_ROUND ? 54 : 4;
+  if (box.x < 0 || box.y < topLimit || box.y + box.height >= CHMI_RADAR_HEIGHT)
     return false;
   if (!placer.claim(box)) return false;
 
@@ -719,6 +731,7 @@ void drawEuropeMapLayer(uint16_t *buffer, const RadarProjection &projection,
 void drawMapOverlay(uint16_t *buffer, float markerLatitude,
                     float markerLongitude, uint16_t radiusKm,
                     const RadarProjection &projection, uint8_t opacity) {
+  const MapCanvasSize canvasSize(CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT);
   if (opacity == 0) return;
   constexpr uint16_t borderColor = 0xbdf7;
   constexpr uint16_t cityColor = 0x07ff;
@@ -751,7 +764,7 @@ void drawMapOverlay(uint16_t *buffer, float markerLatitude,
   constexpr uint16_t white = 0xffff;
   const int markerDeltaX = markerX - CHMI_RADAR_WIDTH / 2;
   const int markerDeltaY = markerY - CHMI_RADAR_HEIGHT / 2;
-  if (markerDeltaX * markerDeltaX + markerDeltaY * markerDeltaY < 225 * 225) {
+  if (radarInsideView(markerDeltaX, markerDeltaY, 225)) {
     for (int offset = -9; offset <= 9; ++offset) {
       setMapPixel(buffer, markerX + offset, markerY, white, opacity);
       setMapPixel(buffer, markerX, markerY + offset, white, opacity);
@@ -762,6 +775,8 @@ void drawMapOverlay(uint16_t *buffer, float markerLatitude,
 }
 
 void drawDisplayRing(uint16_t *buffer) {
+  // Obdélníkový 7" žádný kruh nemá.
+  if (!SCREEN_ROUND) return;
   const int centerX = CHMI_RADAR_WIDTH / 2;
   const int centerY = CHMI_RADAR_HEIGHT / 2;
   constexpr uint16_t gray = 0x4208;
@@ -822,7 +837,7 @@ bool projectStroke(const RadarProjection &projection, float latitude,
   }
   const int dx = x - CHMI_RADAR_WIDTH / 2;
   const int dy = y - CHMI_RADAR_HEIGHT / 2;
-  return dx * dx + dy * dy <= DISPLAY_RADIUS_PX * DISPLAY_RADIUS_PX;
+  return radarInsideView(dx, dy, DISPLAY_RADIUS_PX);
 }
 
 void drawStroke(uint16_t *buffer, int x, int y, uint32_t ageSeconds,
@@ -860,6 +875,7 @@ void drawStroke(uint16_t *buffer, int x, int y, uint32_t ageSeconds,
 // ořezávají pár pixelů před ním, aby přes něj nepřečuhovaly.
 void drawLightningOverlay(uint16_t *buffer, const RadarProjection &projection,
                           bool nightVisual) {
+  const MapCanvasSize canvasSize(CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT);
   portENTER_CRITICAL(&stateMux);
   const bool enabled = lightningOverlayEnabled;
   const float alarmLatitude = lightningAlarmLatitude;
@@ -933,9 +949,11 @@ void radarProjectionBounds(float latitude, float longitude, uint16_t radiusKm,
     longitude = WHOLE_COUNTRY_LONGITUDE;
   }
   const float latitudeSpan = projectionRadiusKm / 111.32f;
+  // Obrázek může být širší než vysoký (7"); pixely zůstanou čtvercové.
   const float longitudeSpan =
       projectionRadiusKm /
-      (111.32f * cosf(latitude * 0.017453292519943295f));
+      (111.32f * cosf(latitude * 0.017453292519943295f)) *
+      CHMI_RADAR_WIDTH / CHMI_RADAR_HEIGHT;
   cropX1 = longitudeToX(longitude - longitudeSpan);
   cropX2 = longitudeToX(longitude + longitudeSpan);
   cropY1 = latitudeToY(latitude + latitudeSpan);
