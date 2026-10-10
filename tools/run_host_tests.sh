@@ -57,6 +57,7 @@ else
 fi
 run_test rss_parser "$FIRMWARE_DIR/RssParser.cpp" || failures=$((failures + 1))
 run_test clock_namedays "$FIRMWARE_DIR/ClockNamedays.cpp" || failures=$((failures + 1))
+run_test psram_grow_buffer "$FIRMWARE_DIR/PsramGrowBuffer.cpp" || failures=$((failures + 1))
 run_test http_body_reader "$FIRMWARE_DIR/HttpBodyReader.cpp" || failures=$((failures + 1))
 run_test rain_viewer_index "$FIRMWARE_DIR/RainViewerIndex.cpp" || failures=$((failures + 1))
 run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))

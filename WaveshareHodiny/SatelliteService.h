@@ -147,6 +147,9 @@ struct SatelliteProbeResult {
   SatelliteProbeEntry entries[SATELLITE_PROBE_ENTRIES];
 };
 
+// Seznamy družic a buffer odpovědi hned při startu, dokud PSRAM ještě
+// nerozdrobil radar ČHMÚ. Volá se před satelliteServiceBegin.
+void satelliteServiceReserveStorage();
 void satelliteServiceBegin();
 void satelliteServicePrepareForFirmwareUpdate();
 
