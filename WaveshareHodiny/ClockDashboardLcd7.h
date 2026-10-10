@@ -20,7 +20,7 @@ namespace lcd7 {
 bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
-                               Agenda, Rss, School };
+                               Agenda, Rss, School, Planes };
 HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
@@ -46,6 +46,8 @@ const lv_color_t DOT_OFF = LV_COLOR_MAKE(74, 74, 74);
 const lv_color_t NIGHT_MUTED = LV_COLOR_MAKE(150, 38, 34);
 const lv_color_t NIGHT_LINE = LV_COLOR_MAKE(58, 12, 10);
 const lv_color_t NIGHT_DOT_OFF = LV_COLOR_MAKE(70, 14, 12);
+// Aktuální krok dosahu letadel, žlutá jako tečka dosahu na kulatém.
+const lv_color_t COLOR_HIGH_DOT = LV_COLOR_MAKE(255, 255, 0);
 
 struct Palette {
   bool night;
@@ -2423,6 +2425,229 @@ void syncSchool(const Palette &p) {
   syncSchoolSide(p, feed, minute);
 }
 
+// --- Radar letadel ----------------------------------------------------------
+// Mapa 640 x 480 kreslí služba radaru letadel (obdélník místo kruhu, stupnice
+// výšek vlevo dole). Sloupec vpravo nese to, co kulatý píše přes mapu: čas,
+// dosah s tečkami kroků, počet letadel nebo nouzi a detail vybraného letadla.
+// Detail bere z popisků kulatého panelu, který se na 7" sám nikdy neukáže.
+
+constexpr int PLANES_COLUMN_X = PLANE_RADAR_WIDTH;
+constexpr int PLANES_COLUMN_W = SCREEN_WIDTH - PLANES_COLUMN_X;
+constexpr int PLANES_PAD = 14;
+constexpr int PLANES_CONTENT = PLANES_COLUMN_W - 2 * PLANES_PAD;
+constexpr int PLANES_DETAIL_Y = 222;
+constexpr int PLANES_DETAIL_LINES = PLANES_DETAIL_ROW_COUNT + 4;
+
+struct PlanesView {
+  lv_obj_t *root;
+  lv_obj_t *canvas;
+  lv_obj_t *column;
+  lv_obj_t *time;
+  lv_obj_t *date;
+  lv_obj_t *outside;
+  lv_obj_t *lines[2];
+  lv_obj_t *range;
+  lv_obj_t *rangeDots[CLOCK_PLANE_RANGE_COUNT];
+  lv_obj_t *status;
+  lv_obj_t *title;
+  lv_obj_t *detail[PLANES_DETAIL_LINES];
+  lv_obj_t *values[PLANES_DETAIL_LINES];
+  lv_obj_t *hint;
+  StatusIcons icons;
+  PageDots dots;
+  const uint16_t *pixels;
+} planes;
+
+void createPlanes(lv_obj_t *screen) {
+  PlanesView &v = planes;
+  v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.canvas = lv_canvas_create(v.root);
+  lv_obj_set_pos(v.canvas, 0, 0);
+  lv_obj_add_flag(v.canvas, LV_OBJ_FLAG_HIDDEN);
+  v.column = panel(v.root, PLANES_COLUMN_X, 0, PLANES_COLUMN_W, SCREEN_HEIGHT);
+  lv_obj_t *c = v.column;
+  v.time = label(c, &lcd7_text28, PLANES_PAD, 10);
+  v.date = label(c, &lcd7_text15, PLANES_PAD, 48, PLANES_CONTENT);
+  v.outside = label(c, &lcd7_text22, PLANES_PAD, 70);
+  v.lines[0] = line(c, PLANES_PAD, 106, PLANES_CONTENT, 1);
+  v.range = label(c, &lcd7_text28, PLANES_PAD, 116, PLANES_CONTENT);
+  for (lv_obj_t *&dot : v.rangeDots) {
+    dot = panel(c, 0, 0, 8, 8);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+  }
+  v.status = label(c, &lcd7_text18, PLANES_PAD, 176, PLANES_CONTENT);
+  lv_label_set_recolor(v.status, true);
+  lv_label_set_long_mode(v.status, LV_LABEL_LONG_WRAP);
+  v.lines[1] = line(c, PLANES_PAD, PLANES_DETAIL_Y - 10, PLANES_CONTENT, 1);
+  v.title = label(c, &lcd7_text22, PLANES_PAD, PLANES_DETAIL_Y, PLANES_CONTENT);
+  for (size_t index = 0; index < PLANES_DETAIL_LINES; ++index) {
+    v.detail[index] = label(c, &lcd7_text15, PLANES_PAD, 0, PLANES_CONTENT);
+    v.values[index] = label(c, &lcd7_text15, PLANES_PAD, 0, PLANES_CONTENT);
+  }
+  v.hint = label(c, &lcd7_text15, PLANES_PAD, PLANES_DETAIL_Y, PLANES_CONTENT);
+  lv_label_set_long_mode(v.hint, LV_LABEL_LONG_WRAP);
+  v.icons = makeStatusIcons(c);
+  v.dots = makePageDots(c);
+}
+
+void planesFrameChanged(const uint16_t *pixels) {
+  if (!created) return;
+  PlanesView &v = planes;
+  if (pixels != nullptr && pixels != v.pixels) {
+    lv_canvas_set_buffer(v.canvas, const_cast<uint16_t *>(pixels), PLANE_RADAR_WIDTH,
+                         PLANE_RADAR_HEIGHT, LV_IMG_CF_TRUE_COLOR);
+    v.pixels = pixels;
+  }
+  setVisible(v.canvas, pixels != nullptr);
+  if (pixels != nullptr && !lv_obj_has_flag(v.root, LV_OBJ_FLAG_HIDDEN))
+    lv_obj_invalidate(v.canvas);
+}
+
+// Řádek s počtem letadel, hláškou nebo nouzí; barvy podle palety.
+void composePlanesStatus(const Palette &p, char *text, size_t capacity) {
+  const bool english = englishLanguage();
+  char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+  if (planesLcd7.emergency[0] != '\0') {
+    agendaBuildColorTag(tag, COLOR_ERROR);
+    snprintf(text, capacity, "%s%s  %s#", tag, planesLcd7.emergency,
+             planesEmergencyText(planesLcd7.emergency));
+  } else if (planesLcd7.message[0] != '\0') {
+    agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_ROOM);
+    snprintf(text, capacity, "%s%s#", tag, planesLcd7.message);
+  } else if (!planesLcd7.havePixels || !planesLcd7.haveAircraftData) {
+    agendaBuildColorTag(tag, p.muted);
+    snprintf(text, capacity, "%s%s#", tag,
+             planesLcd7.loading ? (english ? "Loading aircraft..." : "Načítám letadla...")
+                                : (english ? "Waiting for data" : "Čekám na data"));
+  } else {
+    agendaBuildColorTag(tag, p.night ? COLOR_ERROR
+                                     : (planesLcd7.watchedVisible ? COLOR_AIR : COLOR_TEXT));
+    snprintf(text, capacity, "%s%s: %u%s#", tag, english ? "AIRCRAFT" : "LETADLA",
+             static_cast<unsigned>(planesLcd7.shownCount),
+             planesLcd7.watchedVisible ? " *" : "");
+  }
+}
+
+void syncPlanes(const Palette &p) {
+  PlanesView &v = planes;
+  setText(v.time, displayedTimeText);
+  setColor(v.time, p.text);
+  setText(v.date, lv_label_get_text(dateLabel));
+  setColor(v.date, p.muted);
+  char text[96];
+  char number[16];
+  formatValue(number, sizeof(number), currentValues.outsideTemperatureC, 1);
+  snprintf(text, sizeof(text), "%s °C", number);
+  setText(v.outside, text);
+  setColor(v.outside, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  setVisible(v.outside, !std::isnan(currentValues.outsideTemperatureC));
+
+  const uint16_t rangeKm = planesLcd7.rangeKm;
+  if (rangeKm > 0)
+    snprintf(text, sizeof(text), "%u km", static_cast<unsigned>(rangeKm));
+  else
+    text[0] = '\0';
+  setText(v.range, text);
+  setColor(v.range, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  // Tečky kroků dosahu, aktuální větší; tažením se mění o krok.
+  for (uint8_t index = 0; index < CLOCK_PLANE_RANGE_COUNT; ++index) {
+    lv_obj_t *dot = v.rangeDots[index];
+    const bool current = CLOCK_PLANE_RANGES_KM[index] == rangeKm;
+    const lv_coord_t size = current ? 11 : 7;
+    if (lv_obj_get_width(dot) != size) lv_obj_set_size(dot, size, size);
+    setBackground(dot, current ? (p.night ? COLOR_ERROR : COLOR_HIGH_DOT) : p.dotOff);
+    setPosition(dot, PLANES_PAD + 4 + index * 20 - size / 2, 160 - size / 2);
+    setVisible(dot, rangeKm > 0);
+  }
+  composePlanesStatus(p, text, sizeof(text));
+  setText(v.status, text);
+
+  // Detail vybraného letadla, nebo nápověda.
+  const bool open = planesDetailPanel != nullptr &&
+                    !lv_obj_has_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  setVisible(v.title, open);
+  setVisible(v.hint, !open && planesLcd7.haveAircraftData);
+  setText(v.hint, englishLanguage() ? "Tap a plane for details"
+                                    : "Klepnutím na letadlo zobrazíš detail");
+  setColor(v.hint, p.muted);
+  lv_obj_t *sources[PLANES_DETAIL_LINES] = {};
+  if (open) {
+    setText(v.title, lv_label_get_text(planesDetailTitle));
+    setColor(v.title, p.night ? COLOR_ERROR : COLOR_ROOM);
+    size_t count = 0;
+    for (lv_obj_t *row : planesDetailRows) sources[count++] = row;
+    sources[count++] = planesDetailRegistration;
+    sources[count++] = planesDetailRouteFrom;
+    sources[count++] = planesDetailRouteTo;
+    if (!lv_obj_has_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN))
+      sources[count++] = planesDetailSignalLost;
+  }
+  // Řádky kulatého jsou "VÝŠKA: 4663 m"; tady jméno tlumeně vlevo a hodnota
+  // vpravo, a když se vedle nevejde, na vlastním řádku pod jménem.
+  lv_coord_t y = PLANES_DETAIL_Y + 32;
+  const lv_coord_t step = lv_font_get_line_height(&lcd7_text15) + 3;
+  for (size_t index = 0; index < PLANES_DETAIL_LINES; ++index) {
+    lv_obj_t *row = v.detail[index];
+    lv_obj_t *value = v.values[index];
+    const char *source = sources[index] != nullptr ? lv_label_get_text(sources[index]) : "";
+    // Kulatý píše nouzi do řádku s recolor značkou; tady stačí text.
+    if (source[0] == '#') {
+      const char *space = strchr(source, ' ');
+      source = space != nullptr ? space + 1 : source;
+    }
+    const bool shown = open && y + step <= SCREEN_HEIGHT - 66 && source[0] != '\0';
+    setVisible(row, shown);
+    if (!shown) {
+      setVisible(value, false);
+      continue;
+    }
+    char line[64];
+    strlcpy(line, source, sizeof(line));
+    size_t length = strlen(line);
+    if (length > 0 && line[length - 1] == '#') line[--length] = '\0';
+    const lv_color_t main = p.night ? COLOR_ERROR : COLOR_TEXT;
+    char *colon = strstr(line, ": ");
+    if (colon == nullptr) {
+      setVisible(value, false);
+      setText(row, line);
+      setColor(row, p.night ? COLOR_ERROR
+                            : (index >= PLANES_DETAIL_ROW_COUNT ? COLOR_MUTED : main));
+      setPosition(row, PLANES_PAD, y);
+      y += step;
+      continue;
+    }
+    *colon = '\0';
+    const char *valueText = colon + 2;
+    setText(row, line);
+    setColor(row, p.muted);
+    setPosition(row, PLANES_PAD, y);
+    setText(value, valueText);
+    setColor(value, main);
+    setVisible(value, true);
+    const lv_coord_t nameWidth =
+        lv_txt_get_width(line, strlen(line), &lcd7_text15, 0, LV_TEXT_FLAG_NONE);
+    const lv_coord_t valueWidth = std::min<lv_coord_t>(
+        PLANES_CONTENT,
+        lv_txt_get_width(valueText, strlen(valueText), &lcd7_text15, 0, LV_TEXT_FLAG_NONE) + 1);
+    setWidth(value, valueWidth);
+    if (nameWidth + 8 + valueWidth <= PLANES_CONTENT) {
+      setPosition(value, PLANES_PAD + PLANES_CONTENT - valueWidth, y);
+      y += step;
+    } else {
+      y += step;
+      if (y + step > SCREEN_HEIGHT - 66) {
+        setVisible(value, false);
+        continue;
+      }
+      setPosition(value, PLANES_PAD, y);
+      y += step;
+    }
+  }
+  for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
+  showStatusIcons(v.icons, p, PLANES_PAD, SCREEN_HEIGHT - 58, false);
+  showPageDots(v.dots, p, -(PLANES_PAD + 5), SCREEN_HEIGHT - 22);
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -2450,6 +2675,8 @@ HomeMode desiredMode() {
     return HomeMode::Rss;
   if (activeScreen == DASHBOARD_SCREEN_SCHOOL && schoolPage != nullptr)
     return HomeMode::School;
+  if (activeScreen == DASHBOARD_SCREEN_PLANES && planesPage != nullptr)
+    return HomeMode::Planes;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
@@ -2468,8 +2695,9 @@ void create() {
   createAgenda(screen);
   createRss(screen);
   createSchool(screen);
+  createPlanes(screen);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
-                         radar.root, agenda.root, rss.root, school.root})
+                         radar.root, agenda.root, rss.root, school.root, planes.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -2497,6 +2725,8 @@ void applyMode(HomeMode mode) {
   setVisible(rss.root, mode == HomeMode::Rss);
   if (mode == HomeMode::School) school.drawnRevision = UINT32_MAX;
   setVisible(school.root, mode == HomeMode::School);
+  if (mode == HomeMode::Planes && planes.pixels != nullptr) lv_obj_invalidate(planes.canvas);
+  setVisible(planes.root, mode == HomeMode::Planes);
   const bool stageLeft = mode == HomeMode::Analog;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -2528,6 +2758,7 @@ void sync(bool force) {
     case HomeMode::Agenda: syncAgenda(p); break;
     case HomeMode::Rss: syncRss(p); break;
     case HomeMode::School: syncSchool(p); break;
+    case HomeMode::Planes: syncPlanes(p); break;
     case HomeMode::None: break;
   }
 }

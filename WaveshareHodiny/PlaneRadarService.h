@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "Board.h"
+
 #include "AdsbParser.h"
 #include "ClockConfig.h"
 #include "RouteParser.h"
@@ -16,7 +18,9 @@
 // ClockDashboard jako LVGL popisky, protože ty umí pořádné písmo i diakritiku.
 // Do bufferu jde jen to, co je opravdu grafika.
 
-constexpr uint16_t PLANE_RADAR_WIDTH = 480;
+// Na 7" obdélník 640 x 480 vlevo od sloupce s údaji, jako meteoradar: dosah
+// platí svisle (kružnice 230 px), do stran je vidět o třetinu dál.
+constexpr uint16_t PLANE_RADAR_WIDTH = HODINY_BOARD_LCD7 ? 640 : 480;
 constexpr uint16_t PLANE_RADAR_HEIGHT = 480;
 
 // Stav detailu vybraného letadla. Obrazovka si z něj skládá popisky sama, aby

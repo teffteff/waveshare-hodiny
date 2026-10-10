@@ -39,6 +39,7 @@ void sync(bool force);
 void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
 void rssTap(int16_t x, int16_t y);
+void planesFrameChanged(const uint16_t *pixels);
 }  // namespace lcd7
 #endif
 
@@ -154,6 +155,21 @@ lv_obj_t *planesDetailRegistration = nullptr;
 lv_obj_t *planesDetailRouteFrom = nullptr;
 lv_obj_t *planesDetailRouteTo = nullptr;
 lv_obj_t *planesDetailSignalLost = nullptr;
+#if HODINY_BOARD_LCD7
+// Poslední snímek radaru letadel pro sloupec 7"; kulatý má totéž v popiscích
+// s pevnými barvami, které by v noci nebyly červené.
+struct PlanesLcd7State {
+  uint8_t shownCount = 0;
+  bool watchedVisible = false;
+  char emergency[6] = "";
+  uint16_t rangeKm = 0;
+  char message[64] = "";
+  bool loading = false;
+  bool haveAircraftData = false;
+  bool havePixels = false;
+  uint32_t revision = 0;
+} planesLcd7;
+#endif
 bool planesFeatureAvailable = false;
 // Obrazovka družic: obloha přijde hotová ze SatelliteService, text kolem je
 // LVGL stejně jako u radaru letadel.
@@ -8125,6 +8141,11 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
     return;
   }
   if (activeScreen != DASHBOARD_SCREEN_PLANES) return;
+#if HODINY_BOARD_LCD7
+  // Mapa letadel 7" leží od levého okraje, ne na jevišti.
+  x = static_cast<int16_t>(x + STAGE_X);
+  if (x >= PLANE_RADAR_WIDTH) return;
+#endif
   planeRadarServiceHandleTap(x, y);
 }
 
@@ -8286,6 +8307,20 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
     return;
   }
   const bool english = englishLanguage();
+#if HODINY_BOARD_LCD7
+  planesLcd7.shownCount = shownCount;
+  planesLcd7.watchedVisible = watchedVisible;
+  strlcpy(planesLcd7.emergency, emergency != nullptr ? emergency : "",
+          sizeof(planesLcd7.emergency));
+  planesLcd7.rangeKm = rangeKm;
+  strlcpy(planesLcd7.message, message != nullptr ? message : "",
+          sizeof(planesLcd7.message));
+  planesLcd7.loading = loading;
+  planesLcd7.haveAircraftData = haveAircraftData;
+  planesLcd7.havePixels = pixels != nullptr;
+  ++planesLcd7.revision;
+  lcd7::planesFrameChanged(pixels);
+#endif
 
   if (pixels != nullptr) {
     lv_canvas_set_buffer(planesCanvas, const_cast<uint16_t *>(pixels),

@@ -23,6 +23,9 @@
 #include "PushAlertsService.h"
 #include "PsramGrowBuffer.h"
 #include "SharedFrames.h"
+#if HODINY_BOARD_LCD7
+#include "Lcd7Fonts.h"
+#endif
 
 // Kořenové certifikáty Mozilly slinkované v mbedTLS. adsb.fi ani adsb.lol
 // nejsou naše servery a jejich certifikát se může kdykoli přepnout na jiný
@@ -73,9 +76,11 @@ constexpr int RADAR_RADIUS = 230;
 
 constexpr size_t PIXEL_COUNT =
     static_cast<size_t>(PLANE_RADAR_WIDTH) * PLANE_RADAR_HEIGHT;
-static_assert(PLANE_RADAR_WIDTH == SHARED_FRAME_WIDTH &&
-                  PLANE_RADAR_HEIGHT == SHARED_FRAME_HEIGHT,
+static_assert(PIXEL_COUNT <= SHARED_FRAME_PIXELS,
               "Radar letadel se kreslí do sdílených snímků");
+// Obdélníkový pohled 7": letadla, města i mapa až k okraji obrázku, ne jen
+// v kruhu. Popisky obrazovky stojí ve sloupci vedle, ne přes mapu.
+constexpr bool RECTANGULAR_VIEW = HODINY_BOARD_LCD7;
 
 // Kolik po sobě jdoucích stahování smí letadlo v datech chybět, než se detail
 // zavře. adsb.fi občas jedno vynechá a v dalším ho pošle zas; zavírat panel
@@ -422,6 +427,15 @@ bool insideCircle(int x, int y, int radius) {
          static_cast<int64_t>(radius) * radius;
 }
 
+// Je bod na mapě? Na kulatém v kruhu o poloměru radius, na 7" v obdélníku
+// zmenšeném o tolik, o kolik je kruh menší než RADAR_RADIUS.
+bool insideView(int x, int y, int radius) {
+  if (!RECTANGULAR_VIEW) return insideCircle(x, y, radius);
+  const int margin = RADAR_RADIUS - radius;
+  return x >= margin && x < PLANE_RADAR_WIDTH - margin && y >= margin &&
+         y < PLANE_RADAR_HEIGHT - margin;
+}
+
 // --- Mapa -------------------------------------------------------------------
 void drawEuropeBorders(const RenderContext &context) {
   const auto pointLongitude = [](uint16_t value) {
@@ -518,7 +532,7 @@ bool drawCity(const RenderContext &context, MapLabelPlacer &placer,
   int x = 0;
   int y = 0;
   projectInContext(context, latitude, longitude, x, y);
-  if (!insideCircle(x, y, RADAR_RADIUS - 8)) return false;
+  if (!insideView(x, y, RADAR_RADIUS - 8)) return false;
 
   const int textWidth = mapTextWidth(label);
   MapLabelBox box = {x + 6, y - 5, textWidth + 4, 11};
@@ -539,7 +553,11 @@ bool drawCity(const RenderContext &context, MapLabelPlacer &placer,
 // Popisky letadel píše Montserrat 12 místo drobného pixelového písma 5x7 (viz
 // MapLabelFont.h). Města a legenda zůstávají pixelové, aby letadla vynikla.
 // Instance patří úloze radaru; volá se jen z ní.
+#if HODINY_BOARD_LCD7
+MapLabelFont planeLabelFont(&lcd7_text15);
+#else
 MapLabelFont planeLabelFont;
+#endif
 
 int planeLabelHeight() { return planeLabelFont.labelHeight(); }
 
@@ -721,8 +739,13 @@ void drawCompassMarks() {
 void drawAltitudeLegend() {
   constexpr int SWATCH_WIDTH = 26;
   constexpr int BAR_WIDTH = 4 * SWATCH_WIDTH;
-  constexpr int LEGEND_Y = 98;
-  const int left = RADAR_CENTER_X - BAR_WIDTH / 2;
+  // Na 7" vlevo dole jako stupnice meteoradaru; nahoře by ležela pod
+  // letadly, kulatý ji má pod hodinami.
+  constexpr int LEGEND_Y = RECTANGULAR_VIEW ? PLANE_RADAR_HEIGHT - 26 : 98;
+  const int left = RECTANGULAR_VIEW ? 14 : RADAR_CENTER_X - BAR_WIDTH / 2;
+  if (RECTANGULAR_VIEW)
+    fillMapRect(pixels, left - 6, LEGEND_Y - 6, BAR_WIDTH + 36, 30,
+                paletteColor(COLOR_BLACK), 100);
   const uint16_t colors[4] = {COLOR_LOW, COLOR_MID, COLOR_HIGH, COLOR_CRUISE};
   static const char *const BOUNDS[3] = {"2", "6", "10"};
 
@@ -770,6 +793,11 @@ void reserveChromeBands(MapLabelPlacer &placer) {
       {0, 388, PLANE_RADAR_WIDTH, 34},  // dosah
       {0, 424, PLANE_RADAR_WIDTH, 20},  // tečky dosahu
   };
+  if (RECTANGULAR_VIEW) {
+    // Jen stupnice výšek vlevo dole; ostatní je ve sloupci vedle mapy.
+    placer.claim({0, PLANE_RADAR_HEIGHT - 34, 160, 34});
+    return;
+  }
   for (const MapLabelBox &band : bands) placer.claim(band);
 }
 
@@ -804,6 +832,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   portEXIT_CRITICAL(&stateMux);
   if (target < 0) return;
   pixels = sharedFrame(target);
+  const MapCanvasSize canvasSize(PLANE_RADAR_WIDTH, PLANE_RADAR_HEIGHT);
   nightPalette = night;
   setRotation(planes.topBearingDeg);
 
@@ -814,7 +843,15 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   // Kruh má poloměr `range` km, takže viditelný rozsah je `range` na každou
   // stranu; dvacetiprocentní rezerva nechá projít i čáry, které jen zavadí
   // o okraj.
-  const float marginKm = context.rangeKm * 1.2f;
+  // Obdélník 7" sahá dál než kruh, v rozích až na polovinu úhlopříčky
+  // (400 px proti 230); mapa může být otočená, takže se počítá do všech stran.
+  const float viewFactor =
+      RECTANGULAR_VIEW
+          ? sqrtf(static_cast<float>(RADAR_CENTER_X * RADAR_CENTER_X +
+                                     RADAR_CENTER_Y * RADAR_CENTER_Y)) /
+                RADAR_RADIUS
+          : 1.0f;
+  const float marginKm = context.rangeKm * 1.2f * viewFactor;
   const float deltaLatitude = marginKm / KM_PER_DEGREE_LATITUDE;
   const float cosineLatitude = cosf(latitude * DEGREES_TO_RADIANS);
   const float deltaLongitude =
@@ -902,7 +939,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     int x = 0;
     int y = 0;
     projectInContext(context, aircraft.latitude, aircraft.longitude, x, y);
-    if (!insideCircle(x, y, RADAR_RADIUS)) continue;
+    if (!insideView(x, y, RADAR_RADIUS)) continue;
 
     PlannedAircraft &entry = plan[planCount++];
     entry.index = index;
@@ -1015,7 +1052,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   const uint8_t drawn = planCount;
 
   drawAltitudeLegend();
-  drawRangeDots(planes.rangeIndex);
+  if (!RECTANGULAR_VIEW) drawRangeDots(planes.rangeIndex);
 
   portENTER_CRITICAL(&stateMux);
   // Pár se během kreslení předal družicím; snímek se nezveřejní a po návratu

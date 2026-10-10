@@ -2608,6 +2608,13 @@ void handleUsbCommands() {
         config.rss.enabled = true;
         Serial.println(saveRuntimeConfig(config, true) ? "RSS_ON"
                                                        : "RSS_ON_FAILED");
+      } else if ((usbCommand == "PLANESON" || usbCommand == "PLANESOFF") &&
+                 !screenshotTransferActive) {
+        // Radar letadel bez webu, stejně jako RSSON/RSSOFF.
+        ClockConfig &config = loopConfigSnapshot();
+        config.planes.enabled = usbCommand == "PLANESON";
+        Serial.println(saveRuntimeConfig(config, true) ? "PLANES_SET"
+                                                       : "PLANES_SET_FAILED");
       } else if (usbCommand == "RSSFETCH" && !screenshotTransferActive) {
         // Notifikace v rssTask nuluje deadline, takže tohle opravdu vynutí
         // stažení i uprostřed nastaveného intervalu.
