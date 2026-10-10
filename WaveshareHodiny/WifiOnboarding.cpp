@@ -15,7 +15,7 @@
 
 #include "ClockFonts.h"
 #include "DisplayDriver.h"
-#include "Display_ST7701.h"
+#include "BoardDisplay.h"
 #include "ImprovSerialService.h"
 #include "WifiProvisioning.h"
 

@@ -31,7 +31,7 @@
 #include "TlsMemory.h"
 #include "ClockDashboard.h"
 #include "CrashLog.h"
-#include "Display_ST7701.h"
+#include "BoardDisplay.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "FirmwareUpdateService.h"

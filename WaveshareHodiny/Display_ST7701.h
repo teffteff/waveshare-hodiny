@@ -76,23 +76,9 @@
 
 #define EXAMPLE_ENABLE_PRINT_LCD_FPS            (0)
 
+// Displej kulaté desky ESP32-S3-Touch-LCD-2.1. Rozhraní pro zbytek firmwaru
+// je v BoardDisplay.h.
 extern uint8_t LCD_Backlight;
-extern esp_lcd_panel_handle_t panel_handle;
+
 void ST7701_Init();
-
-void LCD_Init();
-void LCD_Resync();
-// Pozná trvalý posun obrazu po vypadlém přerušení bounce bufferu a panel
-// resynchronizuje. Volat průběžně z hlavní smyčky; vrací true při opravě.
-bool LCD_MaintainSync();
-uint32_t LCD_SyncRepairCount();
-bool LCD_SetPixelClock(uint32_t frequencyHz);
-uint32_t LCD_GetPixelClock();
-void LCD_Sleep();
-void LCD_Wake();
-bool LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend,
-                   uint16_t Yend, uint8_t* color);
-
-// backlight
 void Backlight_Init();
-void Set_Backlight(uint8_t Light);

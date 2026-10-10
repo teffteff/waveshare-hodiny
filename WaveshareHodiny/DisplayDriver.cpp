@@ -5,9 +5,9 @@
 
 #include <cstring>
 
-#include "Display_ST7701.h"
+#include "BoardDisplay.h"
 #include "FirmwareBuild.h"
-#include "Touch_CST820.h"
+#include "RgbPanel.h"
 
 namespace {
 lv_disp_draw_buf_t drawBuffer;
@@ -42,7 +42,9 @@ uint8_t partialRefreshWarmupFrames = 0;
 bool partialRefreshWarmupRequested = false;
 bool partialRefreshEnableRequested = false;
 
-constexpr size_t FRAMEBUFFER_BYTES = 480 * 480 * sizeof(lv_color_t);
+constexpr size_t FRAMEBUFFER_PIXELS =
+    static_cast<size_t>(SCREEN_WIDTH) * SCREEN_HEIGHT;
+constexpr size_t FRAMEBUFFER_BYTES = FRAMEBUFFER_PIXELS * sizeof(lv_color_t);
 constexpr size_t SCREENSHOT_CHUNK_BYTES = 2048;
 
 // Řadič občas jeden vzorek vynechá; prázdné čtení uprostřed tahu tedy není
@@ -57,8 +59,8 @@ constexpr int32_t TOUCH_STILL_PX = 60;
 constexpr int32_t TOUCH_SWIPE_PX = 70;
 constexpr int32_t TOUCH_SWIPE_CROSS_PX = 90;
 constexpr uint32_t TOUCH_SWIPE_MS = 700;
-// Svislá osa displeje; podržení vlevo od ní znamená zpět, vpravo vpřed.
-constexpr int32_t TOUCH_MIDDLE_X = 240;
+// Svislá osa jeviště; podržení vlevo od ní znamená zpět, vpravo vpřed.
+constexpr int32_t TOUCH_MIDDLE_X = STAGE_X + STAGE_SIZE / 2;
 // Do kdy po prvním klepnutí musí dorazit druhé, aby z nich bylo dvojklepnutí.
 // Měří se od posledního vzorku prvního dotyku po poslední vzorek druhého, takže
 // se do okna vejde i doba, po kterou prst leží podruhé - proto je delší, než
@@ -92,8 +94,9 @@ void flushDisplay(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *pixe
   // Oba draw buffery jsou přímo fyzické framebuffery RGB panelu. I při
   // částečném LVGL renderu proto panelu předáváme začátek celého hotového
   // framebufferu; area popisuje pouze oblast, kterou LVGL uvnitř něj změnilo.
-  const bool framePresented = LCD_addWindow(
-      0, 0, 479, 479, reinterpret_cast<uint8_t *>(&pixels->full));
+  const bool framePresented =
+      LCD_addWindow(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1,
+                    reinterpret_cast<uint8_t *>(&pixels->full));
   if (!framePresented) {
     // Při chybě zachováme LVGL živé; následný resync obnoví RGB DMA bez
     // předstírání, že čekání na bezpečné uvolnění framebufferu uspělo.
@@ -189,25 +192,23 @@ void classifyTouchGesture() {
 }
 
 void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
-  Touch_Read_Data();
+  // Neplatný vzorek (nesmysl po I2C) deska zahodí, jinak by uprostřed tahu
+  // posunul jeho konec a gesto by vyšlo úplně jinak.
+  uint16_t sampleX = 0;
+  uint16_t sampleY = 0;
+  const bool validSample = boardTouchRead(sampleX, sampleY);
   const uint32_t now = millis();
   expireHeldTap(now);
-
-  // Přenos po I2C může uspět a přesto vrátit nesmysl, typicky samé 0xFF.
-  // Dekóduje se jako dotyk daleko mimo panel; takový vzorek zahodíme, jinak by
-  // uprostřed tahu posunul jeho konec a gesto by vyšlo úplně jinak.
-  const bool validSample =
-      touch_data.points > 0 && touch_data.x < 480 && touch_data.y < 480;
 
   if (validSample) {
     if (!touchDown) {
       touchDown = true;
-      touchStartX = touch_data.x;
-      touchStartY = touch_data.y;
+      touchStartX = sampleX;
+      touchStartY = sampleY;
       touchStartedAt = now;
     }
-    touchLastX = touch_data.x;
-    touchLastY = touch_data.y;
+    touchLastX = sampleX;
+    touchLastY = sampleY;
     touchLastSeenAt = now;
   } else if (touchDown && now - touchLastSeenAt >= TOUCH_RELEASE_MS) {
     touchDown = false;
@@ -224,9 +225,6 @@ void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
   } else {
     data->state = LV_INDEV_STATE_REL;
   }
-
-  touch_data.points = 0;
-  touch_data.gesture = NONE;
 }
 
 void increaseTick(void *) {
@@ -243,11 +241,12 @@ void displayDriverInit() {
   screenshotBuffer = static_cast<uint8_t *>(heap_caps_malloc(
       FRAMEBUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #endif
-  lv_disp_draw_buf_init(&drawBuffer, frameBuffer1, frameBuffer2, 480 * 480);
+  lv_disp_draw_buf_init(&drawBuffer, frameBuffer1, frameBuffer2,
+                        FRAMEBUFFER_PIXELS);
 
   lv_disp_drv_init(&displayDriver);
-  displayDriver.hor_res = 480;
-  displayDriver.ver_res = 480;
+  displayDriver.hor_res = SCREEN_WIDTH;
+  displayDriver.ver_res = SCREEN_HEIGHT;
   displayDriver.flush_cb = flushDisplay;
   displayDriver.full_refresh = 1;
   displayDriver.draw_buf = &drawBuffer;
@@ -335,8 +334,9 @@ bool displayDriverTakeShortTap(int16_t &x, int16_t &y) {
   expireHeldTap(millis());
   if (!shortTapPending) return false;
   shortTapPending = false;
-  x = static_cast<int16_t>(shortTapX);
-  y = static_cast<int16_t>(shortTapY);
+  // Stránky počítají v souřadnicích jeviště, ne celé obrazovky.
+  x = static_cast<int16_t>(shortTapX - STAGE_X);
+  y = static_cast<int16_t>(shortTapY - STAGE_Y);
   return true;
 }
 
@@ -353,7 +353,8 @@ bool displayDriverBeginFramebufferCapture(Print &output) {
   memcpy(screenshotBuffer, displayedBuffer, FRAMEBUFFER_BYTES);
   screenshotOffset = 0;
 
-  output.println("WSFB1 480 480 RGB565LE 460800");
+  output.printf("WSFB1 %d %d RGB565LE %u\r\n", SCREEN_WIDTH, SCREEN_HEIGHT,
+                static_cast<unsigned>(FRAMEBUFFER_BYTES));
   return true;
 }
 

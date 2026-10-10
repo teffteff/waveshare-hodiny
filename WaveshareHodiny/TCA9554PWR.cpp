@@ -1,3 +1,6 @@
+#include "Board.h"
+#if HODINY_BOARD_LCD21
+
 #include "TCA9554PWR.h"
 
 /*****************************************************  Operation register REG   ****************************************************/
@@ -94,3 +97,5 @@ void TCA9554PWR_Init(uint8_t PinState)                  // Set the seven pins to
 {
   Mode_EXIOS(PinState);
 }
+
+#endif  // HODINY_BOARD_LCD21

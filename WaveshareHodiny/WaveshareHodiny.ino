@@ -32,17 +32,15 @@
 #include "ConfigurationWeb.h"
 #include "DayNightLogic.h"
 #include "DeviceName.h"
+#include "BoardDisplay.h"
 #include "DisplayDriver.h"
-#include "Display_ST7701.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "FirmwareUpdateService.h"
-#include "I2C_Driver.h"
 #include "ImprovSerialService.h"
 #include "LightningService.h"
 #include "NetworkDiagnostics.h"
 #include "NetworkCoordinator.h"
-#include "TCA9554PWR.h"
 #include "TlsMemory.h"
 #include "TmepService.h"
 #include "WifiOnboarding.h"
@@ -4180,9 +4178,7 @@ void setup() {
   // z PSRAM a vnitřní SRAM nerozdrobí.
   tlsMemoryBegin();
 
-  I2C_Init();
-  Set_EXIOS(0x0C);
-  TCA9554PWR_Init(0x70);
+  boardInit();
   runtimeConfigMutex = xSemaphoreCreateMutex();
   // Případná migrace konfigurace zapisuje do flash. Proveď ji dříve, než
   // spustíme RGB panel nad framebufferem v PSRAM, jinak může první start po
