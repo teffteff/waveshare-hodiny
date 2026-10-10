@@ -219,7 +219,9 @@ void drawForecastIcon(lv_event_t *event) {
   lv_area_t area;
   lv_obj_get_coords(lv_event_get_target(event), &area);
   IconPainter painter(lv_event_get_draw_ctx(event), state->redNight);
-  drawIcon(painter, area.x1 + FORECAST_ICON_SIZE / 2,
-           area.y1 + FORECAST_ICON_SIZE / 2, FORECAST_ICON_SIZE / 2,
+  // Velikost podle objektu: kulatý ciferník má ikony FORECAST_ICON_SIZE,
+  // 7" i větší.
+  const lv_coord_t size = lv_area_get_width(&area);
+  drawIcon(painter, area.x1 + size / 2, area.y1 + size / 2, size / 2,
            state->wmoCode, !state->isDay);
 }

@@ -4624,6 +4624,11 @@ bool forecastChartInsideCircle(int x1, int y1, int x2, int y2) {
          FORECAST_CHART_SAFE_RADIUS * FORECAST_CHART_SAFE_RADIUS;
 }
 
+// Písma grafu předpovědi. Široký graf 7" displeje si je při kreslení
+// přepne na větší.
+const lv_font_t *forecastChartSmallFont = &clock_czech_14;
+const lv_font_t *forecastChartLabelFont = &clock_czech_16;
+
 // Text vystředěný na `centerX`, ale nikdy přes okraj grafu. `top` je horní
 // hrana textu. S `insideCircle` se text, který by vyjel z kruhu, nenakreslí.
 void forecastChartText(lv_draw_ctx_t *context, const lv_area_t &bounds,
@@ -4635,7 +4640,8 @@ void forecastChartText(lv_draw_ctx_t *context, const lv_area_t &bounds,
   int x1 = centerX - size.x / 2;
   if (x1 + size.x - 1 > bounds.x2) x1 = bounds.x2 - size.x + 1;
   if (x1 < bounds.x1) x1 = bounds.x1;
-  if (insideCircle) {
+  // Kruh ořezává jen graf v plné kulaté šířce, ne široký graf 7".
+  if (insideCircle && lv_area_get_width(&bounds) == FORECAST_CHART_WIDTH) {
     // Střed displeje leží uprostřed šířky grafu a WEATHER_FORECAST_CHART_TOP_Y
     // nad jeho horní hranou.
     const int centerScreenX = bounds.x1 + FORECAST_CHART_WIDTH / 2;
@@ -4706,7 +4712,11 @@ void drawForecastChart(lv_event_t *event) {
   const lv_color_t rainColor = redNight ? COLOR_ERROR : COLOR_OUTSIDE;
   const lv_color_t nightColor =
       redNight ? lv_color_make(36, 0, 0) : lv_color_make(22, 27, 38);
-  const float columnWidth = forecastChartColumnWidth(count);
+  // Sloupce podle skutečné šířky grafu: kulatý má FORECAST_CHART_WIDTH,
+  // široký na 7" celou obrazovku.
+  const int plotWidth = lv_area_get_width(&bounds) - FORECAST_CHART_AXIS_WIDTH;
+  const float columnWidth =
+      count == 0 ? 0.0f : static_cast<float>(plotWidth) / static_cast<float>(count);
   const int plotLeft = bounds.x1 + FORECAST_CHART_AXIS_WIDTH;
   const auto columnLeft = [&](size_t index) {
     return plotLeft +
@@ -4817,7 +4827,7 @@ void drawForecastChart(lv_event_t *event) {
         range.axisLowC, range.axisHighC, FORECAST_CHART_GRID_LINES);
     const lv_color_t gridColor =
         redNight ? lv_color_make(70, 0, 0) : lv_color_make(48, 56, 72);
-    const int lineHeight = lv_font_get_line_height(&clock_czech_14);
+    const int lineHeight = lv_font_get_line_height(forecastChartSmallFont);
     char label[12];
     for (int value =
              static_cast<int>(ceilf(range.axisLowC / step)) * step;
@@ -4827,9 +4837,9 @@ void drawForecastChart(lv_event_t *event) {
       forecastChartFill(context, plotLeft, y, bounds.x2, y, gridColor);
       snprintf(label, sizeof(label), "%d°", value);
       lv_point_t size;
-      lv_txt_get_size(&size, label, &clock_czech_14, 0, 0, LV_COORD_MAX,
+      lv_txt_get_size(&size, label, forecastChartSmallFont, 0, 0, LV_COORD_MAX,
                       LV_TEXT_FLAG_NONE);
-      forecastChartText(context, bounds, label, &clock_czech_14, muted,
+      forecastChartText(context, bounds, label, forecastChartSmallFont, muted,
                         plotLeft - 4 - size.x / 2, y - lineHeight / 2);
     }
   }
@@ -4843,10 +4853,10 @@ void drawForecastChart(lv_event_t *event) {
     if (localHour < 0 || (index > 0 && localHour != 0)) continue;
     const char *weekday = forecastWeekdayName(local.tm_wday);
     lv_point_t size;
-    lv_txt_get_size(&size, weekday, &clock_czech_14, 0, 0, LV_COORD_MAX,
+    lv_txt_get_size(&size, weekday, forecastChartSmallFont, 0, 0, LV_COORD_MAX,
                     LV_TEXT_FLAG_NONE);
     const int left = index == 0 ? plotLeft : columnLeft(index);
-    forecastChartText(context, bounds, weekday, &clock_czech_14, muted,
+    forecastChartText(context, bounds, weekday, forecastChartSmallFont, muted,
                       left + 4 + size.x / 2, plotTop + 2);
   }
 
@@ -4952,9 +4962,9 @@ void drawForecastChart(lv_event_t *event) {
   if (historyMode) {
     const char *title = englishLanguage() ? "MEASURED" : "NAMĚŘENO";
     lv_point_t size;
-    lv_txt_get_size(&size, title, &clock_czech_14, 0, 0, LV_COORD_MAX,
+    lv_txt_get_size(&size, title, forecastChartSmallFont, 0, 0, LV_COORD_MAX,
                     LV_TEXT_FLAG_NONE);
-    forecastChartText(context, bounds, title, &clock_czech_14, muted,
+    forecastChartText(context, bounds, title, forecastChartSmallFont, muted,
                       bounds.x2 - 4 - size.x / 2, plotTop + 2);
   }
 
@@ -4989,24 +4999,24 @@ void drawForecastChart(lv_event_t *event) {
       snprintf(nowText, sizeof(nowText), "%d°",
                static_cast<int>(std::lround(nowTemperature)));
       lv_point_t size;
-      lv_txt_get_size(&size, nowText, &clock_czech_16, 0, 0, LV_COORD_MAX,
+      lv_txt_get_size(&size, nowText, forecastChartLabelFont, 0, 0, LV_COORD_MAX,
                       LV_TEXT_FLAG_NONE);
-      forecastChartText(context, bounds, nowText, &clock_czech_16, color,
+      forecastChartText(context, bounds, nowText, forecastChartLabelFont, color,
                         x + 8 + size.x / 2,
-                        y - 8 - lv_font_get_line_height(&clock_czech_16));
+                        y - 8 - lv_font_get_line_height(forecastChartLabelFont));
     }
   }
 
   // Maximum nad čarou, minimum pod ní. Při stejné teplotě po celý den
   // stačí jeden popisek.
   char text[16];
-  const int labelHeight = lv_font_get_line_height(&clock_czech_16);
+  const int labelHeight = lv_font_get_line_height(forecastChartLabelFont);
   if (range.highIndex >= 0) {
     const WeatherForecastHour &high = hours[range.highIndex];
     snprintf(text, sizeof(text), "%d°",
              static_cast<int>(std::lround(high.temperatureC)));
     forecastChartText(
-        context, bounds, text, &clock_czech_16,
+        context, bounds, text, forecastChartLabelFont,
         forecastTemperatureColor(high.temperatureC),
         static_cast<int>(lroundf(columnCenter(range.highIndex))),
         static_cast<int>(lroundf(temperatureY(range.highIndex))) - 4 -
@@ -5018,7 +5028,7 @@ void drawForecastChart(lv_event_t *event) {
     const WeatherForecastHour &low = hours[range.lowIndex];
     snprintf(text, sizeof(text), "%d°",
              static_cast<int>(std::lround(low.temperatureC)));
-    forecastChartText(context, bounds, text, &clock_czech_16,
+    forecastChartText(context, bounds, text, forecastChartLabelFont,
                       forecastTemperatureColor(low.temperatureC),
                       static_cast<int>(lroundf(columnCenter(range.lowIndex))),
                       static_cast<int>(lroundf(temperatureY(range.lowIndex))) +
@@ -5032,9 +5042,9 @@ void drawForecastChart(lv_event_t *event) {
     const int height =
         weatherForecastChartRainHeight(range, rain, rainHeight);
     forecastChartText(
-        context, bounds, text, &clock_czech_14, rainColor,
+        context, bounds, text, forecastChartSmallFont, rainColor,
         static_cast<int>(lroundf(columnCenter(range.wettestIndex))),
-        plotBottom - height - 2 - lv_font_get_line_height(&clock_czech_14));
+        plotBottom - height - 2 - lv_font_get_line_height(forecastChartSmallFont));
   }
 
   // Pod grafem hodiny a pod nimi rychlost větru ve stejných sloupcích,
@@ -5048,20 +5058,20 @@ void drawForecastChart(lv_event_t *event) {
     if (!forecastChartLabelled(hour, step)) continue;
     const int x = static_cast<int>(lroundf(columnCenter(index)));
     snprintf(text, sizeof(text), "%02d", forecastLocalHour(hour, nullptr));
-    forecastChartText(context, bounds, text, &clock_czech_16, muted, x,
+    forecastChartText(context, bounds, text, forecastChartLabelFont, muted, x,
                       hourTop, true);
     if (std::isnan(hour.windKmh)) continue;
     snprintf(text, sizeof(text), "%d",
              static_cast<int>(std::lround(hour.windKmh)));
     const lv_color_t windColor = forecastWindColor(hour.windKmh);
-    forecastChartText(context, bounds, text, &clock_czech_16,
+    forecastChartText(context, bounds, text, forecastChartLabelFont,
                       windColor.full == COLOR_MUTED.full ? COLOR_TEXT
                                                          : windColor,
                       x, windTop, true);
   }
   forecastChartText(context, bounds,
                     englishLanguage() ? "wind km/h" : "vítr km/h",
-                    &clock_czech_14, muted,
+                    forecastChartSmallFont, muted,
                     (plotLeft + bounds.x2) / 2,
                     windTop + FORECAST_CHART_TEXT_LINE);
 }
@@ -9217,6 +9227,16 @@ bool clockDashboardSwipeForecast(int8_t direction) {
   // Tažení doleva (+1) jde k budoucnosti, doprava (-1) k minulosti; z krajní
   // stránky dál nevede nic.
   uint8_t next = forecastPageIndex;
+#if HODINY_BOARD_LCD7
+  // Na 7" jsou dny trvale pod grafem; tažení střídá jen předpověď
+  // a naměřených 24 hodin.
+  if (forecastPageIndex == FORECAST_PAGE_DAYS) forecastPageIndex = FORECAST_PAGE_CHART;
+  if (direction > 0 && forecastPageIndex == FORECAST_PAGE_HISTORY)
+    next = FORECAST_PAGE_CHART;
+  else if (direction < 0 && forecastPageIndex == FORECAST_PAGE_CHART &&
+           forecastHistoryAvailable)
+    next = FORECAST_PAGE_HISTORY;
+#else
   if (direction > 0) {
     if (forecastPageIndex == FORECAST_PAGE_HISTORY) next = FORECAST_PAGE_CHART;
     else if (forecastPageIndex == FORECAST_PAGE_CHART) next = FORECAST_PAGE_DAYS;
@@ -9225,6 +9245,7 @@ bool clockDashboardSwipeForecast(int8_t direction) {
     else if (forecastPageIndex == FORECAST_PAGE_CHART && forecastHistoryAvailable)
       next = FORECAST_PAGE_HISTORY;
   }
+#endif
   if (next == forecastPageIndex) return false;
   forecastPageIndex = next;
   updateForecastPage();
