@@ -27,6 +27,8 @@ HomeMode shownMode = HomeMode::None;
 constexpr int SIDE_X = 480;
 constexpr int SIDE_WIDTH = SCREEN_WIDTH - SIDE_X;
 constexpr int HOME_DOT_GAP = 18;
+// Úzký sloupec 160 px radarů: deset teček se musí vejít do 132 px.
+constexpr int NARROW_DOT_GAP = 13;
 // Dlaždice vyplní plochu pod lištou podle počtu zapnutých hodnot: do čtyř
 // 2 x 2, do šesti 3 x 2, jinak 3 x 3 (celá stránka hodnot).
 constexpr int TILE_GAP = 11;
@@ -315,7 +317,7 @@ PageDots makePageDots(lv_obj_t *parent) {
 // Tečky v pořadí z konfigurace, stejně jako updateScreenDots() na kulatém.
 // centerX < 0 znamená zarovnat vlevo na -centerX.
 void showPageDots(const PageDots &view, const Palette &p, lv_coord_t centerX,
-                  lv_coord_t centerY) {
+                  lv_coord_t centerY, lv_coord_t gap = HOME_DOT_GAP) {
   uint8_t count = 0;
   uint8_t activeIndex = 0;
   for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position) {
@@ -325,7 +327,7 @@ void showPageDots(const PageDots &view, const Palette &p, lv_coord_t centerX,
     ++count;
   }
   const bool visible = count > 1;
-  const lv_coord_t span = (count - 1) * HOME_DOT_GAP;
+  const lv_coord_t span = (count - 1) * gap;
   const lv_coord_t first = centerX < 0 ? -centerX : centerX - span / 2;
   for (uint8_t index = 0; index < SCREEN_DOT_COUNT; ++index) {
     lv_obj_t *dot = view.dots[index];
@@ -337,7 +339,7 @@ void showPageDots(const PageDots &view, const Palette &p, lv_coord_t centerX,
     const lv_coord_t size = active ? 10 : 7;
     if (lv_obj_get_width(dot) != size) lv_obj_set_size(dot, size, size);
     setBackground(dot, active ? p.text : p.dotOff);
-    setPosition(dot, first + index * HOME_DOT_GAP - size / 2,
+    setPosition(dot, first + index * gap - size / 2,
                 centerY - size / 2);
     setVisible(dot, true);
   }
@@ -1458,7 +1460,7 @@ void syncRadar(const Palette &p) {
   showWarningAndRain(v.warningIcon, v.warningEvent, v.warningTail, v.rain, p);
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
   showStatusIcons(v.icons, p, RADAR_PAD, SCREEN_HEIGHT - 58, false);
-  showPageDots(v.dots, p, -(RADAR_PAD + 5), SCREEN_HEIGHT - 22);
+  showPageDots(v.dots, p, -(RADAR_PAD + 5), SCREEN_HEIGHT - 22, NARROW_DOT_GAP);
 }
 
 // --- Agenda ---------------------------------------------------------------
@@ -2646,7 +2648,7 @@ void syncPlanes(const Palette &p) {
   }
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
   showStatusIcons(v.icons, p, PLANES_PAD, SCREEN_HEIGHT - 58, false);
-  showPageDots(v.dots, p, -(PLANES_PAD + 5), SCREEN_HEIGHT - 22);
+  showPageDots(v.dots, p, -(PLANES_PAD + 5), SCREEN_HEIGHT - 22, NARROW_DOT_GAP);
 }
 
 // --- Přepínání ------------------------------------------------------------
