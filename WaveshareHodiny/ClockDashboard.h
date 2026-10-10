@@ -306,4 +306,6 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
 void clockDashboardLcd7HistoryDemo();
 // Ukázková agenda pro screenshot: 0 týden z návrhu, 1 přeplněný dnešek.
 void clockDashboardLcd7AgendaDemo(uint8_t variant);
+// Ukázkové zprávy pro screenshot: 0 pět z návrhu, 1 šest s dlouhým textem.
+void clockDashboardLcd7RssDemo(uint8_t variant);
 #endif

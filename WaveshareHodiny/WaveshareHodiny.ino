@@ -2564,6 +2564,9 @@ void handleUsbCommands() {
         clockDashboardLcd7AgendaDemo(
             static_cast<uint8_t>(usbCommand.substring(10).toInt()));
         Serial.println("AGENDA_DEMO");
+      } else if (usbCommand.startsWith("RSSDEMO") && !screenshotTransferActive) {
+        clockDashboardLcd7RssDemo(static_cast<uint8_t>(usbCommand.substring(7).toInt()));
+        Serial.println("RSS_DEMO");
 #endif
       } else if ((usbCommand == "RADARRANGE+" || usbCommand == "RADARRANGE-") &&
                  !screenshotTransferActive) {

@@ -20,7 +20,8 @@ namespace lcd7 {
 bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
-                               Agenda };
+                               Agenda, Rss };
+HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
 constexpr int SIDE_WIDTH = SCREEN_WIDTH - SIDE_X;
@@ -1735,6 +1736,225 @@ void syncAgenda(const Palette &p) {
   syncAgendaLegend(p);
 }
 
+// --- Zprávy ---------------------------------------------------------------
+// Vlevo seznam titulků (čas a dva řádky titulku), vpravo vybraná zpráva celá:
+// čas, titulek a shrnutí. Výběr se sám posouvá po RSS_ADVANCE_MS, aby hodiny
+// bez obsluhy ukázaly všechny zprávy; klepnutí na titulek ho vybere a podrží.
+// Kulatý detail přes celou stránku tu není potřeba - texty bere z jeho
+// zásoby rssDetailTexts.
+
+constexpr int RSS_LIST_W = 340;
+constexpr int RSS_LIST_TOP = BAR_HEIGHT + 1;
+constexpr int RSS_ROW_PAD_X = 20;
+constexpr int RSS_DETAIL_X = RSS_LIST_W + 28;
+constexpr int RSS_DETAIL_W = SCREEN_WIDTH - RSS_DETAIL_X - 28;
+constexpr int RSS_DETAIL_TOP = BAR_HEIGHT + 22;
+constexpr int RSS_FOOTER_LINE_Y = SCREEN_HEIGHT - 42;
+constexpr uint32_t RSS_ADVANCE_MS = 12000;
+constexpr uint32_t RSS_HOLD_MS = 60000;
+const lv_color_t RSS_SELECTED = LV_COLOR_MAKE(14, 26, 31);
+const lv_color_t RSS_SELECTED_NIGHT = LV_COLOR_MAKE(28, 6, 5);
+const lv_color_t RSS_ROW_LINE = LV_COLOR_MAKE(26, 26, 26);
+
+struct RssRow {
+  lv_obj_t *box;
+  lv_obj_t *time;
+  lv_obj_t *title;
+};
+
+struct RssView {
+  lv_obj_t *root;
+  TopBar bar;
+  lv_obj_t *divider;
+  lv_obj_t *status;
+  RssRow rows[CLOCK_RSS_MAX_ITEMS];
+  lv_obj_t *time;
+  lv_obj_t *title;
+  lv_obj_t *summary;
+  lv_obj_t *footerLine;
+  lv_obj_t *updated;
+  lv_obj_t *position;
+  uint8_t selected;
+  uint32_t selectedAt;
+  uint32_t holdUntil;
+  uint32_t drawnRevision;
+  uint8_t drawnSelected;
+  bool drawnNight;
+  bool drawnEnglish;
+  int64_t drawnMinute;
+} rss;
+
+uint8_t rssCount() {
+  return rssDetailTexts != nullptr ? rssVisibleItemCount : 0;
+}
+
+lv_coord_t rssRowHeight(uint8_t count) {
+  return (SCREEN_HEIGHT - RSS_LIST_TOP) / std::max<uint8_t>(count, 5);
+}
+
+void createRss(lv_obj_t *screen) {
+  RssView &v = rss;
+  v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
+  for (RssRow &row : v.rows) {
+    row.box = panel(v.root, 0, 0, RSS_LIST_W, 1);
+    lv_obj_set_style_border_side(row.box, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(row.box, 1, 0);
+    lv_obj_set_style_border_color(row.box, RSS_ROW_LINE, 0);
+    row.time = label(row.box, &lcd7_text15, RSS_ROW_PAD_X, 7);
+    lv_obj_set_style_text_letter_space(row.time, 1, 0);
+    row.title = label(row.box, &lcd7_text18, RSS_ROW_PAD_X, 30);
+    lv_obj_set_width(row.title, RSS_LIST_W - RSS_ROW_PAD_X - 16);
+    lv_label_set_long_mode(row.title, LV_LABEL_LONG_DOT);
+  }
+  v.divider = line(v.root, RSS_LIST_W, RSS_LIST_TOP, 1, SCREEN_HEIGHT - RSS_LIST_TOP);
+  v.status = label(v.root, &lcd7_text22, 0, SCREEN_HEIGHT / 2 - 14, SCREEN_WIDTH);
+  lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
+  v.time = label(v.root, &lcd7_text15, RSS_DETAIL_X, RSS_DETAIL_TOP);
+  lv_obj_set_style_text_letter_space(v.time, 2, 0);
+  v.title = label(v.root, &lcd7_text28, RSS_DETAIL_X, RSS_DETAIL_TOP + 30);
+  lv_obj_set_width(v.title, RSS_DETAIL_W);
+  lv_label_set_long_mode(v.title, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_line_space(v.title, 4, 0);
+  v.summary = label(v.root, &lcd7_text22, RSS_DETAIL_X, 0);
+  lv_obj_set_width(v.summary, RSS_DETAIL_W);
+  lv_obj_set_style_text_line_space(v.summary, 6, 0);
+  v.footerLine = line(v.root, RSS_DETAIL_X, RSS_FOOTER_LINE_Y, RSS_DETAIL_W, 1);
+  v.updated = label(v.root, &lcd7_text15, RSS_DETAIL_X, RSS_FOOTER_LINE_Y + 12);
+  v.position = label(v.root, &lcd7_text15, 0, RSS_FOOTER_LINE_Y + 12);
+  v.drawnRevision = UINT32_MAX;
+}
+
+// Shrnutí pod titulkem až k čáře patičky: větším písmem, když se vejde celé,
+// jinak menším; co se nevejde ani tak, utnou tři tečky na posledním řádku.
+void placeRssSummary(const char *text, lv_coord_t top) {
+  lv_obj_t *summary = rss.summary;
+  const lv_coord_t room = RSS_FOOTER_LINE_Y - 14 - top;
+  const lv_font_t *font = &lcd7_text22;
+  lv_coord_t lineSpace = 6;
+  lv_point_t size;
+  lv_txt_get_size(&size, text, font, 0, lineSpace, RSS_DETAIL_W, LV_TEXT_FLAG_NONE);
+  if (size.y > room) {
+    font = &lcd7_text18;
+    lineSpace = 5;
+    lv_txt_get_size(&size, text, font, 0, lineSpace, RSS_DETAIL_W, LV_TEXT_FLAG_NONE);
+  }
+  setFont(summary, font);
+  lv_obj_set_style_text_line_space(summary, lineSpace, 0);
+  const lv_coord_t lineHeight = lv_font_get_line_height(font) + lineSpace;
+  const lv_coord_t lines = std::max<lv_coord_t>(1, (room + lineSpace) / lineHeight);
+  lv_label_set_long_mode(summary, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(summary, std::min<lv_coord_t>(size.y, lines * lineHeight - lineSpace));
+  setText(summary, text);
+  setPosition(summary, RSS_DETAIL_X, top);
+}
+
+void syncRssDetail(const Palette &p, uint8_t count) {
+  RssView &v = rss;
+  const bool shown = count > 0;
+  for (lv_obj_t *object : {v.time, v.title, v.summary, v.footerLine, v.position})
+    setVisible(object, shown);
+  if (!shown) return;
+  const RssDetailText &item = rssDetailTexts[v.selected];
+  setText(v.time, item.time);
+  setColor(v.time, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  const lv_coord_t titleTop = item.time[0] != '\0' ? RSS_DETAIL_TOP + 30 : RSS_DETAIL_TOP;
+  setText(v.title, item.title);
+  setColor(v.title, p.text);
+  setPosition(v.title, RSS_DETAIL_X, titleTop);
+  lv_obj_update_layout(v.title);
+  const bool haveSummary = item.summary[0] != '\0';
+  placeRssSummary(haveSummary ? item.summary
+                              : (englishLanguage() ? "The feed sends no text for this story."
+                                                   : "Kanál k téhle zprávě text neposílá."),
+                  titleTop + lv_obj_get_height(v.title) + 16);
+  setColor(v.summary, p.night ? COLOR_ERROR : (haveSummary ? COLOR_TEXT : COLOR_MUTED));
+  char text[16];
+  snprintf(text, sizeof(text), "%u / %u", static_cast<unsigned>(v.selected + 1),
+           static_cast<unsigned>(count));
+  setText(v.position, text);
+  setColor(v.position, p.muted);
+  lv_obj_update_layout(v.position);
+  setPosition(v.position, RSS_DETAIL_X + RSS_DETAIL_W - lv_obj_get_width(v.position),
+              RSS_FOOTER_LINE_Y + 12);
+  setBackground(v.footerLine, p.line);
+}
+
+void syncRss(const Palette &p) {
+  RssView &v = rss;
+  syncTopBar(v.bar, p);
+  const uint8_t count = rssCount();
+  const uint32_t now = millis();
+  if (v.selected >= count) v.selected = 0;
+  if (count > 1 && now >= v.holdUntil && now - v.selectedAt >= RSS_ADVANCE_MS) {
+    v.selected = static_cast<uint8_t>((v.selected + 1) % count);
+    v.selectedAt = now;
+  }
+  // "aktualizováno" se skládá z času a o půlnoci se přepíše na VČERA.
+  char updated[64];
+  const bool haveUpdated =
+      rssFooterShown && formatUpdatedMoment(rssUpdatedAt, updated, sizeof(updated));
+  setVisible(v.updated, haveUpdated && count > 0);
+  if (haveUpdated) setText(v.updated, updated);
+  setColor(v.updated, p.muted);
+
+  const bool english = englishLanguage();
+  if (v.drawnRevision == rssRevision && v.drawnSelected == v.selected &&
+      v.drawnNight == p.night && v.drawnEnglish == english)
+    return;
+  v.drawnRevision = rssRevision;
+  v.drawnSelected = v.selected;
+  v.drawnNight = p.night;
+  v.drawnEnglish = english;
+
+  setVisible(v.status, count == 0);
+  setText(v.status, lv_label_get_text(rssStatusLabel));
+  setColor(v.status, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  setVisible(v.divider, count > 0);
+  setBackground(v.divider, p.line);
+  const lv_coord_t rowHeight = rssRowHeight(count);
+  const lv_coord_t lineHeight = lv_font_get_line_height(&lcd7_text18);
+  for (uint8_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+    RssRow &row = v.rows[index];
+    setVisible(row.box, index < count);
+    if (index >= count) continue;
+    const RssDetailText &item = rssDetailTexts[index];
+    const bool selected = index == v.selected;
+    if (lv_obj_get_height(row.box) != rowHeight) lv_obj_set_height(row.box, rowHeight);
+    setPosition(row.box, 0, RSS_LIST_TOP + index * rowHeight);
+    setBackground(row.box, selected ? (p.night ? RSS_SELECTED_NIGHT : RSS_SELECTED)
+                                    : COLOR_BACKGROUND);
+    setBorder(row.box, p.night ? NIGHT_LINE : RSS_ROW_LINE);
+    setText(row.time, item.time);
+    setColor(row.time, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+    setVisible(row.time, item.time[0] != '\0');
+    // Bez času začíná titulek nahoře; řádků titulku je tolik, kolik se do
+    // řádku seznamu vejde (u šesti zpráv dva, u pěti i bez času tři).
+    const lv_coord_t titleTop = item.time[0] != '\0' ? 25 : 8;
+    setPosition(row.title, RSS_ROW_PAD_X, titleTop);
+    const lv_coord_t lines = std::max<lv_coord_t>(
+        1, std::min<lv_coord_t>(3, (rowHeight - titleTop - 3) / lineHeight));
+    if (lv_obj_get_height(row.title) != lines * lineHeight)
+      lv_obj_set_height(row.title, lines * lineHeight);
+    setText(row.title, item.title);
+    setColor(row.title, p.night ? (selected ? COLOR_ERROR : NIGHT_MUTED)
+                                : (selected ? COLOR_TEXT : COLOR_MUTED));
+  }
+  syncRssDetail(p, count);
+}
+
+void rssTap(int16_t x, int16_t y) {
+  if (!created || shownMode != HomeMode::Rss || x >= RSS_LIST_W) return;
+  const uint8_t count = rssCount();
+  if (count == 0 || y < RSS_LIST_TOP) return;
+  const int index = (y - RSS_LIST_TOP) / rssRowHeight(count);
+  if (index >= count) return;
+  rss.selected = static_cast<uint8_t>(index);
+  rss.selectedAt = millis();
+  rss.holdUntil = rss.selectedAt + RSS_HOLD_MS;
+  sync(true);
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -1748,7 +1968,6 @@ class PsramAllocations {
   PsramAllocations &operator=(const PsramAllocations &) = delete;
 };
 
-HomeMode shownMode = HomeMode::None;
 uint32_t lastSyncAt = 0;
 
 HomeMode desiredMode() {
@@ -1759,6 +1978,8 @@ HomeMode desiredMode() {
     return HomeMode::Radar;
   if (activeScreen == DASHBOARD_SCREEN_AGENDA && agendaPage != nullptr)
     return HomeMode::Agenda;
+  if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr)
+    return HomeMode::Rss;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
@@ -1775,8 +1996,9 @@ void create() {
   createForecast(screen);
   createRadar(screen);
   createAgenda(screen);
+  createRss(screen);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
-                         radar.root, agenda.root})
+                         radar.root, agenda.root, rss.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -1794,6 +2016,14 @@ void applyMode(HomeMode mode) {
   setVisible(radar.root, mode == HomeMode::Radar);
   if (mode == HomeMode::Agenda) agenda.drawnRevision = UINT32_MAX;
   setVisible(agenda.root, mode == HomeMode::Agenda);
+  if (mode == HomeMode::Rss && shownMode != HomeMode::Rss) {
+    // Obrazovka se vždycky otevírá na nejnovější zprávě.
+    rss.selected = 0;
+    rss.selectedAt = millis();
+    rss.holdUntil = 0;
+    rss.drawnRevision = UINT32_MAX;
+  }
+  setVisible(rss.root, mode == HomeMode::Rss);
   const bool stageLeft = mode == HomeMode::Analog;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -1823,6 +2053,7 @@ void sync(bool force) {
     case HomeMode::Forecast: syncForecast(p); break;
     case HomeMode::Radar: syncRadar(p); break;
     case HomeMode::Agenda: syncAgenda(p); break;
+    case HomeMode::Rss: syncRss(p); break;
     case HomeMode::None: break;
   }
 }

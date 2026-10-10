@@ -38,6 +38,7 @@ void create();
 void sync(bool force);
 void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
+void rssTap(int16_t x, int16_t y);
 }  // namespace lcd7
 #endif
 
@@ -253,6 +254,8 @@ lv_obj_t *rssDetailTitleLabel = nullptr;
 lv_obj_t *rssDetailSummaryLabel = nullptr;
 bool rssDetailOpen = false;
 unsigned long rssDetailOpenedAt = 0;
+// Roste s každou změnou zpráv, pro zprávy 7" (stejně jako agendaRevision).
+uint32_t rssRevision = 0;
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
 // Pás pod ukazatelem obrazovek: čas a venkovní teplota. Stejná informace na
@@ -8103,6 +8106,11 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
     return;
   }
   if (activeScreen == DASHBOARD_SCREEN_RSS) {
+#if HODINY_BOARD_LCD7
+    // 7" má detail trvale vedle seznamu; klepnutí jen vybírá zprávu.
+    lcd7::rssTap(static_cast<int16_t>(x + STAGE_X), y);
+    return;
+#endif
     // Na otevřeném detailu klepnutí nic nedělá; zpátky vede tažení prstu.
     if (rssDetailOpen) return;
     const int index = rssItemAt(y);
@@ -9031,6 +9039,7 @@ void clockDashboardSetForecastFailed(bool failed) {
 void clockDashboardSetRssStatus(const char *message, uint8_t count,
                                 int64_t updatedAt) {
   if (rssPage == nullptr) return;
+  ++rssRevision;
   rssUpdatedAt = updatedAt;
   const bool footer = updatedAt > 0 && count > 0;
   if (count != rssVisibleItemCount || footer != rssFooterShown) {
@@ -9052,6 +9061,7 @@ void clockDashboardSetRssStatus(const char *message, uint8_t count,
 void clockDashboardSetRssItem(size_t index, const char *title,
                               const char *time, const char *summary) {
   if (rssPage == nullptr || index >= rssVisibleItemCount) return;
+  ++rssRevision;
   lv_obj_t *titleLabel = rssTitleLabels[index];
   if (titleLabel == nullptr) return;
   const bool hasTime = time != nullptr && time[0] != '\0';
@@ -10357,5 +10367,35 @@ void clockDashboardLcd7AgendaDemo(uint8_t variant) {
   for (size_t index = 0; index < count; ++index)
     clockDashboardSetAgendaItem(index, events[index].day, events[index].time,
                                 events[index].title, events[index].calendar);
+}
+
+void clockDashboardLcd7RssDemo(uint8_t variant) {
+  struct Story {
+    const char *time;
+    const char *title;
+    const char *summary;
+  };
+  // 0: pět zpráv z návrhu; 1: šest zpráv, jedna bez času a textu a jedna
+  // s dlouhým textem, který se musí zmenšit a utnout.
+  static const Story STORIES[] = {
+      {"09:12", "Na D1 u Mirošovic začne v pondělí oprava mostu, ve směru na Prahu zůstane jeden pruh",
+       "Opravy mostu na 21. kilometru potrvají do konce listopadu. Ředitelství silnic a dálnic doporučuje řidičům z Benešovska ráno počítat se zdržením až deset minut, objízdná trasa vede přes Strančice."},
+      {"08:47", "Meteorologové varují před silným větrem, nárazy až 70 km/h",
+       "Žlutá výstraha platí pro Středočeský kraj do 18 hodin. Hasiči doporučují uklidit volně ležící předměty z balkonů a zahrad a nezdržovat se v lese."},
+      {"08:20", "Benešov otevře v listopadu zrekonstruovaný krytý bazén",
+       "Rekonstrukce trvala dva roky. Vstupné zůstane na stejné úrovni jako před uzavřením, nově přibude dětské brouzdaliště a sauna."},
+      {"07:55", "Orionidy vrcholí příští týden, nejvíc meteorů bude vidět po půlnoci",
+       "Za jasné oblohy lze napočítat až dvacet meteorů za hodinu. Nejlepší podmínky budou mimo města, Měsíc v té době zapadá před půlnocí."},
+      {"07:30", "Školy v kraji dostanou peníze na nové jídelny", ""},
+      {"", "Vláda schválila návrh rozpočtu na příští rok, schodek má klesnout pod dvě stě miliard korun a výdaje na obranu porostou",
+       "Ministr financí uvedl, že rozpočet počítá s růstem ekonomiky o dvě procenta a s inflací kolem 2,5 procenta. Opozice návrh kritizuje jako nerealistický a upozorňuje, že příjmy z daní jsou nadhodnocené. Sněmovna by o rozpočtu měla poprvé hlasovat v listopadu, konečné schválení se čeká v prosinci. Kraje a obce mají dostat o tři procenta víc než letos, učitelé si polepší o pět procent. Na dopravní stavby půjde rekordních 150 miliard, nejvíc na dálnice D35 a D49 a na modernizaci železničních koridorů."},
+  };
+  const uint8_t count = variant == 1 ? 6 : 5;
+  clockDashboardSetRssAvailable(true);
+  clockDashboardSetRssStatus(nullptr, count, static_cast<int64_t>(time(nullptr)) - 600);
+  for (uint8_t index = 0; index < count; ++index) {
+    const Story &story = STORIES[variant == 1 ? 5 - index : index];
+    clockDashboardSetRssItem(index, story.title, story.time, story.summary);
+  }
 }
 #endif
