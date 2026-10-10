@@ -2556,6 +2556,11 @@ void handleUsbCommands() {
         appearance.style = static_cast<uint8_t>(usbCommand.substring(10).toInt());
         previewClockAppearanceFromWeb(appearance);
         Serial.println("CLOCKSTYLE_SET");
+#if HODINY_BOARD_LCD7
+      } else if (usbCommand == "HISTORYDEMO" && !screenshotTransferActive) {
+        clockDashboardLcd7HistoryDemo();
+        Serial.println("HISTORY_DEMO");
+#endif
       } else if (usbCommand == "LCDSYNC") {
         Serial.printf("LCD_SYNC_REPAIRS=%" PRIu32 " GLITCHES=%" PRIu32 "\n",
                       LCD_SyncRepairCount(), LCD_PhaseGlitchCount());

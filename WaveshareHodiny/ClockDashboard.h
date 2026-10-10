@@ -2,7 +2,9 @@
 
 #include <Arduino.h>
 
+#include "Board.h"
 #include "ClockConfig.h"
+#include "FirmwareBuild.h"
 #include "PlaneRadarService.h"
 #include "WeatherHistory.h"
 #include "WeatherForecast.h"
@@ -298,3 +300,8 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                                     uint8_t currentFrameNumber,
                                     uint8_t animationFrameCount,
                                     uint16_t displayedRadiusKm, bool mapOnly);
+
+#if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
+// Vyplní průběh hodnot ukázkou, aby šel screenshot dlaždic bez čekání 24 h.
+void clockDashboardLcd7HistoryDemo();
+#endif

@@ -687,12 +687,98 @@ void hideRoundDialContent() {
 
 // --- Dlaždice hodnot ------------------------------------------------------
 
+// Průběh hodnot za posledních 24 h pro čáru v dlaždici. Vzorek každých
+// 15 minut, jen v RAM: po restartu se čára plní znovu, zato se nic nezapisuje
+// do flash (zápis do flash rozhodí RGB panel). Paměť se bere hned při startu,
+// než se PSRAM rozdrobí.
+constexpr size_t HISTORY_POINTS = 96;
+constexpr uint32_t HISTORY_INTERVAL_MS = 15UL * 60UL * 1000UL;
+
+struct History {
+  float values[CLOCK_VALUE_SLOT_COUNT][HISTORY_POINTS];
+  uint8_t head;   // kam padne příští vzorek
+  uint8_t count;  // kolik vzorků je platných
+  uint32_t version;
+};
+History *history = nullptr;
+uint32_t lastHistorySampleAt = 0;
+
+void allocateHistory() {
+  history = static_cast<History *>(
+      heap_caps_calloc(1, sizeof(History), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
+float slotReadingForHistory(size_t slotIndex) {
+  const float battery = currentValues.slotBatteryPercent[slotIndex];
+  if (!std::isnan(battery) && battery <= CLOCK_DEAD_BATTERY_PERCENT) return NAN;
+  return valueSlotReading(slotIndex);
+}
+
+void recordHistorySample() {
+  for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot)
+    history->values[slot][history->head] = slotReadingForHistory(slot);
+  history->head = (history->head + 1) % HISTORY_POINTS;
+  if (history->count < HISTORY_POINTS) ++history->count;
+  ++history->version;
+  lastHistorySampleAt = millis();
+}
+
+// První vzorek padne, jakmile je známá aspoň jedna hodnota, další po
+// HISTORY_INTERVAL_MS.
+void maintainHistory() {
+  if (history == nullptr) return;
+  if (history->count > 0) {
+    if (millis() - lastHistorySampleAt >= HISTORY_INTERVAL_MS) recordHistorySample();
+    return;
+  }
+  for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot) {
+    if (!std::isnan(slotReadingForHistory(slot))) {
+      recordHistorySample();
+      return;
+    }
+  }
+}
+
+// Vzorek "age" kroků zpět (0 = nejnovější).
+float historyAt(size_t slot, size_t age) {
+  const size_t index = (history->head + HISTORY_POINTS - 1 - age) % HISTORY_POINTS;
+  return history->values[slot][index];
+}
+
+#if !FIRMWARE_RELEASE
+// Ukázkový průběh pro screenshot, než se nasbírá skutečný (USB HISTORYDEMO).
+void fillHistoryDemo() {
+  if (history == nullptr) return;
+  for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot) {
+    const float now = slotReadingForHistory(slot);
+    const float base = std::isnan(now) ? 10.0f : now;
+    const float swing = std::fabs(base) * 0.15f + 1.0f;
+    for (size_t i = 0; i < HISTORY_POINTS; ++i) {
+      const float phase = static_cast<float>(i) / HISTORY_POINTS * 6.283f;
+      history->values[slot][i] =
+          base + swing * (std::sin(phase + slot) - std::sin(6.283f + slot));
+    }
+  }
+  history->head = 0;
+  history->count = HISTORY_POINTS;
+  ++history->version;
+}
+#endif
+
 struct Tile {
   lv_obj_t *box;
   lv_obj_t *title;
   lv_obj_t *value;
   lv_obj_t *unit;
   lv_obj_t *battery;
+  lv_obj_t *spark;
+  lv_obj_t *since;
+  lv_obj_t *range;
+  lv_point_t points[HISTORY_POINTS];
+  uint32_t drawnVersion;
+  size_t drawnSlot;
+  lv_coord_t drawnWidth;
+  lv_coord_t drawnHeight;
 };
 
 struct ValuesView {
@@ -733,6 +819,14 @@ void createValues(lv_obj_t *screen) {
     tile.unit = label(tile.box, &lcd7_text18, TILE_PAD, 52);
     tile.battery = label(tile.box, &lv_font_montserrat_16, 0, 10);
     lv_label_set_text(tile.battery, LV_SYMBOL_BATTERY_EMPTY);
+    tile.spark = lv_line_create(tile.box);
+    lv_obj_set_style_line_width(tile.spark, 2, 0);
+    lv_obj_set_style_line_rounded(tile.spark, true, 0);
+    lv_obj_add_flag(tile.spark, LV_OBJ_FLAG_HIDDEN);
+    tile.since = label(tile.box, &lcd7_text15, TILE_PAD, 0);
+    lv_label_set_text(tile.since, "před 24 h");
+    tile.range = label(tile.box, &lcd7_text15, 0, 0);
+    tile.drawnVersion = UINT32_MAX;
   }
 }
 
@@ -799,6 +893,72 @@ void placeTile(Tile &tile, size_t position, size_t count) {
   setPosition(tile.box, x, y);
 }
 
+void showSparkline(Tile &tile, size_t slotIndex, const ValueSlotDisplay &display,
+                   lv_color_t color, const Palette &p, lv_coord_t tileWidth,
+                   lv_coord_t tileHeight, lv_coord_t sparkY,
+                   lv_coord_t sparkHeight, bool tall) {
+  const size_t count = history == nullptr ? 0 : history->count;
+  float low = NAN;
+  float high = NAN;
+  size_t valid = 0;
+  for (size_t age = 0; age < count; ++age) {
+    const float value = historyAt(slotIndex, age);
+    if (std::isnan(value)) continue;
+    low = std::isnan(low) ? value : std::min(low, value);
+    high = std::isnan(high) ? value : std::max(high, value);
+    ++valid;
+  }
+  const bool visible = valid >= 2;
+  setVisible(tile.spark, visible);
+  setVisible(tile.since, visible && tall);
+  setVisible(tile.range, visible && tall);
+  if (!visible) return;
+  if (lv_color_to32(lv_obj_get_style_line_color(tile.spark, 0)) != lv_color_to32(color))
+    lv_obj_set_style_line_color(tile.spark, color, 0);
+  setColor(tile.since, p.muted);
+  setColor(tile.range, p.muted);
+
+  if (tile.drawnVersion == history->version && tile.drawnSlot == slotIndex &&
+      tile.drawnWidth == tileWidth && tile.drawnHeight == tileHeight)
+    return;
+  tile.drawnVersion = history->version;
+  tile.drawnSlot = slotIndex;
+  tile.drawnWidth = tileWidth;
+  tile.drawnHeight = tileHeight;
+
+  // Osa x je vždy celých 24 h, nejnovější vzorek vpravo; mezery bez
+  // hodnoty čára přeskočí.
+  const lv_coord_t width = tileWidth - 2 * TILE_PAD;
+  const float span = high - low > 1e-6f ? high - low : 1.0f;
+  uint16_t points = 0;
+  for (size_t age = count; age-- > 0;) {
+    const float value = historyAt(slotIndex, age);
+    if (std::isnan(value)) continue;
+    const lv_coord_t x = static_cast<lv_coord_t>(
+        width - 1 - static_cast<int32_t>(age) * (width - 1) / (HISTORY_POINTS - 1));
+    const lv_coord_t y = static_cast<lv_coord_t>(
+        high - low > 1e-6f ? (high - value) / span * (sparkHeight - 2) + 1
+                           : sparkHeight / 2);
+    tile.points[points++] = {x, y};
+  }
+  lv_line_set_points(tile.spark, tile.points, points);
+  setPosition(tile.spark, TILE_PAD, sparkY);
+  if (tall) {
+    const lv_coord_t captionY = tileHeight - 10 - lv_font_get_line_height(&lcd7_text15);
+    setPosition(tile.since, TILE_PAD, captionY);
+    char lowText[16];
+    char highText[16];
+    char text[40];
+    formatValue(lowText, sizeof(lowText), low, display.decimals);
+    formatValue(highText, sizeof(highText), high, display.decimals);
+    snprintf(text, sizeof(text), "%s – %s", lowText, highText);
+    setText(tile.range, text);
+    lv_obj_update_layout(tile.range);
+    setPosition(tile.range, tileWidth - TILE_PAD - lv_obj_get_width(tile.range),
+                captionY);
+  }
+}
+
 void syncValues(const Palette &p) {
   ValuesView &v = values;
   syncTopBar(p);
@@ -854,12 +1014,19 @@ void syncValues(const Palette &p) {
     const lv_font_t *font = large ? &lcd7_number72 : &lcd7_number44;
     if (lv_obj_get_style_text_font(tile.value, 0) != font)
       lv_obj_set_style_text_font(tile.value, font, 0);
-    // Číslo uprostřed plochy pod názvem.
+    // Pod číslem čára průběhu; ve vysoké dlaždici i popisek s rozsahem.
+    const bool tall = tileHeight >= 150;
+    const lv_coord_t captionHeight = tall ? lv_font_get_line_height(&lcd7_text15) + 4 : 0;
+    const lv_coord_t sparkHeight = tall ? 56 : 24;
+    const lv_coord_t sparkY = tileHeight - 12 - captionHeight - sparkHeight;
+    // Číslo uprostřed plochy mezi názvem a čárou.
     const lv_coord_t titleBottom = 10 + lv_font_get_line_height(&lcd7_text15);
     setPosition(tile.value, TILE_PAD,
-                titleBottom + (tileHeight - titleBottom -
+                titleBottom + (sparkY - titleBottom -
                                lv_font_get_line_height(font)) / 2);
     const lv_color_t color = scaled(p, reading, *display.colorScale);
+    showSparkline(tile, slotIndex, display, color, p, tileWidth, tileHeight,
+                  sparkY, sparkHeight, tall);
     setColor(tile.value, color);
     setColor(tile.unit, color);
     setColor(tile.title, p.muted);
@@ -891,6 +1058,7 @@ HomeMode desiredMode() {
 }
 
 void create() {
+  allocateHistory();
   lv_obj_t *screen = lv_scr_act();
   createDigital(screen);
   createAnalog(screen);
@@ -914,6 +1082,7 @@ void applyMode(HomeMode mode) {
 
 void sync(bool force) {
   if (!created) return;
+  maintainHistory();
   const HomeMode mode = desiredMode();
   if (mode != shownMode) {
     applyMode(mode);

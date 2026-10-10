@@ -35,6 +35,7 @@
 namespace lcd7 {
 void create();
 void sync(bool force);
+void fillHistoryDemo();
 }  // namespace lcd7
 #endif
 
@@ -10255,4 +10256,8 @@ bool clockDashboardTrafficMapPage() {
 
 #if HODINY_BOARD_LCD7
 #include "ClockDashboardLcd7.h"
+#endif
+
+#if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
+void clockDashboardLcd7HistoryDemo() { lcd7::fillHistoryDemo(); }
 #endif
