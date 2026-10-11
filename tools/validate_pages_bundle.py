@@ -72,6 +72,90 @@ def validate_weather_assets(site: Path) -> None:
         raise SystemExit("Veřejné Meteocons neodpovídají firmwarovému allowlistu.")
 
 
+
+BOARD_SUFFIX = {"lcd21": "", "lcd7": "-lcd7"}
+
+
+def expected_parts(board: str) -> dict[str, int]:
+    prefix = "waveshare-hodiny" + BOARD_SUFFIX[board]
+    return {
+        name.replace("waveshare-hodiny", prefix, 1): offset
+        for name, offset in EXPECTED_PARTS.items()
+    }
+
+
+def check_build(manifest: dict, board: str, label: str) -> None:
+    builds = manifest.get("builds")
+    if not isinstance(builds, list) or len(builds) != 1:
+        raise SystemExit(f"{label}: manifest musí obsahovat právě jeden build.")
+    build = builds[0]
+    if build.get("chipFamily") != "ESP32-S3" or build.get("improv") is not True:
+        raise SystemExit(f"{label}: manifest nemá očekávaný ESP32-S3 Improv build.")
+    parts = build.get("parts")
+    wanted = expected_parts(board)
+    if not isinstance(parts, list) or len(parts) != len(wanted):
+        raise SystemExit(f"{label}: manifest musí obsahovat právě čtyři instalační části.")
+    if any(
+        not isinstance(part, dict)
+        or set(part) != {"path", "offset"}
+        or not isinstance(part["path"], str)
+        or not isinstance(part["offset"], int)
+        or isinstance(part["offset"], bool)
+        for part in parts
+    ):
+        raise SystemExit(f"{label}: instalační část má neplatnou strukturu nebo typy.")
+    paths = [part["path"] for part in parts]
+    if len(paths) != len(set(paths)):
+        raise SystemExit(f"{label}: manifest obsahuje duplicitní instalační část.")
+    actual = {part["path"]: part["offset"] for part in parts}
+    if actual != wanted:
+        raise SystemExit(f"{label}: instalační části nebo offsety nesouhlasí: {actual}")
+
+
+# Balíček jedné desky v adresáři firmware: manifest, čtyři části, OTA obraz
+# a metadata. Metadata 2,1" ze starších release pole "board" nemají.
+def validate_board_bundle(firmware: Path, board: str) -> dict:
+    suffix = BOARD_SUFFIX[board]
+    label = f"Deska {board}"
+    manifest = json.loads((firmware / f"manifest{suffix}.json").read_text(encoding="utf-8"))
+    check_build(manifest, board, label)
+    for name in expected_parts(board):
+        path = firmware / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise SystemExit(f"{label}: instalační část chybí nebo je prázdná: {path}")
+    ota_name = f"waveshare-hodiny{suffix}.ota.bin"
+    ota_path = firmware / ota_name
+    ota_metadata_path = firmware / f"ota{suffix}.json"
+    if not ota_path.is_file() or not ota_metadata_path.is_file():
+        raise SystemExit(f"{label}: ve veřejném release chybí OTA obraz nebo metadata.")
+    ota = json.loads(ota_metadata_path.read_text(encoding="utf-8"))
+    base_keys = {"version", "chipFamily", "size", "sha256", "url"}
+    if set(ota) != base_keys | {"board"} and not (board == "lcd21" and set(ota) == base_keys):
+        raise SystemExit(f"{label}: OTA metadata mají neplatnou strukturu.")
+    if (
+        ota.get("board", "lcd21") != board
+        or ota["version"] != manifest.get("version")
+        or ota["chipFamily"] != "ESP32-S3"
+        or ota["size"] != ota_path.stat().st_size
+        or ota["sha256"] != sha256(ota_path)
+        or ota["url"] != f"/waveshare-hodiny/firmware/{ota_name}"
+    ):
+        raise SystemExit(f"{label}: OTA metadata neodpovídají veřejnému OTA obrazu.")
+    return manifest
+
+
+def validate_archived_manifest(path: Path, version: str, board: str) -> dict:
+    label = f"Archivní verze {version} ({board})"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest.get("version") != version:
+        raise SystemExit(f"{label}: manifest nesouhlasí s katalogem.")
+    check_build(manifest, board, label)
+    for name in expected_parts(board):
+        part = path.parent / name
+        if not part.is_file() or part.stat().st_size == 0:
+            raise SystemExit(f"{label}: chybí část {name}.")
+    return manifest
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Použití: validate_pages_bundle.py ADRESAR_WEBU")
@@ -96,54 +180,12 @@ def main() -> None:
             raise SystemExit("Firmware adresář obsahuje soubory bez manifestu.")
         print("Web je platný; firmware zatím není publikovaný.")
         return
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    builds = manifest.get("builds")
-    if not isinstance(builds, list) or len(builds) != 1:
-        raise SystemExit("Manifest musí obsahovat právě jeden build.")
-    build = builds[0]
-    if build.get("chipFamily") != "ESP32-S3" or build.get("improv") is not True:
-        raise SystemExit("Manifest nemá očekávaný ESP32-S3 Improv build.")
-
-    parts = build.get("parts")
-    if not isinstance(parts, list) or len(parts) != len(EXPECTED_PARTS):
-        raise SystemExit("Manifest musí obsahovat právě čtyři instalační části.")
-    if any(
-        not isinstance(part, dict)
-        or set(part) != {"path", "offset"}
-        or not isinstance(part["path"], str)
-        or not isinstance(part["offset"], int)
-        or isinstance(part["offset"], bool)
-        for part in parts
-    ):
-        raise SystemExit("Instalační část má neplatnou strukturu nebo typy.")
-    paths = [part["path"] for part in parts]
-    if len(paths) != len(set(paths)):
-        raise SystemExit("Manifest obsahuje duplicitní instalační část.")
-    actual = {part["path"]: part["offset"] for part in parts}
-    if actual != EXPECTED_PARTS:
-        raise SystemExit(f"Instalační části nebo offsety nesouhlasí: {actual}")
-
-    for name in EXPECTED_PARTS:
-        path = firmware / name
-        if not path.is_file() or path.stat().st_size == 0:
-            raise SystemExit(f"Instalační část chybí nebo je prázdná: {path}")
-    ota_path = firmware / "waveshare-hodiny.ota.bin"
-    ota_metadata_path = firmware / "ota.json"
-    if not ota_path.is_file() or not ota_metadata_path.is_file():
-        raise SystemExit("Ve veřejném release chybí OTA obraz nebo metadata.")
-    ota = json.loads(ota_metadata_path.read_text(encoding="utf-8"))
-    expected_ota_keys = {"version", "chipFamily", "size", "sha256", "url"}
-    if set(ota) != expected_ota_keys:
-        raise SystemExit("OTA metadata mají neplatnou strukturu.")
-    if (
-        ota["version"] != manifest.get("version")
-        or ota["chipFamily"] != "ESP32-S3"
-        or ota["size"] != ota_path.stat().st_size
-        or ota["sha256"] != sha256(ota_path)
-        or ota["url"] != "/waveshare-hodiny/firmware/waveshare-hodiny.ota.bin"
-    ):
-        raise SystemExit("OTA metadata neodpovídají veřejnému OTA obrazu.")
+    manifest = validate_board_bundle(firmware, "lcd21")
+    lcd7_manifest = None
+    if (firmware / "manifest-lcd7.json").exists():
+        lcd7_manifest = validate_board_bundle(firmware, "lcd7")
+        if lcd7_manifest.get("version") != manifest.get("version"):
+            raise SystemExit("Balíčky 2,1\" a 7\" mají různé verze.")
 
     catalog_path = firmware / "releases.json"
     if catalog_path.exists():
@@ -153,52 +195,33 @@ def main() -> None:
             raise SystemExit("Katalog musí obsahovat jednu až pět stabilních verzí.")
         versions: set[str] = set()
         for index, release in enumerate(releases):
-            if not isinstance(release, dict) or set(release) != {"version", "manifest"}:
+            if not isinstance(release, dict) or set(release) not in (
+                {"version", "manifest"},
+                {"version", "manifest", "manifestLcd7"},
+            ):
                 raise SystemExit("Položka katalogu verzí má neplatnou strukturu.")
             version = release["version"]
-            relative_manifest = release["manifest"]
-            expected_manifest = f"firmware/releases/{version}/manifest.json"
             if (
                 not isinstance(version, str)
                 or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version)
                 or version in versions
-                or relative_manifest != expected_manifest
+                or release["manifest"] != f"firmware/releases/{version}/manifest.json"
+                or release.get("manifestLcd7", f"firmware/releases/{version}/manifest-lcd7.json")
+                != f"firmware/releases/{version}/manifest-lcd7.json"
             ):
                 raise SystemExit("Katalog obsahuje neplatnou nebo duplicitní verzi.")
             versions.add(version)
-            archived_manifest_path = site / relative_manifest
-            archived_manifest = json.loads(archived_manifest_path.read_text(encoding="utf-8"))
-            if archived_manifest.get("version") != version:
-                raise SystemExit(f"Manifest archivní verze {version} nesouhlasí s katalogem.")
-            archived_builds = archived_manifest.get("builds")
-            if not isinstance(archived_builds, list) or len(archived_builds) != 1:
-                raise SystemExit(f"Archivní verze {version} nemá právě jeden build.")
-            archived_build = archived_builds[0]
-            archived_parts = archived_build.get("parts")
-            if (
-                archived_build.get("chipFamily") != "ESP32-S3"
-                or archived_build.get("improv") is not True
-                or not isinstance(archived_parts, list)
-                or len(archived_parts) != len(EXPECTED_PARTS)
-                or any(
-                    not isinstance(part, dict)
-                    or set(part) != {"path", "offset"}
-                    or not isinstance(part["path"], str)
-                    or not isinstance(part["offset"], int)
-                    or isinstance(part["offset"], bool)
-                    for part in archived_parts
-                )
-                or {part.get("path"): part.get("offset") for part in archived_parts if isinstance(part, dict)} != EXPECTED_PARTS
-            ):
-                raise SystemExit(f"Archivní manifest {version} nemá očekávaný instalační build.")
-            for name in EXPECTED_PARTS:
-                archived_part = archived_manifest_path.parent / name
-                if not archived_part.is_file() or archived_part.stat().st_size == 0:
-                    raise SystemExit(f"Archivní verzi {version} chybí část {name}.")
-            if index == 0 and archived_manifest != manifest:
+            archived = validate_archived_manifest(site / release["manifest"], version, "lcd21")
+            if index == 0 and archived != manifest:
                 raise SystemExit("První verze katalogu neodpovídá aktuálnímu manifestu.")
-    print(f"Web i instalační balíček verze {manifest.get('version')} jsou platné.")
-
+            if "manifestLcd7" in release:
+                archived7 = validate_archived_manifest(site / release["manifestLcd7"], version, "lcd7")
+                if index == 0 and archived7 != lcd7_manifest:
+                    raise SystemExit("První verze katalogu neodpovídá aktuálnímu manifestu 7\".")
+            elif index == 0 and lcd7_manifest is not None:
+                raise SystemExit("Katalog nezná 7\" manifest aktuální verze.")
+    boards = "2,1\" i 7\"" if lcd7_manifest is not None else "2,1\""
+    print(f"Web i instalační balíček verze {manifest.get('version')} ({boards}) jsou platné.")
 
 if __name__ == "__main__":
     main()

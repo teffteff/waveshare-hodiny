@@ -57,10 +57,25 @@ jobs:
                 --pattern waveshare-hodiny.partitions.bin \
                 --pattern waveshare-hodiny.boot-app0.bin \
                 --pattern waveshare-hodiny.app.bin
+              # 7" je v release až od verze, která ho přinesla; starší nic nemají.
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$release_dir" \
+                --pattern manifest-lcd7.json \
+                --pattern 'waveshare-hodiny-lcd7.bootloader.bin' \
+                --pattern 'waveshare-hodiny-lcd7.partitions.bin' \
+                --pattern 'waveshare-hodiny-lcd7.boot-app0.bin' \
+                --pattern 'waveshare-hodiny-lcd7.app.bin' 2>/dev/null || true
             done < <(jq -r '.[].tagName' <<<"$releases")
 
-            jq '{releases: [.[] | {version: (.tagName | ltrimstr("v")), manifest: ("firmware/releases/" + (.tagName | ltrimstr("v")) + "/manifest.json")}]}' \
-              <<<"$releases" > _site/firmware/releases.json
+            # Katalog: u každé verze manifest kulaté 2,1", u verzí se 7" i manifestLcd7.
+            while IFS= read -r version; do
+              dir="_site/firmware/releases/$version"
+              if [[ -f "$dir/manifest-lcd7.json" ]]; then
+                jq -n --arg v "$version" '{version: $v, manifest: ("firmware/releases/" + $v + "/manifest.json"), manifestLcd7: ("firmware/releases/" + $v + "/manifest-lcd7.json")}'
+              else
+                jq -n --arg v "$version" '{version: $v, manifest: ("firmware/releases/" + $v + "/manifest.json")}'
+              fi
+            done < <(jq -r '.[].tagName | ltrimstr("v")' <<<"$releases") \
+              | jq -s '{releases: .}' > _site/firmware/releases.json
 
             gh release download "$latest_tag" --repo "$GITHUB_REPOSITORY" --dir _site/firmware \
               --pattern manifest.json \
@@ -70,6 +85,10 @@ jobs:
               --pattern waveshare-hodiny.app.bin \
               --pattern waveshare-hodiny.ota.bin \
               --pattern ota.json
+            gh release download "$latest_tag" --repo "$GITHUB_REPOSITORY" --dir _site/firmware \
+              --pattern manifest-lcd7.json \
+              --pattern 'waveshare-hodiny-lcd7.*.bin' \
+              --pattern ota-lcd7.json 2>/dev/null || true
           else
             echo "No public firmware release exists yet; installer stays disabled."
           fi
@@ -100,6 +119,7 @@ jobs:
           paths=(index.html styles.css app.js)
           # Bez publikovaného release web firmware adresář nemá, viz "Prepare site".
           if [[ -f _site/firmware/ota.json ]]; then paths+=(firmware/ota.json); fi
+          if [[ -f _site/firmware/ota-lcd7.json ]]; then paths+=(firmware/ota-lcd7.json); fi
           for path in "${paths[@]}"; do
             code="$(curl -sS -o /dev/null -w '%{http_code}' --retry 5 --retry-all-errors \
               --retry-delay 10 --max-time 30 "$base/$path" || echo 000)"

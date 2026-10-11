@@ -74,6 +74,17 @@ jobs:
           RELEASE_CHANNEL: public
         run: ./build-release.sh "${{ inputs.version }}"
 
+      # 7" má vlastní knihovny ESP-IDF (tools/setup_lcd7_sdk.sh) a vlastní
+      # názvy souborů (-lcd7), takže kulatá 2,1" jeho obraz nikdy nestáhne.
+      - name: Build public 7-inch release
+        env:
+          RELEASE_CHANNEL: public
+          BOARD: lcd7
+        run: |
+          # Skript SDK kopíruje stock core 3.0.7 z datového adresáře Arduino CLI.
+          export ARDUINO_STOCK_DATA_DIR="$(arduino-cli config get directories.data --config-file arduino-cli.yaml)"
+          ./build-release.sh "${{ inputs.version }}"
+
       - name: Validate complete Pages and OTA bundle
         run: |
           mkdir -p _site/screenshots _site/media _site/firmware
@@ -83,13 +94,18 @@ jobs:
           cp build/waveshare-hodiny-release/${{ inputs.version }}-public/package/manifest.json _site/firmware/
           cp build/waveshare-hodiny-release/${{ inputs.version }}-public/package/ota.json _site/firmware/
           cp build/waveshare-hodiny-release/${{ inputs.version }}-public/package/waveshare-hodiny.*.bin _site/firmware/
+          lcd7=build/waveshare-hodiny-release/${{ inputs.version }}-public-lcd7/package
+          cp "$lcd7/manifest-lcd7.json" "$lcd7/ota-lcd7.json" _site/firmware/
+          cp "$lcd7"/waveshare-hodiny-lcd7.*.bin _site/firmware/
           python3 tools/validate_pages_bundle.py _site
 
       - name: Upload validated package artifact
         uses: actions/upload-artifact@v7
         with:
           name: waveshare-hodiny-${{ inputs.version }}-public
-          path: build/waveshare-hodiny-release/${{ inputs.version }}-public/package/
+          path: |
+            build/waveshare-hodiny-release/${{ inputs.version }}-public/package/
+            build/waveshare-hodiny-release/${{ inputs.version }}-public-lcd7/package/
           if-no-files-found: error
           retention-days: 14
 
@@ -108,6 +124,14 @@ jobs:
             build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.app.bin \
             build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.ota.bin \
             build/waveshare-hodiny-release/$VERSION-public/package/waveshare-hodiny.elf \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/manifest-lcd7.json \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/ota-lcd7.json \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/waveshare-hodiny-lcd7.bootloader.bin \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/waveshare-hodiny-lcd7.partitions.bin \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/waveshare-hodiny-lcd7.boot-app0.bin \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/waveshare-hodiny-lcd7.app.bin \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/waveshare-hodiny-lcd7.ota.bin \
+            build/waveshare-hodiny-release/$VERSION-public-lcd7/package/waveshare-hodiny-lcd7.elf \
             --repo "$GITHUB_REPOSITORY" \
             --title "Waveshare Hodiny $VERSION" \
             --generate-notes \

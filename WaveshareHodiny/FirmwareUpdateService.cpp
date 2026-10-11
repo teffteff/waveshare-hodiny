@@ -127,12 +127,20 @@ String normalizedDownloadUrl(String url) {
   return url;
 }
 
+// Každá deska má vlastní metadata: kulatá 2,1" ota.json (tak je čte i starší
+// firmware bez kontroly desky), 7" ota-lcd7.json. Kulatá tak 7" obraz nikdy
+// neuvidí; pole "board" v metadatech je druhá pojistka.
 String metadataUrl() {
   if (FIRMWARE_OTA_METADATA_PATH[0] != '\0') {
-    return String(FIRMWARE_SERVER_URL) + FIRMWARE_OTA_METADATA_PATH;
+    String path = FIRMWARE_OTA_METADATA_PATH;
+    if (strcmp(BOARD_ID, "lcd21") != 0 && path.endsWith("/ota.json"))
+      path = path.substring(0, path.length() - 5) + "-" + BOARD_ID + ".json";
+    return String(FIRMWARE_SERVER_URL) + path;
   }
-  return String(FIRMWARE_SERVER_URL) + "/api/v1/projects/" +
-         FIRMWARE_PROJECT_SLUG + "/ota";
+  String url = String(FIRMWARE_SERVER_URL) + "/api/v1/projects/" +
+               FIRMWARE_PROJECT_SLUG + "/ota";
+  if (strcmp(BOARD_ID, "lcd21") != 0) url += String("?board=") + BOARD_ID;
+  return url;
 }
 
 String sha256Hex(const uint8_t digest[32]) {

@@ -55,7 +55,7 @@ const translations = {
   "Spusťte instalaci": "Start installation", "Prohlížeč Vás požádá o výběr sériového portu.": "Your browser will ask you to select a serial port.",
   "Nastavte Wi-Fi": "Configure Wi-Fi", "Po instalaci zadejte síť přes Improv Serial.": "After installation, enter the network using Improv Serial.",
   "Veřejný stabilní firmware": "Public stable firmware", "Zjišťuji dostupnost…": "Checking availability…", "Připojit zařízení": "Connect device",
-  "Vyberte verzi firmware": "Select firmware version", "Načítám dostupné verze…": "Loading available versions…",
+  "Vyberte verzi firmware": "Select firmware version", "Vyberte desku": "Select board", "Kulatý displej 2,1\"": "Round 2.1\" display", "Displej 7\" (800 × 480)": "7\" display (800 × 480)", "Načítám dostupné verze…": "Loading available versions…",
   "Tento prohlížeč nepodporuje Web Serial. Otevřete stránku v desktopovém Chromu nebo Edge.": "This browser does not support Web Serial. Open this page in desktop Chrome or Edge.",
   "Přístup k sériovému portu není povolený. Otevřete stránku přes zabezpečené HTTPS.": "Serial port access is not allowed. Open this page over secure HTTPS.",
   "Instalátor se připravuje.": "Preparing the installer.", "Pozor:": "Warning:",
@@ -137,16 +137,29 @@ const installButton = document.querySelector("#install-button");
 const statusLabel = document.querySelector("#installer-status");
 const firmwareSelect = document.querySelector("#firmware-select");
 const downgradeWarning = document.querySelector("#installer-downgrade");
+const boardSelect = document.querySelector("#board-select");
+
+// Obě desky mají stejný čip, takže je esp-web-tools nerozliší: deska se volí
+// tady a každá má vlastní manifest. 7" je v katalogu až od verze, která ho
+// přinesla (pole manifestLcd7).
+function boardReleases() {
+  if (boardSelect?.value !== "lcd7") return installerReleases;
+  return installerReleases
+    .filter((release) => typeof release.manifestLcd7 === "string")
+    .map((release) => ({ version: release.version, manifest: release.manifestLcd7 }));
+}
 
 function refreshFirmwareOptions() {
-  if (!firmwareSelect || installerReleases.length === 0) return;
-  const selectedVersion = installerReleases.some((release) => release.version === firmwareSelect.value)
+  const releases = boardReleases();
+  if (!firmwareSelect || releases.length === 0) return;
+  const latest = releases[0].version;
+  const selectedVersion = releases.some((release) => release.version === firmwareSelect.value)
     ? firmwareSelect.value
-    : latestInstallerVersion;
-  firmwareSelect.replaceChildren(...installerReleases.map((release) => {
+    : latest;
+  firmwareSelect.replaceChildren(...releases.map((release) => {
     const option = document.createElement("option");
     option.value = release.version;
-    option.textContent = release.version === latestInstallerVersion ? `${release.version} (${currentLanguage === "en" ? "latest" : "nejnovější"})` : release.version;
+    option.textContent = release.version === latest ? `${release.version} (${currentLanguage === "en" ? "latest" : "nejnovější"})` : release.version;
     option.dataset.manifest = release.manifest;
     return option;
   }));
@@ -175,15 +188,39 @@ async function prepareInstaller() {
     if (!Array.isArray(catalog.releases) || catalog.releases.length < 1 || catalog.releases.length > 5) throw new Error("invalid release catalog");
     installerReleases = catalog.releases;
     latestInstallerVersion = installerReleases[0].version;
+    // Volba desky se ukáže, až nějaký release ponese i 7" firmware.
+    const lcd7Available = installerReleases.some((release) => typeof release.manifestLcd7 === "string");
+    if (boardSelect) {
+      boardSelect.hidden = !lcd7Available;
+      document.querySelector("#board-select-label").hidden = !lcd7Available;
+      boardSelect.disabled = !lcd7Available;
+    }
     refreshFirmwareOptions();
     firmwareSelect.disabled = false;
-    await selectFirmware(catalog.releases[0]);
+    await selectFirmware(boardReleases()[0]);
   } catch (error) {
     statusLabel.classList.add("error");
     console.info(messages[currentLanguage].log, error.message);
   }
   updateInstallerText();
 }
+
+boardSelect?.addEventListener("change", async () => {
+  statusLabel.classList.remove("error");
+  installButton.removeAttribute("ready");
+  const releases = boardReleases();
+  latestInstallerVersion = releases[0]?.version ?? latestInstallerVersion;
+  refreshFirmwareOptions();
+  try {
+    if (!releases.length) throw new Error("no release for board");
+    await selectFirmware(releases[0]);
+  } catch (error) {
+    installerAvailable = false;
+    statusLabel.classList.add("error");
+    console.info(messages[currentLanguage].log, error.message);
+    updateInstallerText();
+  }
+});
 
 firmwareSelect.addEventListener("change", async () => {
   statusLabel.classList.remove("error");
