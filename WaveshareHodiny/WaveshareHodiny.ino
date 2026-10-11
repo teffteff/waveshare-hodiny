@@ -26,6 +26,8 @@
 #include "SharedFrames.h"
 #include "MemoryCensus.h"
 #include "HaHistoryBuckets.h"
+#include "HomeAssistantTemplate.h"
+#include "HttpDownload.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
 #include "Astronomy.h"
@@ -254,6 +256,10 @@ constexpr uint8_t HOME_ASSISTANT_REQUEST_ATTEMPTS = 2;
 constexpr uint32_t HOME_ASSISTANT_REQUEST_RETRY_DELAY_MS = 250;
 // Pauza mezi entitami, ve které smyčka nedrží zámek sítě.
 constexpr uint32_t HOME_ASSISTANT_ENTITY_YIELD_MS = 20;
+// Když /api/template s tímto tokenem nejde (token bez práv administrátora,
+// HA bez šablon), čtou se entity po jedné a šablona se zkusí znovu za hodinu
+// nebo hned po změně adresy či tokenu.
+constexpr uint32_t HOME_ASSISTANT_TEMPLATE_RETRY_MS = 60UL * 60UL * 1000UL;
 constexpr uint32_t OPEN_METEO_REFRESH_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t TMEP_REFRESH_MS = 60UL * 1000UL;
 constexpr uint32_t EXTERNAL_DATA_RETRY_MS = 60UL * 1000UL;
@@ -3543,31 +3549,28 @@ bool previousLocalDayTimestamp(time_t nextTimestamp,
   return previousTimestamp > 0 && previousTimestamp < nextTimestamp;
 }
 
-bool applySunState(const ClockConfig &config, const String &payload,
-                   const String &state, ClockValues &values) {
+// Texty atributů jsou prázdné, když je odpověď nenese; čas se pak nepřečte
+// stejně jako u chybějícího klíče.
+bool applySunStateFields(const ClockConfig &config, const String &state,
+                         const String &sunriseText, const String &sunsetText,
+                         const String &lastChangedText, ClockValues &values) {
   values.sunStateAvailable = false;
   if (state != "above_horizon" && state != "below_horizon") return false;
-  String sunriseText;
-  String sunsetText;
   time_t sunrise = 0;
   time_t sunset = 0;
-  if (extractJsonStringField(payload, "next_rising", sunriseText) &&
-      parseIso8601Timestamp(sunriseText, sunrise)) {
+  if (parseIso8601Timestamp(sunriseText, sunrise)) {
     values.nextSunriseTimestamp = static_cast<uint64_t>(sunrise);
   }
-  if (extractJsonStringField(payload, "next_setting", sunsetText) &&
-      parseIso8601Timestamp(sunsetText, sunset)) {
+  if (parseIso8601Timestamp(sunsetText, sunset)) {
     values.nextSunsetTimestamp = static_cast<uint64_t>(sunset);
   }
   const bool horizonIsDay = state == "above_horizon";
-  String lastChangedText;
   time_t lastChanged = 0;
   time_t expectedCompletedTransition = 0;
   const time_t nextSameTransition = horizonIsDay ? sunrise : sunset;
   const time_t nextUpcomingTransition = horizonIsDay ? sunset : sunrise;
   const time_t now = time(nullptr);
   const bool lastChangedAvailable =
-      extractJsonStringField(payload, "last_changed", lastChangedText) &&
       parseIso8601Timestamp(lastChangedText, lastChanged);
   const bool expectedCompletedTransitionAvailable = previousLocalDayTimestamp(
       nextSameTransition, expectedCompletedTransition);
@@ -3588,6 +3591,169 @@ bool applySunState(const ClockConfig &config, const String &payload,
   values.weatherIsDay = decision == ClockSunDecision::Day;
   values.sunStateAvailable = true;
   return true;
+}
+
+bool applySunState(const ClockConfig &config, const String &payload,
+                   const String &state, ClockValues &values) {
+  String sunriseText;
+  String sunsetText;
+  String lastChangedText;
+  if (!extractJsonStringField(payload, "next_rising", sunriseText))
+    sunriseText = "";
+  if (!extractJsonStringField(payload, "next_setting", sunsetText))
+    sunsetText = "";
+  if (!extractJsonStringField(payload, "last_changed", lastChangedText))
+    lastChangedText = "";
+  return applySunStateFields(config, state, sunriseText, sunsetText,
+                             lastChangedText, values);
+}
+
+// Přijímá odpověď šablony do pevného bufferu. Nad kapacitu přestane přijímat
+// a nahlásí přetečení, aby se useknutá odpověď nevydávala za úplnou.
+class HomeAssistantTemplateSink : public Print {
+ public:
+  HomeAssistantTemplateSink(uint8_t *buffer, size_t capacity)
+      : buffer_(buffer), capacity_(capacity) {}
+
+  size_t write(uint8_t value) override { return write(&value, 1); }
+
+  size_t write(const uint8_t *data, size_t size) override {
+    const size_t remaining = capacity_ - length_;
+    const size_t accepted = size < remaining ? size : remaining;
+    if (accepted > 0) memcpy(buffer_ + length_, data, accepted);
+    length_ += accepted;
+    if (accepted != size) overflowed_ = true;
+    return accepted;
+  }
+
+  size_t length() const { return length_; }
+  bool overflowed() const { return overflowed_; }
+
+ private:
+  uint8_t *buffer_;
+  size_t capacity_;
+  size_t length_ = 0;
+  bool overflowed_ = false;
+};
+
+// Buffer dotazu i odpovědi šablony. Bere se jednou a drží se po celý běh:
+// po hodinách běhu by se blok téhle velikosti v rozdrobené PSRAM nemusel
+// najít. Když se nepodaří hned, zkusí se to při dalším obnovení a do té doby
+// se čte po entitách.
+uint8_t *homeAssistantTemplateBuffer() {
+  static uint8_t *buffer = nullptr;
+  if (buffer == nullptr) {
+    buffer = static_cast<uint8_t *>(heap_caps_malloc(
+        HA_TEMPLATE_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  return buffer;
+}
+
+// Otisk adresy a tokenu, aby se po jejich změně šablona zkusila hned znovu.
+uint32_t homeAssistantTemplateConfigHash(const ClockConfig &config) {
+  uint32_t hash = 2166136261u;
+  for (const char *text : {config.homeAssistantUrl, config.homeAssistantToken}) {
+    for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+      hash = (hash ^ static_cast<uint8_t>(*cursor)) * 16777619u;
+    }
+    hash = (hash ^ 0xFFu) * 16777619u;
+  }
+  return hash;
+}
+
+uint32_t homeAssistantTemplateBlockedHash = 0;
+unsigned long homeAssistantTemplateBlockedAt = 0;
+bool homeAssistantTemplateBlocked = false;
+
+enum class HomeAssistantTemplateResult : uint8_t {
+  Ok,
+  // HA nedostupný (spojení, zámek sítě): dotazy po entitách by dopadly
+  // stejně, jen mnohokrát pomaleji.
+  Unreachable,
+  // HA odpověděl, ale šablona nepomohla: zkusí se dotazy po entitách.
+  Failed,
+};
+
+// Všechny entity jedním POST /api/template. Při Ok jsou v `entities` údaje
+// pro každou pozici seznamu a ukazují do bufferu šablony.
+HomeAssistantTemplateResult requestHomeAssistantTemplate(
+    NetworkClient &client, const ClockConfig &config,
+    const char *const *entityIds, size_t entityCount,
+    HaTemplateEntity *entities, int &lastStatus) {
+  if (homeAssistantTemplateBlocked) {
+    if (homeAssistantTemplateBlockedHash ==
+            homeAssistantTemplateConfigHash(config) &&
+        millis() - homeAssistantTemplateBlockedAt <
+            HOME_ASSISTANT_TEMPLATE_RETRY_MS) {
+      return HomeAssistantTemplateResult::Failed;
+    }
+    homeAssistantTemplateBlocked = false;
+  }
+  uint8_t *buffer = homeAssistantTemplateBuffer();
+  if (buffer == nullptr) return HomeAssistantTemplateResult::Failed;
+  NetworkOperationGuard networkGuard(HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
+  if (!networkGuard) {
+    lastStatus = HTTPC_ERROR_CONNECTION_REFUSED;
+    return HomeAssistantTemplateResult::Unreachable;
+  }
+  const String url = String(config.homeAssistantUrl) + "/api/template";
+  char *text = reinterpret_cast<char *>(buffer);
+  for (uint8_t attempt = 0; attempt < HOME_ASSISTANT_REQUEST_ATTEMPTS;
+       ++attempt) {
+    // Tělo se skládá znovu před každým pokusem: odpověď předchozího ho
+    // v bufferu mohla přepsat. Pozice 5 je entita slunce.
+    const size_t bodyLength = haTemplateBuildRequest(
+        entityIds, entityCount, 5, text, HA_TEMPLATE_BUFFER_BYTES);
+    if (bodyLength == 0) return HomeAssistantTemplateResult::Failed;
+    HTTPClient http;
+    http.setConnectTimeout(HOME_ASSISTANT_CONNECT_TIMEOUT_MS);
+    http.setTimeout(HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
+    http.setReuse(true);
+    httpDownloadPrepare(http);
+    bool parsed = false;
+    if (!http.begin(client, url)) {
+      lastStatus = HTTPC_ERROR_CONNECTION_REFUSED;
+    } else {
+      http.addHeader("Authorization",
+                     String("Bearer ") + config.homeAssistantToken);
+      http.addHeader("Accept", "application/json");
+      http.addHeader("Content-Type", "application/json");
+      lastStatus = http.POST(buffer, bodyLength);
+      if (lastStatus == HTTP_CODE_OK) {
+        HomeAssistantTemplateSink sink(buffer, HA_TEMPLATE_BUFFER_BYTES);
+        const int read = httpDownloadBody(http, sink,
+                                          HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
+        parsed = read >= 0 && !sink.overflowed() &&
+                 haTemplateParseResponse(text, sink.length(), entityIds,
+                                         entityCount, entities);
+        if (!parsed) {
+          Serial.printf("[HA] odpoved sablony nepouzitelna (%d, %s)\n", read,
+                        sink.overflowed() ? "preteceni" : "obsah");
+        }
+      }
+      http.end();
+    }
+    if (parsed) return HomeAssistantTemplateResult::Ok;
+    // Odpověď 200, ze které nic nejde přečíst, se opakováním nespraví.
+    if (lastStatus == HTTP_CODE_OK) return HomeAssistantTemplateResult::Failed;
+    if (!shouldRetryHomeAssistantRequest(lastStatus) ||
+        attempt + 1 >= HOME_ASSISTANT_REQUEST_ATTEMPTS) {
+      break;
+    }
+    delay(HOME_ASSISTANT_REQUEST_RETRY_DELAY_MS);
+  }
+  if (lastStatus <= 0) return HomeAssistantTemplateResult::Unreachable;
+  // 400 chyba šablony, 401/403 token bez práv administrátora (šablony je
+  // vyžadují), 404/405 HA bez šablon: s tímto nastavením se nic nezmění.
+  if (lastStatus == 400 || lastStatus == 401 || lastStatus == 403 ||
+      lastStatus == 404 || lastStatus == 405) {
+    homeAssistantTemplateBlocked = true;
+    homeAssistantTemplateBlockedHash = homeAssistantTemplateConfigHash(config);
+    homeAssistantTemplateBlockedAt = millis();
+    Serial.printf("[HA] /api/template vraci %d, entity se ctou po jedne\n",
+                  lastStatus);
+  }
+  return HomeAssistantTemplateResult::Failed;
 }
 
 bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
@@ -3649,32 +3815,78 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
   uint8_t configuredCount = 0;
   uint8_t successfulCount = 0;
   int lastStatus = 0;
-  for (size_t index = 0; index < entityCount; ++index) {
-    if (entityIds[index][0] == '\0') continue;
-    ++configuredCount;
-    // Zámek sítě se bere zvlášť pro každou entitu. Bez pauzy po jeho uvolnění
-    // si ho tahle smyčka vezme zpátky dřív, než se probuzený čekatel vůbec
-    // dostane ke slovu, a kontrola firmware nebo zprávy vyprší i po deseti
-    // pokusech. Krátký spánek dá frontu čekatelů dopředu.
-    if (configuredCount > 1) delay(HOME_ASSISTANT_ENTITY_YIELD_MS);
-    String payload;
-    if (!requestHomeAssistantState(client, config, entityIds[index], payload,
-                                   lastStatus)) {
-      continue;
+
+  // Nejdřív všechny entity jedním dotazem na šablonu.
+  // Statické: přes 4 kB by zbytečně ukrajovaly ze zásobníku úlohy.
+  static HaTemplateEntity entities[sizeof(entityIds) / sizeof(entityIds[0])];
+  const HomeAssistantTemplateResult templateResult =
+      requestHomeAssistantTemplate(client, config, entityIds, entityCount,
+                                   entities, lastStatus);
+  const bool viaTemplate = templateResult == HomeAssistantTemplateResult::Ok;
+  if (viaTemplate) {
+    // Stav může mít až 255 znaků (strop HA), časy slunce jsou krátké.
+    static char state[256];
+    static char sunrise[HA_TEMPLATE_ATTRIBUTE_MAX_CHARS + 1];
+    static char sunset[HA_TEMPLATE_ATTRIBUTE_MAX_CHARS + 1];
+    static char lastChanged[48];
+    for (size_t index = 0; index < entityCount; ++index) {
+      if (entityIds[index][0] == '\0') continue;
+      ++configuredCount;
+      // Entita, kterou HA nezná, v odpovědi chybí; dřív to byla 404.
+      const HaTemplateEntity &entity = entities[index];
+      if (!entity.found) continue;
+      haTemplateCopyText(entity.state, state, sizeof(state));
+      bool applied = false;
+      if (index == 5) {
+        haTemplateCopyText(entity.nextRising, sunrise, sizeof(sunrise));
+        haTemplateCopyText(entity.nextSetting, sunset, sizeof(sunset));
+        haTemplateCopyText(entity.lastChanged, lastChanged,
+                           sizeof(lastChanged));
+        applied = applySunStateFields(config, String(state), String(sunrise),
+                                      String(sunset), String(lastChanged),
+                                      values);
+      } else {
+        applied = applyHomeAssistantState(config, entityIds[index],
+                                          String(state), values);
+      }
+      if (applied) ++successfulCount;
     }
-    String state;
-    if (!extractJsonStringField(payload, "state", state)) continue;
-    bool applied = false;
-    if (index == 5) {
-      applied = applySunState(config, payload, state, values);
-    } else {
-      applied = applyHomeAssistantState(config, entityIds[index], state, values);
+  } else if (templateResult == HomeAssistantTemplateResult::Failed) {
+    // Šablona nejde (typicky token bez práv administrátora): po jedné jako
+    // dřív.
+    for (size_t index = 0; index < entityCount; ++index) {
+      if (entityIds[index][0] == '\0') continue;
+      ++configuredCount;
+      // Zámek sítě se bere zvlášť pro každou entitu. Bez pauzy po jeho
+      // uvolnění si ho tahle smyčka vezme zpátky dřív, než se probuzený
+      // čekatel vůbec dostane ke slovu, a kontrola firmware nebo zprávy
+      // vyprší i po deseti pokusech. Krátký spánek dá frontu čekatelů
+      // dopředu.
+      if (configuredCount > 1) delay(HOME_ASSISTANT_ENTITY_YIELD_MS);
+      String payload;
+      if (!requestHomeAssistantState(client, config, entityIds[index],
+                                     payload, lastStatus)) {
+        continue;
+      }
+      String state;
+      if (!extractJsonStringField(payload, "state", state)) continue;
+      bool applied = false;
+      if (index == 5) {
+        applied = applySunState(config, payload, state, values);
+      } else {
+        applied =
+            applyHomeAssistantState(config, entityIds[index], state, values);
+      }
+      if (applied) ++successfulCount;
     }
-    if (applied) ++successfulCount;
+  } else {
+    for (size_t index = 0; index < entityCount; ++index) {
+      if (entityIds[index][0] != '\0') ++configuredCount;
+    }
   }
   const bool apiResponded = successfulCount > 0;
-  String detail = String(successfulCount) + '/' + configuredCount +
-                  F(" entit načteno");
+  String detail = String(successfulCount) + '/' + configuredCount;
+  detail += viaTemplate ? F(" entit načteno šablonou") : F(" entit načteno");
   if (!apiResponded && lastStatus != 0) {
     detail += F(", poslední výsledek ");
     detail += lastStatus;
