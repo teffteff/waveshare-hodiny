@@ -70,3 +70,37 @@ bool rainViewerParseIndex(const char *payload, size_t wantedFrames,
   }
   return index.frameCount > 0;
 }
+
+bool rainViewerSameFrame(const RainViewerFrame &first,
+                         const RainViewerFrame &second) {
+  return first.time == second.time && first.path[0] != '\0' &&
+         strcmp(first.path, second.path) == 0;
+}
+
+RainViewerRefreshPlan rainViewerPlanRefresh(const RainViewerFrame *held,
+                                            size_t heldCount,
+                                            const RainViewerIndex &index,
+                                            size_t maxShift) {
+  RainViewerRefreshPlan plan;
+  const size_t count = index.frameCount;
+  if (held == nullptr || heldCount == 0 || heldCount != count) return plan;
+
+  // Kolik nejstarších držených snímků vypadne, aby zbytek seděl na začátek
+  // indexu. Nula znamená beze změny.
+  for (size_t shift = 0; shift < count && shift <= maxShift; ++shift) {
+    bool overlapMatches = true;
+    for (size_t position = 0; position + shift < count; ++position) {
+      if (!rainViewerSameFrame(held[position + shift],
+                               index.frames[position])) {
+        overlapMatches = false;
+        break;
+      }
+    }
+    if (!overlapMatches) continue;
+    plan.kind = shift == 0 ? RainViewerRefreshKind::Unchanged
+                           : RainViewerRefreshKind::Shift;
+    plan.shift = shift;
+    return plan;
+  }
+  return plan;
+}

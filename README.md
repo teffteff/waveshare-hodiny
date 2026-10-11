@@ -347,7 +347,9 @@ ponechají zkratky, na které jsi zvyklý. RainViewer servíruje dlaždice Web
 Mercatoru a jeho přiblížení jde po mocninách dvou, takže vyjde nejbližší
 dostupný rozsah, a ne přesně číslo z nastavení; popisek nahoře proto ukazuje
 poloměr, který opravdu vyšel. Dlaždice se necachují, takže změna rozsahu
-znamená stažení animace znovu.
+znamená stažení animace znovu. Pravidelná obnova po pěti minutách ale stáhne
+jen snímky, které hodiny ještě nemají (RainViewer vydává jeden za deset minut),
+a animaci o ně posune stejně jako u ČHMÚ.
 
 Automatické střídání s radarem zůstává se zapnutým RainViewerem dostupné
 i v cizině - vypíná ho až nedostupný radar, ne samotná zahraniční poloha.

@@ -63,6 +63,11 @@ constexpr bool CACHE_PNG = !LAYERED_VIEW;
 // starých snímcích. Na 7" se doplňuje jen jeden; víc nových snímků najednou
 // (radar dlouho schovaný) se přepíše do stávajících snímků celým načtením.
 constexpr size_t MAX_REFRESH_SHIFT = LAYERED_VIEW ? 1 : MAX_PENDING_REFRESH_FRAMES;
+// RainViewer na obou deskách doplňuje jen do slotu vyhrazeného od začátku:
+// snímek vydává po deseti minutách, takže při obnově po pěti přibude nejvýš
+// jeden. Víc (po výpadku sítě) se načte celé do stávajících snímků, místo aby
+// kulatý dodatečně sháněl další 230kB buffery, které dřív nepotřeboval.
+constexpr size_t RAIN_VIEWER_REFRESH_SHIFT = 1;
 // Stupně odrazivosti ČHMÚ na 7" stačí po bajtu na pixel; RainViewer dekóduje
 // barvy po dvou bajtech a buffer si při prvním použití zvětší.
 constexpr size_t LEVEL_DECODE_BYTES = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
@@ -140,6 +145,9 @@ bool preparedFrameReady[MAX_ANIMATION_FRAME_COUNT] = {};
 uint32_t preparedFrameRevisions[MAX_ANIMATION_FRAME_COUNT] = {};
 char preparedFrameTimes[MAX_ANIMATION_FRAME_COUNT][6] = {};
 char preparedFrameNames[MAX_ANIMATION_FRAME_COUNT][FILE_NAME_CAPACITY] = {};
+// Čas snímku RainVieweru (sekundy UTC z indexu). Spolu s cestou v
+// preparedFrameNames určuje snímek, který se při obnově nemusí stahovat znovu.
+int64_t preparedFrameStamps[MAX_ANIMATION_FRAME_COUNT] = {};
 uint8_t activeDisplayBuffer = 0;
 uint16_t activeRadiusKm = 50;
 bool rebuildFromCacheRequested = false;
@@ -203,7 +211,22 @@ size_t pendingPngCapacities[MAX_PENDING_REFRESH_FRAMES] = {};
 char pendingFrameNames[MAX_PENDING_REFRESH_FRAMES][FILE_NAME_CAPACITY] = {};
 char pendingFrameTimes[MAX_PENDING_REFRESH_FRAMES][6] = {};
 uint32_t pendingFrameRevisions[MAX_PENDING_REFRESH_FRAMES] = {};
+int64_t pendingFrameStamps[MAX_PENDING_REFRESH_FRAMES] = {};
 size_t pendingRefreshCount = 0;
+// Pohled, pro který se naposledy celé načetly snímky RainVieweru. Na kulatém
+// je v nich zapečená mapa, takže obnova posunem smí navázat jen na stejný
+// pohled; jinak se načte celá animace.
+struct RainViewerFramesView {
+  float latitude = 0.0f;
+  float longitude = 0.0f;
+  uint16_t radiusKm = 0;
+  uint8_t mapOpacity = 0;
+  bool valid = false;
+};
+RainViewerFramesView rainViewerFramesView;
+// Poslední index RainVieweru. Sdílí ho obnova s celým načtením, do kterého
+// obnova přejde, aby se index nestahoval dvakrát.
+RainViewerIndex rainViewerIndex;
 uint16_t *lineBuffer = nullptr;
 size_t lineCapacity = 0;
 uint16_t *decodeTarget = nullptr;
@@ -1775,6 +1798,8 @@ bool prepareFrame(size_t index, const uint8_t *pngData, size_t pngSize,
 }
 
 void beginProgressivePreparation(size_t count) {
+  // Snímky se přepisují; na předchozí snímky RainVieweru už navázat nejde.
+  rainViewerFramesView.valid = false;
   portENTER_CRITICAL(&stateMux);
   animationFrameCount = count;
   pendingRefreshCount = 0;
@@ -1840,6 +1865,7 @@ void releaseUnusedFrames(size_t usedCount) {
     preparedFrameRevisions[index] = 0;
     preparedFrameTimes[index][0] = '\0';
     preparedFrameNames[index][0] = '\0';
+    preparedFrameStamps[index] = 0;
     if (cachedPngFrames[index] != nullptr) {
       heap_caps_free(cachedPngFrames[index]);
       cachedPngFrames[index] = nullptr;
@@ -2045,12 +2071,42 @@ bool loadAnimation(float latitude, float longitude, uint16_t radiusKm,
   return false;
 }
 
+// Popisek snímku RainVieweru v místním čase ("HH:MM").
+void rainViewerFrameLabel(int64_t time, char *label, size_t capacity) {
+  const time_t stamp = static_cast<time_t>(time);
+  struct tm frameLocalTime = {};
+  localtime_r(&stamp, &frameLocalTime);
+  snprintf(label, capacity, "%02d:%02d", frameLocalTime.tm_hour,
+           frameLocalTime.tm_min);
+}
+
+// Stáhne jeden snímek RainVieweru do decodeBuffer (barvy RGB565) a na kulatém
+// do něj zapeče mapu a prstenec. Zabalení do snímku animace je na volajícím.
+bool buildRainViewerFrame(const RainViewerFrame &frame, float latitude,
+                          float longitude, uint16_t radiusKm,
+                          uint8_t mapOpacityValue, uint32_t revision) {
+  decodeBufferHoldsLevels = false;
+  if (!rainViewerBuildFrame(frame, decodeBuffer, revision)) return false;
+  if (!LAYERED_VIEW) {
+    RadarProjection projection;
+    projection.rainViewer = true;
+    drawMapOverlay(decodeBuffer, latitude, longitude, radiusKm, projection,
+                   mapOpacityValue);
+    drawDisplayRing(decodeBuffer);
+  }
+  return true;
+}
+
 // Stažení a příprava animace z RainVieweru. Proti ČHMÚ tu odpadá cache PNG:
 // jiný rozsah znamená jiné přiblížení a tedy úplně jiné dlaždice, takže se
-// výřez z ničeho přepočítat nedá a snímky se stahují znovu.
+// výřez z ničeho přepočítat nedá a snímky se stahují znovu. Pravidelnou
+// obnovu se stejným pohledem obstarává refreshRainViewerAnimation, která
+// stáhne jen nové snímky; sem přejde, když na držené snímky navázat nejde,
+// a předá už stažený index (indexFetched).
 bool loadRainViewerAnimation(float latitude, float longitude,
                              uint16_t radiusKm, uint8_t wantedFrameCount,
-                             uint8_t mapOpacityValue, uint32_t revision) {
+                             uint8_t mapOpacityValue, uint32_t revision,
+                             bool indexFetched = false) {
   if (WiFi.status() != WL_CONNECTED) {
     setStatus(false, "Wi-Fi neni pripojena");
     return false;
@@ -2073,15 +2129,14 @@ bool loadRainViewerAnimation(float latitude, float longitude,
     return false;
   };
 
-  static RainViewerIndex index;
-  if (!rainViewerFetchIndex(wantedFrameCount, index, revision)) {
+  RainViewerIndex &index = rainViewerIndex;
+  if (!indexFetched &&
+      !rainViewerFetchIndex(wantedFrameCount, index, revision)) {
     return giveUp("Seznam RainVieweru se nepodarilo nacist");
   }
   const size_t frameCount = index.frameCount;
 
   rainViewerSetView(latitude, longitude, radiusKm);
-  RadarProjection projection;
-  projection.rainViewer = true;
 
   beginProgressivePreparation(frameCount);
   portENTER_CRITICAL(&stateMux);
@@ -2090,33 +2145,25 @@ bool loadRainViewerAnimation(float latitude, float longitude,
   portEXIT_CRITICAL(&stateMux);
 
   for (size_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
-    decodeBufferHoldsLevels = false;
-    if (!rainViewerBuildFrame(index.frames[frameIndex], decodeBuffer,
-                              revision))
+    const RainViewerFrame &frame = index.frames[frameIndex];
+    if (!buildRainViewerFrame(frame, latitude, longitude, radiusKm,
+                              mapOpacityValue, revision))
       return giveUp("Snimek RainVieweru se nepodarilo stahnout");
-    if (!LAYERED_VIEW) {
-      drawMapOverlay(decodeBuffer, latitude, longitude, radiusKm, projection,
-                     mapOpacityValue);
-      drawDisplayRing(decodeBuffer);
-    }
     if (!packDecodedFrame(frameIndex) || !requestMatches(revision))
       return giveUp("Snimek RainVieweru se nepodarilo pripravit");
 
     char label[6] = "";
-    const time_t stamp = static_cast<time_t>(index.frames[frameIndex].time);
-    struct tm frameLocalTime = {};
-    localtime_r(&stamp, &frameLocalTime);
-    snprintf(label, sizeof(label), "%02d:%02d", frameLocalTime.tm_hour,
-             frameLocalTime.tm_min);
+    rainViewerFrameLabel(frame.time, label, sizeof(label));
     portENTER_CRITICAL(&stateMux);
     preparedFrameReady[frameIndex] = true;
     preparedFrameRevisions[frameIndex] = revision;
     strlcpy(preparedFrameTimes[frameIndex], label,
             sizeof(preparedFrameTimes[frameIndex]));
-    // Jméno slouží jen k porovnání s cache ČHMÚ, kterou RainViewer nemá; cesta
-    // k dlaždicím je přesto srozumitelnější než prázdný řetězec.
-    strlcpy(preparedFrameNames[frameIndex], index.frames[frameIndex].path,
+    // Cesta k dlaždicím a čas snímku: podle nich obnova pozná snímky, které
+    // už drží a nemusí je stahovat znovu.
+    strlcpy(preparedFrameNames[frameIndex], frame.path,
             sizeof(preparedFrameNames[frameIndex]));
+    preparedFrameStamps[frameIndex] = frame.time;
     ready = true;
     activeRadiusKm = radiusKm;
     portEXIT_CRITICAL(&stateMux);
@@ -2131,6 +2178,11 @@ bool loadRainViewerAnimation(float latitude, float longitude,
   }
   finishProgressivePreparation(revision);
   releaseUnusedFrames(frameCount);
+  rainViewerFramesView.latitude = latitude;
+  rainViewerFramesView.longitude = longitude;
+  rainViewerFramesView.radiusKm = radiusKm;
+  rainViewerFramesView.mapOpacity = mapOpacityValue;
+  rainViewerFramesView.valid = true;
   setStatus(false, "");
   return true;
 }
@@ -2156,6 +2208,7 @@ void commitPendingRefresh() {
             sizeof(preparedFrameTimes[index]));
     strlcpy(preparedFrameNames[index], preparedFrameNames[index + shift],
             sizeof(preparedFrameNames[index]));
+    preparedFrameStamps[index] = preparedFrameStamps[index + shift];
     cachedPngFrames[index] = cachedPngFrames[index + shift];
     cachedPngSizes[index] = cachedPngSizes[index + shift];
     cachedPngCapacities[index] = cachedPngCapacities[index + shift];
@@ -2172,6 +2225,7 @@ void commitPendingRefresh() {
             sizeof(preparedFrameTimes[target]));
     strlcpy(preparedFrameNames[target], pendingFrameNames[slot],
             sizeof(preparedFrameNames[target]));
+    preparedFrameStamps[target] = pendingFrameStamps[slot];
     cachedPngFrames[target] = pendingPngFrames[slot];
     cachedPngSizes[target] = pendingPngSizes[slot];
     cachedPngCapacities[target] = pendingPngCapacities[slot];
@@ -2184,8 +2238,27 @@ void commitPendingRefresh() {
     pendingFrameNames[slot][0] = '\0';
     pendingFrameTimes[slot][0] = '\0';
     pendingFrameRevisions[slot] = 0;
+    pendingFrameStamps[slot] = 0;
   }
   pendingRefreshCount = 0;
+}
+
+// Nové snímky čekají v pending slotech. Animace je převezme na konci průchodu
+// (advanceAnimation), aby neposkočila uprostřed; stojí-li už na konci, nebo
+// není-li vidět, převezmou se hned.
+bool schedulePendingRefresh() {
+  portENTER_CRITICAL(&stateMux);
+  const bool atBoundary = animationPause &&
+                          displayedFrame + 1 ==
+                              static_cast<int>(animationFrameCount);
+  const bool refreshInBackground = !visible;
+  portEXIT_CRITICAL(&stateMux);
+  if (animationFrameCount == 1) {
+    commitPendingRefresh();
+    return showPreparedFrame(0, millis());
+  }
+  if (atBoundary || refreshInBackground) commitPendingRefresh();
+  return true;
 }
 
 bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
@@ -2296,19 +2369,115 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
   }
   pendingRefreshCount = shift;
   setStatus(false, "");
+  return schedulePendingRefresh();
+}
 
-  portENTER_CRITICAL(&stateMux);
-  const bool atBoundary = animationPause &&
-                          displayedFrame + 1 ==
-                              static_cast<int>(animationFrameCount);
-  const bool refreshInBackground = !visible;
-  portEXIT_CRITICAL(&stateMux);
-  if (animationFrameCount == 1) {
-    commitPendingRefresh();
-    return showPreparedFrame(0, millis());
+// Porovná držené snímky RainVieweru s právě staženým indexem. Navázat se dá
+// jen na snímky, které jsou všechny hotové, pro tuhle revizi a pro stejný
+// pohled; rozpracované celé načtení (některý snímek chybí) se načte znovu
+// celé. Zvlášť kvůli zásobníku: kopie držených snímků (~1 kB) nemá ležet na
+// zásobníku po celou dobu stahování.
+__attribute__((noinline)) RainViewerRefreshPlan planRainViewerRefresh(
+    float latitude, float longitude, uint16_t radiusKm,
+    uint8_t mapOpacityValue, uint32_t revision) {
+  RainViewerFrame held[MAX_ANIMATION_FRAME_COUNT];
+  size_t heldCount = 0;
+  const bool sameView = rainViewerFramesView.valid &&
+                        rainViewerFramesView.latitude == latitude &&
+                        rainViewerFramesView.longitude == longitude &&
+                        rainViewerFramesView.radiusKm == radiusKm &&
+                        rainViewerFramesView.mapOpacity == mapOpacityValue;
+  if (sameView) {
+    heldCount = min(animationFrameCount, MAX_ANIMATION_FRAME_COUNT);
+    for (size_t frame = 0; frame < heldCount; ++frame) {
+      if (!preparedFrameReady[frame] || preparedFrames[frame] == nullptr ||
+          preparedFrameRevisions[frame] != revision) {
+        heldCount = 0;
+        break;
+      }
+      strlcpy(held[frame].path, preparedFrameNames[frame],
+              sizeof(held[frame].path));
+      held[frame].time = preparedFrameStamps[frame];
+    }
   }
-  if (atBoundary || refreshInBackground) commitPendingRefresh();
-  return true;
+  return rainViewerPlanRefresh(held, heldCount, rainViewerIndex,
+                               RAIN_VIEWER_REFRESH_SHIFT);
+}
+
+// Pravidelná obnova animace z RainVieweru. Minulé snímky se v RainVieweru
+// nemění, takže se jako u ČHMÚ stáhnou jen nové (podle cesty a času z indexu)
+// a animace se o ně posune; ostatní snímky zůstanou, jak jsou. Nový snímek se
+// skládá do decodeBuffer a balí do vyhrazeného pending slotu, který si při
+// převzetí vymění buffer s nejstarším snímkem - žádná nová velká alokace.
+// Nejde-li navázat (jiný pohled, jiný počet, víc nových snímků, než kolik
+// smí posun doplnit), načte se celá animace jako dřív.
+bool refreshRainViewerAnimation(float latitude, float longitude,
+                                uint16_t radiusKm, uint8_t wantedFrameCount,
+                                uint8_t mapOpacityValue, uint32_t revision) {
+  if (WiFi.status() != WL_CONNECTED) {
+    setStatus(false, "Wi-Fi neni pripojena");
+    return false;
+  }
+  if (!ensureBuffers() || !ensureDecodeBuffer(COLOR_DECODE_BYTES)) {
+    setStatus(false, "Nedostatek pameti pro radar");
+    return false;
+  }
+  setStatus(true, "Obnovuji radar RainViewer...");
+  RainViewerIndex &index = rainViewerIndex;
+  if (!rainViewerFetchIndex(wantedFrameCount, index, revision)) {
+    setStatus(false, "Seznam RainVieweru se nepodarilo nacist");
+    return false;
+  }
+
+  const RainViewerRefreshPlan plan = planRainViewerRefresh(
+      latitude, longitude, radiusKm, mapOpacityValue, revision);
+  if (plan.kind == RainViewerRefreshKind::Unchanged) {
+    setStatus(false, "");
+    return true;
+  }
+  if (plan.kind == RainViewerRefreshKind::Reload) {
+    return loadRainViewerAnimation(latitude, longitude, radiusKm,
+                                   wantedFrameCount, mapOpacityValue, revision,
+                                   true);
+  }
+
+  rainViewerSetView(latitude, longitude, radiusKm);
+  pendingRefreshCount = 0;
+  const size_t firstNew = index.frameCount - plan.shift;
+  for (size_t slot = 0; slot < plan.shift; ++slot) {
+    const RainViewerFrame &frame = index.frames[firstNew + slot];
+    // Bez paměti pro nový snímek radši celé načtení do stávajících snímků
+    // než viset na starých; při chybě sítě ne - to by jen stáhlo všechny
+    // snímky místo jednoho.
+    bool outOfMemory = false;
+    bool prepared = buildRainViewerFrame(frame, latitude, longitude, radiusKm,
+                                         mapOpacityValue, revision);
+    if (prepared && !packPendingFrame(slot)) {
+      prepared = false;
+      outOfMemory = true;
+    }
+    if (!prepared || !requestMatches(revision)) {
+      setStatus(false, "Nove snimky RainVieweru se nepodarilo pripravit");
+      pendingRefreshCount = 0;
+      if (outOfMemory && requestMatches(revision))
+        return loadRainViewerAnimation(latitude, longitude, radiusKm,
+                                       wantedFrameCount, mapOpacityValue,
+                                       revision, true);
+      return false;
+    }
+    // Dlaždice se necachují; převzetí posouvá i seznam PNG, ten ale zůstane
+    // prázdný.
+    pendingPngSizes[slot] = 0;
+    strlcpy(pendingFrameNames[slot], frame.path,
+            sizeof(pendingFrameNames[slot]));
+    rainViewerFrameLabel(frame.time, pendingFrameTimes[slot],
+                         sizeof(pendingFrameTimes[slot]));
+    pendingFrameStamps[slot] = frame.time;
+    pendingFrameRevisions[slot] = revision;
+  }
+  pendingRefreshCount = plan.shift;
+  setStatus(false, "");
+  return schedulePendingRefresh();
 }
 
 int firstPreparedFrame() {
@@ -2825,8 +2994,10 @@ void radarTask(void *) {
       portENTER_CRITICAL(&stateMux);
       const bool rainViewer = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
       portEXIT_CRITICAL(&stateMux);
-      // RainViewer nemá co doplňovat po jednom snímku: dlaždice se necachují a
-      // posun animace o jeden krok by stejně znamenal stáhnout celý snímek.
+      // RainViewer jde vždy přímo (server kreslí jen ČHMÚ). Pravidelná obnova
+      // u něj stejně jako u ČHMÚ stáhne jen nové snímky a animaci o ně posune
+      // (refreshRainViewerAnimation); celé načtení jen po změně pohledu,
+      // rozsahu nebo zdroje, nebo když na držené snímky navázat nejde.
       bool success = false;
       bool direct = true;
       if (!rainViewer && serverFramesWanted(now)) {
@@ -2848,9 +3019,13 @@ void radarTask(void *) {
       if (direct)
         success =
             rainViewer
-                ? loadRainViewerAnimation(latitude, longitude, radiusKm,
-                                          wantedFrameCount, mapOpacityValue,
-                                          revision)
+                ? (fullPreparation
+                       ? loadRainViewerAnimation(latitude, longitude, radiusKm,
+                                                 wantedFrameCount,
+                                                 mapOpacityValue, revision)
+                       : refreshRainViewerAnimation(
+                             latitude, longitude, radiusKm, wantedFrameCount,
+                             mapOpacityValue, revision))
                 : (fullPreparation
                        ? loadAnimation(latitude, longitude, radiusKm,
                                        wantedFrameCount, mapOpacityValue,
