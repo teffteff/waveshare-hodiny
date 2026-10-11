@@ -115,6 +115,14 @@ void setPosition(lv_obj_t *object, lv_coord_t x, lv_coord_t y) {
     lv_obj_set_pos(object, x, y);
 }
 
+// "aktualizováno ..." na všech obrazovkách na stejném místě: vpravo dole,
+// 20 px od okraje. Popisek musí být přímo na kořeni obrazovky.
+constexpr lv_coord_t UPDATED_Y = SCREEN_HEIGHT - 26;
+void placeUpdated(lv_obj_t *object) {
+  lv_obj_update_layout(object);
+  setPosition(object, SCREEN_WIDTH - 20 - lv_obj_get_width(object), UPDATED_Y);
+}
+
 lv_obj_t *panel(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t w,
                 lv_coord_t h) {
   lv_obj_t *object = lv_obj_create(parent);
@@ -1731,8 +1739,8 @@ void syncRadar(const Palette &p) {
 }
 
 // --- Agenda ---------------------------------------------------------------
-// Pod lištou dva sloupce: vlevo první dva dny větším písmem (dnes a zítra,
-// na které se člověk dívá nejčastěji), vpravo další dny menším. Když se pravý
+// Pod lištou dva sloupce: vlevo první dva dny (dnes a zítra), vpravo další,
+// obojí stejným písmem. Když se pravý
 // sloupec nevejde a levý má místo, přejde doleva i další den. Den delší než
 // levý sloupec pokračuje vpravo pod zopakovanou hlavičkou. Co se nevejde
 // nikam, nahradí tři tečky na posledním řádku. Dole legenda kalendářů
@@ -1764,7 +1772,8 @@ struct AgendaColumnStyle {
 };
 
 const AgendaColumnStyle AGENDA_COLUMNS[2] = {
-    {AGENDA_X, AGENDA_LEFT_W, 64, 16, &lcd7_text22, 4, 6},
+    // Obě poloviny stejným písmem; levá má jen první dva dny.
+    {AGENDA_X, AGENDA_LEFT_W, 54, 14, &lcd7_text18, 4, 5},
     {AGENDA_RIGHT_X, AGENDA_RIGHT_W, 54, 14, &lcd7_text18, 4, 5},
 };
 
@@ -1945,9 +1954,7 @@ void syncAgendaLegend(const Palette &p) {
     text[0] = '\0';
   setText(v.updated, text);
   setColor(v.updated, p.muted);
-  lv_obj_update_layout(v.updated);
-  setPosition(v.updated, SCREEN_WIDTH - AGENDA_X - lv_obj_get_width(v.updated),
-              centerY - lv_font_get_line_height(&lcd7_text15) / 2);
+  placeUpdated(v.updated);
 }
 
 void syncAgenda(const Palette &p) {
@@ -2016,6 +2023,8 @@ void syncAgenda(const Palette &p) {
 // zásoby rssDetailTexts.
 
 constexpr int RSS_LIST_W = 340;
+// Seznam ukazuje šest zpráv; další jsou pod nimi (svislé tažení po seznamu).
+constexpr uint8_t RSS_VISIBLE_ROWS = 6;
 constexpr int RSS_LIST_TOP = BAR_HEIGHT + 1;
 constexpr int RSS_ROW_PAD_X = 20;
 constexpr int RSS_DETAIL_X = RSS_LIST_W + 28;
@@ -2039,7 +2048,8 @@ struct RssView {
   TopBar bar;
   lv_obj_t *divider;
   lv_obj_t *status;
-  RssRow rows[CLOCK_RSS_MAX_ITEMS];
+  RssRow rows[RSS_VISIBLE_ROWS];
+  uint8_t scrollTop;  // první zpráva v okně seznamu
   lv_obj_t *time;
   lv_obj_t *title;
   lv_obj_t *summary;
@@ -2051,6 +2061,7 @@ struct RssView {
   uint32_t holdUntil;
   uint32_t drawnRevision;
   uint8_t drawnSelected;
+  uint8_t drawnScrollTop;
   bool drawnNight;
   bool drawnEnglish;
   int64_t drawnMinute;
@@ -2061,7 +2072,18 @@ uint8_t rssCount() {
 }
 
 lv_coord_t rssRowHeight(uint8_t count) {
-  return (SCREEN_HEIGHT - RSS_LIST_TOP) / std::max<uint8_t>(count, 5);
+  return (SCREEN_HEIGHT - RSS_LIST_TOP) /
+         std::max<uint8_t>(std::min<uint8_t>(count, RSS_VISIBLE_ROWS), 5);
+}
+
+// Okno seznamu tak, aby v něm byla vybraná zpráva a nepřesáhlo konec.
+void rssKeepVisible(uint8_t count) {
+  RssView &v = rss;
+  if (v.selected < v.scrollTop) v.scrollTop = v.selected;
+  if (v.selected >= v.scrollTop + RSS_VISIBLE_ROWS)
+    v.scrollTop = static_cast<uint8_t>(v.selected - RSS_VISIBLE_ROWS + 1);
+  const uint8_t maxTop = count > RSS_VISIBLE_ROWS ? count - RSS_VISIBLE_ROWS : 0;
+  if (v.scrollTop > maxTop) v.scrollTop = maxTop;
 }
 
 void createRss(lv_obj_t *screen) {
@@ -2146,9 +2168,8 @@ void syncRssDetail(const Palette &p, uint8_t count) {
            static_cast<unsigned>(count));
   setText(v.position, text);
   setColor(v.position, p.muted);
-  lv_obj_update_layout(v.position);
-  setPosition(v.position, RSS_DETAIL_X + RSS_DETAIL_W - lv_obj_get_width(v.position),
-              RSS_FOOTER_LINE_Y + 12);
+  // Pořadí vlevo, vpravo dole je "aktualizováno" jako všude.
+  setPosition(v.position, RSS_DETAIL_X, RSS_FOOTER_LINE_Y + 12);
   setBackground(v.footerLine, p.line);
 }
 
@@ -2161,6 +2182,7 @@ void syncRss(const Palette &p) {
   if (count > 1 && now >= v.holdUntil && now - v.selectedAt >= RSS_ADVANCE_MS) {
     v.selected = static_cast<uint8_t>((v.selected + 1) % count);
     v.selectedAt = now;
+    rssKeepVisible(count);
   }
   // "aktualizováno" se skládá z času a o půlnoci se přepíše na VČERA.
   char updated[64];
@@ -2169,11 +2191,14 @@ void syncRss(const Palette &p) {
   setVisible(v.updated, haveUpdated && count > 0);
   if (haveUpdated) setText(v.updated, updated);
   setColor(v.updated, p.muted);
+  placeUpdated(v.updated);
 
   const bool english = englishLanguage();
   if (v.drawnRevision == rssRevision && v.drawnSelected == v.selected &&
-      v.drawnNight == p.night && v.drawnEnglish == english)
+      v.drawnNight == p.night && v.drawnEnglish == english &&
+      v.drawnScrollTop == v.scrollTop)
     return;
+  v.drawnScrollTop = v.scrollTop;
   v.drawnRevision = rssRevision;
   v.drawnSelected = v.selected;
   v.drawnNight = p.night;
@@ -2186,14 +2211,15 @@ void syncRss(const Palette &p) {
   setBackground(v.divider, p.line);
   const lv_coord_t rowHeight = rssRowHeight(count);
   const lv_coord_t lineHeight = lv_font_get_line_height(&lcd7_text18);
-  for (uint8_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
-    RssRow &row = v.rows[index];
+  for (uint8_t slot = 0; slot < RSS_VISIBLE_ROWS; ++slot) {
+    RssRow &row = v.rows[slot];
+    const uint8_t index = static_cast<uint8_t>(v.scrollTop + slot);
     setVisible(row.box, index < count);
     if (index >= count) continue;
     const RssDetailText &item = rssDetailTexts[index];
     const bool selected = index == v.selected;
     if (lv_obj_get_height(row.box) != rowHeight) lv_obj_set_height(row.box, rowHeight);
-    setPosition(row.box, 0, RSS_LIST_TOP + index * rowHeight);
+    setPosition(row.box, 0, RSS_LIST_TOP + slot * rowHeight);
     setBackground(row.box, selected ? (p.night ? RSS_SELECTED_NIGHT : RSS_SELECTED)
                                     : COLOR_BACKGROUND);
     setBorder(row.box, p.night ? NIGHT_LINE : RSS_ROW_LINE);
@@ -2219,7 +2245,7 @@ void rssTap(int16_t x, int16_t y) {
   if (!created || shownMode != HomeMode::Rss || x >= RSS_LIST_W) return;
   const uint8_t count = rssCount();
   if (count == 0 || y < RSS_LIST_TOP) return;
-  const int index = (y - RSS_LIST_TOP) / rssRowHeight(count);
+  const int index = rss.scrollTop + (y - RSS_LIST_TOP) / rssRowHeight(count);
   if (index >= count) return;
   rss.selected = static_cast<uint8_t>(index);
   rss.selectedAt = millis();
@@ -2249,8 +2275,13 @@ constexpr int SCHOOL7_HOUR_W = 34;
 constexpr int SCHOOL7_DIVIDER_X = 548;
 constexpr int SCHOOL7_SIDE_X = 566;
 constexpr int SCHOOL7_SIDE_W = SCREEN_WIDTH - SCHOOL7_SIDE_X - 18;
-constexpr int SCHOOL7_SIDE_ROWS = 14;
-constexpr int SCHOOL7_SIDE_SECTIONS = 5;
+// Sloupce textu školy: na rozvrhu jeden vpravo (obědy, testy), na druhé
+// stránce tři (známky | testy a úkoly | zprávy a nástěnka).
+constexpr int SCHOOL7_SIDE_ROWS = 12;
+constexpr int SCHOOL7_SIDE_SECTIONS = 3;
+constexpr int SCHOOL7_COLUMNS = 4;
+constexpr int SCHOOL7_NEWS_TOP = SCHOOL7_TOP + 4;
+constexpr int SCHOOL7_NEWS_BOTTOM = SCREEN_HEIGHT - 36;
 constexpr int SCHOOL7_MARK_BOX = 26;
 const lv_color_t SCHOOL7_CELL = LV_COLOR_MAKE(11, 11, 11);
 const lv_color_t SCHOOL7_CELL_BORDER = LV_COLOR_MAKE(28, 28, 28);
@@ -2271,6 +2302,11 @@ struct SchoolSideRow {
   lv_obj_t *mark;
 };
 
+struct SchoolColumn {
+  lv_obj_t *heads[SCHOOL7_SIDE_SECTIONS];
+  SchoolSideRow rows[SCHOOL7_SIDE_ROWS];
+};
+
 struct SchoolView {
   lv_obj_t *root;
   TopBar bar;
@@ -2279,11 +2315,14 @@ struct SchoolView {
   lv_obj_t *ends[SCHOOL_MAX_DAYS];
   SchoolCell cells[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS];
   lv_obj_t *divider;
-  lv_obj_t *sectionHeads[SCHOOL7_SIDE_SECTIONS];
-  SchoolSideRow side[SCHOOL7_SIDE_ROWS];
+  SchoolColumn columns[SCHOOL7_COLUMNS];
+  lv_obj_t *newsLines[2];
+  lv_obj_t *pageDots[2];
   lv_obj_t *updated;
+  uint8_t page;  // 0 rozvrh a obědy, 1 známky, testy, úkoly, zprávy
   uint32_t drawnRevision;
   int drawnMinute;
+  uint8_t drawnPage;
   bool drawnNight;
   bool drawnEnglish;
 } school;
@@ -2310,20 +2349,28 @@ void createSchool(lv_obj_t *screen) {
     }
   }
   v.divider = line(v.root, SCHOOL7_DIVIDER_X, SCHOOL7_TOP, 1, SCHOOL7_BOTTOM - SCHOOL7_TOP);
-  for (lv_obj_t *&head : v.sectionHeads) {
-    head = label(v.root, &lcd7_text15, SCHOOL7_SIDE_X, 0);
-    lv_obj_set_style_text_letter_space(head, 2, 0);
+  for (SchoolColumn &column : v.columns) {
+    for (lv_obj_t *&head : column.heads) {
+      head = label(v.root, &lcd7_text15, 0, 0);
+      lv_obj_set_style_text_letter_space(head, 2, 0);
+    }
+    for (SchoolSideRow &row : column.rows) {
+      row.text = label(v.root, &lcd7_text18, 0, 0, 1);
+      lv_label_set_recolor(row.text, true);
+      row.markBox = panel(v.root, 0, 0, SCHOOL7_MARK_BOX, SCHOOL7_MARK_BOX);
+      lv_obj_set_style_radius(row.markBox, 6, 0);
+      row.mark = label(row.markBox, &lcd7_text18, 0, 1, SCHOOL7_MARK_BOX);
+      lv_obj_set_style_text_align(row.mark, LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_set_style_text_color(row.mark, COLOR_BACKGROUND, 0);
+    }
   }
-  for (SchoolSideRow &row : v.side) {
-    row.text = label(v.root, &lcd7_text18, SCHOOL7_SIDE_X, 0, SCHOOL7_SIDE_W);
-    lv_label_set_recolor(row.text, true);
-    row.markBox = panel(v.root, SCHOOL7_SIDE_X, 0, SCHOOL7_MARK_BOX, SCHOOL7_MARK_BOX);
-    lv_obj_set_style_radius(row.markBox, 6, 0);
-    row.mark = label(row.markBox, &lcd7_text18, 0, 1, SCHOOL7_MARK_BOX);
-    lv_obj_set_style_text_align(row.mark, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(row.mark, COLOR_BACKGROUND, 0);
+  for (int index = 0; index < 2; ++index) {
+    v.newsLines[index] = line(v.root, 0, SCHOOL7_NEWS_TOP, 1, SCHOOL7_NEWS_BOTTOM - SCHOOL7_NEWS_TOP);
+    v.pageDots[index] = panel(v.root, SCREEN_WIDTH / 2 - 12 + index * 18, SCREEN_HEIGHT - 18, 7, 7);
+    lv_obj_set_style_radius(v.pageDots[index], LV_RADIUS_CIRCLE, 0);
   }
-  v.updated = label(v.root, &lcd7_text15, SCHOOL7_SIDE_X, SCHOOL7_BOTTOM - 18);
+  v.page = 0;
+  v.updated = label(v.root, &lcd7_text15, 0, UPDATED_Y);
   v.drawnRevision = UINT32_MAX;
 }
 
@@ -2503,62 +2550,66 @@ lv_color_t markColor(const char *mark) {
   }
 }
 
-// Pravý sloupec: sekce pod sebou, dokud se vejdou. Řádek se láme nejvýš na
-// dva řádky; sekce bez jediného řádku, který by se vešel, se vynechá celá.
+// Sloupec sekcí pod sebou (nadpis, řádky), dokud se vejdou. Řádek se láme
+// nejvýš na maxLines řádků; sekce bez jediného řádku se vynechá celá.
 class SchoolSide {
  public:
-  SchoolSide(const Palette &p) : p_(p), y_(SCHOOL7_TOP + 2) {}
+  SchoolSide(const Palette &p, SchoolColumn &column, lv_coord_t x, lv_coord_t width,
+             lv_coord_t top, lv_coord_t bottom)
+      : p_(p), column_(column), x_(x), width_(width), y_(top), bottom_(bottom) {}
 
   bool beginSection(const char *title, lv_color_t color) {
     if (section_ >= SCHOOL7_SIDE_SECTIONS) return false;
     const lv_coord_t head = lv_font_get_line_height(&lcd7_text15) + 4;
     const lv_coord_t gap = section_ > 0 ? 14 : 0;
-    if (y_ + gap + head + lineHeight() > bottom()) return false;
-    lv_obj_t *label = school.sectionHeads[section_++];
+    if (y_ + gap + head + lineHeight() > bottom_) return false;
+    lv_obj_t *label = column_.heads[section_++];
     y_ += gap;
     setText(label, title);
     setColor(label, p_.night ? COLOR_ERROR : color);
-    setPosition(label, SCHOOL7_SIDE_X, y_);
+    setPosition(label, x_, y_);
     setVisible(label, true);
     y_ += head;
     return true;
   }
 
   // Vrací false, když se řádek už nevešel.
-  bool addRow(const char *text, const char *mark = nullptr) {
+  bool addRow(const char *text, const char *mark = nullptr, lv_coord_t maxLines = 2) {
     if (row_ >= SCHOOL7_SIDE_ROWS) return false;
-    SchoolSideRow &row = school.side[row_];
+    SchoolSideRow &row = column_.rows[row_];
     const lv_coord_t indent = mark != nullptr ? SCHOOL7_MARK_BOX + 10 : 0;
-    const lv_coord_t width = SCHOOL7_SIDE_W - indent;
+    const lv_coord_t width = width_ - indent;
     lv_point_t size;
     lv_txt_get_size(&size, text, &lcd7_text18, 0, 0, width, LV_TEXT_FLAG_RECOLOR);
-    lv_coord_t lines = size.y > lineHeight() ? 2 : 1;
-    if (y_ + lines * lineHeight() > bottom()) lines = 1;
-    if (y_ + lineHeight() > bottom()) return false;
+    lv_coord_t lines = std::max<lv_coord_t>(1, std::min<lv_coord_t>(
+        maxLines, (size.y + lineHeight() - 1) / lineHeight()));
+    while (lines > 1 && y_ + lines * lineHeight() > bottom_) --lines;
+    if (y_ + lineHeight() > bottom_) return false;
     setWidth(row.text, width);
     if (lv_obj_get_height(row.text) != lines * lineHeight())
       lv_obj_set_height(row.text, lines * lineHeight());
+    lv_label_set_long_mode(row.text, LV_LABEL_LONG_DOT);
     setText(row.text, text);
     setColor(row.text, p_.night ? COLOR_ERROR : COLOR_TEXT);
-    setPosition(row.text, SCHOOL7_SIDE_X + indent, y_);
+    setPosition(row.text, x_ + indent, y_);
     setVisible(row.text, true);
     setVisible(row.markBox, mark != nullptr);
     if (mark != nullptr) {
       setText(row.mark, mark);
       setBackground(row.markBox, p_.night ? COLOR_ERROR : markColor(mark));
-      setPosition(row.markBox, SCHOOL7_SIDE_X, y_ - 2);
+      setPosition(row.markBox, x_, y_ - 2);
     }
-    y_ += lines * lineHeight() + 4;
+    y_ += lines * lineHeight() + 5;
     ++row_;
     return true;
   }
 
   void finish() {
     for (size_t index = section_; index < SCHOOL7_SIDE_SECTIONS; ++index)
-      setVisible(school.sectionHeads[index], false);
+      setVisible(column_.heads[index], false);
     for (size_t index = row_; index < SCHOOL7_SIDE_ROWS; ++index) {
-      setVisible(school.side[index].text, false);
-      setVisible(school.side[index].markBox, false);
+      setVisible(column_.rows[index].text, false);
+      setVisible(column_.rows[index].markBox, false);
     }
   }
 
@@ -2566,16 +2617,42 @@ class SchoolSide {
 
  private:
   static lv_coord_t lineHeight() { return lv_font_get_line_height(&lcd7_text18); }
-  static lv_coord_t bottom() { return SCHOOL7_BOTTOM - 26; }
 
   const Palette &p_;
+  SchoolColumn &column_;
+  lv_coord_t x_;
+  lv_coord_t width_;
   lv_coord_t y_;
+  lv_coord_t bottom_;
   size_t section_ = 0;
   size_t row_ = 0;
 };
 
-void syncSchoolSide(const Palette &p, const SchoolFeed *feed, int minute) {
-  SchoolSide side(p);
+void hideSchoolColumn(SchoolColumn &column) {
+  for (lv_obj_t *head : column.heads) setVisible(head, false);
+  for (SchoolSideRow &row : column.rows) {
+    setVisible(row.text, false);
+    setVisible(row.markBox, false);
+  }
+}
+
+void addSchoolTests(SchoolSide &side, const SchoolFeed &feed, bool english, char *text,
+                    size_t capacity) {
+  if (!feed.hasTests || feed.testCount == 0 ||
+      !side.beginSection(english ? "TESTS" : "TESTY", SCHOOL7_TEST))
+    return;
+  for (size_t index = 0; index < feed.testCount; ++index) {
+    const SchoolTest &test = feed.tests[index];
+    composeSideRow(text, capacity, test.when, test.done ? COLOR_MUTED : SCHOOL7_TEST,
+                   test.abbrev[0] != '\0' ? test.abbrev : test.subject, test.theme);
+    if (!side.addRow(text)) break;
+  }
+}
+
+// Rozvrh: vpravo obědy celé (až tři řádky na jídlo), pod nimi testy.
+void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute) {
+  SchoolSide side(p, school.columns[0], SCHOOL7_SIDE_X, SCHOOL7_SIDE_W, SCHOOL7_TOP + 2,
+                  SCREEN_HEIGHT - 36);
   const bool english = englishLanguage();
   char text[SCHOOL_TITLE_LENGTH * 2 + 48];
   if (feed != nullptr && feed->hasMeals && feed->mealCount > 0) {
@@ -2594,68 +2671,84 @@ void syncSchoolSide(const Palette &p, const SchoolFeed *feed, int minute) {
           snprintf(what, sizeof(what), "%s: %s", meal.who, meal.text);
         else
           strlcpy(what, meal.text, sizeof(what));
-        composeSideRow(text, sizeof(text), newDay ? meal.when : "",
-                       COLOR_TEXT, nullptr, what);
-        if (!side.addRow(text)) break;
+        composeSideRow(text, sizeof(text), newDay ? meal.when : "", COLOR_TEXT, nullptr, what);
+        if (!side.addRow(text, nullptr, 3)) break;
       }
     }
   }
-  if (feed != nullptr && feed->hasTests && feed->testCount > 0 &&
-      side.beginSection(english ? "TESTS" : "TESTY", SCHOOL7_TEST)) {
-    for (size_t index = 0; index < feed->testCount; ++index) {
-      const SchoolTest &test = feed->tests[index];
-      composeSideRow(text, sizeof(text), test.when,
-                     test.done ? COLOR_MUTED : SCHOOL7_TEST,
-                     test.abbrev[0] != '\0' ? test.abbrev : test.subject, test.theme);
-      if (!side.addRow(text)) break;
+  if (feed != nullptr) addSchoolTests(side, *feed, english, text, sizeof(text));
+  side.finish();
+  setVisible(school.divider, !side.empty());
+  setBackground(school.divider, p.line);
+}
+
+// Druhá stránka: známky | testy a úkoly | zprávy a nástěnka.
+void syncSchoolNews(const Palette &p, const SchoolFeed *feed) {
+  const bool english = englishLanguage();
+  char text[SCHOOL_TITLE_LENGTH * 2 + 48];
+  constexpr lv_coord_t gap = 32;
+  constexpr lv_coord_t width = (SCREEN_WIDTH - 2 * 20 - 2 * gap) / 3;
+  const lv_coord_t x[3] = {20, 20 + width + gap, 20 + 2 * (width + gap)};
+  for (int index = 0; index < 2; ++index) {
+    setPosition(school.newsLines[index], x[index + 1] - gap / 2, SCHOOL7_NEWS_TOP);
+    setBackground(school.newsLines[index], p.line);
+  }
+  SchoolSide marks(p, school.columns[1], x[0], width, SCHOOL7_NEWS_TOP, SCHOOL7_NEWS_BOTTOM);
+  if (feed != nullptr && feed->hasMarks &&
+      marks.beginSection(english ? "MARKS" : "ZNÁMKY", COLOR_MUTED)) {
+    if (feed->markCount == 0) marks.addRow(english ? "No new marks" : "Žádné nové");
+    for (size_t index = 0; index < feed->markCount; ++index) {
+      const SchoolMark &mark = feed->marks[index];
+      char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+      agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_MUTED);
+      char subject[SCHOOL_TITLE_LENGTH + 40];
+      composeSideRow(subject, sizeof(subject), "", COLOR_TEXT,
+                     mark.abbrev[0] != '\0' ? mark.abbrev : mark.subject, mark.theme);
+      snprintf(text, sizeof(text), "%s  %s%s#", subject, tag, mark.when);
+      if (!marks.addRow(text, mark.mark)) break;
     }
   }
-  if (feed != nullptr && feed->hasHomework && feed->homeworkCount > 0 &&
-      side.beginSection(english ? "HOMEWORK" : "ÚKOLY", COLOR_OUTSIDE)) {
+  marks.finish();
+
+  SchoolSide tasks(p, school.columns[2], x[1], width, SCHOOL7_NEWS_TOP, SCHOOL7_NEWS_BOTTOM);
+  if (feed != nullptr) addSchoolTests(tasks, *feed, english, text, sizeof(text));
+  if (feed != nullptr && feed->hasHomework &&
+      tasks.beginSection(english ? "HOMEWORK" : "ÚKOLY", COLOR_OUTSIDE)) {
+    if (feed->homeworkCount == 0) tasks.addRow(english ? "No homework" : "Žádné úkoly");
     for (size_t index = 0; index < feed->homeworkCount; ++index) {
       const SchoolHomework &task = feed->homework[index];
       composeSideRow(text, sizeof(text), task.due, COLOR_OUTSIDE,
                      task.abbrev[0] != '\0' ? task.abbrev : task.subject, task.title);
-      if (!side.addRow(text)) break;
+      if (!tasks.addRow(text)) break;
     }
   }
-  if (feed != nullptr && feed->hasMarks && feed->markCount > 0 &&
-      side.beginSection(english ? "MARKS" : "ZNÁMKY", COLOR_MUTED)) {
-    for (size_t index = 0; index < feed->markCount; ++index) {
-      const SchoolMark &mark = feed->marks[index];
-      composeSideRow(text, sizeof(text), "", COLOR_TEXT,
-                     mark.abbrev[0] != '\0' ? mark.abbrev : mark.subject, mark.theme);
-      if (!side.addRow(text, mark.mark)) break;
-    }
-  }
-  const bool messages = feed != nullptr && feed->hasMessages && feed->messageCount > 0;
-  const bool notices = feed != nullptr && feed->hasNotices && feed->noticeCount > 0;
-  if ((messages || notices) &&
-      side.beginSection(english ? "MESSAGES" : "ZPRÁVY", COLOR_MUTED)) {
-    bool room = true;
-    for (size_t index = 0; messages && room && index < feed->messageCount; ++index) {
-      const SchoolMessage &message = feed->messages[index];
-      composeSideRow(text, sizeof(text), message.when, COLOR_MUTED, message.sender,
-                     message.title);
-      room = side.addRow(text);
-    }
-    for (size_t index = 0; notices && room && index < feed->noticeCount; ++index) {
-      const SchoolNotice &notice = feed->notices[index];
-      composeSideRow(text, sizeof(text), notice.when, COLOR_MUTED, nullptr, notice.title);
-      room = side.addRow(text);
-    }
-  }
-  side.finish();
-  setVisible(school.divider, !side.empty());
-  setBackground(school.divider, p.line);
+  tasks.finish();
 
-  const bool haveUpdated = feed != nullptr && feed->timetableUpdated[0] != '\0';
-  setVisible(school.updated, haveUpdated);
-  if (haveUpdated) {
-    formatUpdatedText(feed->timetableUpdated, text, sizeof(text));
-    setText(school.updated, text);
+  SchoolSide news(p, school.columns[3], x[2], width, SCHOOL7_NEWS_TOP, SCHOOL7_NEWS_BOTTOM);
+  if (feed != nullptr && feed->hasMessages &&
+      news.beginSection(english ? "MESSAGES" : "ZPRÁVY", COLOR_ROOM)) {
+    if (feed->messageCount == 0) news.addRow(english ? "Nothing new" : "Nic nového");
+    for (size_t index = 0; index < feed->messageCount; ++index) {
+      const SchoolMessage &message = feed->messages[index];
+      composeSideRow(text, sizeof(text), message.when, COLOR_ROOM, message.sender,
+                     message.title);
+      if (!news.addRow(text)) break;
+    }
   }
-  setColor(school.updated, p.muted);
+  if (feed != nullptr && feed->hasNotices && feed->noticeCount > 0 &&
+      news.beginSection(english ? "NOTICE BOARD" : "NÁSTĚNKA", COLOR_MOON)) {
+    for (size_t index = 0; index < feed->noticeCount; ++index) {
+      const SchoolNotice &notice = feed->notices[index];
+      char body[SCHOOL_TITLE_LENGTH * 2 + 8];
+      if (notice.text[0] != '\0')
+        snprintf(body, sizeof(body), "%s: %s", notice.title, notice.text);
+      else
+        strlcpy(body, notice.title, sizeof(body));
+      composeSideRow(text, sizeof(text), notice.when, COLOR_MOON, nullptr, body);
+      if (!news.addRow(text, nullptr, 3)) break;
+    }
+  }
+  news.finish();
 }
 
 void syncSchool(const Palette &p) {
@@ -2664,14 +2757,42 @@ void syncSchool(const Palette &p) {
   const int minute = schoolMinuteOfDay();
   const bool english = englishLanguage();
   if (v.drawnRevision == schoolRevision && v.drawnMinute == minute &&
-      v.drawnNight == p.night && v.drawnEnglish == english)
+      v.drawnNight == p.night && v.drawnEnglish == english && v.drawnPage == v.page)
     return;
+  v.drawnPage = v.page;
   v.drawnRevision = schoolRevision;
   v.drawnMinute = minute;
   v.drawnNight = p.night;
   v.drawnEnglish = english;
 
   const SchoolFeed *feed = schoolReady ? schoolLcd7Feed : nullptr;
+  const bool timetable = v.page == 0;
+  for (int index = 0; index < 2; ++index) {
+    setBackground(v.pageDots[index], index == v.page ? p.text : p.dotOff);
+    setVisible(v.newsLines[index], !timetable);
+  }
+  // "aktualizováno": na rozvrhu stáří rozvrhu a obědů, na druhé stránce
+  // zpráv, známek a nástěnky.
+  const char *updatedWhen = feed == nullptr ? ""
+                            : timetable     ? feed->timetableUpdated
+                                            : feed->newsUpdated;
+  char updatedText[SCHOOL_UPDATED_LENGTH + 24];
+  setVisible(v.updated, updatedWhen[0] != '\0');
+  if (updatedWhen[0] != '\0') {
+    formatUpdatedText(updatedWhen, updatedText, sizeof(updatedText));
+    setText(v.updated, updatedText);
+  }
+  setColor(v.updated, p.muted);
+  placeUpdated(v.updated);
+  if (!timetable) {
+    for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) syncSchoolDay(p, day, nullptr, 0, 0, minute);
+    setVisible(v.status, false);
+    setVisible(v.divider, false);
+    hideSchoolColumn(v.columns[0]);
+    syncSchoolNews(p, feed);
+    return;
+  }
+  for (int index = 1; index < SCHOOL7_COLUMNS; ++index) hideSchoolColumn(v.columns[index]);
   const size_t days = feed != nullptr ? std::min(feed->dayCount, SCHOOL_MAX_DAYS) : 0;
   const lv_coord_t area = SCHOOL7_LEFT_END - SCHOOL7_LEFT;
   const lv_coord_t width =
@@ -2692,7 +2813,7 @@ void syncSchool(const Palette &p) {
     setText(v.status, text);
     setColor(v.status, p.muted);
   }
-  syncSchoolSide(p, feed, minute);
+  syncSchoolLunchColumn(p, feed, minute);
 }
 
 // --- Radar letadel ----------------------------------------------------------
@@ -2987,7 +3108,7 @@ void createTraffic(lv_obj_t *screen) {
   }
   v.notes = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 8, TRAFFIC7_CONTENT);
   lv_label_set_recolor(v.notes, true);
-  v.updated = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 30, TRAFFIC7_CONTENT);
+  v.updated = label(v.root, &lcd7_text15, x, UPDATED_Y);
   lv_label_set_recolor(v.updated, true);
   v.drawnRevision = UINT32_MAX;
 }
@@ -3063,7 +3184,32 @@ void syncTrafficCard(const Palette &p, TrafficCard &card, const TrafficDrive *dr
   setPosition(card.delta, after, delay > 0 ? top + 44 : top + 47);
   setFont(card.delta, delay > 0 ? &lcd7_text22 : &lcd7_text18);
 
-  setText(card.detail, drive->detail);
+  // Server píše "přes Mirošovice (Strančice 28)": doporučená cesta a v závorce
+  // ta druhá s dobou jízdy. Na displeji srozumitelněji: "přes Mirošovice ·
+  // přes Strančice 28 min".
+  char detail[TRAFFIC_TEXT_LENGTH + 24];
+  strlcpy(detail, drive->detail, sizeof(detail));
+  char *open = strrchr(detail, '(');
+  const size_t length = strlen(detail);
+  if (open != nullptr && length > 0 && detail[length - 1] == ')' && open > detail) {
+    char other[TRAFFIC_TEXT_LENGTH];
+    strlcpy(other, open + 1, sizeof(other));
+    other[strlen(other) - 1] = '\0';
+    char *space = strrchr(other, ' ');
+    char *end = nullptr;
+    const long minutes = space != nullptr ? strtol(space + 1, &end, 10) : -1;
+    if (space != nullptr && end != nullptr && *end == '\0' && minutes > 0) {
+      *space = '\0';
+      char *trim = open;
+      while (trim > detail && trim[-1] == ' ') --trim;
+      *trim = '\0';
+      char composed[TRAFFIC_TEXT_LENGTH + 24];
+      snprintf(composed, sizeof(composed), "%s  ·  %s %s %ld min", detail,
+               english ? "via" : "přes", other, minutes);
+      strlcpy(detail, composed, sizeof(detail));
+    }
+  }
+  setText(card.detail, detail);
   setColor(card.detail, p.night ? COLOR_ERROR : (drive->better ? COLOR_AIR : COLOR_TEXT));
 }
 
@@ -3132,12 +3278,13 @@ void syncTraffic(const Palette &p) {
     if (localtime_r(&when, &local) != nullptr) strftime(clock, sizeof(clock), "%H:%M", &local);
     char tag[AGENDA_COLOR_TAG_LENGTH + 1];
     agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_ROOM);
-    snprintf(updated, sizeof(updated), "%s %s%s%s%s", english ? "traffic at" : "provoz v",
+    snprintf(updated, sizeof(updated), "%s %s%s%s%s", english ? "updated" : "aktualizováno",
              clock, texts->stale ? "  " : "", texts->stale ? tag : "",
              texts->stale ? (english ? "old data#" : "stará data#") : "");
   }
   setText(v.updated, updated);
   setColor(v.updated, p.muted);
+  placeUpdated(v.updated);
 }
 
 // --- Družice a noční obloha: Slunce a Měsíc vpravo --------------------------
@@ -3170,8 +3317,15 @@ struct SkySideView {
   lv_obj_t *illumination;
   lv_obj_t *nextPhases;
   lv_obj_t *satTitle;
-  lv_obj_t *satCount;
-  lv_obj_t *satPass;
+  lv_obj_t *passes[SatelliteSnapshot::MAX_LISTED_PASSES];
+  // Druhá stránka sloupce (tažení po sloupci): obloha a její úkazy.
+  lv_obj_t *skyTitle;
+  lv_obj_t *dark;
+  lv_obj_t *kp;
+  lv_obj_t *eventsTitle;
+  lv_obj_t *events[SKY_MAX_EVENTS];
+  lv_obj_t *pageDots[2];
+  uint8_t page;
   uint32_t drawnRevision;
 } skySide;
 
@@ -3219,12 +3373,124 @@ void createSkySide(lv_obj_t *screen) {
   v.lines[1] = line(c, SKY_SIDE_PAD, 338, SKY_SIDE_CONTENT, 1);
   v.satTitle = centeredLabel(c, &lcd7_text15, 0, 348, SKY_SIDE_W);
   lv_obj_set_style_text_letter_space(v.satTitle, 2, 0);
-  v.satCount = centeredLabel(c, &lcd7_text15, SKY_SIDE_PAD, 370, SKY_SIDE_CONTENT);
-  lv_label_set_recolor(v.satCount, true);
-  v.satPass = centeredLabel(c, &lcd7_text18, SKY_SIDE_PAD, 392, SKY_SIDE_CONTENT);
-  lv_label_set_recolor(v.satPass, true);
-  lv_label_set_long_mode(v.satPass, LV_LABEL_LONG_WRAP);
+  for (int index = 0; index < SatelliteSnapshot::MAX_LISTED_PASSES; ++index) {
+    v.passes[index] = centeredLabel(c, &lcd7_text18, SKY_SIDE_PAD, 370 + index * 22,
+                                    SKY_SIDE_CONTENT);
+    lv_label_set_recolor(v.passes[index], true);
+  }
+  v.skyTitle = centeredLabel(c, &lcd7_text15, 0, 10, SKY_SIDE_W);
+  lv_obj_set_style_text_letter_space(v.skyTitle, 2, 0);
+  v.dark = centeredLabel(c, &lcd7_text22, SKY_SIDE_PAD, 36, SKY_SIDE_CONTENT);
+  v.kp = centeredLabel(c, &lcd7_text15, SKY_SIDE_PAD, 70, SKY_SIDE_CONTENT);
+  lv_label_set_recolor(v.kp, true);
+  lv_label_set_long_mode(v.kp, LV_LABEL_LONG_WRAP);
+  v.eventsTitle = centeredLabel(c, &lcd7_text15, 0, 120, SKY_SIDE_W);
+  lv_obj_set_style_text_letter_space(v.eventsTitle, 2, 0);
+  for (int index = 0; index < static_cast<int>(SKY_MAX_EVENTS); ++index) {
+    v.events[index] = label(c, &lcd7_text18, SKY_SIDE_PAD, 146 + index * 64, SKY_SIDE_CONTENT);
+    lv_label_set_recolor(v.events[index], true);
+    lv_label_set_long_mode(v.events[index], LV_LABEL_LONG_WRAP);
+  }
+  for (int index = 0; index < 2; ++index) {
+    v.pageDots[index] = panel(c, SKY_SIDE_W / 2 - 12 + index * 18, SCREEN_HEIGHT - BAR_HEIGHT - 16, 7, 7);
+    lv_obj_set_style_radius(v.pageDots[index], LV_RADIUS_CIRCLE, 0);
+  }
+  v.page = 0;
   v.drawnRevision = UINT32_MAX;
+}
+
+// Druhá stránka sloupce: kdy je tma, index Kp a nejbližší úkazy na obloze.
+void syncSkyPage(const Palette &p) {
+  SkySideView &v = skySide;
+  const bool english = englishLanguage();
+  const SkySnapshot *sky = skyLcd7;
+  const bool have = sky != nullptr && sky->dataFresh;
+  const time_t now = time(nullptr);
+  setText(v.skyTitle, english ? "NIGHT SKY" : "OBLOHA");
+  setColor(v.skyTitle, p.night ? COLOR_ERROR : COLOR_MOON);
+  char text[SKY_EVENT_TEXT_LENGTH + 64];
+  char from[8];
+  char to[8];
+  if (!have) {
+    strlcpy(text, english ? "Waiting for data" : "Čekám na data", sizeof(text));
+  } else if (sky->darkTo > static_cast<int64_t>(now) && sky->darkFrom > 0) {
+    formatLocalClock(sky->darkFrom, from, sizeof(from));
+    formatLocalClock(sky->darkTo, to, sizeof(to));
+    snprintf(text, sizeof(text), "%s %s – %s", english ? "Dark" : "Tma", from, to);
+  } else {
+    strlcpy(text, english ? "No full darkness" : "Úplná tma dnes nebude", sizeof(text));
+  }
+  setText(v.dark, text);
+  setColor(v.dark, p.night ? COLOR_ERROR : COLOR_TEXT);
+  // Kp: geomagnetická aktivita; od prahu z nastavení možná polární záře.
+  text[0] = '\0';
+  if (have && sky->hasKp) {
+    char value[12];
+    formatValue(value, sizeof(value), sky->kp, 1);
+    const bool aurora = sky->kp >= dashboardRuntimeConfig.nightSky.auroraKp;
+    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+    agendaBuildColorTag(tag, p.night ? COLOR_ERROR : (aurora ? COLOR_AIR : COLOR_MUTED));
+    snprintf(text, sizeof(text), "%sKp %s · %s#", tag, value,
+             aurora ? (english ? "aurora possible" : "možná polární záře")
+                    : (english ? "geomagnetically calm" : "klidné magnetické pole"));
+  }
+  setText(v.kp, text);
+  setColor(v.kp, p.muted);
+  setText(v.eventsTitle, english ? "UPCOMING" : "ÚKAZY");
+  setColor(v.eventsTitle, p.muted);
+  // Úkazy pod sebou podle skutečné výšky; jednořádkový nenechá díru.
+  lv_coord_t eventY = 146;
+  for (int index = 0; index < static_cast<int>(SKY_MAX_EVENTS); ++index) {
+    const bool shown = have && index < sky->eventCount;
+    setVisible(v.events[index], shown);
+    if (!shown) continue;
+    char when[24];
+    skyEventWhen(sky->events[index], static_cast<int64_t>(now), english, when, sizeof(when));
+    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+    agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+    snprintf(text, sizeof(text), "%s%s#  %s", tag, when, sky->events[index].text);
+    setText(v.events[index], text);
+    setColor(v.events[index], p.night ? COLOR_ERROR : COLOR_TEXT);
+    setPosition(v.events[index], SKY_SIDE_PAD, eventY);
+    lv_obj_update_layout(v.events[index]);
+    eventY += lv_obj_get_height(v.events[index]) + 12;
+  }
+}
+
+bool handleSwipe(int8_t direction) {
+  int16_t startX = 0;
+  int16_t startY = 0;
+  bool vertical = false;
+  displayDriverLastSwipe(startX, startY, vertical);
+  // Vodorovný tah po sloupci družic střídá jeho dvě stránky; tah po kruhu
+  // zůstává kulaté logice (družice a noční obloha).
+  if (shownMode == HomeMode::RoundLeft && !vertical && startX >= SKY_SIDE_X) {
+    skySide.page = static_cast<uint8_t>(1 - skySide.page);
+    sync(true);
+    return true;
+  }
+  // Vodorovný tah na škole střídá rozvrh a druhou stránku (známky, zprávy).
+  if (shownMode == HomeMode::School && !vertical) {
+    school.page = static_cast<uint8_t>(1 - school.page);
+    sync(true);
+    return true;
+  }
+  // Svislý tah po seznamu zpráv posune okno o půl seznamu; výběr se na
+  // minutu zastaví, aby seznam neodjel zpátky k automaticky vybrané zprávě.
+  if (shownMode == HomeMode::Rss && vertical && startX < RSS_LIST_W) {
+    const uint8_t count = rssCount();
+    if (count <= RSS_VISIBLE_ROWS) return true;
+    const int step = RSS_VISIBLE_ROWS / 2;
+    const int maxTop = count - RSS_VISIBLE_ROWS;
+    int top = rss.scrollTop + (direction < 0 ? step : -step);
+    top = std::max(0, std::min(maxTop, top));
+    rss.scrollTop = static_cast<uint8_t>(top);
+    rss.holdUntil = millis() + RSS_HOLD_MS;
+    sync(true);
+    return true;
+  }
+  (void)startY;
+  return false;
 }
 
 // Text kulatého popisku, nebo prázdný, dokud stránka nevznikla.
@@ -3263,22 +3529,39 @@ void syncSkySide(const Palette &p) {
   setText(v.nextPhases, skyText(skyNextPhasesLabel));
   setColor(v.nextPhases, p.muted);
 
-  // Družice: počet a nejbližší přelety z kulaté stránky, která je v kruhu
-  // na 7" neukazuje. Na noční obloze se nic z toho nepíše.
-  const bool satellites = !clockDashboardSatellitesSkyPage();
-  setVisible(v.lines[1], satellites);
-  setVisible(v.satTitle, satellites);
-  setVisible(v.satCount, satellites);
-  setVisible(v.satPass, satellites);
-  if (satellites) {
-    setText(v.satTitle, english ? "SATELLITES" : "DRUŽICE");
-    setColor(v.satTitle, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
-    setText(v.satCount, skyText(satellitesStatusLabel));
-    setText(v.satPass, lv_obj_has_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN)
-                           ? ""
-                           : skyText(satellitesPassLabel));
-    setColor(v.satCount, p.night ? COLOR_ERROR : COLOR_TEXT);
-    setColor(v.satPass, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  // Stránka sloupce: 0 Slunce, Měsíc a přelety, 1 obloha (tažení po sloupci).
+  const bool first = v.page == 0;
+  lv_obj_t *pageZero[] = {v.sunTitle, v.sunCaptions[0], v.sunCaptions[1], v.sunTimes[0],
+                          v.sunTimes[1], v.twilight[0], v.twilight[1], v.dayLength,
+                          v.lines[0], v.moonTitle, v.moonCaptions[0], v.moonCaptions[1],
+                          v.moonTimes[0], v.moonTimes[1], v.phase, v.illumination,
+                          v.nextPhases, v.lines[1], v.satTitle};
+  for (lv_obj_t *object : pageZero) setVisible(object, first);
+  lv_obj_t *pageOne[] = {v.skyTitle, v.dark, v.kp, v.eventsTitle};
+  for (lv_obj_t *object : pageOne) setVisible(object, !first);
+  for (int index = 0; index < 2; ++index) {
+    setBackground(v.pageDots[index], index == v.page ? p.text : p.dotOff);
+  }
+  if (!first) {
+    for (lv_obj_t *object : v.passes) setVisible(object, false);
+    setVisible(v.moon, false);
+    syncSkyPage(p);
+    return;
+  }
+  for (lv_obj_t *object : v.events) setVisible(object, false);
+
+  // Přelety ISS a domácích družic: vždycky vidět, nezávisle na tom, který
+  // z nich kulatá stránka zrovna vybrala na řádek pod oblohou.
+  setText(v.satTitle, english ? "PASSES" : "PŘELETY");
+  setColor(v.satTitle, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  for (int index = 0; index < SatelliteSnapshot::MAX_LISTED_PASSES; ++index) {
+    char text[128];
+    const bool shown = index < satellitesLcd7PassCount &&
+                       formatSatellitePass(satellitesLcd7Passes[index], text, sizeof(text));
+    setVisible(v.passes[index], shown);
+    if (!shown) continue;
+    setText(v.passes[index], text);
+    setColor(v.passes[index], p.night ? COLOR_ERROR : COLOR_OUTSIDE);
   }
 
   // Kotouč Měsíce kreslí kulatá stránka do vlastního bufferu; stačí ho
@@ -3493,12 +3776,16 @@ void applyMode(HomeMode mode) {
   if (mode == HomeMode::Rss && shownMode != HomeMode::Rss) {
     // Obrazovka se vždycky otevírá na nejnovější zprávě.
     rss.selected = 0;
+    rss.scrollTop = 0;
     rss.selectedAt = millis();
     rss.holdUntil = 0;
     rss.drawnRevision = UINT32_MAX;
   }
   setVisible(rss.root, mode == HomeMode::Rss);
-  if (mode == HomeMode::School) school.drawnRevision = UINT32_MAX;
+  if (mode == HomeMode::School) {
+    school.drawnRevision = UINT32_MAX;
+    if (shownMode != HomeMode::School) school.page = 0;
+  }
   setVisible(school.root, mode == HomeMode::School);
   if (mode == HomeMode::Planes && planes.pixels != nullptr) lv_obj_invalidate(planes.canvas);
   setVisible(planes.root, mode == HomeMode::Planes);

@@ -40,6 +40,7 @@ void sync(bool force);
 void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
 void stageHistory(size_t slot, const float *buckets);
+bool handleSwipe(int8_t direction);
 void rssTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
 void trafficFrameChanged(const uint16_t *pixels);
@@ -183,6 +184,13 @@ lv_obj_t *satellitesCanvas = nullptr;
 lv_obj_t *satellitesClockLabel = nullptr;
 lv_obj_t *satellitesStatusLabel = nullptr;
 lv_obj_t *satellitesPassLabel = nullptr;
+#if HODINY_BOARD_LCD7
+// Nadcházející přelety a poslední stav oblohy pro sloupec družic 7".
+SatellitePass satellitesLcd7Passes[SatelliteSnapshot::MAX_LISTED_PASSES];
+uint8_t satellitesLcd7PassCount = 0;
+SkySnapshot *skyLcd7 = nullptr;
+uint32_t skyLcd7Revision = 0;
+#endif
 lv_obj_t *satellitesDetailPanel = nullptr;
 lv_obj_t *satellitesDetailTitle = nullptr;
 lv_obj_t *satellitesDetailClose = nullptr;
@@ -252,9 +260,12 @@ size_t agendaCalendarCount = 0;
 char agendaCalendarNames[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 lv_obj_t *rssHeaderLabel = nullptr;
 lv_obj_t *rssStatusLabel = nullptr;
-lv_obj_t *rssTitleLabels[CLOCK_RSS_MAX_ITEMS] = {};
+// Kolik zpráv dashboard drží: kulatý jich ukáže nejvýš CLOCK_RSS_MAX_ITEMS,
+// 7" až RSS_MAX_ITEMS v posouvaném seznamu.
+constexpr size_t DASHBOARD_RSS_ITEMS = HODINY_BOARD_LCD7 ? RSS_MAX_ITEMS : CLOCK_RSS_MAX_ITEMS;
+lv_obj_t *rssTitleLabels[DASHBOARD_RSS_ITEMS] = {};
 // Jen položky s časem nesou recolor značku, kterou přebarvuje applyRssColors().
-bool rssItemHasTime[CLOCK_RSS_MAX_ITEMS] = {};
+bool rssItemHasTime[DASHBOARD_RSS_ITEMS] = {};
 uint8_t rssVisibleItemCount = 0;
 // Pod zprávami: kdy kanál vznikl. Popisek dne se skládá až při kreslení, aby
 // se o půlnoci sám přepsal na VČERA.
@@ -2928,7 +2939,7 @@ void applyRssColors() {
   }
   char tag[RSS_COLOR_TAG_LENGTH + 1];
   rssBuildColorTag(tag, rssTimeColor());
-  for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+  for (size_t index = 0; index < DASHBOARD_RSS_ITEMS; ++index) {
     lv_obj_t *title = rssTitleLabels[index];
     if (title == nullptr) continue;
     setTextColor(title, redNight ? COLOR_ERROR : COLOR_TEXT);
@@ -2946,7 +2957,7 @@ void applyRssColors() {
 // každém obnovení kanálu.
 void layoutRssItems(uint8_t count) {
   if (rssPage == nullptr) return;
-  if (count > CLOCK_RSS_MAX_ITEMS) count = CLOCK_RSS_MAX_ITEMS;
+  if (count > DASHBOARD_RSS_ITEMS) count = DASHBOARD_RSS_ITEMS;
   rssVisibleItemCount = count;
   const int lineHeight = rssLineHeight();
   int titleLines = rssTitleLines(count);
@@ -2975,7 +2986,7 @@ void layoutRssItems(uint8_t count) {
     if (overflow > 0) top -= overflow;
   }
 
-  for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+  for (size_t index = 0; index < DASHBOARD_RSS_ITEMS; ++index) {
     lv_obj_t *title = rssTitleLabels[index];
     if (title == nullptr) continue;
     if (index >= count) {
@@ -3023,7 +3034,7 @@ void createRssPage(lv_obj_t *screen) {
   alignCenter(rssUpdatedLabel, 0, RSS_FOOTER_Y);
   lv_obj_add_flag(rssUpdatedLabel, LV_OBJ_FLAG_HIDDEN);
 
-  for (size_t index = 0; index < CLOCK_RSS_MAX_ITEMS; ++index) {
+  for (size_t index = 0; index < DASHBOARD_RSS_ITEMS; ++index) {
     lv_obj_t *title = makeLabel(rssPage, &clock_czech_16, COLOR_TEXT);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
     lv_label_set_recolor(title, true);
@@ -3074,7 +3085,7 @@ void createRssPage(lv_obj_t *screen) {
 RssDetailText *ensureRssDetailTexts() {
   if (rssDetailTexts == nullptr) {
     rssDetailTexts = static_cast<RssDetailText *>(heap_caps_calloc(
-        CLOCK_RSS_MAX_ITEMS, sizeof(RssDetailText),
+        DASHBOARD_RSS_ITEMS, sizeof(RssDetailText),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   return rssDetailTexts;
@@ -8634,15 +8645,12 @@ void updateSatellitesDetail(const SatelliteDetail &detail) {
 
 // Přelet družice pod oblohou: ISS, nebo domácí SATGUS. Služba už vybrala ten,
 // který je na řadě. Časy jsou v místním čase hodin.
-void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
-  if (satellitesPassLabel == nullptr) return;
-  const SatellitePass &pass = snapshot.pass;
+// "ISS 21:40 max 54° VIDITELNÁ" (s recolor značkou), "TEĎ" u probíhajícího.
+// false, když přelet není platný nebo už skončil.
+bool formatSatellitePass(const SatellitePass &pass, char *text, size_t capacity) {
   const time_t now = time(nullptr);
-  if (!pass.valid || now < 1700000000 ||
-      static_cast<int64_t>(now) > pass.set) {
-    lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
+  if (!pass.valid || now < 1700000000 || static_cast<int64_t>(now) > pass.set)
+    return false;
   const bool english = englishLanguage();
   const bool redNight = redNightVisualEnabled();
   const char *visibleColor = redNight ? "FF4848" : "65C744";
@@ -8651,9 +8659,8 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
     snprintf(visibleText, sizeof(visibleText), " #%s %s#", visibleColor,
              english ? "VISIBLE" : "VIDITELNÁ");
   }
-  char text[128];
   if (static_cast<int64_t>(now) >= pass.rise) {
-    snprintf(text, sizeof(text), "%s %s max %u°%s", pass.name,
+    snprintf(text, capacity, "%s %s max %u°%s", pass.name,
              english ? "NOW" : "TEĎ",
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);
   } else {
@@ -8663,11 +8670,22 @@ void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
     localtime_r(&rise, &riseLocal);
     localtime_r(&now, &nowLocal);
     const bool tomorrow = riseLocal.tm_yday != nowLocal.tm_yday;
-    snprintf(text, sizeof(text), "%s %s%02d:%02d max %u°%s", pass.name,
+    snprintf(text, capacity, "%s %s%02d:%02d max %u°%s", pass.name,
              tomorrow ? (english ? "TMRW " : "ZÍTRA ") : "",
              riseLocal.tm_hour, riseLocal.tm_min,
              static_cast<unsigned>(pass.maxElevationDeg), visibleText);
   }
+  return true;
+}
+
+void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
+  if (satellitesPassLabel == nullptr) return;
+  char text[128];
+  if (!formatSatellitePass(snapshot.pass, text, sizeof(text))) {
+    lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const bool redNight = redNightVisualEnabled();
   setTextColor(satellitesPassLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesPassLabel, text);
   alignCenter(satellitesPassLabel, 0, SATELLITES_PASS_OFFSET_Y);
@@ -8826,6 +8844,11 @@ void clockDashboardSetSatellitesAvailable(bool available) {
 
 void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
   if (satellitesCanvas == nullptr || satellitesStatusLabel == nullptr) return;
+#if HODINY_BOARD_LCD7
+  satellitesLcd7PassCount = snapshot.passCount;
+  for (uint8_t index = 0; index < snapshot.passCount; ++index)
+    satellitesLcd7Passes[index] = snapshot.passes[index];
+#endif
   const bool english = englishLanguage();
   const bool redNight = redNightVisualEnabled();
 
@@ -10473,6 +10496,21 @@ bool clockDashboardTrafficMapPage() {
 #endif
 
 #if HODINY_BOARD_LCD7
+void clockDashboardLcd7SetSky(const SkySnapshot &sky) {
+  if (skyLcd7 == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(SkySnapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr) return;
+    skyLcd7 = new (memory) SkySnapshot();
+  }
+  *skyLcd7 = sky;
+  ++skyLcd7Revision;
+}
+
+bool clockDashboardLcd7Swipe(int8_t direction) {
+  if (settingsVisible || firmwareUpdateActive) return false;
+  return lcd7::handleSwipe(direction);
+}
+
 void clockDashboardLcd7StageHistory(size_t slot, const float *buckets) {
   lcd7::stageHistory(slot, buckets);
 }

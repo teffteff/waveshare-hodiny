@@ -19,6 +19,11 @@ uint8_t *screenshotBuffer = nullptr;
 size_t screenshotOffset = 0;
 int8_t screenHoldPending = 0;
 int8_t rangeSwipePending = 0;
+// Odkud tah posledního gesta vyšel (souřadnice obrazovky) a jestli byl svislý.
+// Obrazovky 7" podle toho rozliší tah po mapě od tahu po sloupci vedle ní.
+int16_t swipeStartX = 0;
+int16_t swipeStartY = 0;
+bool swipeVertical = false;
 bool shortTapPending = false;
 // Kam se klepnulo. Radar letadel podle toho vybírá letadlo, takže samo "někdo
 // klepl" nestačí.
@@ -180,9 +185,15 @@ void classifyTouchGesture() {
       abs(dy) <= TOUCH_SWIPE_CROSS_PX) {
     // Tažení doleva rozsah oddálí, doprava přiblíží.
     rangeSwipePending = dx < 0 ? 1 : -1;
+    swipeStartX = static_cast<int16_t>(touchStartX);
+    swipeStartY = static_cast<int16_t>(touchStartY);
+    swipeVertical = false;
   } else if (duration <= TOUCH_SWIPE_MS && abs(dy) >= TOUCH_SWIPE_PX &&
              abs(dx) <= TOUCH_SWIPE_CROSS_PX) {
     rangeSwipePending = dy < 0 ? -1 : 1;
+    swipeStartX = static_cast<int16_t>(touchStartX);
+    swipeStartY = static_cast<int16_t>(touchStartY);
+    swipeVertical = true;
   } else if (stillFinger && duration >= TOUCH_HOLD_MS) {
     // Podržení v levé polovině vrací zpět, v pravé jde vpřed.
     screenHoldPending = touchLastX < TOUCH_MIDDLE_X ? -1 : 1;
@@ -353,6 +364,20 @@ bool displayDriverTakeDoubleTap() {
   const bool pending = doubleTapPending;
   doubleTapPending = false;
   return pending;
+}
+
+void displayDriverInjectSwipe(int8_t direction, int16_t startX, int16_t startY,
+                              bool vertical) {
+  swipeStartX = startX;
+  swipeStartY = startY;
+  swipeVertical = vertical;
+  rangeSwipePending = direction;
+}
+
+void displayDriverLastSwipe(int16_t &startX, int16_t &startY, bool &vertical) {
+  startX = swipeStartX;
+  startY = swipeStartY;
+  vertical = swipeVertical;
 }
 
 int8_t displayDriverTakeRangeSwipe() {

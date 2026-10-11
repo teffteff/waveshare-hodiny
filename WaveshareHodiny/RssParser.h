@@ -6,7 +6,8 @@
 // Strop pro jeden rozebraný kanál. Volající si vyžádá jen tolik zpráv, kolik
 // jich obrazovka kreslí (3-6); rezerva navíc drží parser nezávislý na
 // ClockConfig, aby šel testovat na počítači.
-constexpr size_t RSS_MAX_ITEMS = 8;
+// 7" ukazuje až dvanáct zpráv (seznam se posouvá), kulatý nejvýš šest.
+constexpr size_t RSS_MAX_ITEMS = 12;
 // Titulek v UTF-8; čeština zůstává, ostatní diakritika se přepíše do ASCII.
 // Naměřený strop iROZHLAS.cz je 106 znaků, česká písmena berou dva bajty;
 // do dvou řádků se vejde kolem sta znaků, zbytek utne LVGL třemi tečkami.

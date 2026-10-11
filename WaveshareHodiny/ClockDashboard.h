@@ -309,6 +309,12 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
 // Průběh slotu za 24 h z Home Assistantu: 96 hodnot po 15 minutách od
 // nejstarší, NAN = mezera. Volá úloha HA, je bezpečné.
 void clockDashboardLcd7StageHistory(size_t slot, const float *buckets);
+// Stav oblohy pro sloupec družic (úkazy, tma, Kp), i když je vidět jen
+// stránka družic.
+void clockDashboardLcd7SetSky(const SkySnapshot &sky);
+// Tah po obrazovce 7", který si obrazovka vyřídí sama (sloupec družic,
+// seznam zpráv); false, když ho má dostat kulatá logika.
+bool clockDashboardLcd7Swipe(int8_t direction);
 #endif
 
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE

@@ -752,6 +752,8 @@ void maintainSkyFetch(const ClockSatellitesConfig &config, float latitude,
         skyHaveData = true;
         skyLastSuccessAt = millis();
         skyRedrawRequested = true;
+        // 7" bere tmu a úkazy přímo z dat, bez nakresleného snímku.
+        ++generation;
         portEXIT_CRITICAL(&stateMux);
         setSkyMessage("");
         ok = true;
@@ -1304,6 +1306,27 @@ void satelliteServiceSnapshot(SatelliteSnapshot &snapshot) {
           ? satellitePickPass(liveInfo, static_cast<int64_t>(epoch))
           : nullptr;
   snapshot.pass = pass != nullptr ? *pass : SatellitePass{};
+  snapshot.passCount = 0;
+  if (haveTracks && haveEpoch) {
+    const int64_t now = static_cast<int64_t>(epoch);
+    // Probíhající první, ostatní podle začátku; řazení vkládáním, je jich pár.
+    for (uint8_t index = 0; index < liveInfo.passCount; ++index) {
+      const SatellitePass &candidate = liveInfo.passes[index];
+      if (!candidate.valid || candidate.set <= now) continue;
+      const auto key = [&](const SatellitePass &item) {
+        return item.rise <= now ? INT64_MIN : item.rise;
+      };
+      uint8_t position = snapshot.passCount;
+      while (position > 0 && key(snapshot.passes[position - 1]) > key(candidate)) --position;
+      if (position >= SatelliteSnapshot::MAX_LISTED_PASSES) continue;
+      const uint8_t last = std::min<uint8_t>(snapshot.passCount,
+                                             SatelliteSnapshot::MAX_LISTED_PASSES - 1);
+      for (uint8_t move = last; move > position; --move)
+        snapshot.passes[move] = snapshot.passes[move - 1];
+      snapshot.passes[position] = candidate;
+      if (snapshot.passCount < SatelliteSnapshot::MAX_LISTED_PASSES) ++snapshot.passCount;
+    }
+  }
   strlcpy(snapshot.message, statusMessage, sizeof(snapshot.message));
   snapshot.detail = SatelliteDetail{};
   if (selectedId != 0 && selectionDetail.noradId == selectedId) {
@@ -1512,7 +1535,8 @@ void satelliteServiceSkySnapshot(SkySnapshot &snapshot) {
   const unsigned long now = millis();
   snapshot.generation = generation;
   snapshot.loading = skyLoading || (skyFetchNow && !skyHaveData);
-  snapshot.haveData = skyFrameReady && skyDataFresh(now);
+  snapshot.dataFresh = skyDataFresh(now);
+  snapshot.haveData = skyFrameReady && snapshot.dataFresh;
   snapshot.dark = skyDark;
   snapshot.sunUp = skySunUp;
   if (skyLive != nullptr && skyDataFresh(now)) {

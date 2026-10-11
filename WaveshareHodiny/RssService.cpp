@@ -9,6 +9,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "Board.h"
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
 #include "PsramGrowBuffer.h"
@@ -383,7 +384,11 @@ static bool rssServiceDownload(const ClockRssConfig &config,
   parseError[0] = '\0';
   if (error.isEmpty() &&
       !rssParseFeed(reinterpret_cast<const char *>(rssBuffer.data()),
-                    payloadLength, config.itemCount, parsed, parseError,
+                    payloadLength,
+                    // 7" posouvá seznam, a tak bere všechno, co kanál dá;
+                    // počet v nastavení patří místu na kulatém displeji.
+                    HODINY_BOARD_LCD7 ? RSS_MAX_ITEMS : config.itemCount,
+                    parsed, parseError,
                     sizeof(parseError))) {
     error = parseError;
   }

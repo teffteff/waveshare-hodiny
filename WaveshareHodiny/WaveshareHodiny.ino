@@ -561,7 +561,12 @@ void applySatellitesState(const ClockConfig &config, bool visible) {
       available && (config.satellites.automaticRotation || skyPage),
       config.openMeteoLatitude, config.openMeteoLongitude, config.satellites,
       config.language == CLOCK_LANGUAGE_ENGLISH);
+#if HODINY_BOARD_LCD7
+  // 7" nemá stránku oblohy, tma, Kp a úkazy patří do sloupce družic.
+  satelliteServiceSetNightSky(available, skyPage, config.nightSky.hideEvents);
+#else
   satelliteServiceSetNightSky(skyAvailable, skyPage, config.nightSky.hideEvents);
+#endif
 }
 
 void applySatellitesState(const ClockConfig &config) {
@@ -1572,7 +1577,14 @@ void maintainDisplayGestures() {
   }
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
-    if (clockDashboardSwipeValues() || clockDashboardSwipeSchool() ||
+#if HODINY_BOARD_LCD7
+    const bool lcd7Swipe = clockDashboardLcd7Swipe(rangeSwipeDirection);
+#else
+    constexpr bool lcd7Swipe = false;
+#endif
+    if (lcd7Swipe) {
+      displayModeStartedAt = millis();
+    } else if (clockDashboardSwipeValues() || clockDashboardSwipeSchool() ||
         clockDashboardSwipeRss() ||
         clockDashboardSwipeForecast(rangeSwipeDirection)) {
       displayModeStartedAt = millis();
@@ -2149,7 +2161,19 @@ void maintainSatellitesDisplay() {
   }
   satelliteServiceSnapshot(snapshot);
   const bool skyPage = snapshot.skyPage && sky != nullptr;
+#if HODINY_BOARD_LCD7
+  // Sloupec 7" ukazuje úkazy a tmu i na stránce družic.
+  if (sky != nullptr) {
+    satelliteServiceSkySnapshot(*sky);
+    static uint32_t lastSkyGeneration = UINT32_MAX;
+    if (sky->generation != lastSkyGeneration) {
+      lastSkyGeneration = sky->generation;
+      clockDashboardLcd7SetSky(*sky);
+    }
+  }
+#else
   if (skyPage) satelliteServiceSkySnapshot(*sky);
+#endif
   const bool loading = skyPage ? sky->loading : snapshot.loading;
   const bool detailOpen = skyPage ? sky->detail.open : snapshot.detail.open;
   const char *message = skyPage ? sky->message : snapshot.message;
@@ -2571,6 +2595,17 @@ void handleUsbCommands() {
         previewClockAppearanceFromWeb(appearance);
         Serial.println("CLOCKSTYLE_SET");
 #if HODINY_BOARD_LCD7
+      } else if (usbCommand.startsWith("SWIPE ")) {
+        // "SWIPE L 600 200": tah doleva (L/R) nebo nahoru/dolů (U/D) začínající
+        // v bodě obrazovky, stejnou cestou jako prst.
+        const char axis = usbCommand.length() > 6 ? usbCommand[6] : 'L';
+        char *rest = nullptr;
+        const long x = strtol(usbCommand.c_str() + 7, &rest, 10);
+        const long y = strtol(rest, nullptr, 10);
+        const bool vertical = axis == 'U' || axis == 'D';
+        const int8_t direction = (axis == 'L' || axis == 'U') ? (vertical ? -1 : 1) : (vertical ? 1 : -1);
+        displayDriverInjectSwipe(direction, static_cast<int16_t>(x), static_cast<int16_t>(y), vertical);
+        Serial.println("SWIPE_DONE");
       } else if (usbCommand == "HISTORYRELOAD") {
         historyReloadRequested = true;
         if (homeAssistantTaskHandle != nullptr) xTaskNotifyGive(homeAssistantTaskHandle);

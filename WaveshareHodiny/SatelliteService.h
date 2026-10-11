@@ -53,6 +53,11 @@ struct SatelliteSnapshot {
   // Přelet na řádek pod oblohou; neplatný, když žádný nezbyl nebo je skupina
   // té družice vypnutá. Vybírá ho satellitePickPass().
   SatellitePass pass;
+  // Všechny nadcházející přelety (probíhající první, pak podle začátku);
+  // 7" je ukazuje ve sloupci, aby byla vidět ISS i domácí družice.
+  static constexpr uint8_t MAX_LISTED_PASSES = 4;
+  SatellitePass passes[MAX_LISTED_PASSES];
+  uint8_t passCount = 0;
   char message[64] = "";
   SatelliteDetail detail;
 };
@@ -85,6 +90,8 @@ struct SkySnapshot {
   bool loading = false;
   // Data jsou čerstvá a snímek z nich nakreslený.
   bool haveData = false;
+  // Data jsou čerstvá, i když snímek ještě nikdo nekreslil.
+  bool dataFresh = false;
   // Slunce aspoň šest stupňů pod obzorem, nebo nad ním.
   bool dark = false;
   bool sunUp = false;

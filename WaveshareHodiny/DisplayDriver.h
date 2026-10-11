@@ -18,6 +18,12 @@ void displayDriverSetPartialRefresh(bool enabled, bool rebuildBuffers = false);
 int8_t displayDriverTakeScreenHold();
 // Přetažení prstem: -1 přiblížit rozsah radaru, +1 oddálit, 0 nic.
 int8_t displayDriverTakeRangeSwipe();
+// Začátek (souřadnice obrazovky) a osa tahu, který vrátil poslední
+// displayDriverTakeRangeSwipe(). Svislý tah nahoru dává -1, dolů +1.
+void displayDriverLastSwipe(int16_t &startX, int16_t &startY, bool &vertical);
+// Vývojové USB SWIPE: tah jako prstem, pro screenshoty stránek.
+void displayDriverInjectSwipe(int8_t direction, int16_t startX, int16_t startY,
+                              bool vertical);
 // Krátké klepnutí i s místem, kam dopadlo. Souřadnice potřebuje radar letadel,
 // který jimi vybírá letadlo pod prstem. Klepnutí se hlásí až po okně
 // dvojklepnutí, jinak by první polovina dvojklepnutí zároveň vybrala letadlo.
