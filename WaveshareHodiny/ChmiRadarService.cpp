@@ -2511,10 +2511,20 @@ bool loadServerAnimation(float latitude, float longitude, uint16_t radiusKm,
   strlcpy(base, serverUrl, sizeof(base));
   portEXIT_CRITICAL(&stateMux);
   if (base[0] == '\0') return false;
-  for (uint8_t *&bundle : serverBundles) {
-    if (bundle == nullptr)
-      bundle = static_cast<uint8_t *>(heap_caps_malloc(
-          SERVER_BUNDLE_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  const auto allocateBundles = [] {
+    for (uint8_t *&bundle : serverBundles) {
+      if (bundle == nullptr)
+        bundle = static_cast<uint8_t *>(heap_caps_malloc(
+            SERVER_BUNDLE_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    return serverBundles[0] != nullptr && serverBundles[1] != nullptr;
+  };
+  // Návrat ze snímků z ČHMÚ (po výpadku serveru): ty zabírají skoro celou
+  // PSRAM, takže na buffery serveru se místo najde až po jejich uvolnění.
+  // Když pak server neodpoví, načte se z ČHMÚ celá animace znovu.
+  if (!allocateBundles() && !serverFramesActive) {
+    releaseDirectFrameBuffers();
+    allocateBundles();
   }
   if (serverBundles[0] == nullptr || serverBundles[1] == nullptr ||
       !ensureDecodeBuffer(LEVEL_DECODE_BYTES)) {
