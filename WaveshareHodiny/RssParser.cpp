@@ -60,13 +60,20 @@ class AsciiWriter {
     if (length_ > 0) pendingSpace_ = true;
   }
 
+  // Znak (i vícebajtový v UTF-8) se zapíše celý, nebo vůbec: useknutý
+  // titulek nesmí končit půlkou písmene.
   void append(const char *text, size_t textLength) {
     if (textLength == 0) return;
     if (pendingSpace_) {
       pendingSpace_ = false;
       putByte(' ');
     }
-    for (size_t index = 0; index < textLength; ++index) putByte(text[index]);
+    if (destinationSize_ == 0 || length_ + textLength >= destinationSize_) {
+      truncated_ = true;
+      return;
+    }
+    memcpy(destination_ + length_, text, textLength);
+    length_ += textLength;
   }
 
   void append(const char *text) { append(text, strlen(text)); }
@@ -128,13 +135,22 @@ bool isXmlSpace(char value) {
 }
 
 // Kódové body mimo ASCII, které projektová písma opravdu obsahují, takže se
-// nemusí přepisovat. Odpovídá rozsahu v ClockCzechFont*.c.
-const char *passThroughUtf8(uint32_t codePoint) {
+// nemusí přepisovat: znaménka a celá česká abeceda s diakritikou. Odpovídá
+// rozsahu v ClockCzechFont*.c i Lcd7Font*.c; ostatní písmena s diakritikou
+// (ö, ł, Ľ) písma nemají a přepíšou se tabulkami níž.
+bool passThroughUtf8(uint32_t codePoint) {
   switch (codePoint) {
-    case 0x00B0: return "\xC2\xB0";  // °
-    case 0x00B3: return "\xC2\xB3";  // ³
-    case 0x00B5: return "\xC2\xB5";  // µ
-    default: return nullptr;
+    case 0x00B0:  // °
+    case 0x00B3:  // ³
+    case 0x00B5:  // µ
+    case 0x00C1: case 0x00C9: case 0x00CD: case 0x00D3: case 0x00DA: case 0x00DD:
+    case 0x00E1: case 0x00E9: case 0x00ED: case 0x00F3: case 0x00FA: case 0x00FD:
+    case 0x010C: case 0x010D: case 0x010E: case 0x010F: case 0x011A: case 0x011B:
+    case 0x0147: case 0x0148: case 0x0158: case 0x0159: case 0x0160: case 0x0161:
+    case 0x0164: case 0x0165: case 0x016E: case 0x016F: case 0x017D: case 0x017E:
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -192,6 +208,12 @@ void writeCodePoint(AsciiWriter &writer, uint32_t codePoint) {
     writer.append(&value, 1);
     return;
   }
+  if (passThroughUtf8(codePoint)) {
+    const char bytes[2] = {static_cast<char>(0xC0 | (codePoint >> 6)),
+                           static_cast<char>(0x80 | (codePoint & 0x3F))};
+    writer.append(bytes, 2);
+    return;
+  }
   const char *table = nullptr;
   size_t offset = 0;
   if (codePoint >= 0x00C0 && codePoint <= 0x00FF) {
@@ -206,11 +228,7 @@ void writeCodePoint(AsciiWriter &writer, uint32_t codePoint) {
     writer.append(entry, entry[1] == '\1' ? 1 : 2);
     return;
   }
-  const char *passThrough = passThroughUtf8(codePoint);
-  if (passThrough != nullptr) {
-    writer.append(passThrough);
-    return;
-  }
+
   const char *punctuation = punctuationAscii(codePoint);
   if (punctuation != nullptr) {
     writer.append(punctuation);

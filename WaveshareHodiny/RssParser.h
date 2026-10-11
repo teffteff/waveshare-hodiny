@@ -7,14 +7,15 @@
 // jich obrazovka kreslí (3-6); rezerva navíc drží parser nezávislý na
 // ClockConfig, aby šel testovat na počítači.
 constexpr size_t RSS_MAX_ITEMS = 8;
-// Titulek po přepisu do ASCII. Naměřený strop iROZHLAS.cz je 106 znaků; do
-// dvou řádků se jich vejde kolem sta, zbytek utne LVGL třemi tečkami.
-constexpr size_t RSS_TITLE_LENGTH = 160;
+// Titulek v UTF-8; čeština zůstává, ostatní diakritika se přepíše do ASCII.
+// Naměřený strop iROZHLAS.cz je 106 znaků, česká písmena berou dva bajty;
+// do dvou řádků se vejde kolem sta znaků, zbytek utne LVGL třemi tečkami.
+constexpr size_t RSS_TITLE_LENGTH = 224;
 constexpr size_t RSS_CHANNEL_TITLE_LENGTH = 48;
-// Shrnutí pro detail zprávy po přepisu do ASCII. Server zpráv dne posílá 3 až
+// Shrnutí pro detail zprávy v UTF-8 (jako titulek). Server zpráv dne posílá 3 až
 // 5 vět, naměřeno 180 až 350 znaků; víc se na kulatý displej pod titulek
 // stejně nevejde. Delší text se utne na hranici slova a dostane tři tečky.
-constexpr size_t RSS_SUMMARY_LENGTH = 512;
+constexpr size_t RSS_SUMMARY_LENGTH = 720;
 
 struct RssItem {
   char title[RSS_TITLE_LENGTH] = "";

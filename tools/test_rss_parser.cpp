@@ -22,15 +22,17 @@ int64_t date(const std::string &text) {
 }
 
 void testTransliteration() {
-  // Celá česká abeceda s diakritikou, velká i malá.
-  assert(translit("ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ") == "ACDEEINORSTUUYZ");
-  assert(translit("áčďéěíňóřšťúůýž") == "acdeeinorstuuyz");
+  // Celá česká abeceda s diakritikou, velká i malá: písma hodin ji mají,
+  // takže projde beze změny.
+  assert(translit("ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ") == "ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ");
+  assert(translit("áčďéěíňóřšťúůýž") == "áčďéěíňóřšťúůýž");
   // Skutečný titulek z kanálu iROZHLAS.cz.
   assert(translit("Židovská obec se soudí o bývalý spolkový dům v Brně") ==
-         "Zidovska obec se soudi o byvaly spolkovy dum v Brne");
-  // Sousední jazyky, které se ve zpravodajství objevují.
+         "Židovská obec se soudí o bývalý spolkový dům v Brně");
+  // Sousední jazyky: co písmo nemá (ł, ę, ń, Ľ, ü, Æ, ø), se přepíše,
+  // česká písmena v nich zůstanou.
   assert(translit("Wałęsa Gdańsk Košice Ľuboš Müller Ærø") ==
-         "Walesa Gdansk Kosice Lubos Muller AEro");
+         "Walesa Gdansk Košice Luboš Muller AEro");
   assert(translit("Straße") == "Strasse");
 
   // Uvozovky, které iROZHLAS.cz opravdu sází (U+201A a U+2018), a pomlčky.
@@ -40,7 +42,7 @@ void testTransliteration() {
 
   // XML entity, včetně číselných tvarů kódujících diakritiku.
   assert(translit("AC&amp;C &lt;tag&gt; &quot;x&quot;") == "AC&C <tag> \"x\"");
-  assert(translit("&#345;eka a &#x158;eka") == "reka a Reka");
+  assert(translit("&#345;eka a &#x158;eka") == "řeka a Řeka");
   assert(translit("&nedefinovana; pryc") == "pryc");
 
   // Bílé znaky: odsazení z XML se sloučí a ořízne.
@@ -58,6 +60,13 @@ void testTransliteration() {
   assert(written == sizeof(small) - 1);
   assert(small[sizeof(small) - 1] == '\0');
   assert(strcmp(small, "Velmi d") == 0);
+
+  // Dvoubajtové písmeno, které se už nevejde, se nezapíše napůl.
+  char tiny[5];
+  rssTransliterate("abčd", 5, tiny, sizeof(tiny));
+  assert(strcmp(tiny, "abč") == 0);
+  rssTransliterate("abcč", 5, tiny, sizeof(tiny));
+  assert(strcmp(tiny, "abc") == 0);
 
   // Poškozené UTF-8 nesmí zacyklit ani nic zapsat navíc.
   const char broken[] = {'a', static_cast<char>(0xC3), '\0'};
@@ -113,7 +122,7 @@ void testFeed() {
   assert(feed.updatedAt == 1788361500LL);
   assert(feed.count == 2);
   // Nejnovější zpráva musí být první i tehdy, když v kanálu byla druhá.
-  assert(strcmp(feed.items[0].title, "Nejnovejsi zprava & spol") == 0);
+  assert(strcmp(feed.items[0].title, "Nejnovejsi zpráva & spol") == 0);
   assert(strcmp(feed.items[1].title, "Starsi zprava") == 0);
   assert(feed.items[0].publishedAt > feed.items[1].publishedAt);
   assert(feed.items[0].timeAvailable && feed.items[1].timeAvailable);
@@ -122,7 +131,7 @@ void testFeed() {
   assert(rssParseFeed(PAYLOAD, sizeof(PAYLOAD) - 1, 1, feed, error,
                       sizeof(error)));
   assert(feed.count == 1);
-  assert(strcmp(feed.items[0].title, "Nejnovejsi zprava & spol") == 0);
+  assert(strcmp(feed.items[0].title, "Nejnovejsi zpráva & spol") == 0);
 
   // Atom s atributem na značce, prefixem jmenného prostoru a bez data.
   static const char ATOM[] =
@@ -218,9 +227,9 @@ std::string text(const std::string &source, size_t size = RSS_SUMMARY_LENGTH) {
 void testSummaries() {
   // Doslovné i zakódované HTML zmizí, odstavce se oddělí mezerou.
   assert(text("<p>Prvn\xc3\xad odstavec.</p><p>Druh\xc3\xbd <b>tu</b>.</p>") ==
-         "Prvni odstavec. Druhy tu .");
+         "První odstavec. Druhý tu .");
   assert(text("&lt;p&gt;Perex &amp; obr&#225;zek&lt;img src=\"a.jpg\"/&gt;"
-              "&lt;/p&gt;") == "Perex & obrazek");
+              "&lt;/p&gt;") == "Perex & obrázek");
   // Porovnání v textu značkou není.
   assert(text("a < b a 3&lt;4") == "a < b a 3<4");
   // Delší text se utne na konci slova a dostane tři tečky.
@@ -244,7 +253,7 @@ void testSummaries() {
   char error[160];
   assert(rssParseFeed(FEED, sizeof(FEED) - 1, 5, feed, error, sizeof(error)));
   assert(feed.count == 3);
-  assert(strcmp(feed.items[0].summary, "Shrnuti prvni zpravy.") == 0);
+  assert(strcmp(feed.items[0].summary, "Shrnutí první zprávy.") == 0);
   assert(strcmp(feed.items[1].summary, "V CDATA odkaz") == 0);
   assert(feed.items[2].summary[0] == '\0');
 
