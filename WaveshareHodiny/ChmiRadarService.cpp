@@ -229,18 +229,20 @@ int dataY0 = 0;
 uint16_t decodedLineCount = 0;
 bool decodedLinesSequential = true;
 
-// --- Snímky ze serveru (7") -------------------------------------------------
+// --- Snímky ze serveru --------------------------------------------------------
 // Server vedle srážkové předpovědi (/radar.bin, RadarBundle.h) posílá hotové
 // snímky stupňů odrazivosti zabalené zlibem. Hodiny je drží zabalené ve dvou
 // bufferech (do jednoho se stahuje, z druhého se kreslí) a před kreslením
 // rozbalí jen jeden do decodeBuffer. Odpadne PNG dekodér, stažené PNG
-// i šest rozbalených snímků - přes 400 kB PSRAM - a s nimi i práce, při které
-// RGB panel ztrácel synchronizaci. Bez serveru nebo při jeho výpadku se
-// stahuje z ČHMÚ jako dřív.
-constexpr bool SERVER_FRAMES = LAYERED_VIEW;
-// Šest snímků lehkého deště má 20 kB, celé Česko pod deštěm odhadem 80 kB.
-// Co se nevejde, server ubere od nejstaršího snímku.
-constexpr size_t SERVER_BUNDLE_CAPACITY = 96 * 1024;
+// i rozbalené snímky (na 7" 6 x 70 kB, na kulatém 6 x 230 kB) a s nimi i práce,
+// při které RGB panel ztrácel synchronizaci. Kulatý pak mapu a prstenec kreslí
+// do každého kroku animace (composeRoundFrame) stejně jako 7". Bez serveru
+// nebo při jeho výpadku se stahuje z ČHMÚ jako dřív.
+constexpr bool SERVER_FRAMES = true;
+// Šest snímků lehkého deště má na 7" 20 kB a na kulatém 35 kB, celé Česko
+// pod deštěm odhadem čtyřikrát tolik. Co se nevejde, server ubere od
+// nejstaršího snímku.
+constexpr size_t SERVER_BUNDLE_CAPACITY = (LAYERED_VIEW ? 96 : 160) * 1024;
 // Po chybě serveru se čtvrt hodiny stahuje rovnou z ČHMÚ.
 constexpr unsigned long SERVER_RETRY_MS = 15UL * 60UL * 1000UL;
 char serverUrl[CLOCK_RAIN_URL_LENGTH] = "";
@@ -1429,6 +1431,31 @@ bool composeView(uint8_t targetBuffer, const uint8_t *frame, bool nightVisual,
   return sharedFramesLeaseValid(SharedFrameUser::Radar, lease);
 }
 
+// Snímek kulatého ze stupňů odrazivosti od serveru: barvy srážek, přes ně mapa
+// a prstenec (dekódování z PNG je pekla rovnou do snímku), noční paleta a blesky
+// stejným pořadím jako u snímků z ČHMÚ.
+void composeRoundFrame(uint16_t *target, const uint8_t *levels, bool nightVisual,
+                       float latitude, float longitude, uint16_t radiusKm,
+                       uint8_t mapOpacityValue, bool overlay) {
+  for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel) {
+    const uint8_t value = levels[pixel];
+    const uint32_t level = (static_cast<uint32_t>(value) + LEVEL_STEP / 2) / LEVEL_STEP;
+    target[pixel] = value == LEVEL_NO_DATA ? CHMI_NO_DATA_COLOR
+                                           : CHMI_LEVEL_COLORS[level > 15 ? 15 : level];
+  }
+  if (imageWidth <= 0 || imageHeight <= 0) {
+    imageWidth = RADAR_SOURCE_WIDTH;
+    imageHeight = RADAR_SOURCE_HEIGHT;
+  }
+  const RadarProjection projection =
+      currentProjection(latitude, longitude, radiusKm);
+  drawMapOverlay(target, latitude, longitude, radiusKm, projection,
+                 mapOpacityValue);
+  drawDisplayRing(target);
+  if (nightVisual) applyNightRadarPalette(target);
+  if (overlay) drawLightningOverlay(target, projection, nightVisual);
+}
+
 bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
                  uint8_t mapOpacityValue, uint32_t revision) {
   if (!ensureBuffers()) return false;
@@ -2320,6 +2347,9 @@ bool showPreparedFrame(size_t index, unsigned long now) {
     if (!composeView(targetBuffer, source, nightVisual, latitude, longitude,
                      radiusKm, mapOpacityValue, overlay, lease))
       return false;
+  } else if (fromServer) {
+    composeRoundFrame(displayBuffers[targetBuffer], source, nightVisual,
+                      latitude, longitude, radiusKm, mapOpacityValue, overlay);
   } else {
     uint16_t *target = displayBuffers[targetBuffer];
     for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
@@ -2446,6 +2476,12 @@ void releaseDirectFrameBuffers() {
   cachedPngCount = 0;
   if (pngBuffer != nullptr) heap_caps_free(pngBuffer);
   pngBuffer = nullptr;
+  // Barvy (kulatý, RainViewer) potřebují dva bajty na pixel, stupně jeden.
+  if (decodeBufferBytes > LEVEL_DECODE_BYTES) {
+    heap_caps_free(decodeBuffer);
+    decodeBuffer = nullptr;
+    decodeBufferBytes = 0;
+  }
   if (pngDecoder != nullptr) {
     pngDecoder->~PNG();
     heap_caps_free(pngDecoder);
@@ -2526,8 +2562,17 @@ bool loadServerAnimation(float latitude, float longitude, uint16_t radiusKm,
     releaseDirectFrameBuffers();
     allocateBundles();
   }
+  // Kulatý skládá každý krok animace do vlastních obrazových bufferů.
+  bool displayReady = true;
+  for (uint16_t *&buffer : displayBuffers) {
+    if (LAYERED_VIEW) break;
+    if (buffer == nullptr)
+      buffer = static_cast<uint16_t *>(heap_caps_malloc(
+          RADAR_PIXEL_COUNT * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    displayReady = displayReady && buffer != nullptr;
+  }
   if (serverBundles[0] == nullptr || serverBundles[1] == nullptr ||
-      !ensureDecodeBuffer(LEVEL_DECODE_BYTES)) {
+      !displayReady || !ensureDecodeBuffer(LEVEL_DECODE_BYTES)) {
     setStatus(false, "Nedostatek pameti pro radar");
     return false;
   }
