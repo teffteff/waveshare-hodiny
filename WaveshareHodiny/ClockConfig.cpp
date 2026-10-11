@@ -13,6 +13,7 @@ constexpr uint32_t CONFIG_MAGIC = 0x57484346;
 constexpr char CONFIG_PARTITION[] = "clockcfg";
 constexpr char CONFIG_NAMESPACE[] = "clock-config";
 constexpr char CONFIG_KEY[] = "config";
+constexpr char CONFIG_BACKUP_KEY[] = "config-b";
 constexpr char APPEARANCE_NAMESPACE[] = "clock-look";
 constexpr char APPEARANCE_STYLE_KEY[] = "style";
 constexpr char APPEARANCE_TONE_KEY[] = "tone";
@@ -1849,10 +1850,13 @@ bool clockConfigLoad(ClockConfig &config) {
   // buffer. Konfigurace je velká a nemá ležet na zásobníku loopTask.
   static ConfigRecord &record = allocateConfigRecord();
   record = ConfigRecord{};
-  const size_t storedSize = preferences.getBytesLength(CONFIG_KEY);
+  // Záložní klíč existuje jen uprostřed nouzového uložení (clockConfigSave);
+  // přerušené uložení tak nenechá hodiny bez nastavení.
+  const char *key = preferences.isKey(CONFIG_KEY) ? CONFIG_KEY : CONFIG_BACKUP_KEY;
+  const size_t storedSize = preferences.getBytesLength(key);
   const bool supportedSize = supportedRecordSize(storedSize);
   const bool readComplete =
-      supportedSize && preferences.getBytes(CONFIG_KEY, &record, storedSize) ==
+      supportedSize && preferences.getBytes(key, &record, storedSize) ==
                            storedSize;
   preferences.end();
 
@@ -1927,18 +1931,30 @@ bool clockConfigSave(const ClockConfig &config) {
 
   Preferences preferences;
   if (!preferences.begin(CONFIG_NAMESPACE, false, CONFIG_PARTITION)) return false;
-  bool ok =
-      preferences.putBytes(CONFIG_KEY, &record, sizeof(record)) == sizeof(record);
-  if (!ok && preferences.remove(CONFIG_KEY)) {
+  const auto put = [&](const char *key) {
+    return preferences.putBytes(key, &record, sizeof(record)) == sizeof(record);
+  };
+  bool ok = put(CONFIG_KEY);
+  bool primaryWritten = ok;
+  if (!ok) {
     // Velký konfigurační blob při mnoha změnách schématu může zaplnit NVS
     // historickými verzemi. Odstranění pouze tohoto klíče umožní NVS staré
     // blobové stránky zkompaktovat; ostatní namespace v clockcfg zůstávají.
-    preferences.end();
-    if (!preferences.begin(CONFIG_NAMESPACE, false, CONFIG_PARTITION))
-      return false;
-    ok = preferences.putBytes(CONFIG_KEY, &record, sizeof(record)) ==
-         sizeof(record);
+    // Napřed se ale nové nastavení uloží pod záložní klíč, aby výpadek
+    // napájení mezi odstraněním a zápisem nevrátil hodiny do výchozího stavu.
+    // Když se nevejde ani záloha, zbývá dřívější postup bez ní.
+    const bool backedUp = put(CONFIG_BACKUP_KEY);
+    if (preferences.remove(CONFIG_KEY)) {
+      preferences.end();
+      if (!preferences.begin(CONFIG_NAMESPACE, false, CONFIG_PARTITION))
+        return backedUp;
+      primaryWritten = put(CONFIG_KEY);
+    }
+    ok = primaryWritten || backedUp;
   }
+  // Záloha z dřívějšího nouzového uložení by jinak zbytečně držela místo.
+  if (primaryWritten && preferences.isKey(CONFIG_BACKUP_KEY))
+    preferences.remove(CONFIG_BACKUP_KEY);
   preferences.end();
   return ok;
 }

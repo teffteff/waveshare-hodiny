@@ -43,6 +43,7 @@
 #include "LightningService.h"
 #include "NetworkDiagnostics.h"
 #include "NetworkCoordinator.h"
+#include "TlsBundle.h"
 #include "TlsMemory.h"
 #include "TmepService.h"
 #include "WifiOnboarding.h"
@@ -4405,6 +4406,8 @@ void setup() {
   // Dřív než cokoli otevře první TLS spojení: handshaky pak berou paměť
   // z PSRAM a vnitřní SRAM nerozdrobí.
   tlsMemoryBegin();
+  // Svazek kořenů se nastaví jednou, než ho začnou služby souběžně používat.
+  tlsBundleBegin();
   memoryCensusCheckpoint("start");
 
   boardInit();
@@ -4595,6 +4598,7 @@ void loop() {
   if (millis() > 120000) memoryCensusCheckpoint("after-2min");
   if (millis() > 600000) memoryCensusCheckpoint("after-10min");
   firmwareUpdateServiceParkLoopBeforeRestart();
+  firmwareUpdateServiceConfirmHealthyBoot();
 #if FIRMWARE_RELEASE
   improvSerialServiceLoop();
 #else

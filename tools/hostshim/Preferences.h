@@ -25,11 +25,24 @@ inline std::string entryKey(const std::string &partition,
   return partition + '/' + space + '/' + (key == nullptr ? "" : key);
 }
 
+// Kolik dalších zápisů daného klíče má selhat, jako by NVS bylo plné.
+inline std::map<std::string, int> &failingPuts() {
+  static std::map<std::string, int> instance;
+  return instance;
+}
+
 }  // namespace hostshim
 
 // Testovací rozhraní: vyprázdnění paměti a vložení surového záznamu, jaký by
 // v NVS zanechal starší firmware.
-inline void hostPreferencesReset() { hostshim::store().clear(); }
+inline void hostPreferencesReset() {
+  hostshim::store().clear();
+  hostshim::failingPuts().clear();
+}
+
+inline void hostPreferencesFailPuts(const char *key, int count) {
+  hostshim::failingPuts()[key] = count;
+}
 
 inline void hostPreferencesSeedBlob(const char *partition, const char *space,
                                     const char *key, const void *data,
@@ -60,6 +73,11 @@ class Preferences {
 
   size_t putBytes(const char *key, const void *value, size_t size) {
     if (!writable()) return 0;
+    const auto failing = hostshim::failingPuts().find(key);
+    if (failing != hostshim::failingPuts().end() && failing->second > 0) {
+      --failing->second;
+      return 0;
+    }
     const uint8_t *bytes = static_cast<const uint8_t *>(value);
     entry(key) = std::vector<uint8_t>(bytes, bytes + size);
     return size;

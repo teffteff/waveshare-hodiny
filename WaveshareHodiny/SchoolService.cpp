@@ -3,18 +3,16 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <freertos/semphr.h>
 #include <string.h>
 
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "TlsBundle.h"
 
-// Kořenové certifikáty Mozilly slinkované v mbedTLS; adresu serveru zadává
+// Certifikát se ověřuje proti svazku kořenů Mozilly (TlsBundle.h); adresu serveru zadává
 // majitel, takže připnout jeden kořen nejde - stejně jako u agendy.
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 // Stejné meze jako u agendy. Stahování drží síť výhradně pro sebe, takže
@@ -253,9 +251,7 @@ static bool schoolServiceDownload(const ClockSchoolConfig &config,
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
     if (secure) {
-      secureClient.setCACertBundle(
-          rootca_crt_bundle_start,
-          static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+      tlsUseCertificateBundle(secureClient);
       secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     }
     HTTPClient http;
@@ -294,9 +290,6 @@ static bool schoolServiceDownload(const ClockSchoolConfig &config,
     }
     client.stop();
   }
-  // Core 3.0.7 svazek kořenů po spojení neodpojí a každé stažení by ukouslo
-  // kus interní RAM. Odpojuje se až po zániku klienta.
-  if (secure) esp_crt_bundle_detach(nullptr);
 
   if (error.isEmpty() && httpStatus != HTTP_CODE_OK) {
     if (httpStatus == HTTP_CODE_NOT_FOUND) {

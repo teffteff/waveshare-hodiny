@@ -380,15 +380,26 @@ uint8_t agendaEventCount() {
   return agendaVisibleItemCount;
 }
 
+// Text do recolor popisku: mřížka v textu ze serveru se zdvojí.
+void appendEscaped(char *output, size_t capacity, const char *text) {
+  size_t length = strlen(output);
+  for (const char *c = text; *c != '\0' && length + 2 < capacity; ++c) {
+    output[length++] = *c;
+    if (*c == '#') output[length++] = '#';
+  }
+  output[length] = '\0';
+}
+
 void formatAgendaEvent(uint8_t index, const Palette &p, char *output,
                        size_t capacity) {
   lv_color32_t color;
   color.full = lv_color_to32(
       p.night ? COLOR_ERROR : agendaCalendarColor(agendaRowCalendar[index]));
-  snprintf(output, capacity, "#%02x%02x%02x %s#  %s", color.ch.red,
-           color.ch.green, color.ch.blue,
-           lv_label_get_text(agendaTimeLabels[index]),
-           lv_label_get_text(agendaTitleLabels[index]));
+  snprintf(output, capacity, "#%02x%02x%02x ", color.ch.red, color.ch.green,
+           color.ch.blue);
+  appendEscaped(output, capacity, lv_label_get_text(agendaTimeLabels[index]));
+  strlcat(output, "#  ", capacity);
+  appendEscaped(output, capacity, lv_label_get_text(agendaTitleLabels[index]));
 }
 
 const lv_img_dsc_t *weatherIcon(const Palette &p) {
@@ -748,7 +759,9 @@ uint32_t lastHistorySampleAt = 0;
 
 // Průběh za 24 h z Home Assistantu po startu (clockDashboardLcd7StageHistory).
 // Plní ho úloha HA, do historie ho přelije až úloha loop, která historii
-// jediná čte - přes tuhle odkládací kopii pod zámkem.
+// jediná čte - přes tuhle odkládací kopii pod zámkem. Zámek je mutex, ne
+// spinlock: přelévání prochází kilobajty v PSRAM a se zakázaným přerušením by
+// zdrželo obsluhu RGB panelu, jejíž zpoždění rozhazuje obraz.
 struct StagedHistory {
   float values[CLOCK_VALUE_SLOT_COUNT][HISTORY_POINTS];
   float dayLow[CLOCK_VALUE_SLOT_COUNT];
@@ -758,13 +771,14 @@ struct StagedHistory {
   bool pending;
 };
 StagedHistory *stagedHistory = nullptr;
-portMUX_TYPE stagedHistoryMux = portMUX_INITIALIZER_UNLOCKED;
+SemaphoreHandle_t stagedHistoryMutex = nullptr;
 
 void allocateHistory() {
   history = static_cast<History *>(
       heap_caps_calloc(1, sizeof(History), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   stagedHistory = static_cast<StagedHistory *>(
       heap_caps_calloc(1, sizeof(StagedHistory), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  stagedHistoryMutex = xSemaphoreCreateMutex();
 }
 
 // Dnešní den jako rok*1000+den v roce; 0, dokud není známý čas.
@@ -804,23 +818,26 @@ void rollDayRange() {
 }
 
 void stageHistory(size_t slot, const float *buckets, float dayLow, float dayHigh) {
-  if (stagedHistory == nullptr || slot >= CLOCK_VALUE_SLOT_COUNT) return;
+  if (stagedHistory == nullptr || stagedHistoryMutex == nullptr ||
+      slot >= CLOCK_VALUE_SLOT_COUNT)
+    return;
   const int32_t day = localDayKey();
-  portENTER_CRITICAL(&stagedHistoryMux);
+  xSemaphoreTake(stagedHistoryMutex, portMAX_DELAY);
   memcpy(stagedHistory->values[slot], buckets, sizeof(stagedHistory->values[slot]));
   stagedHistory->dayLow[slot] = dayLow;
   stagedHistory->dayHigh[slot] = dayHigh;
   stagedHistory->dayKey = day;
   stagedHistory->slots[slot] = true;
   stagedHistory->pending = true;
-  portEXIT_CRITICAL(&stagedHistoryMux);
+  xSemaphoreGive(stagedHistoryMutex);
 }
 
 // Doplní historii odloženým průběhem. Vzorky naměřené od startu mají
 // přednost; odložený průběh vyplní jen místa, kde vzorek chybí.
 void applyStagedHistory() {
   if (stagedHistory == nullptr || history == nullptr || !stagedHistory->pending) return;
-  portENTER_CRITICAL(&stagedHistoryMux);
+  // Smyčka nečeká: když zrovna zapisuje úloha HA, přelije se při příštím průchodu.
+  if (xSemaphoreTake(stagedHistoryMutex, 0) != pdTRUE) return;
   for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot) {
     if (!stagedHistory->slots[slot]) continue;
     for (size_t age = 0; age < HISTORY_POINTS; ++age) {
@@ -838,7 +855,7 @@ void applyStagedHistory() {
     stagedHistory->slots[slot] = false;
   }
   stagedHistory->pending = false;
-  portEXIT_CRITICAL(&stagedHistoryMux);
+  xSemaphoreGive(stagedHistoryMutex);
   // Bez naměřeného vzorku by první přidaný přepsal nejnovější odložený;
   // nejstarší místo kruhu je správně na indexu head.
   history->count = HISTORY_POINTS;
@@ -2576,16 +2593,6 @@ void syncSchoolDay(const Palette &p, size_t dayIndex, const SchoolFeed *feed,
       setVisible(cell.sub, false);
     }
   }
-}
-
-// Text do recolor popisku: mřížka v textu ze serveru se zdvojí.
-void appendEscaped(char *output, size_t capacity, const char *text) {
-  size_t length = strlen(output);
-  for (const char *c = text; *c != '\0' && length + 2 < capacity; ++c) {
-    output[length++] = *c;
-    if (*c == '#') output[length++] = '#';
-  }
-  output[length] = '\0';
 }
 
 // "#RRGGBB KDY# text" - kdy v barvě sekce, zbytek v barvě textu.

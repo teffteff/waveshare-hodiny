@@ -183,8 +183,7 @@ bool ensureBuffers() {
   if (tilePng == nullptr) {
     tilePng = static_cast<uint8_t *>(
         heap_caps_malloc(MAX_TILE_PNG_BYTES, MALLOC_CAP_SPIRAM));
-    if (tilePng == nullptr)
-      tilePng = static_cast<uint8_t *>(malloc(MAX_TILE_PNG_BYTES));
+    // Bez náhrady ve vnitřní RAM: 64 kB odtud by vzalo místo Wi-Fi a TLS.
     if (tilePng == nullptr) return false;
   }
   if (tileLine == nullptr) {

@@ -7,12 +7,13 @@
 // proto handshake zkracují na tuhle hodnotu.
 constexpr uint32_t NETWORK_TLS_HANDSHAKE_TIMEOUT_S = 5;
 
-// Zámek níže už NEserializuje síť celých hodin. Berou ho jen dotazy na Home
-// Assistant a Open-Meteo (fetchOpenMeteo, requestHomeAssistantState ve
-// WaveshareHodiny.ino) a ty všechny běží v úloze home-assistant, takže dnes
-// nikdy nečeká. Ostatní služby mají vlastní úlohy a TLS otevírají souběžně
-// bez něj; vnitřní RAM jim nešetří tenhle zámek, ale TlsMemory.cpp, který
-// alokace mbedTLS posílá do PSRAM (diagnostika: tlsInternalFallbacks).
+// Zámek níže drží jedno stažení najednou: Home Assistant a Open-Meteo
+// (WaveshareHodiny.ino) i většina služeb s vlastní úlohou (zprávy, agenda,
+// škola, družice, blesky, radar, letadla, výstrahy…) ho berou kolem svého
+// dotazu. Nebere ho dálkové nastavení, jehož dlouhé dotazování by ho drželo
+// desítky sekund. Vnitřní RAM handshakům šetří TlsMemory.cpp, který alokace
+// mbedTLS posílá do PSRAM (diagnostika: tlsInternalFallbacks); svazek kořenů
+// sdílený souběžnými spojeními viz TlsBundle.h.
 
 void networkCoordinatorBegin();
 bool networkCoordinatorAcquire(uint32_t timeoutMs);

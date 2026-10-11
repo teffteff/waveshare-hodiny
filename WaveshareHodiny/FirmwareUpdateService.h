@@ -34,5 +34,8 @@ bool firmwareUpdateServiceRequestCheck(bool installWhenAvailable);
 // resetoval periferie ve chvíli, kdy loopTask na jádře 1 ověřoval heslo webu
 // přes hardwarové SHA (clock-sync.py se během aktualizace přihlašuje).
 void firmwareUpdateServiceParkLoopBeforeRestart();
+// Volá se z loop(). Nový obraz po OTA potvrdí až po dvou minutách běhu; když
+// do té doby spadne nebo se restartuje, zavaděč příště spustí předchozí verzi.
+void firmwareUpdateServiceConfirmHealthyBoot();
 FirmwareUpdateSnapshot firmwareUpdateServiceSnapshot();
 const char *firmwareUpdateStateName(FirmwareUpdateState state);

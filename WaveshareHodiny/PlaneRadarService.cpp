@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <lvgl.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <freertos/idf_additions.h>
 #include <math.h>
@@ -23,15 +22,14 @@
 #include "PushAlertsService.h"
 #include "PsramGrowBuffer.h"
 #include "SharedFrames.h"
+#include "TlsBundle.h"
 #if HODINY_BOARD_LCD7
 #include "Lcd7Fonts.h"
 #endif
 
-// Kořenové certifikáty Mozilly slinkované v mbedTLS. adsb.fi ani adsb.lol
+// Certifikát se ověřuje proti svazku kořenů Mozilly (TlsBundle.h). adsb.fi ani adsb.lol
 // nejsou naše servery a jejich certifikát se může kdykoli přepnout na jiný
 // kořen, takže se připnout nedá - stejně jako u kanálu zpráv.
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 
@@ -1115,9 +1113,7 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
   long result = -1;
   {
     WiFiClientSecure client;
-    client.setCACertBundle(
-        rootca_crt_bundle_start,
-        static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+    tlsUseCertificateBundle(client);
     client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http;
     http.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -1150,9 +1146,6 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
     // Pojistka pro případ, že spojení vůbec nevzniklo nebo skončilo chybou.
     client.stop();
   }
-  // Arduino core připojuje svazek kořenů při každém spojení, ale nikdy ho
-  // neodpojí. Bez tohoto každé stažení ukousne kus interní RAM.
-  esp_crt_bundle_detach(nullptr);
   return result;
 }
 

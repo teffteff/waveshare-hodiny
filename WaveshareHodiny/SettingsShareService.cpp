@@ -3,17 +3,15 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "TlsBundle.h"
 
-// Kořenové certifikáty Mozilly slinkované v mbedTLS. Server zadává uživatel,
+// Certifikát se ověřuje proti svazku kořenů Mozilly (TlsBundle.h). Server zadává uživatel,
 // takže připnout jeden kořen nejde - stejně jako u agendy a zpráv.
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 constexpr uint32_t SHARE_CONNECT_TIMEOUT_MS = 5000;
@@ -137,9 +135,7 @@ void settingsShareExecute(const SettingsShareRequest &request,
   bool bodyFailed = false;
   {
     WiFiClientSecure client;
-    client.setCACertBundle(
-        rootca_crt_bundle_start,
-        static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+    tlsUseCertificateBundle(client);
     client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http;
     http.setConnectTimeout(SHARE_CONNECT_TIMEOUT_MS);
@@ -184,9 +180,6 @@ void settingsShareExecute(const SettingsShareRequest &request,
     }
     client.stop();
   }
-  // Arduino core 3.0.7 svazek kořenů při ukončení spojení neodpojí; bez toho
-  // by každý přenos ukousl kus interní RAM. Viz AgendaService.cpp.
-  esp_crt_bundle_detach(nullptr);
 
   if (bodyFailed) return;
   if (!operationSucceeded(request.operation, result.httpStatus)) {

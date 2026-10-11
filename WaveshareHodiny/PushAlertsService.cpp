@@ -3,16 +3,14 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <freertos/idf_additions.h>
 
 #include <cstring>
 
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "TlsBundle.h"
 
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 constexpr uint32_t CONNECT_TIMEOUT_MS = 6000;
@@ -89,9 +87,7 @@ int getSettings(const Desired &request, char *response, size_t capacity) {
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
     if (secure) {
-      secureClient.setCACertBundle(
-          rootca_crt_bundle_start,
-          static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+      tlsUseCertificateBundle(secureClient);
       secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     }
     WiFiClient &client =
@@ -119,8 +115,6 @@ int getSettings(const Desired &request, char *response, size_t capacity) {
     }
     client.stop();
   }
-  // Core připojuje svazek kořenů při každém spojení, ale nikdy ho neodpojí.
-  if (secure) esp_crt_bundle_detach(nullptr);
   return status;
 }
 

@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
 #include <freertos/idf_additions.h>
 #include <mbedtls/sha256.h>
 #include <time.h>
@@ -454,6 +455,25 @@ void updateCheckTask(void *) {
   }
 }
 }  // namespace
+
+// Jádro by nový obraz potvrdilo hned v initArduino(), ještě před setup(), a
+// obraz padající při startu by pak bez USB nešlo vrátit. Potvrzuje se proto
+// až z loop() po ustálení (firmwareUpdateServiceConfirmHealthyBoot).
+extern "C" bool verifyRollbackLater() { return true; }
+
+void firmwareUpdateServiceConfirmHealthyBoot() {
+  // Dvě minuty pokryjí start, Wi-Fi, první načtení obrazovek i radaru.
+  constexpr uint32_t HEALTHY_UPTIME_MS = 120000;
+  static bool confirmed = false;
+  if (confirmed || millis() < HEALTHY_UPTIME_MS) return;
+  confirmed = true;
+  esp_ota_img_states_t state;
+  if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) ==
+          ESP_OK &&
+      state == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();
+  }
+}
 
 void firmwareUpdateServiceParkLoopBeforeRestart() {
   if (!restartPending) return;

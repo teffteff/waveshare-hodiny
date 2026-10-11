@@ -18,6 +18,7 @@ constexpr uint32_t CONFIG_MAGIC = 0x57484346;
 constexpr char CONFIG_PARTITION[] = "clockcfg";
 constexpr char CONFIG_NAMESPACE[] = "clock-config";
 constexpr char CONFIG_KEY[] = "config";
+constexpr char CONFIG_BACKUP_KEY[] = "config-b";
 constexpr uint32_t SCHEMA_27 = 27;
 constexpr size_t SCHEMA_27_CONFIG_SIZE = offsetof(ClockConfig, leftValue);
 constexpr size_t SCHEMA_27_RECORD_SIZE =
@@ -182,6 +183,42 @@ void testRoundTripPreservesValues() {
   assert(strcmp(loaded.leftSide.temperatureEntityId,
                 "sensor.loznice_teplota") == 0);
   assert(loaded.metricA.decimals == 2);
+}
+
+// Plné NVS: nouzové uložení nesmí ani na chvíli nechat hodiny bez nastavení.
+void testFailedSaveKeepsConfigInBackup() {
+  hostPreferencesReset();
+  ClockConfig original;
+  clockConfigApplyDefaults(original);
+  clockConfigCopy(original.leftSide.name, sizeof(original.leftSide.name), "STARÉ");
+  assert(clockConfigSave(original));
+
+  ClockConfig changed = original;
+  clockConfigCopy(changed.leftSide.name, sizeof(changed.leftSide.name), "NOVÉ");
+  // Hlavní klíč selže i po odstranění: platí záloha, hlavní záznam chybí.
+  hostPreferencesFailPuts(CONFIG_KEY, 2);
+  assert(clockConfigSave(changed));
+  assert(storedSize() == 0);
+  assert(hostPreferencesBlobSize(CONFIG_PARTITION, CONFIG_NAMESPACE,
+                                 CONFIG_BACKUP_KEY) > 0);
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(strcmp(loaded.leftSide.name, "NOVÉ") == 0);
+
+  // Další úspěšné uložení zálohu uklidí.
+  assert(clockConfigSave(loaded));
+  assert(storedSize() > 0);
+  assert(hostPreferencesBlobSize(CONFIG_PARTITION, CONFIG_NAMESPACE,
+                                 CONFIG_BACKUP_KEY) == 0);
+
+  // Hlavní klíč selže jen jednou: po odstranění se zapíše a záloha zmizí.
+  clockConfigCopy(changed.leftSide.name, sizeof(changed.leftSide.name), "TŘETÍ");
+  hostPreferencesFailPuts(CONFIG_KEY, 1);
+  assert(clockConfigSave(changed));
+  assert(hostPreferencesBlobSize(CONFIG_PARTITION, CONFIG_NAMESPACE,
+                                 CONFIG_BACKUP_KEY) == 0);
+  assert(clockConfigLoad(loaded));
+  assert(strcmp(loaded.leftSide.name, "TŘETÍ") == 0);
 }
 
 // Migrace 27 → 28 musí zachovat vše, co starší firmware uložil.
@@ -1946,6 +1983,7 @@ int main() {
   testLightningAndSkyPersistenceAndMigration();
   testEmptyStorageUsesDefaults();
   testRoundTripPreservesValues();
+  testFailedSaveKeepsConfigInBackup();
   testSchema27MigrationKeepsStoredValues();
   testCorruptRecordFallsBackToDefaults();
   testNormalizationClampsStoredValues();

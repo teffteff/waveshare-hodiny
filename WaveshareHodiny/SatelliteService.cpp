@@ -3,7 +3,6 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <freertos/idf_additions.h>
 #include <sys/time.h>
@@ -22,11 +21,10 @@
 #include "PsramGrowBuffer.h"
 #include "SharedFrames.h"
 #include "SkyRender.h"
+#include "TlsBundle.h"
 
 // Adresu serveru zadává uživatel, takže se ověřuje proti svazku kořenů Mozilly,
 // stejně jako u blesků a agendy.
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 
@@ -306,9 +304,7 @@ long download(const char *url, int &httpStatus, uint8_t *buffer,
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
     if (secure) {
-      secureClient.setCACertBundle(
-          rootca_crt_bundle_start,
-          static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+      tlsUseCertificateBundle(secureClient);
       secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     }
     WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
@@ -340,8 +336,6 @@ long download(const char *url, int &httpStatus, uint8_t *buffer,
     }
     client.stop();
   }
-  // Core připojuje svazek kořenů při každém spojení, ale nikdy ho neodpojí.
-  if (secure) esp_crt_bundle_detach(nullptr);
   return result;
 }
 

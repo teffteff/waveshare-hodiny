@@ -17,6 +17,10 @@ void *frameBuffer1 = nullptr;
 void *frameBuffer2 = nullptr;
 uint8_t *screenshotBuffer = nullptr;
 size_t screenshotOffset = 0;
+// Kdy přenos naposledy pokročil. Odpojený hostitel nepřijme nic a hlavní smyčka
+// by bez LVGL (a na 7" bez kreslení vůbec) čekala věčně.
+unsigned long screenshotProgressAt = 0;
+constexpr unsigned long SCREENSHOT_STALL_TIMEOUT_MS = 5000;
 int8_t screenHoldPending = 0;
 int8_t rangeSwipePending = 0;
 // Odkud tah posledního gesta vyšel (souřadnice obrazovky) a jestli byl svislý.
@@ -414,6 +418,7 @@ bool displayDriverBeginFramebufferCapture(Print &output) {
   memcpy(screenshotBuffer, displayedBuffer, FRAMEBUFFER_BYTES);
 #endif
   screenshotOffset = 0;
+  screenshotProgressAt = millis();
 
   output.printf("WSFB1 %d %d RGB565LE %u\r\n", SCREEN_WIDTH, SCREEN_HEIGHT,
                 static_cast<unsigned>(FRAMEBUFFER_BYTES));
@@ -431,8 +436,16 @@ bool displayDriverStreamFramebufferChunk(Print &output) {
   // částečný zápis považoval za dokončený přenos, takže na hostiteli chyběl
   // konec framebufferu. Posuneme se pouze o skutečně přijaté bajty a zbytek
   // stejného bloku odešleme v některém z dalších průchodů hlavní smyčkou.
-  screenshotOffset +=
+  const size_t written =
       output.write(screenshotBuffer + screenshotOffset, count);
+  screenshotOffset += written;
+  const unsigned long now = millis();
+  if (written > 0) {
+    screenshotProgressAt = now;
+  } else if (now - screenshotProgressAt > SCREENSHOT_STALL_TIMEOUT_MS) {
+    // Přenos se vzdá; hostitel pozná neúplný snímek podle délky.
+    screenshotOffset = FRAMEBUFFER_BYTES;
+  }
   const bool done = screenshotOffset >= FRAMEBUFFER_BYTES;
 #if HODINY_BOARD_LCD7
   if (done) screenshotBuffer = nullptr;

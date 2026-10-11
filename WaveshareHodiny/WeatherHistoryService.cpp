@@ -3,7 +3,6 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 
 #include <cstring>
@@ -11,9 +10,8 @@
 
 #include "HttpDownload.h"
 #include "NetworkCoordinator.h"
+#include "TlsBundle.h"
 
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 constexpr char USER_AGENT[] = "WaveshareHodiny";
@@ -99,9 +97,7 @@ long download(const char *url) {
     if (secure) {
       // Adresu serveru zadává uživatel, takže se ověřuje proti svazku kořenů
       // Mozilly, stejně jako u srážek a výstrah.
-      secureClient.setCACertBundle(
-          rootca_crt_bundle_start,
-          static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+      tlsUseCertificateBundle(secureClient);
       secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
     }
     WiFiClient &client =
@@ -130,8 +126,6 @@ long download(const char *url) {
     }
     client.stop();
   }
-  // Core připojuje svazek kořenů při každém spojení, ale nikdy ho neodpojí.
-  if (secure) esp_crt_bundle_detach(nullptr);
   return result;
 }
 }  // namespace

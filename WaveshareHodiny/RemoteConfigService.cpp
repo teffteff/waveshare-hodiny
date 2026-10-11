@@ -3,7 +3,6 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <freertos/idf_additions.h>
 
@@ -14,9 +13,8 @@
 #include "DeviceName.h"
 #include "FirmwareBuild.h"
 #include "NetworkCoordinator.h"
+#include "TlsBundle.h"
 
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t rootca_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 namespace {
 constexpr char PREFS_NAMESPACE[] = "remote-config";
@@ -493,17 +491,13 @@ void remoteConfigTask(void *) {
     SessionEnd end = SessionEnd::Failed;
     {
       WiFiClientSecure client;
-      client.setCACertBundle(
-          rootca_crt_bundle_start,
-          static_cast<size_t>(rootca_crt_bundle_end - rootca_crt_bundle_start));
+      tlsUseCertificateBundle(client);
       client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
       if (client.connect(connection.endpoint.host, connection.endpoint.port)) {
         end = runSession(client, connection, revision, requestBody, response);
       }
       client.stop();
     }
-    // Core připojuje svazek kořenů při každém spojení, ale nikdy ho neodpojí.
-    esp_crt_bundle_detach(nullptr);
     response.trim();
 
     switch (end) {
