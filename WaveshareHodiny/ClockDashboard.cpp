@@ -5277,6 +5277,8 @@ lv_obj_t *skyPhaseNameLabel = nullptr;
 lv_obj_t *skyIlluminationLabel = nullptr;
 lv_obj_t *skyNextPhasesLabel = nullptr;
 lv_obj_t *skyMoonCanvas = nullptr;
+// Roste s každým přepočtem Slunce a Měsíce (sloupec družic na 7").
+uint32_t skyRevision = 0;
 uint16_t *skyMoonPixels = nullptr;
 ClockSkyData skyData;
 bool skyFeatureAvailable = false;
@@ -8181,9 +8183,10 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   }
   if (activeScreen != DASHBOARD_SCREEN_PLANES) return;
 #if HODINY_BOARD_LCD7
-  // Mapa letadel 7" leží od levého okraje, ne na jevišti.
+  // Mapa letadel 7" leží od levého okraje pod lištou (40 px), ne na jevišti.
   x = static_cast<int16_t>(x + STAGE_X);
-  if (x >= PLANE_RADAR_WIDTH) return;
+  y = static_cast<int16_t>(y - (SCREEN_HEIGHT - PLANE_RADAR_HEIGHT));
+  if (x >= PLANE_RADAR_WIDTH || y < 0) return;
 #endif
   planeRadarServiceHandleTap(x, y);
 }
@@ -9202,6 +9205,13 @@ void clockDashboardSetSkyVisible(bool visible) {
 }
 
 void clockDashboardSetSkyAvailable(bool available) {
+#if HODINY_BOARD_LCD7
+  // 7" samostatnou obrazovku Slunce a Měsíc nemá: údaje ukazuje sloupec
+  // družic. Stránka ale vzniká vždycky (skrytá), protože skládá texty
+  // a kotouč Měsíce, ze kterých sloupec čte.
+  if (skyPage == nullptr && dashboardScreen != nullptr) createSkyPage(dashboardScreen);
+  available = false;
+#endif
   // Stránka se zakládá až s prvním zapnutím obrazovky, stejně jako agenda.
   if (available && skyPage == nullptr && dashboardScreen != nullptr)
     createSkyPage(dashboardScreen);
@@ -9220,6 +9230,7 @@ void clockDashboardSetSkyAvailable(bool available) {
 
 void clockDashboardSetSky(const ClockSkyData &data) {
   skyData = data;
+  ++skyRevision;
   updateSkyPage();
 }
 

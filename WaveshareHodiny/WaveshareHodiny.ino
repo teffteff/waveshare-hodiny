@@ -2350,7 +2350,8 @@ void maintainLocalSunState() {
 // po deseti minutách, což je pár milisekund, ale v každé smyčce zbytečných.
 void maintainSkyData() {
   const ClockConfig &config = loopConfigSnapshot();
-  if (!clockConfigSkyAvailable(config)) return;
+  // 7" ukazuje Slunce a Měsíc ve sloupci družic, takže počítá vždycky.
+  if (!HODINY_BOARD_LCD7 && !clockConfigSkyAvailable(config)) return;
   static unsigned long computedAt = 0;
   static float computedLatitude = NAN;
   static float computedLongitude = NAN;

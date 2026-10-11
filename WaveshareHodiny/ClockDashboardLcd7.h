@@ -1100,7 +1100,6 @@ struct ForecastView {
   lv_obj_t *daysLine;
   ForecastDayView days[WEATHER_FORECAST_MAX_DAYS];
   lv_obj_t *air;
-  lv_obj_t *header;
   uint32_t signature;
 } forecast;
 
@@ -1157,7 +1156,6 @@ void createForecast(lv_obj_t *screen) {
   }
   v.air = label(v.root, &lcd7_text15, 20, SCREEN_HEIGHT - 26, 520);
   lv_label_set_recolor(v.air, true);
-  v.header = label(v.root, &lcd7_text15, 0, SCREEN_HEIGHT - 26);
 }
 
 // Co se změnilo od posledního kreslení grafu: data, stránka, noc a minuta
@@ -1296,15 +1294,8 @@ void syncForecastAir(const Palette &p) {
     setText(v.air, text);
     setColor(v.air, p.muted);
   }
-  // Stav stažení (aktualizováno ...) vpravo dole, jak ho skládá kulatá
-  // stránka.
-  setText(v.header, forecastHeaderLabel != nullptr
-                        ? lv_label_get_text(forecastHeaderLabel)
-                        : "");
-  setColor(v.header, p.muted);
-  lv_obj_update_layout(v.header);
-  setPosition(v.header, SCREEN_WIDTH - 20 - lv_obj_get_width(v.header),
-              SCREEN_HEIGHT - 26);
+  // Kulatá stránka má vlastní řádek s datem, časem a teplotou; na 7" je
+  // totéž v liště nahoře, takže se dole neopakuje.
 }
 
 void syncForecast(const Palette &p) {
@@ -1337,6 +1328,8 @@ void syncForecast(const Palette &p) {
 // srážky, ostrá mapa a blesky); tady se jen ukáže na vlastním plátně. Popisky
 // kulaté stránky (čas, rozsah, snímek) přebírá sloupec vpravo.
 
+// Mapy radarů leží pod lištou.
+constexpr int MAP_TOP = BAR_HEIGHT;
 constexpr int RADAR_COLUMN_X = CHMI_RADAR_VIEW_WIDTH;
 constexpr int RADAR_COLUMN_W = SCREEN_WIDTH - RADAR_COLUMN_X;
 constexpr int RADAR_PAD = 14;
@@ -1347,13 +1340,11 @@ constexpr int RADAR_DOT_GAP = 16;
 
 struct RadarView {
   lv_obj_t *root;
+  TopBar bar;
   lv_obj_t *canvas;
   lv_obj_t *status;
   lv_obj_t *column;
-  lv_obj_t *time;
-  lv_obj_t *date;
-  lv_obj_t *outside;
-  lv_obj_t *lines[2];
+  lv_obj_t *lines[1];
   lv_obj_t *range;
   lv_obj_t *frame;
   lv_obj_t *frameDots[RADAR_FRAME_DOTS];
@@ -1362,41 +1353,38 @@ struct RadarView {
   lv_obj_t *warningTail;
   lv_obj_t *rain;
   StatusIcons icons;
-  PageDots dots;
   const uint16_t *pixels;
 } radar;
 
 void createRadar(lv_obj_t *screen) {
   RadarView &v = radar;
   v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
   v.canvas = lv_canvas_create(v.root);
-  lv_obj_set_pos(v.canvas, 0, 0);
+  lv_obj_set_pos(v.canvas, 0, MAP_TOP);
   lv_obj_add_flag(v.canvas, LV_OBJ_FLAG_HIDDEN);
   v.status = label(v.root, &lcd7_text22, 0, SCREEN_HEIGHT / 2 - 14, RADAR_COLUMN_X);
   lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
-  v.column = panel(v.root, RADAR_COLUMN_X, 0, RADAR_COLUMN_W, SCREEN_HEIGHT);
+  // Sloupec pod lištou: čas, datum a tečky obrazovek jsou v liště.
+  v.column = panel(v.root, RADAR_COLUMN_X, MAP_TOP + 1, RADAR_COLUMN_W,
+                   SCREEN_HEIGHT - MAP_TOP - 1);
   lv_obj_t *c = v.column;
-  v.time = label(c, &lcd7_text28, RADAR_PAD, 10);
-  v.date = label(c, &lcd7_text15, RADAR_PAD, 48, RADAR_CONTENT);
-  v.outside = label(c, &lcd7_text22, RADAR_PAD, 70);
-  v.lines[0] = line(c, RADAR_PAD, 106, RADAR_CONTENT, 1);
-  v.range = label(c, &lcd7_text28, RADAR_PAD, 116, RADAR_CONTENT);
-  v.frame = label(c, &lcd7_text18, RADAR_PAD, 156, RADAR_CONTENT);
+  v.range = label(c, &lcd7_text28, RADAR_PAD, 10, RADAR_CONTENT);
+  v.frame = label(c, &lcd7_text18, RADAR_PAD, 50, RADAR_CONTENT);
   lv_label_set_recolor(v.frame, true);
   for (lv_obj_t *&dot : v.frameDots) {
     dot = panel(c, 0, 0, 8, 8);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
   }
-  v.lines[1] = line(c, RADAR_PAD, 222, RADAR_CONTENT, 1);
-  v.warningIcon = label(c, &lv_font_montserrat_16, RADAR_PAD, 236);
+  v.lines[0] = line(c, RADAR_PAD, 116, RADAR_CONTENT, 1);
+  v.warningIcon = label(c, &lv_font_montserrat_16, RADAR_PAD, 130);
   lv_label_set_text(v.warningIcon, LV_SYMBOL_WARNING);
-  v.warningEvent = label(c, &lcd7_text18, RADAR_PAD + 24, 234, RADAR_CONTENT - 24);
-  v.warningTail = label(c, &lcd7_text15, RADAR_PAD + 24, 258, RADAR_CONTENT - 24);
-  v.rain = label(c, &lcd7_text22, RADAR_PAD, 290, RADAR_CONTENT);
+  v.warningEvent = label(c, &lcd7_text18, RADAR_PAD + 24, 128, RADAR_CONTENT - 24);
+  v.warningTail = label(c, &lcd7_text15, RADAR_PAD + 24, 152, RADAR_CONTENT - 24);
+  v.rain = label(c, &lcd7_text22, RADAR_PAD, 184, RADAR_CONTENT);
   lv_label_set_long_mode(v.rain, LV_LABEL_LONG_WRAP);
   v.icons = makeStatusIcons(c);
-  v.dots = makePageDots(c);
 }
 
 void radarFrameChanged(const uint16_t *pixels) {
@@ -1420,18 +1408,7 @@ void syncRadar(const Palette &p) {
   setVisible(v.status, !haveFrame);
   setText(v.status, lv_label_get_text(radarStatusLabel));
   setColor(v.status, p.muted);
-
-  setText(v.time, displayedTimeText);
-  setColor(v.time, p.text);
-  setText(v.date, lv_label_get_text(dateLabel));
-  setColor(v.date, p.muted);
-  char number[16];
-  char text[48];
-  formatValue(number, sizeof(number), currentValues.outsideTemperatureC, 1);
-  snprintf(text, sizeof(text), "%s °C", number);
-  setText(v.outside, text);
-  setColor(v.outside, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
-  setVisible(v.outside, !std::isnan(currentValues.outsideTemperatureC));
+  syncTopBar(v.bar, p);
 
   setText(v.range, haveFrame ? lv_label_get_text(radarRangeLabel) : "");
   setColor(v.range, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
@@ -1452,15 +1429,14 @@ void syncRadar(const Palette &p) {
     setBackground(dot, current ? (p.night ? COLOR_ERROR : COLOR_AIR) : p.dotOff);
     const lv_coord_t centerX =
         RADAR_PAD + 4 + (index % RADAR_DOTS_PER_ROW) * RADAR_DOT_GAP;
-    const lv_coord_t centerY = 192 + (index / RADAR_DOTS_PER_ROW) * RADAR_DOT_GAP;
+    const lv_coord_t centerY = 86 + (index / RADAR_DOTS_PER_ROW) * RADAR_DOT_GAP;
     setPosition(dot, centerX - size / 2, centerY - size / 2);
     setVisible(dot, true);
   }
 
   showWarningAndRain(v.warningIcon, v.warningEvent, v.warningTail, v.rain, p);
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
-  showStatusIcons(v.icons, p, RADAR_PAD, SCREEN_HEIGHT - 58, false);
-  showPageDots(v.dots, p, -(RADAR_PAD + 5), SCREEN_HEIGHT - 22, NARROW_DOT_GAP);
+  showStatusIcons(v.icons, p, RADAR_PAD, SCREEN_HEIGHT - MAP_TOP - 34, false);
 }
 
 // --- Agenda ---------------------------------------------------------------
@@ -2438,17 +2414,15 @@ constexpr int PLANES_COLUMN_X = PLANE_RADAR_WIDTH;
 constexpr int PLANES_COLUMN_W = SCREEN_WIDTH - PLANES_COLUMN_X;
 constexpr int PLANES_PAD = 14;
 constexpr int PLANES_CONTENT = PLANES_COLUMN_W - 2 * PLANES_PAD;
-constexpr int PLANES_DETAIL_Y = 222;
+constexpr int PLANES_DETAIL_Y = 118;
 constexpr int PLANES_DETAIL_LINES = PLANES_DETAIL_ROW_COUNT + 4;
 
 struct PlanesView {
   lv_obj_t *root;
+  TopBar bar;
   lv_obj_t *canvas;
   lv_obj_t *column;
-  lv_obj_t *time;
-  lv_obj_t *date;
-  lv_obj_t *outside;
-  lv_obj_t *lines[2];
+  lv_obj_t *lines[1];
   lv_obj_t *range;
   lv_obj_t *rangeDots[CLOCK_PLANE_RANGE_COUNT];
   lv_obj_t *status;
@@ -2457,31 +2431,29 @@ struct PlanesView {
   lv_obj_t *values[PLANES_DETAIL_LINES];
   lv_obj_t *hint;
   StatusIcons icons;
-  PageDots dots;
   const uint16_t *pixels;
 } planes;
 
 void createPlanes(lv_obj_t *screen) {
   PlanesView &v = planes;
   v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
   v.canvas = lv_canvas_create(v.root);
-  lv_obj_set_pos(v.canvas, 0, 0);
+  lv_obj_set_pos(v.canvas, 0, MAP_TOP);
   lv_obj_add_flag(v.canvas, LV_OBJ_FLAG_HIDDEN);
-  v.column = panel(v.root, PLANES_COLUMN_X, 0, PLANES_COLUMN_W, SCREEN_HEIGHT);
+  // Sloupec pod lištou: čas, datum a tečky obrazovek jsou v liště.
+  v.column = panel(v.root, PLANES_COLUMN_X, MAP_TOP + 1, PLANES_COLUMN_W,
+                   SCREEN_HEIGHT - MAP_TOP - 1);
   lv_obj_t *c = v.column;
-  v.time = label(c, &lcd7_text28, PLANES_PAD, 10);
-  v.date = label(c, &lcd7_text15, PLANES_PAD, 48, PLANES_CONTENT);
-  v.outside = label(c, &lcd7_text22, PLANES_PAD, 70);
-  v.lines[0] = line(c, PLANES_PAD, 106, PLANES_CONTENT, 1);
-  v.range = label(c, &lcd7_text28, PLANES_PAD, 116, PLANES_CONTENT);
+  v.range = label(c, &lcd7_text28, PLANES_PAD, 10, PLANES_CONTENT);
   for (lv_obj_t *&dot : v.rangeDots) {
     dot = panel(c, 0, 0, 8, 8);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
   }
-  v.status = label(c, &lcd7_text18, PLANES_PAD, 176, PLANES_CONTENT);
+  v.status = label(c, &lcd7_text18, PLANES_PAD, 70, PLANES_CONTENT);
   lv_label_set_recolor(v.status, true);
   lv_label_set_long_mode(v.status, LV_LABEL_LONG_WRAP);
-  v.lines[1] = line(c, PLANES_PAD, PLANES_DETAIL_Y - 10, PLANES_CONTENT, 1);
+  v.lines[0] = line(c, PLANES_PAD, PLANES_DETAIL_Y - 10, PLANES_CONTENT, 1);
   v.title = label(c, &lcd7_text22, PLANES_PAD, PLANES_DETAIL_Y, PLANES_CONTENT);
   for (size_t index = 0; index < PLANES_DETAIL_LINES; ++index) {
     v.detail[index] = label(c, &lcd7_text15, PLANES_PAD, 0, PLANES_CONTENT);
@@ -2490,7 +2462,6 @@ void createPlanes(lv_obj_t *screen) {
   v.hint = label(c, &lcd7_text15, PLANES_PAD, PLANES_DETAIL_Y, PLANES_CONTENT);
   lv_label_set_long_mode(v.hint, LV_LABEL_LONG_WRAP);
   v.icons = makeStatusIcons(c);
-  v.dots = makePageDots(c);
 }
 
 void planesFrameChanged(const uint16_t *pixels) {
@@ -2533,17 +2504,8 @@ void composePlanesStatus(const Palette &p, char *text, size_t capacity) {
 
 void syncPlanes(const Palette &p) {
   PlanesView &v = planes;
-  setText(v.time, displayedTimeText);
-  setColor(v.time, p.text);
-  setText(v.date, lv_label_get_text(dateLabel));
-  setColor(v.date, p.muted);
+  syncTopBar(v.bar, p);
   char text[96];
-  char number[16];
-  formatValue(number, sizeof(number), currentValues.outsideTemperatureC, 1);
-  snprintf(text, sizeof(text), "%s °C", number);
-  setText(v.outside, text);
-  setColor(v.outside, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
-  setVisible(v.outside, !std::isnan(currentValues.outsideTemperatureC));
 
   const uint16_t rangeKm = planesLcd7.rangeKm;
   if (rangeKm > 0)
@@ -2559,7 +2521,7 @@ void syncPlanes(const Palette &p) {
     const lv_coord_t size = current ? 11 : 7;
     if (lv_obj_get_width(dot) != size) lv_obj_set_size(dot, size, size);
     setBackground(dot, current ? (p.night ? COLOR_ERROR : COLOR_HIGH_DOT) : p.dotOff);
-    setPosition(dot, PLANES_PAD + 4 + index * 20 - size / 2, 160 - size / 2);
+    setPosition(dot, PLANES_PAD + 4 + index * 20 - size / 2, 54 - size / 2);
     setVisible(dot, rangeKm > 0);
   }
   composePlanesStatus(p, text, sizeof(text));
@@ -2598,7 +2560,7 @@ void syncPlanes(const Palette &p) {
       const char *space = strchr(source, ' ');
       source = space != nullptr ? space + 1 : source;
     }
-    const bool shown = open && y + step <= SCREEN_HEIGHT - 66 && source[0] != '\0';
+    const bool shown = open && y + step <= SCREEN_HEIGHT - MAP_TOP - 46 && source[0] != '\0';
     setVisible(row, shown);
     if (!shown) {
       setVisible(value, false);
@@ -2638,7 +2600,7 @@ void syncPlanes(const Palette &p) {
       y += step;
     } else {
       y += step;
-      if (y + step > SCREEN_HEIGHT - 66) {
+      if (y + step > SCREEN_HEIGHT - MAP_TOP - 46) {
         setVisible(value, false);
         continue;
       }
@@ -2647,8 +2609,7 @@ void syncPlanes(const Palette &p) {
     }
   }
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
-  showStatusIcons(v.icons, p, PLANES_PAD, SCREEN_HEIGHT - 58, false);
-  showPageDots(v.dots, p, -(PLANES_PAD + 5), SCREEN_HEIGHT - 22, NARROW_DOT_GAP);
+  showStatusIcons(v.icons, p, PLANES_PAD, SCREEN_HEIGHT - MAP_TOP - 34, false);
 }
 
 // --- Doprava ----------------------------------------------------------------
@@ -2869,6 +2830,126 @@ void syncTraffic(const Palette &p) {
   setColor(v.updated, p.muted);
 }
 
+// --- Družice a noční obloha: Slunce a Měsíc vpravo --------------------------
+// Kulatá mapa oblohy zůstává u levého okraje, přes její horní okraj vede
+// stejná lišta jako jinde (řádek s časem v kruhu se proto schová). Vpravo
+// Slunce a Měsíc - samostatná obrazovka Slunce a Měsíc na 7" není. Texty
+// a kotouč Měsíce skládá skrytá kulatá stránka (updateSkyPage).
+
+constexpr int SKY_SIDE_X = STAGE_SIZE;
+constexpr int SKY_SIDE_W = SCREEN_WIDTH - SKY_SIDE_X;
+constexpr int SKY_SIDE_PAD = 18;
+constexpr int SKY_SIDE_CONTENT = SKY_SIDE_W - 2 * SKY_SIDE_PAD;
+const lv_color_t SKY_SUNRISE = LV_COLOR_MAKE(255, 194, 26);
+
+struct SkySideView {
+  lv_obj_t *barRoot;
+  TopBar bar;
+  lv_obj_t *column;
+  lv_obj_t *sunTitle;
+  lv_obj_t *sunCaptions[2];
+  lv_obj_t *sunTimes[2];
+  lv_obj_t *twilight;
+  lv_obj_t *dayLength;
+  lv_obj_t *line;
+  lv_obj_t *moonTitle;
+  lv_obj_t *moon;
+  lv_obj_t *phase;
+  lv_obj_t *illumination;
+  lv_obj_t *moonTimes;
+  lv_obj_t *nextPhases;
+  StatusIcons icons;
+  uint32_t drawnRevision;
+} skySide;
+
+void createSkySide(lv_obj_t *screen) {
+  SkySideView &v = skySide;
+  v.barRoot = panel(screen, 0, 0, SCREEN_WIDTH, BAR_HEIGHT + 1);
+  v.bar = makeTopBar(v.barRoot);
+  v.column = panel(screen, SKY_SIDE_X, BAR_HEIGHT + 1, SKY_SIDE_W, SCREEN_HEIGHT - BAR_HEIGHT - 1);
+  lv_obj_t *c = v.column;
+  const lv_coord_t half = SKY_SIDE_CONTENT / 2;
+  v.sunTitle = label(c, &lcd7_text15, SKY_SIDE_PAD, 14);
+  lv_obj_set_style_text_letter_space(v.sunTitle, 2, 0);
+  for (int index = 0; index < 2; ++index) {
+    v.sunCaptions[index] = label(c, &lcd7_text15, SKY_SIDE_PAD + index * half, 38);
+    v.sunTimes[index] = label(c, &lcd7_text28, SKY_SIDE_PAD + index * half, 56);
+  }
+  v.twilight = label(c, &lcd7_text15, SKY_SIDE_PAD, 96, SKY_SIDE_CONTENT);
+  v.dayLength = label(c, &lcd7_text15, SKY_SIDE_PAD, 118, SKY_SIDE_CONTENT);
+  v.line = line(c, SKY_SIDE_PAD, 150, SKY_SIDE_CONTENT, 1);
+  v.moonTitle = label(c, &lcd7_text15, SKY_SIDE_PAD, 164);
+  lv_obj_set_style_text_letter_space(v.moonTitle, 2, 0);
+  v.moon = lv_canvas_create(c);
+  lv_obj_set_pos(v.moon, SKY_SIDE_PAD, 190);
+  lv_obj_add_flag(v.moon, LV_OBJ_FLAG_HIDDEN);
+  const lv_coord_t textX = SKY_SIDE_PAD + SKY_MOON_SIZE + 16;
+  const lv_coord_t textW = SKY_SIDE_CONTENT - SKY_MOON_SIZE - 16;
+  v.phase = label(c, &lcd7_text22, textX, 192, textW);
+  v.illumination = label(c, &lcd7_text15, textX, 222, textW);
+  v.moonTimes = label(c, &lcd7_text15, textX, 244, textW);
+  lv_label_set_long_mode(v.moonTimes, LV_LABEL_LONG_WRAP);
+  v.nextPhases = label(c, &lcd7_text15, SKY_SIDE_PAD, 296, SKY_SIDE_CONTENT);
+  lv_label_set_long_mode(v.nextPhases, LV_LABEL_LONG_WRAP);
+  v.icons = makeStatusIcons(c);
+  v.drawnRevision = UINT32_MAX;
+}
+
+// Text kulatého popisku, nebo prázdný, dokud stránka Slunce a Měsíc nevznikla.
+const char *skyText(lv_obj_t *source) {
+  return source != nullptr ? lv_label_get_text(source) : "";
+}
+
+void syncSkySide(const Palette &p) {
+  SkySideView &v = skySide;
+  syncTopBar(v.bar, p);
+  showStatusIcons(v.icons, p, SKY_SIDE_W - SKY_SIDE_PAD,
+                  SCREEN_HEIGHT - BAR_HEIGHT - 34, true);
+  setBackground(v.line, p.line);
+  const bool english = englishLanguage();
+  setText(v.sunTitle, english ? "SUN" : "SLUNCE");
+  setColor(v.sunTitle, p.night ? COLOR_ERROR : COLOR_ROOM);
+  setText(v.moonTitle, english ? "MOON" : "MĚSÍC");
+  setColor(v.moonTitle, p.night ? COLOR_ERROR : COLOR_MOON);
+  for (int index = 0; index < 2; ++index) {
+    setText(v.sunCaptions[index], skyText(skyCaptionLabels[index]));
+    setColor(v.sunCaptions[index], p.muted);
+    setText(v.sunTimes[index], skyText(skyTimeLabels[index]));
+    setColor(v.sunTimes[index],
+             p.night ? COLOR_ERROR : (index == 0 ? SKY_SUNRISE : COLOR_ROOM));
+  }
+  char text[96];
+  snprintf(text, sizeof(text), "%s %s  ·  %s %s", english ? "dawn" : "svítání",
+           skyText(skyTwilightLabels[0]), english ? "dusk" : "soumrak",
+           skyText(skyTwilightLabels[1]));
+  setText(v.twilight, text);
+  setColor(v.twilight, p.muted);
+  setText(v.dayLength, skyText(skyDayLengthLabel));
+  setColor(v.dayLength, p.night ? COLOR_ERROR : COLOR_TEXT);
+
+  setText(v.phase, skyText(skyPhaseNameLabel));
+  setColor(v.phase, p.night ? COLOR_ERROR : COLOR_TEXT);
+  setText(v.illumination, skyText(skyIlluminationLabel));
+  setColor(v.illumination, p.muted);
+  snprintf(text, sizeof(text), "%s %s\n%s %s", skyText(skyCaptionLabels[2]),
+           skyText(skyTimeLabels[2]), skyText(skyCaptionLabels[3]),
+           skyText(skyTimeLabels[3]));
+  setText(v.moonTimes, text);
+  setColor(v.moonTimes, p.night ? COLOR_ERROR : COLOR_TEXT);
+  setText(v.nextPhases, skyText(skyNextPhasesLabel));
+  setColor(v.nextPhases, p.muted);
+
+  // Kotouč Měsíce kreslí kulatá stránka do vlastního bufferu; stačí ho
+  // ukázat a po přepočtu překreslit.
+  setVisible(v.moon, skyMoonPixels != nullptr);
+  if (skyMoonPixels != nullptr && v.drawnRevision != skyRevision) {
+    lv_canvas_set_buffer(v.moon, skyMoonPixels, SKY_MOON_SIZE, SKY_MOON_SIZE,
+                         LV_IMG_CF_TRUE_COLOR);
+    lv_obj_invalidate(v.moon);
+    v.drawnRevision = skyRevision;
+  }
+}
+
 // --- Nastavení --------------------------------------------------------------
 // Stejné ovladače jako na kulatém (createSettingsPage), jen rozložené přes
 // celou obrazovku: nahoře hlavička s adresou a tlačítky Zrušit/Uložit, vlevo
@@ -3017,10 +3098,9 @@ HomeMode desiredMode() {
     return HomeMode::Planes;
   if (activeScreen == DASHBOARD_SCREEN_TRAFFIC && trafficPage != nullptr)
     return HomeMode::Traffic;
-  // Slunce a Měsíc i družice (s noční oblohou) zůstávají kulaté: jeviště
-  // vlevo a vpravo sloupec domovské obrazovky s hodnotami.
-  if ((activeScreen == DASHBOARD_SCREEN_SKY && skyPage != nullptr) ||
-      (activeScreen == DASHBOARD_SCREEN_SATELLITES && satellitesPage != nullptr))
+  // Družice (s noční oblohou) zůstávají kulaté: jeviště vlevo pod lištou,
+  // vpravo Slunce a Měsíc. Samostatná obrazovka Slunce a Měsíc na 7" není.
+  if (activeScreen == DASHBOARD_SCREEN_SATELLITES && satellitesPage != nullptr)
     return HomeMode::RoundLeft;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
   if (valuesLayoutEnabled()) return HomeMode::Values;
@@ -3042,6 +3122,9 @@ void create() {
   createSchool(screen);
   createPlanes(screen);
   createTraffic(screen);
+  createSkySide(screen);
+  for (lv_obj_t *root : {skySide.barRoot, skySide.column})
+    lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
                          radar.root, agenda.root, rss.root, school.root, planes.root,
                          traffic.root})
@@ -3054,7 +3137,10 @@ void create() {
 void applyMode(HomeMode mode) {
   lv_obj_t *stage = displayDriverStage();
   setVisible(digital.root, mode == HomeMode::Digital);
-  setVisible(analog.root, mode == HomeMode::Analog || mode == HomeMode::RoundLeft);
+  setVisible(analog.root, mode == HomeMode::Analog);
+  setVisible(skySide.barRoot, mode == HomeMode::RoundLeft);
+  setVisible(skySide.column, mode == HomeMode::RoundLeft);
+  if (mode == HomeMode::RoundLeft) skySide.drawnRevision = UINT32_MAX;
   setVisible(values.root, mode == HomeMode::Values);
   setVisible(forecast.root, mode == HomeMode::Forecast);
   if (mode == HomeMode::Forecast) forecast.signature = 0;
@@ -3103,6 +3189,8 @@ void sync(bool force) {
   // Kulatý kód při každé změně hodnot odkrývá své popisky v ciferníku; skrýt
   // je musí ještě před vykreslením, ne až s další synchronizací.
   if (mode == HomeMode::Analog) hideRoundDialContent();
+  // Řádek s datem, časem a teplotou v kruhu družic leží pod lištou.
+  if (mode == HomeMode::RoundLeft) setVisible(satellitesClockLabel, false);
   const uint32_t now = millis();
   if (!force && now - lastSyncAt < SYNC_INTERVAL_MS) return;
   lastSyncAt = now;
@@ -3118,11 +3206,7 @@ void sync(bool force) {
     case HomeMode::School: syncSchool(p); break;
     case HomeMode::Planes: syncPlanes(p); break;
     case HomeMode::Traffic: syncTraffic(p); break;
-    case HomeMode::RoundLeft:
-      syncAnalog(p);
-      // Kulatá stránka má tečky obrazovek sama nahoře.
-      for (lv_obj_t *dot : analog.dots.dots) setVisible(dot, false);
-      break;
+    case HomeMode::RoundLeft: syncSkySide(p); break;
     case HomeMode::None: break;
   }
 }

@@ -14,7 +14,8 @@
 // při každém kroku animace vyhlazeně zvětší a mapa, popisky, stupnice
 // a blesky se přes něj kreslí ostře v 640 x 480.
 constexpr uint16_t CHMI_RADAR_WIDTH = HODINY_BOARD_LCD7 ? 320 : 480;
-constexpr uint16_t CHMI_RADAR_HEIGHT = HODINY_BOARD_LCD7 ? 240 : 480;
+// Na 7" pod lištou 40 px: obraz 640 x 440.
+constexpr uint16_t CHMI_RADAR_HEIGHT = HODINY_BOARD_LCD7 ? 220 : 480;
 constexpr uint8_t CHMI_RADAR_ZOOM = HODINY_BOARD_LCD7 ? 2 : 1;
 constexpr uint16_t CHMI_RADAR_VIEW_WIDTH = CHMI_RADAR_WIDTH * CHMI_RADAR_ZOOM;
 constexpr uint16_t CHMI_RADAR_VIEW_HEIGHT = CHMI_RADAR_HEIGHT * CHMI_RADAR_ZOOM;

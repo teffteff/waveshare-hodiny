@@ -71,8 +71,9 @@ constexpr float KM_PER_DEGREE_LATITUDE = 111.0f;
 
 constexpr int RADAR_CENTER_X = PLANE_RADAR_WIDTH / 2;
 constexpr int RADAR_CENTER_Y = PLANE_RADAR_HEIGHT / 2;
-// Poloměr kruhu, na který se promítá nastavený dosah.
-constexpr int RADAR_RADIUS = 230;
+// Poloměr kruhu, na který se promítá nastavený dosah. Na 7" je obraz pod
+// lištou vysoký 440 px, takže kruh musí být menší.
+constexpr int RADAR_RADIUS = HODINY_BOARD_LCD7 ? 205 : 230;
 
 constexpr size_t PIXEL_COUNT =
     static_cast<size_t>(PLANE_RADAR_WIDTH) * PLANE_RADAR_HEIGHT;
@@ -721,7 +722,7 @@ void drawRangeRingsAndCenter() {
 
 // Světové strany. Azimut b se objeví na displeji pod úhlem (b - topBearing).
 void drawCompassMarks() {
-  constexpr int MARK_RADIUS = 205;
+  constexpr int MARK_RADIUS = RADAR_RADIUS - 25;
   static const char *const LABELS[4] = {"S", "V", "J", "Z"};
   static const int BEARINGS[4] = {0, 90, 180, 270};
   const uint16_t color = paletteColor(COLOR_GRAY);
