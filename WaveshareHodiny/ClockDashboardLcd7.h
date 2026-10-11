@@ -283,7 +283,7 @@ void showStatusIcons(const StatusIcons &icons, const Palette &p, lv_coord_t x,
                          icons.web};
   const bool visible[] = {lightningAlertActive, showWifi, showHomeAssistant,
                           webActive};
-  setText(icons.lightning, lv_label_get_text(lightningStatusLabel));
+  setText(icons.lightning, viewModels().lightning.text);
   setColor(icons.lightning, COLOR_ERROR);
   setColor(icons.wifi, p.night ? COLOR_ERROR
                                : (wifiConnected ? COLOR_AIR : COLOR_ERROR));
@@ -373,11 +373,10 @@ lv_color_t warningColor(const Palette &p) {
   return p.night ? COLOR_ERROR : warningLevelColor(radarWarningLevel);
 }
 
-// Nejbližší události z agendy: přímo z popisků stránky agendy, která je
-// jediným místem, kde ciferník seznam drží. Bez zapnuté agendy nic.
+// Nejbližší události z modelu agendy. Bez zapnuté agendy nic.
 uint8_t agendaEventCount() {
   if (!agendaFeatureAvailable || agendaPage == nullptr) return 0;
-  return agendaVisibleItemCount;
+  return viewModels().agenda.count;
 }
 
 // Text do recolor popisku: mřížka v textu ze serveru se zdvojí.
@@ -392,14 +391,15 @@ void appendEscaped(char *output, size_t capacity, const char *text) {
 
 void formatAgendaEvent(uint8_t index, const Palette &p, char *output,
                        size_t capacity) {
+  const AgendaRowViewModel &row = viewModels().agenda.rows[index];
   lv_color32_t color;
-  color.full = lv_color_to32(
-      p.night ? COLOR_ERROR : agendaCalendarColor(agendaRowCalendar[index]));
+  color.full = lv_color_to32(p.night ? COLOR_ERROR : agendaCalendarColor(row.calendar));
   snprintf(output, capacity, "#%02x%02x%02x ", color.ch.red, color.ch.green,
            color.ch.blue);
-  appendEscaped(output, capacity, lv_label_get_text(agendaTimeLabels[index]));
+  // Celodenní událost: pomlčka jako na kulatém ciferníku.
+  appendEscaped(output, capacity, row.time[0] != '\0' ? row.time : AGENDA_ALL_DAY_MARK);
   strlcat(output, "#  ", capacity);
-  appendEscaped(output, capacity, lv_label_get_text(agendaTitleLabels[index]));
+  appendEscaped(output, capacity, row.title);
 }
 
 const lv_img_dsc_t *weatherIcon(const Palette &p) {
@@ -526,10 +526,9 @@ void showAgenda(lv_obj_t *head, lv_obj_t *first, lv_obj_t *second,
   const uint8_t count = agendaEventCount();
   char text[160];
   setVisible(head, head != nullptr && agendaFeatureAvailable);
+  const AgendaViewModel &model = viewModels().agenda;
   if (head != nullptr) {
-    setText(head, count > 0 && agendaRowStartsDay[0]
-                      ? lv_label_get_text(agendaDayLabels[0])
-                      : "AGENDA");
+    setText(head, count > 0 && model.rows[0].startsDay ? model.rows[0].day : "AGENDA");
     setColor(head, p.muted);
   }
   if (count > 0) {
@@ -537,9 +536,7 @@ void showAgenda(lv_obj_t *head, lv_obj_t *first, lv_obj_t *second,
     setText(first, text);
     setColor(first, p.text);
   } else {
-    setText(first, agendaFeatureAvailable && agendaPage != nullptr
-                       ? lv_label_get_text(agendaStatusLabel)
-                       : "");
+    setText(first, agendaFeatureAvailable && agendaPage != nullptr ? model.status : "");
     setColor(first, p.muted);
   }
   setVisible(second, count > 1);
@@ -551,9 +548,10 @@ void showAgenda(lv_obj_t *head, lv_obj_t *first, lv_obj_t *second,
 }
 
 void showDate(lv_obj_t *date, lv_obj_t *nameday, const Palette &p) {
-  setText(date, lv_label_get_text(dateLabel));
+  const DateViewModel &model = viewModels().date;
+  setText(date, model.date);
   setColor(date, p.night ? COLOR_ERROR : COLOR_TEXT);
-  const char *name = lv_label_get_text(namedayLabel);
+  const char *name = model.nameday;
   setVisible(nameday, name[0] != '\0');
   if (name[0] == '\0') return;
   char capitalized[64];
@@ -1037,7 +1035,7 @@ void syncTopBar(TopBar &v, const Palette &p) {
   setColor(v.time, p.text);
   lv_obj_update_layout(v.time);
   lv_coord_t x = lv_obj_get_x(v.time) + lv_obj_get_width(v.time) + 16;
-  setText(v.date, lv_label_get_text(dateLabel));
+  setText(v.date, viewModels().date.date);
   setColor(v.date, p.muted);
   setPosition(v.date, x, 12);
   lv_obj_update_layout(v.date);
@@ -1079,7 +1077,7 @@ void syncTopBar(TopBar &v, const Palette &p) {
     strlcat(problems, symbol, sizeof(problems));
     strlcat(problems, "#", sizeof(problems));
   };
-  if (lightningAlertActive) add(lv_label_get_text(lightningStatusLabel));
+  if (lightningAlertActive) add(viewModels().lightning.text);
   if (!wifiConnected) add(LV_SYMBOL_WIFI);
   else if (homeAssistantStatusRelevant && !currentValues.homeAssistantOnline)
     add(LV_SYMBOL_HOME);
@@ -1588,8 +1586,8 @@ void syncForecast(const Palette &p) {
 
 // --- Meteoradar: mapa 640 x 480 vlevo, úzký sloupec vpravo ---------------
 // Obraz 640 x 480 skládá ChmiRadarService ve sdíleném snímku (zvětšené
-// srážky, ostrá mapa a blesky); tady se jen ukáže na vlastním plátně. Popisky
-// kulaté stránky (čas, rozsah, snímek) přebírá sloupec vpravo.
+// srážky, ostrá mapa a blesky); tady se jen ukáže na vlastním plátně. Čas
+// snímku, rozsah a hlášku (RadarViewModel) ukazuje sloupec vpravo.
 
 // Mapy radarů leží pod lištou.
 constexpr int MAP_TOP = BAR_HEIGHT;
@@ -1702,21 +1700,20 @@ void radarFrameChanged(const uint16_t *pixels) {
 
 void syncRadar(const Palette &p) {
   RadarView &v = radar;
-  const bool haveFrame = v.pixels != nullptr &&
-                         !lv_obj_has_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
+  const RadarViewModel &model = viewModels().radar;
+  const bool haveFrame = v.pixels != nullptr && model.frameShown;
   setVisible(v.canvas, haveFrame);
   setVisible(v.status, !haveFrame);
-  setText(v.status, lv_label_get_text(radarStatusLabel));
+  setText(v.status, model.status);
   setColor(v.status, p.muted);
   syncTopBar(v.bar, p);
 
-  const char *rangeText = lv_label_get_text(radarRangeLabel);
-  setText(v.range, haveFrame ? rangeText : "");
+  setText(v.range, haveFrame ? model.range : "");
   setColor(v.range, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
-  setText(v.frame, haveFrame ? lv_label_get_text(radarTitleLabel) : "");
+  setText(v.frame, haveFrame ? model.frame : "");
   setColor(v.frame, p.text);
-  // Tečky kroků dosahu jako u letadel; "100 km" je 100, "CELÁ ČR" je 0.
-  const uint16_t rangeKm = static_cast<uint16_t>(atoi(rangeText));
+  // Tečky kroků dosahu jako u letadel; celá republika je 0.
+  const uint16_t rangeKm = model.rangeKm;
   for (int index = 0; index < RADAR_RANGE_STEPS; ++index) {
     lv_obj_t *dot = v.rangeDots[index];
     const bool current = RADAR_RANGE_KM[index] == rangeKm;
@@ -1814,8 +1811,7 @@ void syncRadar(const Palette &p) {
 // nikam, nahradí tři tečky na posledním řádku. Dole legenda kalendářů
 // s barevnými tečkami a kdy server kalendáře naposled stáhl.
 //
-// Texty drží popisky kulaté stránky agendy (kulatý je na 7" nerozmisťuje
-// a nezkracuje), tady se jen čtou.
+// Texty drží model agendy (AgendaViewModel), tady se jen rozmisťují.
 
 constexpr int AGENDA_X = 28;
 constexpr int AGENDA_TOP = BAR_HEIGHT + 18;
@@ -1890,7 +1886,7 @@ AgendaPlacement placeAgenda(uint8_t count, uint8_t leftGroups) {
   uint8_t column = 0;
   int lastShown = -1;
   for (uint8_t index = 0; index < count; ++index) {
-    const bool startsDay = agendaRowStartsDay[index] || index == 0;
+    const bool startsDay = viewModels().agenda.rows[index].startsDay || index == 0;
     if (startsDay) ++group;
     if (column == 0 && group >= leftGroups) column = 1;
     // Řádek se musí vejít celý; v levém sloupci i s hlavičkou dne.
@@ -1932,7 +1928,7 @@ AgendaPlacement placeAgenda(uint8_t count, uint8_t leftGroups) {
 AgendaPlacement layoutAgenda(uint8_t count) {
   uint8_t groups = 0;
   for (uint8_t index = 0; index < count; ++index)
-    if (agendaRowStartsDay[index] || index == 0) ++groups;
+    if (viewModels().agenda.rows[index].startsDay || index == 0) ++groups;
   uint8_t leftGroups = std::min<uint8_t>(2, groups);
   AgendaPlacement placement = placeAgenda(count, leftGroups);
   // Další den doleva, dokud se tím zbavíme přetečení a vlevo se vejde celý.
@@ -1941,7 +1937,7 @@ AgendaPlacement layoutAgenda(uint8_t count) {
     bool leftFits = true;
     uint8_t group = 0;
     for (uint8_t index = 0; index < count; ++index) {
-      if (index > 0 && agendaRowStartsDay[index]) ++group;
+      if (index > 0 && viewModels().agenda.rows[index].startsDay) ++group;
       if (group <= leftGroups && wider.column[index] != 0) leftFits = false;
     }
     if (!leftFits) break;
@@ -1990,8 +1986,9 @@ bool agendaDayIsToday(const char *day) {
 
 // Den, ke kterému řádek patří (popisek nese jen první řádek dne).
 const char *agendaDayOf(uint8_t index) {
-  while (index > 0 && !agendaRowStartsDay[index]) --index;
-  return lv_label_get_text(agendaDayLabels[index]);
+  const AgendaViewModel &model = viewModels().agenda;
+  while (index > 0 && !model.rows[index].startsDay) --index;
+  return model.rows[index].day;
 }
 
 void syncAgendaLegend(const Palette &p) {
@@ -2029,16 +2026,17 @@ void syncAgenda(const Palette &p) {
   AgendaView &v = agenda;
   syncTopBar(v.bar, p);
   const bool english = englishLanguage();
-  if (v.drawnRevision == agendaRevision && v.drawnNight == p.night &&
+  const AgendaViewModel &model = viewModels().agenda;
+  if (v.drawnRevision == model.revision && v.drawnNight == p.night &&
       v.drawnEnglish == english)
     return;
-  v.drawnRevision = agendaRevision;
+  v.drawnRevision = model.revision;
   v.drawnNight = p.night;
   v.drawnEnglish = english;
 
-  const uint8_t count = agendaVisibleItemCount;
+  const uint8_t count = model.count;
   setVisible(v.status, count == 0);
-  setText(v.status, lv_label_get_text(agendaStatusLabel));
+  setText(v.status, model.status);
   setColor(v.status, p.muted);
   const AgendaPlacement placement = layoutAgenda(count);
   bool rightUsed = false;
@@ -2067,13 +2065,13 @@ void syncAgenda(const Palette &p) {
     const bool more = placement.more[index];
     setVisible(time, !more);
     setFont(time, style.font);
-    const char *timeText = lv_label_get_text(agendaTimeLabels[index]);
-    setText(time, strcmp(timeText, AGENDA_ALL_DAY_MARK) == 0 ? "–" : timeText);
-    setColor(time, p.night ? COLOR_ERROR : agendaCalendarColor(agendaRowCalendar[index]));
+    const AgendaRowViewModel &row = model.rows[index];
+    setText(time, row.time[0] == '\0' ? "–" : row.time);
+    setColor(time, p.night ? COLOR_ERROR : agendaCalendarColor(row.calendar));
     setPosition(time, style.x, y);
     setVisible(title, true);
     setFont(title, style.font);
-    setText(title, more ? "…" : lv_label_get_text(agendaTitleLabels[index]));
+    setText(title, more ? "…" : row.title);
     setColor(title, more ? p.muted : p.text);
     setWidth(title, style.width - style.timeWidth - style.timeGap);
     setPosition(title, more ? style.x : style.x + style.timeWidth + style.timeGap, y);
@@ -2878,7 +2876,7 @@ void syncSchool(const Palette &p) {
 // Mapa 640 x 480 kreslí služba radaru letadel (obdélník místo kruhu, stupnice
 // výšek vlevo dole). Sloupec vpravo nese to, co kulatý píše přes mapu: čas,
 // dosah s tečkami kroků, počet letadel nebo nouzi a detail vybraného letadla.
-// Detail bere z popisků kulatého panelu, který se na 7" sám nikdy neukáže.
+// Detail bere z modelu PlaneDetailViewModel.
 
 constexpr int PLANES_COLUMN_X = PLANE_RADAR_WIDTH;
 constexpr int PLANES_COLUMN_W = SCREEN_WIDTH - PLANES_COLUMN_X;
@@ -2984,20 +2982,13 @@ void composePlanesStatus(const Palette &p, char *text, size_t capacity) {
   }
 }
 
-// Text za "JMÉNO: " z řádku kulatého detailu; bez dvojtečky celý řádek.
-const char *planesRowValue(lv_obj_t *row) {
-  if (row == nullptr) return "";
-  const char *text = lv_label_get_text(row);
-  const char *colon = strstr(text, ": ");
-  return colon != nullptr ? colon + 2 : text;
-}
-
 // Detail vybraného letadla ve sloupci 160 px: volací znak, typ slovy a trasa
 // nahoře, pak čtyři čísla velkým písmem s malým popiskem nad sebou (vždy
 // stejně, ať je hodnota krátká, nebo dlouhá), dole registrace a zdroj.
-// Čte texty kulatého detailu, aby obojí ukazovalo totéž.
+// Čte model detailu (PlaneDetailViewModel), stejně jako kulatý panel.
 void syncPlanesDetail(const Palette &p, lv_coord_t top) {
   PlanesView &v = planes;
+  const PlaneDetailViewModel &model = viewModels().planeDetail;
   const bool english = englishLanguage();
   const lv_color_t main = p.night ? COLOR_ERROR : COLOR_TEXT;
   const lv_coord_t bottom = SCREEN_HEIGHT - MAP_TOP - 4;
@@ -3021,7 +3012,7 @@ void syncPlanesDetail(const Palette &p, lv_coord_t top) {
     return next < PLANES_DETAIL_LINES ? v.detail[next++] : nullptr;
   };
 
-  setText(v.title, lv_label_get_text(planesDetailTitle));
+  setText(v.title, model.title);
   setColor(v.title, p.night ? COLOR_ERROR : COLOR_ROOM);
   setPosition(v.title, PLANES_PAD, y);
   y += lv_font_get_line_height(&lcd7_text22) + 2;
@@ -3031,43 +3022,35 @@ void syncPlanesDetail(const Palette &p, lv_coord_t top) {
   agendaBuildColorTag(tag, p.muted);
   bool fits = true;
   // Typ slovy ("Boeing 737-800"), až na dva řádky.
-  const char *type = planesRowValue(planesDetailRows[PLANES_DETAIL_TYPE_ROW]);
-  if (lv_label_get_text(planesDetailRows[PLANES_DETAIL_TYPE_ROW])[0] != '\0' &&
-      strcmp(type, "?") != 0) {
-    if (lv_obj_t *object = take()) fits = place(object, type, &lcd7_text18, main, 6);
+  if (model.type[0] != '\0' && strcmp(model.type, "?") != 0) {
+    if (lv_obj_t *object = take()) fits = place(object, model.type, &lcd7_text18, main, 6);
   }
-  // Nouze má přednost před vším dalším.
-  const char *emergency = lv_label_get_text(planesDetailRows[PLANES_DETAIL_ROW_COUNT - 1]);
-  if (fits && emergency[0] != '\0') {
-    if (lv_obj_t *object = take()) fits = place(object, emergency, &lcd7_text18, main, 6);
+  // Nouze má přednost před vším dalším; červeně i ve dne.
+  if (fits && model.emergency[0] != '\0') {
+    snprintf(text, sizeof(text), "#FF4848 %s#", model.emergency);
+    if (lv_obj_t *object = take()) fits = place(object, text, &lcd7_text18, main, 6);
   }
   // Trasa: "Z Praha" / "Do Londýn" s tlumenou předložkou, nebo stav hledání.
-  for (lv_obj_t *route : {planesDetailRouteFrom, planesDetailRouteTo}) {
-    const char *raw = lv_label_get_text(route);
-    if (!fits || raw[0] == '\0') continue;
-    const char *colon = strstr(raw, ": ");
-    if (colon != nullptr) {
-      snprintf(text, sizeof(text), "%s%.*s# %s", tag, static_cast<int>(colon - raw), raw,
-               colon + 2);
+  for (uint8_t index = 0; index < 2; ++index) {
+    if (!fits || model.route[index][0] == '\0') continue;
+    if (model.routeCaption[index][0] != '\0') {
+      snprintf(text, sizeof(text), "%s%s# %s", tag, model.routeCaption[index],
+               model.route[index]);
     } else {
-      snprintf(text, sizeof(text), "%s%s#", tag, raw);
+      snprintf(text, sizeof(text), "%s%s#", tag, model.route[index]);
     }
     if (lv_obj_t *object = take()) fits = place(object, text, &lcd7_text15, main, 2);
   }
   y += 6;
   // Výška, rychlost, směr, stoupání: popisek malým, číslo velkým.
-  for (uint8_t row = 0; fits && row < 4; ++row) {
-    const char *raw = lv_label_get_text(planesDetailRows[row]);
-    const char *colon = strstr(raw, ": ");
-    if (colon == nullptr) continue;
-    snprintf(text, sizeof(text), "%.*s", static_cast<int>(colon - raw), raw);
+  for (uint8_t row = 0; fits && row < PlaneDetailViewModel::VALUE_ROWS; ++row) {
     lv_obj_t *caption = take();
     if (caption == nullptr) break;
-    fits = place(caption, text, &lcd7_text15, p.muted, 0);
+    fits = place(caption, model.captions[row], &lcd7_text15, p.muted, 0);
     lv_obj_t *value = v.values[row];
     // Desetinná čárka jako všude jinde na displeji (kulatý píše "-2.9 m/s").
     char number[32];
-    strlcpy(number, colon + 2, sizeof(number));
+    strlcpy(number, model.values[row], sizeof(number));
     if (!english) {
       for (char *c = number; *c != '\0'; ++c)
         if (*c == '.') *c = ',';
@@ -3078,21 +3061,14 @@ void syncPlanesDetail(const Palette &p, lv_coord_t top) {
   // Registrace a zdroj (vlastní přijímač / internet) pod sebou, tlumeně;
   // když letadlo zmizí z dat, místo zdroje "signál ztracen".
   if (fits) {
-    strlcpy(text, lv_label_get_text(planesDetailRegistration), sizeof(text));
-    static const char SEPARATOR[] = "  ·  ";
-    char *dot = strstr(text, SEPARATOR);
-    if (dot != nullptr) {
-      const size_t skip = sizeof(SEPARATOR) - 1;
-      dot[0] = '\n';
-      memmove(dot + 1, dot + skip, strlen(dot + skip) + 1);
-    }
-    if (!lv_obj_has_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN)) {
-      char *newline = strchr(text, '\n');
-      if (newline != nullptr) *newline = '\0';
-      const size_t length = strlen(text);
-      snprintf(text + length, sizeof(text) - length, "%s%s", length > 0 ? "\n" : "",
-               english ? "signal lost" : "signál ztracen");
-    }
+    const char *lost = english ? "signal lost" : "signál ztracen";
+    if (model.registration[0] != '\0')
+      snprintf(text, sizeof(text), "%s\n%s", model.registration,
+               model.signalLost ? lost : model.source);
+    else if (model.signalLost)
+      snprintf(text, sizeof(text), "%s\n%s", model.source, lost);
+    else
+      strlcpy(text, model.source, sizeof(text));
     y += 4;
     if (lv_obj_t *object = take()) place(object, text, &lcd7_text15, p.muted, 0);
   }
@@ -3124,8 +3100,7 @@ void syncPlanes(const Palette &p) {
   setText(v.status, text);
 
   // Detail vybraného letadla, nebo nápověda.
-  const bool open = planesDetailPanel != nullptr &&
-                    !lv_obj_has_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  const bool open = viewModels().planeDetail.open;
   int16_t selectedX = 0;
   int16_t selectedY = 0;
   const bool ring = planeRadarServiceSelectedPoint(selectedX, selectedY);
@@ -3403,7 +3378,7 @@ void syncTraffic(const Palette &p) {
 // Kulatá mapa oblohy zůstává u levého okraje, přes její horní okraj vede
 // stejná lišta jako jinde (řádek s časem v kruhu se proto schová). Vpravo
 // Slunce a Měsíc - samostatná obrazovka Slunce a Měsíc na 7" není. Texty
-// a kotouč Měsíce skládá skrytá kulatá stránka (updateSkyPage).
+// jsou v modelu SkyViewModel, kotouč Měsíce kreslí renderSkyMoon().
 
 constexpr int SKY_SIDE_X = STAGE_SIZE;
 constexpr int SKY_SIDE_W = SCREEN_WIDTH - SKY_SIDE_X;
@@ -3605,40 +3580,36 @@ bool handleSwipe(int8_t direction) {
   return false;
 }
 
-// Text kulatého popisku, nebo prázdný, dokud stránka nevznikla.
-const char *skyText(lv_obj_t *source) {
-  return source != nullptr ? lv_label_get_text(source) : "";
-}
-
 void syncSkySide(const Palette &p) {
   SkySideView &v = skySide;
   syncTopBar(v.bar, p);
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
   const bool english = englishLanguage();
+  const SkyViewModel &model = viewModels().sky;
   setText(v.sunTitle, english ? "SUN" : "SLUNCE");
   setColor(v.sunTitle, p.night ? COLOR_ERROR : SKY_SUNRISE);
   setText(v.moonTitle, english ? "MOON" : "MĚSÍC");
   setColor(v.moonTitle, p.night ? COLOR_ERROR : COLOR_MOON);
   for (int index = 0; index < 2; ++index) {
-    setText(v.sunCaptions[index], skyText(skyCaptionLabels[index]));
+    setText(v.sunCaptions[index], model.captions[index]);
     setColor(v.sunCaptions[index], p.muted);
-    setText(v.sunTimes[index], skyText(skyTimeLabels[index]));
+    setText(v.sunTimes[index], model.times[index]);
     setColor(v.sunTimes[index],
              p.night ? COLOR_ERROR : (index == 0 ? SKY_SUNRISE : COLOR_ROOM));
-    setText(v.twilight[index], skyText(skyTwilightLabels[index]));
+    setText(v.twilight[index], model.twilight[index]);
     setColor(v.twilight[index], p.muted);
-    setText(v.moonCaptions[index], skyText(skyCaptionLabels[2 + index]));
+    setText(v.moonCaptions[index], model.captions[2 + index]);
     setColor(v.moonCaptions[index], p.muted);
-    setText(v.moonTimes[index], skyText(skyTimeLabels[2 + index]));
+    setText(v.moonTimes[index], model.times[2 + index]);
     setColor(v.moonTimes[index], p.night ? COLOR_ERROR : COLOR_MOON);
   }
-  setText(v.dayLength, skyText(skyDayLengthLabel));
+  setText(v.dayLength, model.dayLength);
   setColor(v.dayLength, p.night ? COLOR_ERROR : COLOR_TEXT);
-  setText(v.phase, skyText(skyPhaseNameLabel));
+  setText(v.phase, model.phaseName);
   setColor(v.phase, p.night ? COLOR_ERROR : COLOR_TEXT);
-  setText(v.illumination, skyText(skyIlluminationLabel));
+  setText(v.illumination, model.illumination);
   setColor(v.illumination, p.muted);
-  setText(v.nextPhases, skyText(skyNextPhasesLabel));
+  setText(v.nextPhases, model.nextPhases);
   setColor(v.nextPhases, p.muted);
 
   // Stránka sloupce: 0 Slunce, Měsíc a přelety, 1 obloha (tažení po sloupci).
@@ -3676,8 +3647,8 @@ void syncSkySide(const Palette &p) {
     setColor(v.passes[index], p.night ? COLOR_ERROR : COLOR_OUTSIDE);
   }
 
-  // Kotouč Měsíce kreslí kulatá stránka do vlastního bufferu; stačí ho
-  // ukázat a po přepočtu překreslit.
+  // Kotouč Měsíce kreslí renderSkyMoon() do skyMoonPixels; stačí ho ukázat
+  // a po přepočtu překreslit.
   setVisible(v.moon, skyMoonPixels != nullptr);
   if (skyMoonPixels != nullptr && v.drawnRevision != skyRevision) {
     lv_canvas_set_buffer(v.moon, skyMoonPixels, SKY_MOON_SIZE, SKY_MOON_SIZE,
