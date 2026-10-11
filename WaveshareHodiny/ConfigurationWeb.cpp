@@ -1512,6 +1512,34 @@ void handleWebPassword() {
   sendJson(200, F("{\"ok\":true,\"configured\":true}"));
 }
 
+// Deska a její schopnosti (BOARD_PROFILE). Stránka podle nich schová nebo
+// přepíše pole, která na téhle desce nic nedělají; uložené hodnoty se dál
+// posílají beze změny, aby záloha přenesená na druhou desku nic neztratila.
+void appendBoardJson(String &result) {
+  result += F(",\"board\":{\"id\":\"");
+  result += BOARD_PROFILE.id;
+  result += F("\",\"name\":\"");
+  result += BOARD_NAME;
+  result += F("\",\"caps\":{\"roundScreen\":");
+  result += BOARD_PROFILE.roundScreen ? F("true") : F("false");
+  result += F(",\"backlightDimmable\":");
+  result += BOARD_PROFILE.backlightDimmable ? F("true") : F("false");
+  result += F(",\"skyScreen\":");
+  result += BOARD_PROFILE.skyScreen ? F("true") : F("false");
+  result += F(",\"rssItemCount\":");
+  result += BOARD_PROFILE.rssItemCountHonoured ? F("true") : F("false");
+  result += F(",\"roundClockFace\":");
+  result += BOARD_PROFILE.roundClockFace ? F("true") : F("false");
+  result += F(",\"forecastHours\":");
+  result += BOARD_PROFILE.forecastAheadHours;
+  result += F(",\"radarRanges\":[");
+  for (uint8_t index = 0; index < BOARD_PROFILE.radarRangeCount; ++index) {
+    if (index > 0) result += ',';
+    result += BOARD_PROFILE.radarRanges[index];
+  }
+  result += F("]}}");
+}
+
 void handleGetConfig() {
   extendWebAvailability();
   const ClockConfig &config = currentConfig();
@@ -1566,6 +1594,7 @@ void handleGetConfig() {
   result += clockConfigRadarAvailable(config) ? F("CZ") : F("OTHER");
   result += F("\",\"radarAvailable\":");
   result += clockConfigRadarAvailable(config) ? F("true") : F("false");
+  appendBoardJson(result);
   result += F(",\"radarRadiusKm\":");
   result += savedRadarRadiusKm;
   result += F(",\"radarActiveRadiusKm\":");

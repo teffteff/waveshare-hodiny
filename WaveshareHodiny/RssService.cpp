@@ -375,7 +375,8 @@ static bool rssServiceDownload(const ClockRssConfig &config,
                     payloadLength,
                     // 7" posouvá seznam, a tak bere všechno, co kanál dá;
                     // počet v nastavení patří místu na kulatém displeji.
-                    HODINY_BOARD_LCD7 ? RSS_MAX_ITEMS : config.itemCount,
+                    BOARD_PROFILE.rssItemCountHonoured ? config.itemCount
+                                                       : RSS_MAX_ITEMS,
                     parsed, parseError,
                     sizeof(parseError))) {
     error = parseError;

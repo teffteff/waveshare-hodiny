@@ -8,6 +8,7 @@ Slouží k rychlé úpravě HTML/JS: stačí uložit hlavičku a obnovit stránk
 
     python3 tools/preview_web_ui.py            # http://127.0.0.1:8080
     python3 tools/preview_web_ui.py --port 9000
+    python3 tools/preview_web_ui.py --board lcd7   # stránka, jak ji vidí 7"
 
 Odeslání formuláře se neukládá, ale vypíše se do konzole, takže je vidět,
 jaká pole by se poslala do firmwaru.
@@ -85,9 +86,25 @@ def value_slots() -> list[dict]:
     return slots
 
 
+# Schopnosti desek podle BOARD_PROFILE v Board.h (appendBoardJson ve
+# ConfigurationWeb.cpp). Stránka podle nich schová pole, která deska neumí.
+BOARD_PROFILES = {
+    "lcd21": {"id": "lcd21", "name": "ESP32-S3-Touch-LCD-2.1", "caps": {
+        "roundScreen": True, "backlightDimmable": True, "skyScreen": True,
+        "rssItemCount": True, "roundClockFace": True, "forecastHours": 24,
+        "radarRanges": [25, 50, 100, 200, 0]}},
+    "lcd7": {"id": "lcd7", "name": "ESP32-S3-Touch-LCD-7", "caps": {
+        "roundScreen": False, "backlightDimmable": False, "skyScreen": False,
+        "rssItemCount": False, "roundClockFace": False, "forecastHours": 48,
+        "radarRanges": [25, 50, 100, 0]}},
+}
+preview_board = "lcd21"
+
+
 def stub_config() -> dict:
     """Odpovídá tvaru configJson() v ConfigurationWeb.cpp."""
     return {
+        "board": BOARD_PROFILES[preview_board],
         "dataSource": "home-assistant",
         "language": "cs",
         "openMeteoCity": "Ondřejov · Praha-východ · Středočeský kraj · Česko",
@@ -568,14 +585,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--board", choices=sorted(BOARD_PROFILES), default="lcd21",
+                        help="deska, za kterou se náhled vydává (lcd21 kulatý, lcd7)")
     args = parser.parse_args()
+    global preview_board
+    preview_board = args.board
 
     # Ověří, že se obě hlavičky dají přečíst, dřív než se otevře port.
     extract_raw_string(PAGE_HEADER, "CONFIGURATION_PAGE", "HTML")
     extract_raw_string(LOCALIZATION_HEADER, "CONFIGURATION_LOCALIZATION_JS", "JS")
 
     server = ThreadingHTTPServer((args.host, args.port), PreviewHandler)
-    print(f"Náhled webového rozhraní běží na http://{args.host}:{args.port}")
+    print(f"Náhled webového rozhraní ({args.board}) běží na http://{args.host}:{args.port}")
     print("Změny v ConfigurationPage.h se projeví po obnovení stránky. Ukončení: Ctrl+C")
     try:
         server.serve_forever()

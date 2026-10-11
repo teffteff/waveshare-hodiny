@@ -1115,13 +1115,9 @@ void handleTrafficVisibility(bool visible) {
 }
 
 void handleRadarRangeChange(int8_t direction) {
-#if HODINY_BOARD_LCD7
-  // 7" má celou republiku na celý obraz, takže 200 km je zbytečný mezikrok.
-  static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 0};
-#else
-  static constexpr uint16_t RADAR_RADII[] = {25, 50, 100, 200, 0};
-#endif
-  constexpr size_t RADII_COUNT = sizeof(RADAR_RADII) / sizeof(RADAR_RADII[0]);
+  // Řada rozsahů patří desce (Board.h); 7" vynechává 200 km.
+  const uint16_t *RADAR_RADII = BOARD_PROFILE.radarRanges;
+  constexpr size_t RADII_COUNT = BOARD_PROFILE.radarRangeCount;
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigRadarAvailable(config)) return;
   // Poslední rozsah je "celá ČR" s pevným středem Česka; mimo něj řada končí
@@ -1357,7 +1353,7 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_SKY:
       // 7" samostatnou obrazovku Slunce a Měsíc nemá (údaje jsou u družic);
       // bez téhle výjimky by podržení prstu skočilo na hodiny.
-      return !HODINY_BOARD_LCD7 && clockConfigSkyAvailable(config);
+      return BOARD_PROFILE.skyScreen && clockConfigSkyAvailable(config);
     case ROTATION_SCREEN_SCHOOL:
       return clockConfigSchoolAvailable(config);
     case ROTATION_SCREEN_SATELLITES:
@@ -1386,7 +1382,7 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
       return clockConfigAgendaAvailable(config) &&
              config.agenda.automaticRotation;
     case ROTATION_SCREEN_SKY:
-      return !HODINY_BOARD_LCD7 && clockConfigSkyAvailable(config) &&
+      return BOARD_PROFILE.skyScreen && clockConfigSkyAvailable(config) &&
              config.sky.automaticRotation;
     case ROTATION_SCREEN_SCHOOL:
       return clockConfigSchoolAvailable(config) &&
@@ -2401,7 +2397,7 @@ void maintainLocalSunState() {
 void maintainSkyData() {
   const ClockConfig &config = loopConfigSnapshot();
   // 7" ukazuje Slunce a Měsíc ve sloupci družic, takže počítá vždycky.
-  if (!HODINY_BOARD_LCD7 && !clockConfigSkyAvailable(config)) return;
+  if (BOARD_PROFILE.skyScreen && !clockConfigSkyAvailable(config)) return;
   static unsigned long computedAt = 0;
   static float computedLatitude = NAN;
   static float computedLongitude = NAN;

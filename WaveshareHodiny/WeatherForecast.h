@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "Board.h"
+
 // Rozbor předpovědi z Open-Meteo, oddělený od stahování, aby šel testovat na
 // počítači - stejně jako RssParser vedle RssService nebo RainViewerIndex vedle
 // RainViewerSource.
@@ -19,11 +21,7 @@
 constexpr size_t WEATHER_FORECAST_PAST_HOURS = 3;
 // Graf ukazuje 24 hodin dopředu; 7" má navíc stránku se zítřkem, takže
 // stahuje 48.
-#if defined(HODINY_BOARD_LCD7) && HODINY_BOARD_LCD7
-constexpr size_t WEATHER_FORECAST_AHEAD_HOURS = 48;
-#else
-constexpr size_t WEATHER_FORECAST_AHEAD_HOURS = 24;
-#endif
+constexpr size_t WEATHER_FORECAST_AHEAD_HOURS = BOARD_PROFILE.forecastAheadHours;
 constexpr size_t WEATHER_FORECAST_CHART_HOURS = 24 + WEATHER_FORECAST_PAST_HOURS;
 constexpr size_t WEATHER_FORECAST_MAX_HOURS =
     WEATHER_FORECAST_AHEAD_HOURS + WEATHER_FORECAST_PAST_HOURS;
