@@ -11,25 +11,45 @@ CXX_BIN="${CXX:-c++}"
 
 mkdir -p "$BUILD_DIR"
 
-# Název testu -> zdrojové soubory firmwaru, které potřebuje k sestavení.
+# Název testu -> zdrojové soubory firmwaru, které test potřebuje k sestavení.
+# BOARD_DEFINES (pole) přidá přepínače desky; výpis i binárka pak nesou
+# štítek, např. weather_forecast[lcd7].
+BOARD_DEFINES=()
+BOARD_LABEL=""
 run_test() {
   local name="$1"
   shift
   local sources=("$ROOT_DIR/tools/test_$name.cpp" "$@")
-  printf '%-24s ' "$name"
+  local label="$name$BOARD_LABEL"
+  printf '%-24s ' "$label"
   if ! "$CXX_BIN" -std=c++17 -Wall -I "$SHIM_DIR" -I "$FIRMWARE_DIR" \
-      -o "$BUILD_DIR/$name" "${sources[@]}" > "$BUILD_DIR/$name.log" 2>&1; then
+      ${BOARD_DEFINES[@]+"${BOARD_DEFINES[@]}"} \
+      -o "$BUILD_DIR/$label" "${sources[@]}" > "$BUILD_DIR/$label.log" 2>&1; then
     echo "PŘEKLAD SELHAL"
-    sed 's/^/    /' "$BUILD_DIR/$name.log"
+    sed 's/^/    /' "$BUILD_DIR/$label.log"
     return 1
   fi
-  if ! "$BUILD_DIR/$name" > "$BUILD_DIR/$name.out" 2>&1; then
+  if ! "$BUILD_DIR/$label" > "$BUILD_DIR/$label.out" 2>&1; then
     echo "SELHAL"
-    sed 's/^/    /' "$BUILD_DIR/$name.out"
+    sed 's/^/    /' "$BUILD_DIR/$label.out"
     return 1
   fi
   echo "OK"
   return 0
+}
+
+# Testy, jejichž překlad se s deskou mění (Board.h, WeatherForecast.h
+# a dál přes ně), běží podruhé s -DHODINY_BOARD_LCD7=1 jako firmware 7".
+# Seznam vznikl porovnáním výstupu preprocesoru s přepínačem a bez něj;
+# u ostatních testů je kód pro obě desky stejný.
+run_lcd7_test() {
+  BOARD_DEFINES=(-DHODINY_BOARD_LCD7=1)
+  BOARD_LABEL="[lcd7]"
+  run_test "$@"
+  local result=$?
+  BOARD_DEFINES=()
+  BOARD_LABEL=""
+  return $result
 }
 
 failures=0
@@ -39,6 +59,9 @@ run_test day_night_logic "$FIRMWARE_DIR/DayNightLogic.cpp" "$FIRMWARE_DIR/Astron
 run_test astronomy "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test screen_schedule "$FIRMWARE_DIR/ScreenSchedule.cpp" "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test semver "$FIRMWARE_DIR/SemVer.cpp" || failures=$((failures + 1))
+OTA_SOURCES=("$FIRMWARE_DIR/OtaMetadata.cpp" "$FIRMWARE_DIR/SemVer.cpp" "$FIRMWARE_DIR/JsonScan.cpp")
+run_test ota_metadata "${OTA_SOURCES[@]}" || failures=$((failures + 1))
+run_lcd7_test ota_metadata "${OTA_SOURCES[@]}" || failures=$((failures + 1))
 run_test ha_history "$FIRMWARE_DIR/HaHistoryBuckets.cpp" || failures=$((failures + 1))
 run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1))
 run_test home_assistant_connection_policy || failures=$((failures + 1))
@@ -62,9 +85,13 @@ run_test psram_grow_buffer "$FIRMWARE_DIR/PsramGrowBuffer.cpp" || failures=$((fa
 run_test http_body_reader "$FIRMWARE_DIR/HttpBodyReader.cpp" || failures=$((failures + 1))
 run_test rain_viewer_index "$FIRMWARE_DIR/RainViewerIndex.cpp" || failures=$((failures + 1))
 run_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))
+run_lcd7_test weather_forecast "$FIRMWARE_DIR/WeatherForecast.cpp" || failures=$((failures + 1))
 run_test weather_forecast_layout || failures=$((failures + 1))
+run_lcd7_test weather_forecast_layout || failures=$((failures + 1))
 run_test weather_forecast_chart || failures=$((failures + 1))
+run_lcd7_test weather_forecast_chart || failures=$((failures + 1))
 run_test weather_history "$FIRMWARE_DIR/WeatherHistory.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+run_lcd7_test weather_history "$FIRMWARE_DIR/WeatherHistory.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test chmi_frame_names "$FIRMWARE_DIR/ChmiFrameNames.cpp" || failures=$((failures + 1))
 run_test map_canvas "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
 run_test plane_feed_url "$FIRMWARE_DIR/PlaneFeedUrl.cpp" || failures=$((failures + 1))

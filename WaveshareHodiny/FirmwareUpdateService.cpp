@@ -15,6 +15,7 @@
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "NetworkCoordinator.h"
+#include "OtaMetadata.h"
 #include "SemVer.h"
 
 namespace {
@@ -63,85 +64,15 @@ void setMessage(FirmwareUpdateState state, const char *message, bool busy) {
   unlockStatus();
 }
 
-bool extractJsonString(const String &json, const char *key, String &value) {
-  const String marker = String('"') + key + '"';
-  const int keyAt = json.indexOf(marker);
-  if (keyAt < 0) return false;
-  const int colonAt = json.indexOf(':', keyAt + marker.length());
-  const int quoteAt = json.indexOf('"', colonAt + 1);
-  if (colonAt < 0 || quoteAt < 0) return false;
-  String result;
-  bool escaped = false;
-  for (int index = quoteAt + 1; index < static_cast<int>(json.length()); ++index) {
-    const char character = json[index];
-    if (escaped) {
-      if (character == '"' || character == '\\' || character == '/') {
-        result += character;
-      } else {
-        return false;
-      }
-      escaped = false;
-    } else if (character == '\\') {
-      escaped = true;
-    } else if (character == '"') {
-      value = result;
-      return true;
-    } else if (static_cast<uint8_t>(character) >= 0x20) {
-      result += character;
-    }
-  }
-  return false;
-}
-
-bool extractJsonUnsigned(const String &json, const char *key, uint32_t &value) {
-  const String marker = String('"') + key + '"';
-  const int keyAt = json.indexOf(marker);
-  if (keyAt < 0) return false;
-  const int colonAt = json.indexOf(':', keyAt + marker.length());
-  if (colonAt < 0) return false;
-  int start = colonAt + 1;
-  while (start < static_cast<int>(json.length()) &&
-         isspace(static_cast<unsigned char>(json[start]))) {
-    ++start;
-  }
-  int end = start;
-  while (end < static_cast<int>(json.length()) && isdigit(json[end])) ++end;
-  if (end == start || end - start > 10) return false;
-  const unsigned long parsed = strtoul(json.substring(start, end).c_str(), nullptr, 10);
-  if (parsed == 0 || parsed > UINT32_MAX) return false;
-  value = static_cast<uint32_t>(parsed);
-  return true;
-}
-
-bool validSha256(const String &sha256) {
-  if (sha256.length() != 64) return false;
-  for (char character : sha256) {
-    if (!isxdigit(static_cast<unsigned char>(character))) return false;
-  }
-  return true;
-}
-
-String normalizedDownloadUrl(String url) {
-  if (url.startsWith("/")) url = String(FIRMWARE_SERVER_URL) + url;
-  const String allowedPrefix = String(FIRMWARE_SERVER_URL) + "/";
-  if (!url.startsWith(allowedPrefix)) return String();
-  return url;
-}
-
-// Každá deska má vlastní metadata: kulatá 2,1" ota.json (tak je čte i starší
-// firmware bez kontroly desky), 7" ota-lcd7.json. Kulatá tak 7" obraz nikdy
-// neuvidí; pole "board" v metadatech je druhá pojistka.
+// Adresa metadat podle desky (OtaMetadata). Kulatá 7" obraz nikdy neuvidí,
+// protože čte jiný soubor; pole "board" v metadatech a značka desky v obrazu
+// jsou další pojistky.
 String metadataUrl() {
-  if (FIRMWARE_OTA_METADATA_PATH[0] != '\0') {
-    String path = FIRMWARE_OTA_METADATA_PATH;
-    if (strcmp(BOARD_ID, "lcd21") != 0 && path.endsWith("/ota.json"))
-      path = path.substring(0, path.length() - 5) + "-" + BOARD_ID + ".json";
-    return String(FIRMWARE_SERVER_URL) + path;
-  }
-  String url = String(FIRMWARE_SERVER_URL) + "/api/v1/projects/" +
-               FIRMWARE_PROJECT_SLUG + "/ota";
-  if (strcmp(BOARD_ID, "lcd21") != 0) url += String("?board=") + BOARD_ID;
-  return url;
+  char url[256];
+  if (!otaMetadataUrl(FIRMWARE_SERVER_URL, FIRMWARE_OTA_METADATA_PATH,
+                      FIRMWARE_PROJECT_SLUG, BOARD_ID, url, sizeof(url)))
+    return String();
+  return String(url);
 }
 
 String sha256Hex(const uint8_t digest[32]) {
@@ -227,6 +158,9 @@ bool installFirmware(const String &url, uint32_t expectedSize,
   uint32_t received = 0;
   unsigned long lastDataAt = millis();
   bool writeOk = true;
+  // Značka desky v obrazu: zachytí release, do kterého se omylem zabalil
+  // obraz druhé desky (metadata i SHA-256 by pak k němu seděla).
+  OtaBoardTagScanner boardTag;
   while (received < expectedSize) {
     const int available = stream->available();
     if (available <= 0) {
@@ -246,6 +180,7 @@ bool installFirmware(const String &url, uint32_t expectedSize,
       break;
     }
     mbedtls_sha256_update(&shaContext, buffer, count);
+    boardTag.feed(buffer, count);
     received += count;
     lastDataAt = millis();
     lockStatus();
@@ -267,6 +202,16 @@ bool installFirmware(const String &url, uint32_t expectedSize,
                actualSha256 == requiredSha256
                    ? "Stažení OTA obrazu nebylo dokončeno."
                    : "Kontrolní SHA-256 OTA obrazu nesouhlasí.",
+               false);
+    if (lifecycleCallback != nullptr) lifecycleCallback(false);
+    return false;
+  }
+  if (!boardTag.accepted()) {
+    Update.abort();
+    setMessage(FirmwareUpdateState::Failed,
+               boardTag.otherTagSeen()
+                   ? "OTA obraz je pro jinou desku."
+                   : "OTA obraz nenese značku této desky.",
                false);
     if (lifecycleCallback != nullptr) lifecycleCallback(false);
     return false;
@@ -316,6 +261,11 @@ bool checkFirmware(bool installWhenAvailable) {
   String payload;
   {
     const String metadataEndpoint = metadataUrl();
+    if (metadataEndpoint.isEmpty()) {
+      setMessage(FirmwareUpdateState::Failed,
+                 "Adresa OTA metadat je příliš dlouhá.", false);
+      return false;
+    }
     WiFiClientSecure client;
     client.setCACert(FIRMWARE_RELEASE_ROOT_CA);
     client.setTimeout(NETWORK_TIMEOUT_MS);
@@ -360,43 +310,32 @@ bool checkFirmware(bool installWhenAvailable) {
     client.stop();
   }
 
-  String version;
-  String chipFamily;
-  String sha256;
-  String url;
-  uint32_t size = 0;
-  if (!extractJsonString(payload, "version", version) ||
-      !extractJsonString(payload, "chipFamily", chipFamily) ||
-      !extractJsonString(payload, "sha256", sha256) ||
-      !extractJsonString(payload, "url", url) ||
-      !extractJsonUnsigned(payload, "size", size) ||
-      !semVerIsValid(version.c_str()) ||
-      chipFamily != FIRMWARE_CHIP_VARIANT || !validSha256(sha256)) {
-    setMessage(FirmwareUpdateState::Failed,
-               "OTA metadata ze serveru nejsou platná.", false);
-    return false;
-  }
-  // Obě desky mají stejný čip, takže chipFamily je nerozliší. Metadata bez
-  // pole "board" vznikla před 7" verzí a patří kulaté 2,1".
-  String board;
-  if (!extractJsonString(payload, "board", board)) board = "lcd21";
-  if (board != BOARD_ID) {
-    setMessage(FirmwareUpdateState::Failed,
-               "OTA obraz ze serveru je pro jinou desku.", false);
-    return false;
-  }
-  url = normalizedDownloadUrl(url);
-  if (url.isEmpty()) {
-    setMessage(FirmwareUpdateState::Failed,
-               "OTA obraz neleží na povoleném serveru.", false);
-    return false;
+  OtaMetadata metadata;
+  switch (otaParseMetadata(payload.c_str(), payload.length(),
+                           FIRMWARE_SERVER_URL, FIRMWARE_CHIP_VARIANT,
+                           BOARD_ID, metadata)) {
+    case OtaMetadataResult::Ok:
+      break;
+    case OtaMetadataResult::WrongBoard:
+      setMessage(FirmwareUpdateState::Failed,
+                 "OTA obraz ze serveru je pro jinou desku.", false);
+      return false;
+    case OtaMetadataResult::DisallowedUrl:
+      setMessage(FirmwareUpdateState::Failed,
+                 "OTA obraz neleží na povoleném serveru.", false);
+      return false;
+    case OtaMetadataResult::Invalid:
+    default:
+      setMessage(FirmwareUpdateState::Failed,
+                 "OTA metadata ze serveru nejsou platná.", false);
+      return false;
   }
 
   const bool newer =
-      !IS_RELEASE_FIRMWARE || semVerCompare(FIRMWARE_VERSION, version.c_str()) < 0;
+      !IS_RELEASE_FIRMWARE || semVerCompare(FIRMWARE_VERSION, metadata.version) < 0;
   lockStatus();
-  strlcpy(status.serverVersion, version.c_str(), sizeof(status.serverVersion));
-  status.totalBytes = size;
+  strlcpy(status.serverVersion, metadata.version, sizeof(status.serverVersion));
+  status.totalBytes = metadata.size;
   status.downloadedBytes = 0;
   status.updateAvailable = newer;
   unlockStatus();
@@ -419,10 +358,10 @@ bool checkFirmware(bool installWhenAvailable) {
     return false;
   }
   lockStatus();
-  strlcpy(pendingInstall.url, url.c_str(), sizeof(pendingInstall.url));
-  strlcpy(pendingInstall.sha256, sha256.c_str(),
+  strlcpy(pendingInstall.url, metadata.url, sizeof(pendingInstall.url));
+  strlcpy(pendingInstall.sha256, metadata.sha256,
           sizeof(pendingInstall.sha256));
-  pendingInstall.size = size;
+  pendingInstall.size = metadata.size;
   unlockStatus();
   return true;
 }
