@@ -52,8 +52,13 @@ void testResponse() {
   assert(schoolParseFeed(RESPONSE, strlen(RESPONSE), feed) ==
          SchoolParseStatus::Ok);
   assert(std::string(feed.student) == "Adam");
-  // Třetí den se na kruh nevejde a hodiny ho zahodí.
+  // Třetí den se na kruh nevejde a kulatý ho zahodí; 7" drží pět.
+#if HODINY_BOARD_LCD7
+  assert(feed.dayCount == 3);
+  assert(std::string(feed.days[2].day) == "PÁ 18.9." && feed.days[2].lessonCount == 0);
+#else
   assert(feed.dayCount == 2);
+#endif
 
   const SchoolDay &today = feed.days[0];
   assert(std::string(today.day) == "DNES");
@@ -466,7 +471,129 @@ void testTwoSectionPage() {
   assert(!result.sections[2].heading);
 }
 
+// Pět dnů ze serveru s ?days=5: ve středu odpoledne čtvrtek, pátek
+// a příští pondělí až středa, weekday u každého dne. Šestý den se zahodí.
+std::string weekResponse(int days) {
+  static const char *const DAYS[][2] = {
+      {"ZÍTRA", "ČTVRTEK"}, {"PÁ 2.10.", "PÁTEK"}, {"PO 5.10.", "PONDĚLÍ"},
+      {"ÚT 6.10.", "ÚTERÝ"}, {"ST 7.10.", "STŘEDA"}, {"ČT 8.10.", "ČTVRTEK"}};
+  std::string json = "{\"days\":[";
+  for (int day = 0; day < days; ++day) {
+    if (day > 0) json += ',';
+    json += std::string("{\"day\":\"") + DAYS[day][0] + "\",\"weekday\":\"" +
+            DAYS[day][1] + "\",\"today\":false,\"end\":\"12:00\",\"lessons\":[";
+    // Pondělí má nultou hodinu, úterý hodinu bez čísla a dvě na stejném
+    // čísle; ostatní dny hodiny 1. až 3.
+    for (int index = 0; index < 3; ++index) {
+      if (index > 0) json += ',';
+      std::string hour = std::to_string(index + 1) + ".";
+      if (day == 2) hour = std::to_string(index) + ".";
+      if (day == 3) hour = index == 0 ? "" : "2.";
+      json += "{\"hour\":\"" + hour +
+              "\",\"start\":\"08:00\",\"end\":\"08:45\",\"subject\":\"Matematika\","
+              "\"abbrev\":\"M\",\"state\":0}";
+    }
+    json += "]}";
+  }
+  json += "]}";
+  return json;
+}
+
+void testWeek() {
+  static SchoolFeed feed;
+  const std::string json = weekResponse(6);
+  assert(schoolParseFeed(json.c_str(), json.size(), feed) == SchoolParseStatus::Ok);
+  assert(feed.dayCount == SCHOOL_MAX_DAYS);
+  assert(std::string(feed.days[1].weekday) == "PÁTEK");
+  // Den v týdnu: weekday, jinak zkratka v popisku, u DNES a ZÍTRA dnešek.
+  SchoolDay day;
+  strcpy(day.day, "ČT 17.9.");
+  assert(schoolDayWeekday(day, -1) == 3);
+  strcpy(day.day, "DNES");
+  assert(schoolDayWeekday(day, 4) == 4 && schoolDayWeekday(day, -1) == -1);
+  strcpy(day.day, "ZÍTRA");
+  assert(schoolDayWeekday(day, 6) == 0);
+  strcpy(day.weekday, "STŘEDA");
+  assert(schoolDayWeekday(day, 6) == 2);
+  strcpy(day.day, "STŘEDA");
+  day.weekday[0] = '\0';
+  assert(schoolDayWeekday(day, -1) == -1);
+  assert(schoolLessonNumber("0.") == 0 && schoolLessonNumber("10.") == 10 &&
+         schoolLessonNumber("3") == 3);
+  assert(schoolLessonNumber("") == -1 && schoolLessonNumber("x.") == -1 &&
+         schoolLessonNumber("1a") == -1 && schoolLessonNumber(nullptr) == -1);
+
+  SchoolWeekGrid grid;
+  schoolBuildWeekGrid(feed, 2, grid);
+#if HODINY_BOARD_LCD7
+  // Sloupce PO-PÁ: pondělí až středa příští týden, čtvrtek a pátek tento.
+  assert(grid.day[0] == 2 && grid.day[1] == 3 && grid.day[2] == 4);
+  assert(grid.day[3] == 0 && grid.day[4] == 1);
+  assert(grid.nextWeek[0] && grid.nextWeek[1] && grid.nextWeek[2]);
+  assert(!grid.nextWeek[3] && !grid.nextWeek[4]);
+  // Nultá hodina v pondělí: řádky od 0. do 3.
+  assert(grid.firstHour == 0 && grid.rows == 4);
+  assert(grid.row[0][0] == 1 && grid.row[0][2] == 3);
+  assert(grid.row[2][0] == 0 && grid.row[2][2] == 2);
+  // Úterý: "2." dvakrát - druhá jde na nejbližší volný řádek za ní, hodina
+  // bez čísla na první volný.
+  assert(grid.row[3][1] == 2 && grid.row[3][2] == 3 && grid.row[3][0] == 0);
+#else
+  // Kulatý drží dva dny: čtvrtek a pátek.
+  assert(grid.day[3] == 0 && grid.day[4] == 1 && grid.day[0] == -1);
+  assert(!grid.nextWeek[3] && grid.firstHour == 1 && grid.rows == 3);
+#endif
+
+  // Starší server: weekday jen u ZÍTRA, ostatní dny podle popisku.
+  std::string old = weekResponse(2);
+  const std::string weekdayKey = "\"weekday\":\"PÁTEK\"";
+  old.replace(old.find(weekdayKey), weekdayKey.size(), "\"weekday\":\"\"");
+  assert(schoolParseFeed(old.c_str(), old.size(), feed) == SchoolParseStatus::Ok);
+  schoolBuildWeekGrid(feed, 2, grid);
+  assert(grid.day[3] == 0 && grid.day[4] == 1);
+
+  // Druhý den se stejným dnem v týdnu (po svátku) a víkend se vynechají.
+  const char *clash =
+      "{\"days\":[{\"day\":\"PO 5.10.\",\"lessons\":[{\"hour\":\"1.\",\"subject\":\"M\"}]},"
+      "{\"day\":\"SO 10.10.\",\"lessons\":[{\"hour\":\"1.\",\"subject\":\"M\"}]}]}";
+  assert(schoolParseFeed(clash, strlen(clash), feed) == SchoolParseStatus::Ok);
+  schoolBuildWeekGrid(feed, -1, grid);
+  assert(grid.day[0] == 0 && grid.day[1] == -1 && grid.day[4] == -1);
+  assert(grid.rows == 1 && grid.row[1][0] == -1);
+
+  // Hodiny bez čísel: řádek je pořadí v dni.
+  const char *plain =
+      "{\"days\":[{\"day\":\"ÚT 6.10.\",\"lessons\":[{\"subject\":\"A\"},"
+      "{\"subject\":\"B\"}]}]}";
+  assert(schoolParseFeed(plain, strlen(plain), feed) == SchoolParseStatus::Ok);
+  schoolBuildWeekGrid(feed, -1, grid);
+  assert(grid.day[1] == 0 && grid.firstHour == -1 && grid.rows == 2);
+  assert(grid.row[0][0] == 0 && grid.row[0][1] == 1);
+}
+
+void testRequestUrl() {
+  char out[96];
+  schoolRequestUrl("https://h:p@x.cz/school.json", 5, out, sizeof(out));
+  assert(std::string(out) == "https://h:p@x.cz/school.json?days=5");
+  schoolRequestUrl("https://x.cz/school.json?token=a", 5, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/school.json?token=a&days=5");
+  schoolRequestUrl("https://x.cz/school.json?", 5, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/school.json?days=5");
+  // Majitelův počet dnů v adrese má přednost; kulatý (0) adresu nemění.
+  schoolRequestUrl("https://x.cz/school.json?days=3", 5, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/school.json?days=3");
+  schoolRequestUrl("https://x.cz/school.json", 0, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/school.json");
+  assert(SCHOOL_REQUEST_DAYS == (HODINY_BOARD_LCD7 ? 5 : 0));
+  // Když se delší adresa nevejde, zůstane původní.
+  char small[30];
+  schoolRequestUrl("https://x.cz/school.json", 5, small, sizeof(small));
+  assert(std::string(small) == "https://x.cz/school.json");
+}
+
 int main() {
+  testWeek();
+  testRequestUrl();
   testCalendarMarks();
   testTests();
   testTwoSectionPage();

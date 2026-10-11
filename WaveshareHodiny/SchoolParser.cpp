@@ -3,6 +3,7 @@
 #include "AgendaParser.h"
 #include "JsonScan.h"
 
+#include <stdio.h>
 #include <string.h>
 
 namespace {
@@ -319,4 +320,142 @@ int schoolCurrentLesson(const SchoolLessonTime *lessons, size_t count,
     if (minuteOfDay < end) return static_cast<int>(index);
   }
   return -1;
+}
+
+void schoolRequestUrl(const char *url, size_t days, char *output,
+                      size_t capacity) {
+  if (output == nullptr || capacity == 0) return;
+  if (url == nullptr) url = "";
+  strlcpy(output, url, capacity);
+  const size_t length = strlen(url);
+  if (days == 0 || length == 0) return;
+  const char *query = strchr(url, '?');
+  // Majitel si počet dnů mohl dát do adresy sám; ten má přednost.
+  if (query != nullptr) {
+    for (const char *cursor = query; cursor != nullptr;
+         cursor = strchr(cursor + 1, '&')) {
+      if (strncmp(cursor + 1, "days=", 5) == 0) return;
+    }
+  }
+  const char *separator = query == nullptr                 ? "?"
+                          : url[length - 1] == '?' ||
+                                  url[length - 1] == '&' ? ""
+                                                         : "&";
+  char parameter[16];
+  snprintf(parameter, sizeof(parameter), "%sdays=%u", separator,
+           static_cast<unsigned>(days));
+  if (length + strlen(parameter) + 1 > capacity) return;
+  strlcat(output, parameter, capacity);
+}
+
+namespace {
+
+const char *const WEEKDAY_NAMES[7] = {"PONDĚLÍ", "ÚTERÝ",  "STŘEDA", "ČTVRTEK",
+                                      "PÁTEK",   "SOBOTA", "NEDĚLE"};
+const char *const WEEKDAY_SHORT[7] = {"PO", "ÚT", "ST", "ČT", "PÁ", "SO", "NE"};
+
+}  // namespace
+
+int schoolDayWeekday(const SchoolDay &day, int todayWeekday) {
+  for (int index = 0; index < 7; ++index)
+    if (strcmp(day.weekday, WEEKDAY_NAMES[index]) == 0) return index;
+  for (int index = 0; index < 7; ++index) {
+    const size_t length = strlen(WEEKDAY_SHORT[index]);
+    if (strncmp(day.day, WEEKDAY_SHORT[index], length) == 0 &&
+        (day.day[length] == ' ' || day.day[length] == '\0'))
+      return index;
+  }
+  if (todayWeekday < 0 || todayWeekday > 6) return -1;
+  if (strcmp(day.day, "DNES") == 0) return todayWeekday;
+  if (strcmp(day.day, "ZÍTRA") == 0) return (todayWeekday + 1) % 7;
+  return -1;
+}
+
+int schoolLessonNumber(const char *hour) {
+  if (hour == nullptr) return -1;
+  int number = 0;
+  int digits = 0;
+  while (*hour >= '0' && *hour <= '9' && digits < 2) {
+    number = number * 10 + (*hour - '0');
+    ++hour;
+    ++digits;
+  }
+  if (digits == 0 || (*hour != '.' && *hour != '\0')) return -1;
+  return number;
+}
+
+void schoolBuildWeekGrid(const SchoolFeed &feed, int todayWeekday,
+                         SchoolWeekGrid &grid) {
+  grid = SchoolWeekGrid{};
+  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day)
+    for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index)
+      grid.row[day][index] = -1;
+  const size_t dayCount =
+      feed.dayCount < SCHOOL_MAX_DAYS ? feed.dayCount : SCHOOL_MAX_DAYS;
+  int firstColumn = -1;
+  for (size_t day = 0; day < dayCount; ++day) {
+    const int weekday = schoolDayWeekday(feed.days[day], todayWeekday);
+    if (weekday < 0 || weekday >= static_cast<int>(SCHOOL_WEEK_COLUMNS) ||
+        grid.day[weekday] >= 0)
+      continue;
+    grid.day[weekday] = static_cast<int8_t>(day);
+    if (firstColumn < 0) firstColumn = weekday;
+  }
+  for (int column = 0; column < firstColumn; ++column)
+    grid.nextWeek[column] = grid.day[column] >= 0;
+
+  // Řádky od nejnižšího čísla hodiny v týdnu: den s nultou hodinou přidá
+  // řádek nahoru všem, ostatní hodiny zůstanou vedle sebe.
+  int lowest = -1;
+  int highest = -1;
+  size_t longest = 0;
+  for (size_t column = 0; column < SCHOOL_WEEK_COLUMNS; ++column) {
+    if (grid.day[column] < 0) continue;
+    const SchoolDay &day = feed.days[grid.day[column]];
+    if (day.lessonCount > longest) longest = day.lessonCount;
+    for (size_t index = 0; index < day.lessonCount; ++index) {
+      const int number = schoolLessonNumber(day.lessons[index].hour);
+      if (number < 0) continue;
+      if (lowest < 0 || number < lowest) lowest = number;
+      if (number > highest) highest = number;
+    }
+  }
+  size_t rows = lowest >= 0 ? static_cast<size_t>(highest - lowest + 1) : 0;
+  if (rows < longest) rows = longest;
+  if (rows > SCHOOL_MAX_LESSONS) rows = SCHOOL_MAX_LESSONS;
+  grid.rows = static_cast<uint8_t>(rows);
+  grid.firstHour = static_cast<int8_t>(lowest);
+
+  for (size_t column = 0; column < SCHOOL_WEEK_COLUMNS; ++column) {
+    if (grid.day[column] < 0) continue;
+    const size_t dayIndex = static_cast<size_t>(grid.day[column]);
+    const SchoolDay &day = feed.days[dayIndex];
+    bool taken[SCHOOL_MAX_LESSONS] = {};
+    // Nejdřív hodiny s číslem na svůj řádek...
+    for (size_t index = 0; index < day.lessonCount; ++index) {
+      const int number = schoolLessonNumber(day.lessons[index].hour);
+      if (number < 0 || lowest < 0) continue;
+      const int row = number - lowest;
+      if (row >= static_cast<int>(rows) || taken[row]) continue;
+      taken[row] = true;
+      grid.row[dayIndex][index] = static_cast<int8_t>(row);
+    }
+    // ...pak ty bez čísla nebo na obsazeném řádku na nejbližší volný za
+    // předchozí hodinou dne, ať drží pořadí. Kde volný není, hodina se
+    // nekreslí.
+    int previous = -1;
+    for (size_t index = 0; index < day.lessonCount; ++index) {
+      if (grid.row[dayIndex][index] >= 0) {
+        previous = grid.row[dayIndex][index];
+        continue;
+      }
+      for (int row = previous + 1; row < static_cast<int>(rows); ++row) {
+        if (taken[row]) continue;
+        taken[row] = true;
+        grid.row[dayIndex][index] = static_cast<int8_t>(row);
+        previous = row;
+        break;
+      }
+    }
+  }
 }

@@ -2339,24 +2339,36 @@ void rssTap(int16_t x, int16_t y) {
 }
 
 // --- Škola ----------------------------------------------------------------
-// Vlevo rozvrh dnů, které server posílá (dnešek nebo příští školní den a den
-// po něm), každý den jako sloupec dlaždic: číslo hodiny, předmět celým
-// názvem (zkratka, když se nevejde) a pod ním čas nebo poznámka. Probíhající
-// či nejbližší hodina má modrý rámeček a "teď · do 9:40", změněná oranžový,
-// odpadlá je přeškrtnutá a tlumená. Vpravo pod sebou obědy, testy, úkoly,
-// známky a zprávy, dokud je místo - 7" nepotřebuje druhou a třetí stránku
-// kulatého, takže tažení vede rovnou na další obrazovku.
+// Vlevo týdenní mřížka: sloupce pondělí až pátek, řádky podle čísla hodiny
+// (vlevo číslo a začátek hodiny). Server posílá pět školních dnů od dneška
+// (?days=5) a dny se rovnají do sloupců podle dne v týdnu, takže ve středu
+// odpoledne stojí v pondělí a úterý už příští týden (hlavička tlumeně
+// s datem). Dlaždice nese předmět celým názvem (zkratku, když se nevejde),
+// probíhající či nejbližší dnešní hodina má modrý rámeček a "do 9:40",
+// změněná oranžový s poznámkou serveru, odpadlá je přeškrtnutá a tlumená.
+// Vpravo pod sebou obědy a testy; druhá stránka nese známky, testy a úkoly,
+// zprávy a nástěnku - 7" nepotřebuje třetí stránku kulatého.
 
 constexpr int SCHOOL7_LEFT = 18;
 constexpr int SCHOOL7_LEFT_END = 532;
-constexpr int SCHOOL7_COLUMN_GAP = 12;
+constexpr int SCHOOL7_COLUMN_GAP = 6;
 constexpr int SCHOOL7_TOP = BAR_HEIGHT + 12;
 constexpr int SCHOOL7_BOTTOM = SCREEN_HEIGHT - 12;
-constexpr int SCHOOL7_HEAD_H = 32;
-constexpr int SCHOOL7_ROW_GAP = 6;
+// Mřížka končí nad tečkami stránek.
+constexpr int SCHOOL7_GRID_BOTTOM = SCREEN_HEIGHT - 28;
+// Hlavička sloupce: den a pod ním konec vyučování.
+constexpr int SCHOOL7_HEAD_H = 46;
+constexpr int SCHOOL7_ROW_GAP = 4;
 constexpr int SCHOOL7_ROW_MAX = 58;
-constexpr int SCHOOL7_TWO_LINE_ROW = 48;
-constexpr int SCHOOL7_HOUR_W = 34;
+constexpr int SCHOOL7_TWO_LINE_ROW = 40;
+// Sloupec s čísly hodin vlevo od mřížky.
+constexpr int SCHOOL7_HOUR_W = 40;
+constexpr int SCHOOL7_GRID_X = SCHOOL7_LEFT + SCHOOL7_HOUR_W + 4;
+constexpr int SCHOOL7_CELL_W =
+    (SCHOOL7_LEFT_END - SCHOOL7_GRID_X -
+     SCHOOL7_COLUMN_GAP * (static_cast<int>(SCHOOL_WEEK_COLUMNS) - 1)) /
+    static_cast<int>(SCHOOL_WEEK_COLUMNS);
+constexpr int SCHOOL7_CELL_PAD = 6;
 constexpr int SCHOOL7_DIVIDER_X = 548;
 constexpr int SCHOOL7_SIDE_X = 566;
 constexpr int SCHOOL7_SIDE_W = SCREEN_WIDTH - SCHOOL7_SIDE_X - 18;
@@ -2374,9 +2386,11 @@ const lv_color_t SCHOOL7_NOW_FILL = LV_COLOR_MAKE(14, 26, 31);
 const lv_color_t SCHOOL7_TEST = LV_COLOR_MAKE(255, 176, 32);
 const lv_color_t SCHOOL7_MARK_2 = LV_COLOR_MAKE(255, 194, 26);
 
+static_assert(SCHOOL_MAX_DAYS >= SCHOOL_WEEK_COLUMNS,
+              "7\" drží ve feedu celý týden");
+
 struct SchoolCell {
   lv_obj_t *box;
-  lv_obj_t *hour;
   lv_obj_t *subject;
   lv_obj_t *sub;
 };
@@ -2396,9 +2410,11 @@ struct SchoolView {
   lv_obj_t *root;
   TopBar bar;
   lv_obj_t *status;
-  lv_obj_t *heads[SCHOOL_MAX_DAYS];
-  lv_obj_t *ends[SCHOOL_MAX_DAYS];
-  SchoolCell cells[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS];
+  lv_obj_t *heads[SCHOOL_WEEK_COLUMNS];
+  lv_obj_t *ends[SCHOOL_WEEK_COLUMNS];
+  // Číslo hodiny a její začátek vlevo od řádku.
+  lv_obj_t *hours[SCHOOL_MAX_LESSONS];
+  SchoolCell cells[SCHOOL_WEEK_COLUMNS][SCHOOL_MAX_LESSONS];
   lv_obj_t *divider;
   SchoolColumn columns[SCHOOL7_COLUMNS];
   lv_obj_t *newsLines[2];
@@ -2419,19 +2435,25 @@ void createSchool(lv_obj_t *screen) {
   v.status = label(v.root, &lcd7_text22, SCHOOL7_LEFT, SCREEN_HEIGHT / 2 - 14,
                    SCHOOL7_LEFT_END - SCHOOL7_LEFT);
   lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
-  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
-    v.heads[day] = label(v.root, &lcd7_text18, 0, SCHOOL7_TOP + 4, 1);
-    lv_obj_set_style_text_letter_space(v.heads[day], 1, 0);
-    v.ends[day] = label(v.root, &lcd7_text15, 0, SCHOOL7_TOP + 7);
-    for (SchoolCell &cell : v.cells[day]) {
-      cell.box = panel(v.root, 0, 0, 1, 1);
-      lv_obj_set_style_radius(cell.box, 8, 0);
+  for (size_t column = 0; column < SCHOOL_WEEK_COLUMNS; ++column) {
+    const lv_coord_t x = SCHOOL7_GRID_X + column * (SCHOOL7_CELL_W + SCHOOL7_COLUMN_GAP);
+    v.heads[column] = label(v.root, &lcd7_text18, x, SCHOOL7_TOP + 2, SCHOOL7_CELL_W);
+    lv_obj_set_style_text_letter_space(v.heads[column], 1, 0);
+    v.ends[column] = label(v.root, &lcd7_text15, x, SCHOOL7_TOP + 24, SCHOOL7_CELL_W);
+    for (SchoolCell &cell : v.cells[column]) {
+      cell.box = panel(v.root, x, 0, SCHOOL7_CELL_W, 1);
+      lv_obj_set_style_radius(cell.box, 6, 0);
       lv_obj_set_style_border_width(cell.box, 2, 0);
-      cell.hour = label(cell.box, &lcd7_text15, 0, 0, SCHOOL7_HOUR_W);
-      lv_obj_set_style_text_align(cell.hour, LV_TEXT_ALIGN_RIGHT, 0);
-      cell.subject = label(cell.box, &lcd7_text22, 0, 0, 1);
-      cell.sub = label(cell.box, &lcd7_text15, 0, 0, 1);
+      cell.subject = label(cell.box, &lcd7_text18, SCHOOL7_CELL_PAD, 0,
+                           SCHOOL7_CELL_W - 2 * SCHOOL7_CELL_PAD - 4);
+      cell.sub = label(cell.box, &lcd7_text15, SCHOOL7_CELL_PAD, 0,
+                       SCHOOL7_CELL_W - 2 * SCHOOL7_CELL_PAD - 4);
     }
+  }
+  for (lv_obj_t *&hour : v.hours) {
+    hour = label(v.root, &lcd7_text15, SCHOOL7_LEFT, 0, SCHOOL7_HOUR_W);
+    lv_label_set_long_mode(hour, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(hour, LV_TEXT_ALIGN_RIGHT, 0);
   }
   v.divider = line(v.root, SCHOOL7_DIVIDER_X, SCHOOL7_TOP, 1, SCHOOL7_BOTTOM - SCHOOL7_TOP);
   for (SchoolColumn &column : v.columns) {
@@ -2474,124 +2496,206 @@ void formatMinutes(char *output, size_t capacity, int minutes) {
   snprintf(output, capacity, "%d:%02d", minutes / 60, minutes % 60);
 }
 
-void syncSchoolDay(const Palette &p, size_t dayIndex, const SchoolFeed *feed,
-                   lv_coord_t x, lv_coord_t width, int minute) {
-  SchoolView &v = school;
-  const bool present = feed != nullptr && dayIndex < feed->dayCount;
-  setVisible(v.heads[dayIndex], present);
-  setVisible(v.ends[dayIndex], present);
-  const size_t count = present ? feed->days[dayIndex].lessonCount : 0;
-  for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index)
-    setVisible(v.cells[dayIndex][index].box, index < count);
-  if (!present) return;
-  const SchoolDay &day = feed->days[dayIndex];
-  const bool english = englishLanguage();
+// Dnešní den v týdnu, 0 pondělí; -1 bez času. Jen pro starší server, který
+// u dalších dnů weekday neposílá (DNES, ZÍTRA).
+int schoolTodayWeekday() {
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return -1;
+  struct tm local;
+  if (localtime_r(&now, &local) == nullptr) return -1;
+  return (local.tm_wday + 6) % 7;
+}
 
-  char text[SCHOOL_TITLE_LENGTH + 32];
-  if (day.weekday[0] != '\0')
-    snprintf(text, sizeof(text), "%s · %s", day.day, day.weekday);
-  else
-    strlcpy(text, day.day, sizeof(text));
-  setText(v.heads[dayIndex], text);
-  setColor(v.heads[dayIndex], p.night ? COLOR_ERROR : (day.today ? COLOR_OUTSIDE : COLOR_TEXT));
-  setPosition(v.heads[dayIndex], x, SCHOOL7_TOP + 4);
-  if (day.end[0] != '\0')
-    snprintf(text, sizeof(text), english ? "until %s" : "do %s", day.end);
+void hideSchoolWeek() {
+  SchoolView &v = school;
+  for (size_t column = 0; column < SCHOOL_WEEK_COLUMNS; ++column) {
+    setVisible(v.heads[column], false);
+    setVisible(v.ends[column], false);
+    for (SchoolCell &cell : v.cells[column]) setVisible(cell.box, false);
+  }
+  for (lv_obj_t *hour : v.hours) setVisible(hour, false);
+}
+
+// Hlavička sloupce: popisek dne od serveru ("DNES", "PO 19.10."); u DNES a
+// ZÍTRA se zkratkou dne v týdnu, když se vejde. Pod ním konec vyučování.
+void syncSchoolHead(const Palette &p, size_t column, const SchoolDay *day, bool nextWeek,
+                    bool english) {
+  static const char *const SHORT[SCHOOL_WEEK_COLUMNS] = {"PO", "ÚT", "ST", "ČT", "PÁ"};
+  SchoolView &v = school;
+  setVisible(v.heads[column], true);
+  char text[SCHOOL_DAY_LENGTH + 16];
+  if (day == nullptr) {
+    // Ve dny, které server neposlal (svátek, prázdniny), jen den v týdnu.
+    setText(v.heads[column], SHORT[column]);
+    setColor(v.heads[column], p.night ? NIGHT_MUTED : COLOR_MUTED);
+    setVisible(v.ends[column], false);
+    return;
+  }
+  const bool dated = strncmp(day->day, SHORT[column], strlen(SHORT[column])) == 0;
+  if (!dated) {
+    snprintf(text, sizeof(text), "%s %s", SHORT[column], day->day);
+    if (lv_txt_get_width(text, strlen(text), &lcd7_text18, 1, LV_TEXT_FLAG_NONE) >
+        SCHOOL7_CELL_W)
+      strlcpy(text, day->day, sizeof(text));
+  } else {
+    strlcpy(text, day->day, sizeof(text));
+  }
+  setText(v.heads[column], text);
+  lv_color_t color = day->today ? COLOR_OUTSIDE : nextWeek ? COLOR_MUTED : COLOR_TEXT;
+  if (p.night) color = nextWeek ? NIGHT_MUTED : COLOR_ERROR;
+  setColor(v.heads[column], color);
+  if (day->end[0] != '\0')
+    snprintf(text, sizeof(text), english ? "until %s" : "do %s", day->end);
   else
     strlcpy(text, english ? "all off" : "vše odpadá", sizeof(text));
-  setText(v.ends[dayIndex], text);
-  setColor(v.ends[dayIndex], p.muted);
-  lv_obj_update_layout(v.ends[dayIndex]);
-  const lv_coord_t endWidth = lv_obj_get_width(v.ends[dayIndex]);
-  setPosition(v.ends[dayIndex], x + width - endWidth, SCHOOL7_TOP + 7);
-  setWidth(v.heads[dayIndex], std::max<lv_coord_t>(1, width - endWidth - 10));
+  setText(v.ends[column], text);
+  setColor(v.ends[column], p.muted);
+  setVisible(v.ends[column], true);
+}
 
-  // Zvýrazněná hodina jen v dnešním rozvrhu, stejně jako na kulatém.
-  SchoolLessonTime times[SCHOOL_MAX_LESSONS];
-  for (size_t index = 0; index < count; ++index) times[index] = schoolLessonTime(day.lessons[index]);
-  const int current = day.today ? schoolCurrentLesson(times, count, minute) : -1;
-
+void syncSchoolWeek(const Palette &p, const SchoolFeed &feed, int minute) {
+  SchoolView &v = school;
+  const bool english = englishLanguage();
+  SchoolWeekGrid grid;
+  schoolBuildWeekGrid(feed, schoolTodayWeekday(), grid);
+  const size_t rows = grid.rows;
   const lv_coord_t top = SCHOOL7_TOP + SCHOOL7_HEAD_H;
-  const lv_coord_t room = SCHOOL7_BOTTOM - top;
-  const lv_coord_t rowHeight = count == 0 ? 0
+  const lv_coord_t room = SCHOOL7_GRID_BOTTOM - top;
+  const lv_coord_t rowHeight = rows == 0 ? 0
       : std::min<lv_coord_t>(SCHOOL7_ROW_MAX,
-                             (room + SCHOOL7_ROW_GAP) / count - SCHOOL7_ROW_GAP);
+                             (room + SCHOOL7_ROW_GAP) / rows - SCHOOL7_ROW_GAP);
   const bool twoLines = rowHeight >= SCHOOL7_TWO_LINE_ROW;
-  const lv_coord_t subjectX = SCHOOL7_HOUR_W + 10;
-  const lv_coord_t subjectWidth = width - subjectX - 10;
-  for (size_t index = 0; index < count; ++index) {
-    const SchoolLesson &lesson = day.lessons[index];
-    SchoolCell &cell = v.cells[dayIndex][index];
-    const bool canceled = lesson.state == SchoolLessonState::Canceled;
-    const bool changed = lesson.state == SchoolLessonState::Changed;
-    const bool now = static_cast<int>(index) == current;
-    setSize(cell.box, width, rowHeight);
-    setPosition(cell.box, x, top + index * (rowHeight + SCHOOL7_ROW_GAP));
-    lv_color_t border = SCHOOL7_CELL_BORDER;
-    lv_color_t subjectColor = COLOR_TEXT;
-    lv_color_t subColor = COLOR_MUTED;
-    if (now) border = subColor = COLOR_OUTSIDE;
-    else if (changed) border = subjectColor = subColor = COLOR_ROOM;
-    if (canceled) subjectColor = COLOR_MUTED;
-    if (p.night) {
-      border = now || changed ? COLOR_ERROR : NIGHT_LINE;
-      subjectColor = canceled ? NIGHT_MUTED : COLOR_ERROR;
-      subColor = NIGHT_MUTED;
+  const lv_coord_t subjectWidth = SCHOOL7_CELL_W - 2 * SCHOOL7_CELL_PAD - 4;
+  const lv_coord_t subjectHeight = lv_font_get_line_height(&lcd7_text18);
+  const lv_coord_t subHeight = lv_font_get_line_height(&lcd7_text15);
+
+  // Řádky: číslo hodiny a začátek z prvního dne, který v řádku hodinu má.
+  for (size_t row = 0; row < SCHOOL_MAX_LESSONS; ++row) {
+    lv_obj_t *hour = v.hours[row];
+    if (row >= rows) {
+      setVisible(hour, false);
+      continue;
     }
-    setBackground(cell.box, now && !p.night ? SCHOOL7_NOW_FILL : SCHOOL7_CELL);
-    setBorder(cell.box, border);
-
-    setText(cell.hour, lesson.hour);
-    setColor(cell.hour, p.muted);
-    setPosition(cell.hour, 0, (rowHeight - 4) / 2 - 10);
-
-    // Plný název, dokud se vejde; zkratka řekne víc než useknutý název.
-    const char *subject = lesson.subject;
-    if (lesson.abbrev[0] != '\0' &&
-        lv_txt_get_width(subject, strlen(subject), &lcd7_text22, 0, LV_TEXT_FLAG_NONE) >
-            subjectWidth)
-      subject = lesson.abbrev;
-    setText(cell.subject, subject);
-    setColor(cell.subject, subjectColor);
-    setDecor(cell.subject, canceled ? LV_TEXT_DECOR_STRIKETHROUGH : LV_TEXT_DECOR_NONE);
-    setWidth(cell.subject, subjectWidth);
-
-    // Druhý řádek: u probíhající hodiny do kdy, u příští odkdy, jinak
-    // poznámka serveru (suplování), u odpadlé "odpadá", jinak čas hodiny.
-    char sub[SCHOOL_NOTE_LENGTH + 32];
-    char from[8];
-    char to[8];
-    sub[0] = '\0';
-    if (now && times[index].start >= 0) {
-      const bool running = minute >= times[index].start;
-      if (running && times[index].end >= 0) {
-        formatMinutes(to, sizeof(to), times[index].end);
-        snprintf(sub, sizeof(sub), english ? "now · until %s" : "teď · do %s", to);
-      } else {
-        formatMinutes(from, sizeof(from), times[index].start);
-        snprintf(sub, sizeof(sub), english ? "next · %s" : "příští · %s", from);
+    const char *start = "";
+    const char *number = "";
+    for (size_t column = 0; column < SCHOOL_WEEK_COLUMNS && start[0] == '\0'; ++column) {
+      if (grid.day[column] < 0) continue;
+      const size_t dayIndex = static_cast<size_t>(grid.day[column]);
+      const SchoolDay &day = feed.days[dayIndex];
+      for (size_t index = 0; index < day.lessonCount; ++index) {
+        if (grid.row[dayIndex][index] != static_cast<int8_t>(row)) continue;
+        if (number[0] == '\0') number = day.lessons[index].hour;
+        if (day.lessons[index].start[0] != '\0') start = day.lessons[index].start;
+        break;
       }
-    } else if (lesson.note[0] != '\0') {
-      strlcpy(sub, lesson.note, sizeof(sub));
-    } else if (canceled) {
-      strlcpy(sub, english ? "off" : "odpadá", sizeof(sub));
-    } else if (lesson.start[0] != '\0') {
-      snprintf(sub, sizeof(sub), "%s – %s", lesson.start, lesson.end);
     }
-    const lv_coord_t subjectHeight = lv_font_get_line_height(&lcd7_text22);
-    const lv_coord_t subHeight = lv_font_get_line_height(&lcd7_text15);
-    if (twoLines && sub[0] != '\0') {
-      const lv_coord_t blockTop = (rowHeight - 4 - subjectHeight - subHeight) / 2;
-      setPosition(cell.subject, subjectX, blockTop);
-      setPosition(cell.sub, subjectX, blockTop + subjectHeight);
-      setWidth(cell.sub, subjectWidth);
-      setText(cell.sub, sub);
-      setColor(cell.sub, subColor);
-      setVisible(cell.sub, true);
-    } else {
-      setPosition(cell.subject, subjectX, (rowHeight - 4 - subjectHeight) / 2);
-      setVisible(cell.sub, false);
+    char text[SCHOOL_HOUR_LENGTH + SCHOOL_TIME_LENGTH + 2];
+    char numberText[SCHOOL_HOUR_LENGTH + 2];
+    if (number[0] != '\0')
+      strlcpy(numberText, number, sizeof(numberText));
+    else if (grid.firstHour >= 0)
+      snprintf(numberText, sizeof(numberText), "%d.", grid.firstHour + static_cast<int>(row));
+    else
+      numberText[0] = '\0';
+    // "08:00" bez úvodní nuly, ať se vejde vedle mřížky.
+    if (start[0] == '0' && start[1] != '\0') ++start;
+    if (twoLines && start[0] != '\0')
+      snprintf(text, sizeof(text), "%s\n%s", numberText, start);
+    else
+      strlcpy(text, numberText, sizeof(text));
+    setText(hour, text);
+    setColor(hour, p.muted);
+    const lv_coord_t lines = twoLines && start[0] != '\0' ? 2 : 1;
+    const lv_coord_t textHeight = lines * subHeight;
+    if (lv_obj_get_height(hour) != textHeight) lv_obj_set_height(hour, textHeight);
+    setPosition(hour, SCHOOL7_LEFT,
+                top + row * (rowHeight + SCHOOL7_ROW_GAP) + (rowHeight - textHeight) / 2);
+    setVisible(hour, true);
+  }
+
+  for (size_t column = 0; column < SCHOOL_WEEK_COLUMNS; ++column) {
+    const int dayIndex = grid.day[column];
+    const SchoolDay *day = dayIndex >= 0 ? &feed.days[dayIndex] : nullptr;
+    syncSchoolHead(p, column, day, grid.nextWeek[column], english);
+    bool used[SCHOOL_MAX_LESSONS] = {};
+    if (day != nullptr) {
+      // Zvýrazněná hodina jen v dnešním rozvrhu, stejně jako na kulatém.
+      SchoolLessonTime times[SCHOOL_MAX_LESSONS];
+      for (size_t index = 0; index < day->lessonCount; ++index)
+        times[index] = schoolLessonTime(day->lessons[index]);
+      const int current = day->today ? schoolCurrentLesson(times, day->lessonCount, minute) : -1;
+      const lv_coord_t x = SCHOOL7_GRID_X + column * (SCHOOL7_CELL_W + SCHOOL7_COLUMN_GAP);
+      for (size_t index = 0; index < day->lessonCount; ++index) {
+        const int row = grid.row[dayIndex][index];
+        if (row < 0) continue;
+        used[row] = true;
+        const SchoolLesson &lesson = day->lessons[index];
+        SchoolCell &cell = v.cells[column][row];
+        const bool canceled = lesson.state == SchoolLessonState::Canceled;
+        const bool changed = lesson.state == SchoolLessonState::Changed;
+        const bool now = static_cast<int>(index) == current;
+        setSize(cell.box, SCHOOL7_CELL_W, rowHeight);
+        setPosition(cell.box, x, top + row * (rowHeight + SCHOOL7_ROW_GAP));
+        lv_color_t border = SCHOOL7_CELL_BORDER;
+        lv_color_t subjectColor = COLOR_TEXT;
+        lv_color_t subColor = COLOR_MUTED;
+        if (now) border = subColor = COLOR_OUTSIDE;
+        else if (changed) border = subjectColor = subColor = COLOR_ROOM;
+        if (canceled) subjectColor = COLOR_MUTED;
+        if (p.night) {
+          border = now || changed ? COLOR_ERROR : NIGHT_LINE;
+          subjectColor = canceled ? NIGHT_MUTED : COLOR_ERROR;
+          subColor = NIGHT_MUTED;
+        }
+        setBackground(cell.box, now && !p.night ? SCHOOL7_NOW_FILL : SCHOOL7_CELL);
+        setBorder(cell.box, border);
+
+        // Plný název, dokud se vejde; zkratka řekne víc než useknutý název.
+        const char *subject = lesson.subject;
+        if (lesson.abbrev[0] != '\0' &&
+            lv_txt_get_width(subject, strlen(subject), &lcd7_text18, 0, LV_TEXT_FLAG_NONE) >
+                subjectWidth)
+          subject = lesson.abbrev;
+        setText(cell.subject, subject);
+        setColor(cell.subject, subjectColor);
+        setDecor(cell.subject, canceled ? LV_TEXT_DECOR_STRIKETHROUGH : LV_TEXT_DECOR_NONE);
+
+        // Druhý řádek jen tam, kde něco říká: u probíhající hodiny do kdy,
+        // u příští odkdy, u změněné poznámka serveru (suplování), u odpadlé
+        // "odpadá". Časy obyčejných hodin stojí vlevo u čísla hodiny.
+        char sub[SCHOOL_NOTE_LENGTH + 16];
+        char clock[8];
+        sub[0] = '\0';
+        if (now && times[index].start >= 0) {
+          const bool running = minute >= times[index].start;
+          if (running && times[index].end >= 0) {
+            formatMinutes(clock, sizeof(clock), times[index].end);
+            snprintf(sub, sizeof(sub), english ? "until %s" : "do %s", clock);
+          } else {
+            formatMinutes(clock, sizeof(clock), times[index].start);
+            snprintf(sub, sizeof(sub), english ? "at %s" : "od %s", clock);
+          }
+        } else if (lesson.note[0] != '\0') {
+          strlcpy(sub, lesson.note, sizeof(sub));
+        } else if (canceled) {
+          strlcpy(sub, english ? "off" : "odpadá", sizeof(sub));
+        }
+        if (twoLines && sub[0] != '\0') {
+          const lv_coord_t blockTop = (rowHeight - 4 - subjectHeight - subHeight) / 2;
+          setPosition(cell.subject, SCHOOL7_CELL_PAD, blockTop);
+          setPosition(cell.sub, SCHOOL7_CELL_PAD, blockTop + subjectHeight);
+          setText(cell.sub, sub);
+          setColor(cell.sub, subColor);
+          setVisible(cell.sub, true);
+        } else {
+          setPosition(cell.subject, SCHOOL7_CELL_PAD, (rowHeight - 4 - subjectHeight) / 2);
+          setVisible(cell.sub, false);
+        }
+        setVisible(cell.box, true);
+      }
     }
+    for (size_t row = 0; row < SCHOOL_MAX_LESSONS; ++row)
+      if (!used[row]) setVisible(v.cells[column][row].box, false);
   }
 }
 
@@ -2860,7 +2964,7 @@ void syncSchool(const Palette &p) {
   setColor(v.updated, p.muted);
   placeUpdated(v.updated);
   if (!timetable) {
-    for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) syncSchoolDay(p, day, nullptr, 0, 0, minute);
+    hideSchoolWeek();
     setVisible(v.status, false);
     setVisible(v.divider, false);
     hideSchoolColumn(v.columns[0]);
@@ -2869,12 +2973,10 @@ void syncSchool(const Palette &p) {
   }
   for (int index = 1; index < SCHOOL7_COLUMNS; ++index) hideSchoolColumn(v.columns[index]);
   const size_t days = feed != nullptr ? std::min(feed->dayCount, SCHOOL_MAX_DAYS) : 0;
-  const lv_coord_t area = SCHOOL7_LEFT_END - SCHOOL7_LEFT;
-  const lv_coord_t width =
-      days > 1 ? (area - SCHOOL7_COLUMN_GAP * (days - 1)) / days : area;
-  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day)
-    syncSchoolDay(p, day, feed, SCHOOL7_LEFT + day * (width + SCHOOL7_COLUMN_GAP), width,
-                  minute);
+  if (days > 0)
+    syncSchoolWeek(p, *feed, minute);
+  else
+    hideSchoolWeek();
 
   setVisible(v.status, days == 0);
   if (days == 0) {

@@ -644,6 +644,13 @@ would no longer be right. During
 holidays with no homework the screen says `Žádné vyučování` and the automatic
 rotation skips it; the finger hold still reaches it.
 
+The 7" board adds `?days=5` to the address itself and draws the timetable as
+a Monday-to-Friday week grid: five school days from today, each in the column
+of its weekday (on Wednesday afternoon Monday and Tuesday are next week's and
+have a dimmed heading), rows by lesson number, the current lesson highlighted,
+substitutions orange and cancelled lessons struck through. An older server
+skips the parameter and sends two days; the round display keeps its address.
+
 ### Weather forecast
 
 A separate screen shows the Open-Meteo forecast for the city saved on the
@@ -860,7 +867,10 @@ and to Benešov, the D1 motorway between exits 15 and 56 in both directions, the
 II/113 detour through Ondřejov. Everything
 is computed by your own server (toulky, `/api/doprava?for=hodiny`) and arrives
 already projected to display pixels, so the clock only downloads and draws; a
-response is two to three kilobytes.
+response is two to three kilobytes. The 7" board adds
+`&w=440&h=438&shape=rect` and gets the map projected straight into its
+rectangle (confirmed in `"map"`); with an older server, which only sends the
+480 × 480 circle, it re-fits the map itself.
 
 **Map** (first page): roads are green, and stretches where traffic is slow,
 jammed (40 km/h or less) or standing (15 km/h or less) are drawn yellow, orange

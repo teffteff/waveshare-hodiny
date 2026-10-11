@@ -3564,11 +3564,11 @@ constexpr char SCHOOL_MORE_MARK[] = "...";
 lv_obj_t *schoolPage = nullptr;
 lv_obj_t *schoolHeaderLabel = nullptr;
 lv_obj_t *schoolStatusLabel = nullptr;
-lv_obj_t *schoolDayLabels[SCHOOL_MAX_DAYS] = {};
-lv_obj_t *schoolEndLabels[SCHOOL_MAX_DAYS] = {};
+lv_obj_t *schoolDayLabels[SCHOOL_ROUND_DAYS] = {};
+lv_obj_t *schoolEndLabels[SCHOOL_ROUND_DAYS] = {};
 lv_obj_t *schoolHomeworkHeading = nullptr;
-lv_obj_t *schoolHourLabels[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
-lv_obj_t *schoolSubjectLabels[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
+lv_obj_t *schoolHourLabels[SCHOOL_ROUND_DAYS][SCHOOL_MAX_LESSONS] = {};
+lv_obj_t *schoolSubjectLabels[SCHOOL_ROUND_DAYS][SCHOOL_MAX_LESSONS] = {};
 lv_obj_t *schoolDueLabels[SCHOOL_MAX_HOMEWORK] = {};
 lv_obj_t *schoolTaskLabels[SCHOOL_MAX_HOMEWORK] = {};
 // Obědy pod rozvrhem: den vlevo (jen u prvního jídla dne), vedle "ZŠ: jídlo".
@@ -3616,13 +3616,13 @@ uint8_t schoolPageIndex = 0;
 // jen to, co potřebují barvy, zvýraznění a přepnutí jazyka.
 bool schoolReady = false;
 uint8_t schoolDayCount = 0;
-bool schoolDayToday[SCHOOL_MAX_DAYS] = {};
-uint8_t schoolLessonCounts[SCHOOL_MAX_DAYS] = {};
+bool schoolDayToday[SCHOOL_ROUND_DAYS] = {};
+uint8_t schoolLessonCounts[SCHOOL_ROUND_DAYS] = {};
 // "HH:MM" konce vyučování; prázdné, když všechno odpadá.
-char schoolEndTimes[SCHOOL_MAX_DAYS][SCHOOL_TIME_LENGTH] = {};
+char schoolEndTimes[SCHOOL_ROUND_DAYS][SCHOOL_TIME_LENGTH] = {};
 // Popisek dne, jak ho skládá clockDashboardSetSchool. Šířka se měří z téhle
 // kopie: v režimu LV_LABEL_LONG_DOT může label vracet text už s tečkami.
-char schoolHeadings[SCHOOL_MAX_DAYS][2 * SCHOOL_DAY_LENGTH + 4] = {};
+char schoolHeadings[SCHOOL_ROUND_DAYS][2 * SCHOOL_DAY_LENGTH + 4] = {};
 bool schoolHasHomework = false;
 uint8_t schoolHomeworkCount = 0;
 uint8_t schoolHomeworkTotal = 0;
@@ -3650,10 +3650,10 @@ uint8_t schoolNoticeTotal = 0;
 bool schoolHasTests = false;
 uint8_t schoolTestCount = 0;
 uint8_t schoolTestTotal = 0;
-SchoolLessonTime schoolLessonTimes[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS];
-SchoolLessonState schoolLessonStates[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
+SchoolLessonTime schoolLessonTimes[SCHOOL_ROUND_DAYS][SCHOOL_MAX_LESSONS];
+SchoolLessonState schoolLessonStates[SCHOOL_ROUND_DAYS][SCHOOL_MAX_LESSONS] = {};
 SchoolLayoutResult schoolVisible;
-int schoolHighlightedLesson[SCHOOL_MAX_DAYS] = {-1, -1};
+int schoolHighlightedLesson[SCHOOL_ROUND_DAYS] = {-1, -1};
 char schoolMessage[SCHOOL_MESSAGE_LENGTH] = "";
 
 // Seznamy dalších stránek. Stránka 1 jsou testy nad známkami, stránka 2
@@ -3756,7 +3756,7 @@ void applySchoolColors() {
                  redNight ? COLOR_ERROR : COLOR_ROOM);
     setTextColor(schoolMealTextLabels[index], text);
   }
-  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+  for (size_t day = 0; day < SCHOOL_ROUND_DAYS; ++day) {
     setTextColor(schoolDayLabels[day], muted);
     setTextColor(schoolEndLabels[day], text);
     for (size_t index = 0; index < SCHOOL_MAX_LESSONS; ++index) {
@@ -3836,7 +3836,7 @@ void updateSchoolHighlight(bool force = false) {
     layoutSchoolPage();
   }
   bool changed = force;
-  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+  for (size_t day = 0; day < SCHOOL_ROUND_DAYS; ++day) {
     int highlighted = -1;
     if (schoolReady && day < schoolDayCount && schoolDayToday[day]) {
       const uint8_t shown = schoolLessonCounts[day] < schoolVisible.lessons
@@ -4057,7 +4057,7 @@ void layoutSchoolPage() {
   const int top = SCHOOL_BLOCK_TOP;
   const int line = schoolLineHeight() + SCHOOL_ROW_GAP;
   const int lessonsTop = top + schoolHeadingHeight() + SCHOOL_ROW_GAP;
-  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+  for (size_t day = 0; day < SCHOOL_ROUND_DAYS; ++day) {
     // Prázdniny s úkoly: jediná hlavička "ŽÁDNÉ VYUČOVÁNÍ" nad úkoly.
     const bool heading = !newsPage && !showMessage &&
                          (day < schoolDayCount || (day == 0 && !haveDays));
@@ -4251,7 +4251,7 @@ void createSchoolPage(lv_obj_t *screen) {
   alignCenter(schoolStatusLabel, 0, 0);
 
   const int fullWidth = SCHOOL_RIGHT - SCHOOL_LEFT;
-  for (size_t day = 0; day < SCHOOL_MAX_DAYS; ++day) {
+  for (size_t day = 0; day < SCHOOL_ROUND_DAYS; ++day) {
     schoolDayLabels[day] =
         makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
     schoolEndLabels[day] =
@@ -9532,9 +9532,11 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
   }
   // Počet dnů určuje šířku sloupců, a tu potřebuje výběr mezi plným názvem
   // předmětu a zkratkou níž.
-  schoolDayCount = static_cast<uint8_t>(feed->dayCount);
+  // Kulatá stránka má dva sloupce; 7" drží ve feedu dnů víc (týdenní mřížka).
+  schoolDayCount = static_cast<uint8_t>(
+      feed->dayCount < SCHOOL_ROUND_DAYS ? feed->dayCount : SCHOOL_ROUND_DAYS);
   const int subjectWidth = schoolSubjectWidth();
-  for (size_t dayIndex = 0; dayIndex < SCHOOL_MAX_DAYS; ++dayIndex) {
+  for (size_t dayIndex = 0; dayIndex < SCHOOL_ROUND_DAYS; ++dayIndex) {
     const bool present = dayIndex < feed->dayCount;
     schoolLessonCounts[dayIndex] =
         present ? static_cast<uint8_t>(feed->days[dayIndex].lessonCount) : 0;
@@ -10609,10 +10611,22 @@ void clockDashboardLcd7SchoolDemo() {
   static const char *const SUBJECTS[][2] = {
       {"Český jazyk", "Čj"}, {"Matematika", "M"}, {"Anglický jazyk", "Aj"},
       {"Prvouka", "Prv"}, {"Hudební výchova", "Hv"}, {"Tělesná výchova", "Tv"}};
+  // Týden pro mřížku PO-PÁ: dnešek a čtyři další školní dny jako ze serveru
+  // s ?days=5. O víkendu se dnešek tváří jako pondělí, aby bylo vidět
+  // zvýraznění.
+  static const char *const WEEKDAYS[][2] = {{"PONDĚLÍ", "PO"}, {"ÚTERÝ", "ÚT"},
+                                            {"STŘEDA", "ST"},  {"ČTVRTEK", "ČT"},
+                                            {"PÁTEK", "PÁ"}};
+  const time_t clock = time(nullptr);
+  struct tm local = {};
+  localtime_r(&clock, &local);
+  int weekday = (local.tm_wday + 6) % 7;
+  if (weekday > 4) weekday = 0;
   String json;
-  json.reserve(4096);
-  json += "{\"days\":[{\"day\":\"DNES\",\"weekday\":\"SOBOTA\",\"today\":true,"
-          "\"lessons\":[";
+  json.reserve(8192);
+  json += "{\"days\":[{\"day\":\"DNES\",\"weekday\":\"";
+  json += WEEKDAYS[weekday][0];
+  json += "\",\"today\":true,\"lessons\":[";
   char lesson[256];
   for (int index = 0; index < 5; ++index) {
     const int start = first + index * 55;
@@ -10631,18 +10645,46 @@ void clockDashboardLcd7SchoolDemo() {
   snprintf(lesson, sizeof(lesson), "],\"end\":\"%d:%02d\"},", (lastEnd / 60) % 24,
            lastEnd % 60);
   json += lesson;
-  json += "{\"day\":\"PO 12.10.\",\"lessons\":[";
-  for (int index = 0; index < 6; ++index) {
-    const int start = 8 * 60 + index * 55;
-    snprintf(lesson, sizeof(lesson),
-             "%s{\"hour\":\"%d.\",\"start\":\"%d:%02d\",\"end\":\"%d:%02d\","
-             "\"subject\":\"%s\",\"abbrev\":\"%s\",\"state\":0}",
-             index > 0 ? "," : "", index + 1, start / 60, start % 60,
-             (start + 45) / 60, (start + 45) % 60, SUBJECTS[(index + 1) % 6][0],
-             SUBJECTS[(index + 1) % 6][1]);
+  // Další čtyři dny: třetí s nultou hodinou, ve čtvrtém se supluje, v pátém
+  // odpadá poslední hodina.
+  static const int COUNTS[] = {6, 7, 5, 6};
+  int offset = 0;
+  for (int day = 0; day < 4; ++day) {
+    const int previous = weekday;
+    weekday = weekday == 4 ? 0 : weekday + 1;
+    offset += weekday == 0 && previous == 4 ? 3 : 1;
+    const time_t then = clock + static_cast<time_t>(offset) * 86400;
+    struct tm date = {};
+    localtime_r(&then, &date);
+    char label[24];
+    if (offset == 1)
+      strlcpy(label, "ZÍTRA", sizeof(label));
+    else
+      snprintf(label, sizeof(label), "%s %d.%d.", WEEKDAYS[weekday][1], date.tm_mday,
+               date.tm_mon + 1);
+    snprintf(lesson, sizeof(lesson), "%s{\"day\":\"%s\",\"weekday\":\"%s\",\"lessons\":[",
+             day > 0 ? "," : "", label, WEEKDAYS[weekday][0]);
+    json += lesson;
+    const int firstHour = day == 1 ? 0 : 1;
+    int lastEnd = 0;
+    for (int index = 0; index < COUNTS[day]; ++index) {
+      const int hour = firstHour + index;
+      const int start = 8 * 60 + (hour - 1) * 55;
+      const int state = day == 2 && index == 1 ? 1 : (day == 3 && index == COUNTS[day] - 1 ? 2 : 0);
+      if (state != 2) lastEnd = start + 45;
+      const int subject = (index + day + 1) % 6;
+      snprintf(lesson, sizeof(lesson),
+               "%s{\"hour\":\"%d.\",\"start\":\"%d:%02d\",\"end\":\"%d:%02d\","
+               "\"subject\":\"%s\",\"abbrev\":\"%s\",\"note\":\"%s\",\"state\":%d}",
+               index > 0 ? "," : "", hour, start / 60, start % 60, (start + 45) / 60,
+               (start + 45) % 60, SUBJECTS[subject][0], SUBJECTS[subject][1],
+               state == 1 ? "supl. Dvořák" : "", state);
+      json += lesson;
+    }
+    snprintf(lesson, sizeof(lesson), "],\"end\":\"%d:%02d\"}", lastEnd / 60, lastEnd % 60);
     json += lesson;
   }
-  json += "],\"end\":\"13:15\"}],"
+  json += "],"
           "\"homework\":[{\"due\":\"PO\",\"subject\":\"Anglický jazyk\",\"abbrev\":\"Aj\","
           "\"title\":\"slovíčka lekce 3\"},{\"due\":\"ÚT\",\"subject\":\"Český jazyk\","
           "\"abbrev\":\"Čj\",\"title\":\"pracovní sešit str. 14, cvičení 3 a 4\"}],"

@@ -9,6 +9,9 @@
 #ifndef TRAFFIC_FIXTURE
 #error "TRAFFIC_FIXTURE musí ukazovat na tools/fixtures/doprava-hodiny.json"
 #endif
+#ifndef TRAFFIC_RECT_FIXTURE
+#error "TRAFFIC_RECT_FIXTURE musí ukazovat na tools/fixtures/doprava-hodiny-rect.json"
+#endif
 
 namespace {
 
@@ -237,10 +240,71 @@ void testFoldText() {
   assert(length % 2 == 0);
 }
 
+// Odpověď na &w=440&h=438&shape=rect: server promítl do obdélníku 7"
+// a potvrzuje to v "map". Starší odpověď "map" nemá a 7" ji přepočítá sám.
+void testRectMap() {
+  static TrafficData data;
+  const std::string text = readFile(TRAFFIC_RECT_FIXTURE);
+  assert(parse(text, data) == TrafficParseStatus::Ok);
+  assert(data.mapWidth == 440 && data.mapHeight == 438 && data.mapRect);
+  assert(trafficProjectedFor(data, 440, 438, true));
+  assert(!trafficProjectedFor(data, 440, 438, false));
+  assert(!trafficProjectedFor(data, 480, 480, true));
+  assert(data.lineCount == 5 && data.placeCount == 3 && data.driveCount == 4);
+  for (uint8_t line = 0; line < data.lineCount; ++line)
+    for (uint8_t point = 0; point < data.lines[line].pointCount; ++point) {
+      assert(data.lines[line].x[point] >= 33 && data.lines[line].x[point] <= 407);
+      assert(data.lines[line].y[point] >= 33 && data.lines[line].y[point] <= 405);
+    }
+
+  static TrafficData old;
+  assert(parse(readFile(TRAFFIC_FIXTURE), old) == TrafficParseStatus::Ok);
+  assert(old.mapWidth == 0 && old.mapHeight == 0 && !old.mapRect);
+  assert(!trafficProjectedFor(old, 440, 438, true));
+
+  // Rozbitý nebo neznámý "map" se bere jako žádný; nový rozbor ho nuluje.
+  const std::string odd =
+      "{\"lines\":[],\"map\":{\"w\":440,\"h\":438,\"shape\":\"oval\"}}";
+  assert(parse(odd, data) == TrafficParseStatus::Ok);
+  assert(data.mapWidth == 0 && !data.mapRect);
+  const std::string round =
+      "{\"lines\":[],\"map\":{\"w\":480,\"h\":480,\"shape\":\"round\"}}";
+  assert(parse(round, data) == TrafficParseStatus::Ok);
+  assert(data.mapWidth == 480 && data.mapHeight == 480 && !data.mapRect);
+  assert(trafficProjectedFor(data, 480, 480, false));
+}
+
+void testRequestUrl() {
+  char out[96];
+  trafficRequestUrl("https://x.cz/api/doprava?for=hodiny", 440, 438, true, out,
+                    sizeof(out));
+  assert(std::string(out) ==
+         "https://x.cz/api/doprava?for=hodiny&w=440&h=438&shape=rect");
+  trafficRequestUrl("https://x.cz/api/doprava", 480, 480, false, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/api/doprava?w=480&h=480&shape=round");
+  trafficRequestUrl("https://x.cz/api/doprava?", 440, 438, true, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/api/doprava?w=440&h=438&shape=rect");
+  // Majitelova mapa v adrese má přednost.
+  trafficRequestUrl("https://x.cz/d?for=hodiny&w=300&h=300", 440, 438, true, out,
+                    sizeof(out));
+  assert(std::string(out) == "https://x.cz/d?for=hodiny&w=300&h=300");
+  // Bez rozměru nebo když se delší adresa nevejde, beze změny.
+  trafficRequestUrl("https://x.cz/d?for=hodiny", 0, 0, true, out, sizeof(out));
+  assert(std::string(out) == "https://x.cz/d?for=hodiny");
+  char small[40];
+  trafficRequestUrl("https://x.cz/api/doprava?for=hodiny", 440, 438, true, small,
+                    sizeof(small));
+  assert(std::string(small) == "https://x.cz/api/doprava?for=hodiny");
+  trafficRequestUrl("", 440, 438, true, out, sizeof(out));
+  assert(out[0] == '\0');
+}
+
 }  // namespace
 
 int main() {
   testFixture();
+  testRectMap();
+  testRequestUrl();
   testNullsDelaysAndStale();
   testFourDrivesWithWays();
   testMalformed();

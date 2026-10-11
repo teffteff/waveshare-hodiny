@@ -74,6 +74,8 @@ run_test route_parser "$FIRMWARE_DIR/RouteParser.cpp" "$FIRMWARE_DIR/JsonScan.cp
 run_test agenda_parser "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test agenda_layout || failures=$((failures + 1))
 run_test school_parser "$FIRMWARE_DIR/SchoolParser.cpp" "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
+# Totéž s limity 7" (pět dnů, týdenní mřížka).
+run_test school_parser_lcd7 "$FIRMWARE_DIR/SchoolParser.cpp" "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" -DHODINY_BOARD_LCD7=1 || failures=$((failures + 1))
 run_test lightning_feed "$FIRMWARE_DIR/LightningFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test satellite_feed "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test rain_alert "$FIRMWARE_DIR/RainAlert.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
@@ -84,7 +86,9 @@ run_test crash_log "$FIRMWARE_DIR/CrashLog.cpp" || failures=$((failures + 1))
 run_test remote_config "$FIRMWARE_DIR/RemoteConfig.cpp" || failures=$((failures + 1))
 run_test sky_render "$FIRMWARE_DIR/SkyRender.cpp" "$FIRMWARE_DIR/SkyCanvas.cpp" "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 TRAFFIC_FIXTURE="-DTRAFFIC_FIXTURE=\"$ROOT_DIR/tools/fixtures/doprava-hodiny.json\""
-run_test traffic_feed "$FIRMWARE_DIR/TrafficFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" "$TRAFFIC_FIXTURE" || failures=$((failures + 1))
+# Totéž promítnuté pro obdélník 7" (&w=440&h=438&shape=rect, s "map").
+TRAFFIC_RECT_FIXTURE="-DTRAFFIC_RECT_FIXTURE=\"$ROOT_DIR/tools/fixtures/doprava-hodiny-rect.json\""
+run_test traffic_feed "$FIRMWARE_DIR/TrafficFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" "$TRAFFIC_FIXTURE" "$TRAFFIC_RECT_FIXTURE" || failures=$((failures + 1))
 RADAR_BUNDLE_FIXTURE="-DRADAR_BUNDLE_FIXTURE=\"$ROOT_DIR/tools/fixtures/radar_bundle.bin\""
 run_test radar_bundle "$FIRMWARE_DIR/RadarBundle.cpp" "$RADAR_BUNDLE_FIXTURE" -lz || failures=$((failures + 1))
 # Mapa dopravy píše jména míst písmem hodin, takže potřebuje kousek LVGL:
@@ -109,6 +113,7 @@ if [[ -f "$LVGL_DIR/src/font/lv_font_fmt_txt.c" ]]; then
     run_test traffic_render "$FIRMWARE_DIR/TrafficRender.cpp" "$FIRMWARE_DIR/TrafficFeed.cpp" \
       "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/MapLabelFont.cpp" "$FIRMWARE_DIR/JsonScan.cpp" \
       "${lvgl_objects[@]}" "$LVGL_DEFS" -I "$LVGL_DIR" -I "$LVGL_DIR/.." "$TRAFFIC_FIXTURE" \
+      "$TRAFFIC_RECT_FIXTURE" \
       || failures=$((failures + 1))
   else
     printf '%-24s %s\n' traffic_render "PŘEKLAD LVGL SELHAL"
