@@ -249,8 +249,16 @@ Příklad exportní URL:
 
 ### Home Assistant
 
-Firmware čte jednotlivé entity přes REST API Home Assistantu. Nepotřebuje
-MQTT, vlastní integraci ani administrátorský účet.
+Firmware čte entity přes REST API Home Assistantu. Nepotřebuje MQTT ani
+vlastní integraci.
+
+Všechny entity se jednou za minutu načtou jediným dotazem na šablonu
+(`POST /api/template`). Home Assistant ale šablony dovolí jen tokenu
+administrátora; s tokenem běžného uživatele odpoví 401 a hodiny pak čtou
+entity po jedné (`GET /api/states/<entita>`, až desítky dotazů za minutu)
+a šablonu zkusí znovu za hodinu nebo po změně adresy či tokenu. Hodiny
+fungují s oběma tokeny, s administrátorským jen méně zatěžují síť i HA.
+Nabídka entit ve webovém nastavení šablonu potřebuje vždy.
 
 ### Vytvoření tokenu
 
