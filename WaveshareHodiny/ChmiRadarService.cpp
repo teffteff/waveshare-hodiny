@@ -107,7 +107,11 @@ constexpr float LON_DATA_RIGHT = 19.624f;
 constexpr float LAT_DATA_TOP = 51.458f;
 constexpr float WHOLE_COUNTRY_LATITUDE = 49.805f;
 constexpr float WHOLE_COUNTRY_LONGITUDE = 15.475f;
-constexpr uint16_t WHOLE_COUNTRY_RADIUS_KM = 260;
+// Svislý poloměr pohledu na celou republiku. Kulatý má čtverec, takže musí
+// pokrýt šířku Česka (asi 490 km); obdélník 7" je o třetinu širší, a tak
+// mu stačí menší poloměr - Česko pak vyplní obraz a rohy nesahají za kraj
+// kompozice ČHMÚ (šedé "bez dat").
+constexpr uint16_t WHOLE_COUNTRY_RADIUS_KM = HODINY_BOARD_LCD7 ? 195 : 260;
 
 // Spojení pro snímky žije mezi stahováními, aby si každý snímek nemusel platit
 // vlastní TLS handshake. Stejný důvod i stejný postup jako u dlaždic
