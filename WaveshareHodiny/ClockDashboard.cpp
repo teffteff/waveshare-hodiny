@@ -8,6 +8,7 @@
 #include "TrafficService.h"
 #include "Astronomy.h"
 #include "ClockDashboard.h"
+#include "DashboardViewModels.h"
 #include "OpenWeatherIcons.h"
 #include "ForecastIcons.h"
 #include "WeatherIconMapping.h"
@@ -143,6 +144,9 @@ lv_obj_t *valueSlotBatteryIcons[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 lv_obj_t *dashboardScreen = nullptr;
 lv_obj_t *forecastPage = nullptr;
 lv_obj_t *planesPage = nullptr;
+// Obrazovka radaru letadel je založená. Na 2,1" totéž co planesPage !=
+// nullptr; 7" kulatou stránku nezakládá (mapa, sloupec i detail jsou jeho).
+bool planesScreenCreated = false;
 lv_obj_t *planesCanvas = nullptr;
 lv_obj_t *planesClockLabel = nullptr;
 lv_obj_t *planesStatusLabel = nullptr;
@@ -232,6 +236,9 @@ lv_obj_t *skyBodyLabels[SKY_MAX_BODIES] = {};
 lv_obj_t *skyEventLabels[SKY_MAX_EVENTS] = {};
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *agendaPage = nullptr;
+// Obrazovka agendy je založená. Na 2,1" totéž co agendaPage != nullptr; 7"
+// kulatou stránku nezakládá a kreslí agendu sám z modelu.
+bool agendaScreenCreated = false;
 lv_obj_t *agendaHeaderLabel = nullptr;
 lv_obj_t *agendaStatusLabel = nullptr;
 lv_obj_t *agendaLegendLabel = nullptr;
@@ -243,19 +250,12 @@ lv_obj_t *agendaDayLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
 // jeden štítek se nedá zarovnat do mřížky, protože písmo není neproporcionální.
 lv_obj_t *agendaTimeLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
 lv_obj_t *agendaTitleLabels[CLOCK_AGENDA_MAX_ITEMS] = {};
-// Který řádek otevírá nový den. Podle toho se rozmisťuje: řádek s hlavičkou je
-// o její výšku vyšší než ostatní.
-bool agendaRowStartsDay[CLOCK_AGENDA_MAX_ITEMS] = {};
-// Kalendář každého řádku. Drží se proto, že noční paleta časy přebarvuje a bez
-// indexu by se po návratu do dne slily do jedné barvy.
-uint8_t agendaRowCalendar[CLOCK_AGENDA_MAX_ITEMS] = {};
-uint8_t agendaVisibleItemCount = 0;
+// Texty, počet řádků, začátky dnů a kalendáře řádků drží model agendy
+// (viewModels().agenda); kalendář řádku i proto, že noční paleta časy
+// přebarvuje a bez indexu by se po návratu do dne slily do jedné barvy.
 // Řádek, který místo události nese tři tečky, protože poslední zobrazený den
 // pokračuje za okrajem. -1 = žádný. Drží se kvůli přebarvení v noční paletě.
 int agendaEllipsisRow = -1;
-// Roste s každou změnou obsahu agendy; agenda 7" podle něj pozná, kdy znovu
-// rozmístit řádky, a nemusí porovnávat texty.
-uint32_t agendaRevision = 0;
 size_t agendaCalendarCount = 0;
 char agendaCalendarNames[AGENDA_MAX_CALENDARS][AGENDA_CALENDAR_NAME_LENGTH] = {};
 lv_obj_t *rssHeaderLabel = nullptr;
@@ -288,7 +288,7 @@ lv_obj_t *rssDetailTitleLabel = nullptr;
 lv_obj_t *rssDetailSummaryLabel = nullptr;
 bool rssDetailOpen = false;
 unsigned long rssDetailOpenedAt = 0;
-// Roste s každou změnou zpráv, pro zprávy 7" (stejně jako agendaRevision).
+// Roste s každou změnou zpráv, pro zprávy 7" (stejně jako revize agendy).
 uint32_t rssRevision = 0;
 lv_obj_t *radarPage = nullptr;
 lv_obj_t *radarCanvas = nullptr;
@@ -619,6 +619,34 @@ bool redNightVisualEnabled() {
   return nightModeEnabled && nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
 }
 
+// Rozvržení 7": datum, hodnoty, ikonu počasí, stavové ikony a tečky obrazovek
+// ukazuje pravý sloupec (ClockDashboardLcd7.h), takže v kulatém ciferníku
+// zůstanou jen ručičky a značky. Řádek s časem a počet družic s přelety nad
+// mapou družic nahrazuje lišta a sloupec vpravo. Kulatý kód tyhle popisky na
+// 7" vůbec neodkrývá, místo aby je 7" po každé změně znovu schovával.
+constexpr bool ROUND_DIAL_INFO_SHOWN = !HODINY_BOARD_LCD7;
+constexpr bool ROUND_SATELLITES_TEXT_SHOWN = !HODINY_BOARD_LCD7;
+
+static_assert(AGENDA_MAX_ITEMS == CLOCK_AGENDA_MAX_ITEMS,
+              "model agendy musí pojmout všechny řádky");
+
+// Texty obrazovek bez LVGL (DashboardViewModels.h). Zakládá se jednou na
+// začátku clockDashboardInit(), v PSRAM: agenda sama má přes dva kilobajty.
+DashboardViewModels *viewModelStorage = nullptr;
+
+DashboardViewModels &viewModels() {
+  if (viewModelStorage == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(DashboardViewModels),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr)
+      memory = heap_caps_calloc(1, sizeof(DashboardViewModels), MALLOC_CAP_8BIT);
+    // Při startu je paměti dost; bez modelu by obrazovky neměly co ukázat.
+    if (memory == nullptr) abort();
+    viewModelStorage = new (memory) DashboardViewModels();
+  }
+  return *viewModelStorage;
+}
+
 void updateRadarWarningLabel();
 
 // Zkrátí text po celých znacích UTF-8 a připojí tři tečky, aby se vešel do
@@ -854,9 +882,15 @@ void applyDashboardLanguage() {
   updateWebPasswordPage();
   // Hláška prázdné obrazovky se překládá jen tehdy, když je opravdu vidět;
   // pod snímkem je skrytá a další snapshot si ji stejně přepíše.
+  RadarViewModel &radarModel = viewModels().radar;
+  if (!radarModel.haveFrame) {
+    strlcpy(radarModel.status, radarEmptyStateText(false),
+            sizeof(radarModel.status));
+    ++radarModel.revision;
+  }
   if (radarStatusLabel != nullptr &&
       !lv_obj_has_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN)) {
-    lv_label_set_text(radarStatusLabel, radarEmptyStateText(false));
+    lv_label_set_text(radarStatusLabel, radarModel.status);
     alignCenter(radarStatusLabel, 0, 0);
   }
   // Předpověď má v každém řádku vlastní text, takže se překládá tím, že se
@@ -901,9 +935,9 @@ bool screenAvailable(uint8_t screen) {
     case DASHBOARD_SCREEN_FORECAST:
       return forecastFeatureAvailable && forecastPage != nullptr;
     case DASHBOARD_SCREEN_PLANES:
-      return planesFeatureAvailable && planesPage != nullptr;
+      return planesFeatureAvailable && planesScreenCreated;
     case DASHBOARD_SCREEN_AGENDA:
-      return agendaFeatureAvailable && agendaPage != nullptr;
+      return agendaFeatureAvailable && agendaScreenCreated;
     case DASHBOARD_SCREEN_SKY:
       return skyFeatureAvailable && skyPage != nullptr;
     case DASHBOARD_SCREEN_SCHOOL:
@@ -938,7 +972,8 @@ void setActiveScreen(uint8_t screen) {
   if (screen == DASHBOARD_SCREEN_RADAR) {
     // Při návratu na radar neodkrývej snímek, který zůstal v canvasu z
     // předchozího cyklu. Canvas znovu zobrazí až první snapshot nové animace.
-    lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
+    viewModels().radar.frameShown = false;
+    if (radarCanvas != nullptr) lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     updateRadarFrameDots(0, 0);
     // Popisky patří ke snímku, který zrovna zmizel; nechat je viset nad
     // prázdnou stránkou by tvrdilo, že se něco ukazuje.
@@ -997,6 +1032,7 @@ void setActiveScreen(uint8_t screen) {
       // Odchod z obrazovky zavírá detail: po návratu by visel nad letadlem,
       // které už dávno odletělo.
       planeRadarServiceCloseDetail();
+      viewModels().planeDetail.open = false;
       if (planesCanvas != nullptr)
         lv_obj_add_flag(planesCanvas, LV_OBJ_FLAG_HIDDEN);
       if (planesDetailPanel != nullptr)
@@ -1046,6 +1082,11 @@ void setObjectVisible(lv_obj_t *object, bool visible) {
   } else {
     lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
   }
+}
+
+// Údaj uvnitř kulatého ciferníku; na 7" zůstane schovaný (ROUND_DIAL_INFO_SHOWN).
+void setDialInfoVisible(lv_obj_t *object, bool visible) {
+  setObjectVisible(object, visible && ROUND_DIAL_INFO_SHOWN);
 }
 
 bool webPasswordResetArmed() {
@@ -2126,8 +2167,10 @@ void alignConnectionStatusIcons() {
 
   lv_obj_t *icons[] = {lightningStatusLabel, wifiStatusLabel, statusLabel,
                        webStatusLabel};
-  const bool visible[] = {lightningAlertActive, showWifi, showHomeAssistant,
-                          showWeb};
+  const bool visible[] = {lightningAlertActive && ROUND_DIAL_INFO_SHOWN,
+                          showWifi && ROUND_DIAL_INFO_SHOWN,
+                          showHomeAssistant && ROUND_DIAL_INFO_SHOWN,
+                          showWeb && ROUND_DIAL_INFO_SHOWN};
   constexpr int ICON_COUNT = 4;
   // Ikony stojí po STATUS_SPACING od středu ke středu. Blesk nese i vzdálenost,
   // takže je širší; řada se proto skládá podle skutečných šířek s mezerou,
@@ -3268,16 +3311,14 @@ void agendaAppendEscaped(String &target, const char *text) {
 // není známo, kde jsou hranice dnů, a řádek s hlavičkou je o její výšku vyšší.
 void layoutAgendaItems() {
   if (agendaPage == nullptr) return;
-  ++agendaRevision;
-#if HODINY_BOARD_LCD7
-  // 7" rozmisťuje agendu sám (ClockDashboardLcd7.h) a potřebuje celé titulky;
-  // tři tečky by tu titulek přepsaly natrvalo.
-  return;
-#endif
+  const AgendaViewModel &model = viewModels().agenda;
+  bool startsDay[CLOCK_AGENDA_MAX_ITEMS];
+  for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index)
+    startsDay[index] = model.rows[index].startsDay;
   const int lineHeight = agendaLineHeight();
   const int dayHeight = agendaDayHeight();
   const AgendaLayoutResult fitted = agendaLayout(
-      agendaRowStartsDay, agendaVisibleItemCount,
+      startsDay, model.count,
       AgendaLayoutMetrics{lineHeight, dayHeight, AGENDA_ROW_GAP, AGENDA_DAY_GAP,
                           AGENDA_BLOCK_HEIGHT});
   const uint8_t visible = fitted.visible;
@@ -3300,7 +3341,7 @@ void layoutAgendaItems() {
       setObjectVisible(title, false);
       continue;
     }
-    if (agendaRowStartsDay[index]) {
+    if (startsDay[index]) {
       cursorY += AGENDA_DAY_GAP;
       lv_obj_align(day, LV_ALIGN_TOP_LEFT, AGENDA_RADIUS + AGENDA_LEFT,
                    AGENDA_RADIUS + cursorY);
@@ -3315,8 +3356,8 @@ void layoutAgendaItems() {
                  AGENDA_RADIUS + cursorY);
     const bool moreMark = static_cast<int>(index) == agendaEllipsisRow;
     if (moreMark) {
-      // Titulek se přepíše natrvalo; další stažení ho nastaví znovu, protože
-      // rozvržení běží až po naplnění všech řádků.
+      // Popisek se přepíše natrvalo; další stažení ho nastaví znovu z modelu,
+      // protože rozvržení běží až po naplnění všech řádků.
       lv_label_set_text(title, AGENDA_MORE_MARK);
       setTextColor(title, redNightVisualEnabled() ? COLOR_ERROR : COLOR_MUTED);
     }
@@ -3462,10 +3503,7 @@ void createAgendaPage(lv_obj_t *screen) {
     lv_label_set_text(title, "");
     lv_obj_add_flag(title, LV_OBJ_FLAG_HIDDEN);
     agendaTitleLabels[index] = title;
-
-    agendaRowStartsDay[index] = false;
   }
-  agendaVisibleItemCount = 0;
 
   agendaLegendLabel = makeLabel(agendaPage, &clock_czech_14, COLOR_MUTED);
   lv_label_set_recolor(agendaLegendLabel, true);
@@ -3508,7 +3546,7 @@ void applyAgendaColors() {
     // paušálně - jinak by se po návratu z noci všechny slily do jedné.
     if (agendaTimeLabels[index] != nullptr) {
       setTextColor(agendaTimeLabels[index],
-                   agendaCalendarColor(agendaRowCalendar[index]));
+                   agendaCalendarColor(viewModels().agenda.rows[index].calendar));
     }
   }
   updateAgendaHeaderLabel();
@@ -5362,6 +5400,10 @@ void renderSkyMoon() {
     }
   }
   if (skyMoonCanvas != nullptr) lv_obj_invalidate(skyMoonCanvas);
+#if HODINY_BOARD_LCD7
+  // Sloupec družic na 7" kreslí tentýž buffer; nová revize ho překreslí.
+  ++skyRevision;
+#endif
 }
 
 void formatSkyTime(int64_t epoch, char *text, size_t capacity) {
@@ -5402,6 +5444,10 @@ void updateSkyHeaderLabel() {
 }
 
 void applySkyColors() {
+#if HODINY_BOARD_LCD7
+  // Kotouč Měsíce pro sloupec družic i bez kulaté stránky (noční paleta).
+  if (skyPage == nullptr) renderSkyMoon();
+#endif
   if (skyPage == nullptr) return;
   const bool redNight = redNightVisualEnabled();
   const lv_color_t muted = redNight ? COLOR_ERROR : COLOR_MUTED;
@@ -5422,11 +5468,11 @@ void applySkyColors() {
   renderSkyMoon();
 }
 
-void updateSkyPage() {
-  if (skyPage == nullptr) return;
+// Texty Slunce a Měsíce do modelu (SkyViewModel). Kulatá stránka z něj plní
+// popisky, sloupec družic na 7" ho čte přímo.
+void composeSkyModel() {
+  SkyViewModel &model = viewModels().sky;
   const bool english = englishLanguage();
-  lv_label_set_text(skySunTitleLabel, english ? "SUN" : "SLUNCE");
-  lv_label_set_text(skyMoonTitleLabel, english ? "MOON" : "MĚSÍC");
   const char *captions[4] = {english ? "rise" : "východ",
                              english ? "set" : "západ",
                              english ? "rise" : "východ",
@@ -5436,10 +5482,9 @@ void updateSkyPage() {
   const int64_t times[4] = {skyData.sunrise, skyData.sunset, skyData.moonrise,
                             skyData.moonset};
   for (int index = 0; index < 4; ++index) {
-    lv_label_set_text(skyCaptionLabels[index], captions[index]);
-    char text[8];
-    formatSkyTime(skyData.valid ? times[index] : 0, text, sizeof(text));
-    lv_label_set_text(skyTimeLabels[index], text);
+    strlcpy(model.captions[index], captions[index], sizeof(model.captions[index]));
+    formatSkyTime(skyData.valid ? times[index] : 0, model.times[index],
+                  sizeof(model.times[index]));
   }
 
   // Občanské svítání a soumrak. Za polárním kruhem v létě soumrak nenastane;
@@ -5448,27 +5493,28 @@ void updateSkyPage() {
       skyData.valid && (skyData.civilDawn > 0 || skyData.civilDusk > 0);
   const int64_t twilight[2] = {skyData.civilDawn, skyData.civilDusk};
   for (int index = 0; index < 2; ++index) {
-    char value[8] = "";
-    if (haveTwilight) formatSkyTime(twilight[index], value, sizeof(value));
-    lv_label_set_text(skyTwilightLabels[index], value);
+    model.twilight[index][0] = '\0';
+    if (haveTwilight)
+      formatSkyTime(twilight[index], model.twilight[index],
+                    sizeof(model.twilight[index]));
   }
 
   char text[64];
   if (!skyData.valid) {
-    lv_label_set_text(skyDayLengthLabel, english ? "Waiting for time sync"
-                                                 : "Čekám na čas ze sítě");
+    strlcpy(model.dayLength,
+            english ? "Waiting for time sync" : "Čekám na čas ze sítě",
+            sizeof(model.dayLength));
   } else if (skyData.sunrise <= 0 && skyData.sunset <= 0) {
     // Za polárním kruhem Slunce některé dny nevyjde nebo nezapadne.
-    lv_label_set_text(skyDayLengthLabel,
-                      skyData.sunUpAllDay
-                          ? (english ? "Polar day" : "Polární den")
-                          : (english ? "Polar night" : "Polární noc"));
+    strlcpy(model.dayLength,
+            skyData.sunUpAllDay ? (english ? "Polar day" : "Polární den")
+                                : (english ? "Polar night" : "Polární noc"),
+            sizeof(model.dayLength));
   } else {
     const int minutes = skyData.dayLengthMinutes;
-    snprintf(text, sizeof(text), english ? "Day length %d h %02d min"
-                                         : "Délka dne %d h %02d min",
+    snprintf(model.dayLength, sizeof(model.dayLength),
+             english ? "Day length %d h %02d min" : "Délka dne %d h %02d min",
              minutes / 60, minutes % 60);
-    lv_label_set_text(skyDayLengthLabel, text);
   }
 
   static constexpr const char *CZECH_PHASES[8] = {
@@ -5478,17 +5524,18 @@ void updateSkyPage() {
       "New moon",  "Waxing crescent", "First quarter", "Waxing gibbous",
       "Full moon", "Waning gibbous",  "Last quarter",  "Waning crescent"};
   const uint8_t phaseIndex = astronomyMoonPhaseIndex(skyData.moonPhase);
-  lv_label_set_text(skyPhaseNameLabel,
-                    !skyData.valid ? ""
-                    : english      ? ENGLISH_PHASES[phaseIndex]
-                                   : CZECH_PHASES[phaseIndex]);
+  strlcpy(model.phaseName,
+          !skyData.valid ? ""
+          : english      ? ENGLISH_PHASES[phaseIndex]
+                         : CZECH_PHASES[phaseIndex],
+          sizeof(model.phaseName));
   if (skyData.valid) {
-    snprintf(text, sizeof(text), english ? "%d %% illuminated" : "osvětleno %d %%",
+    snprintf(model.illumination, sizeof(model.illumination),
+             english ? "%d %% illuminated" : "osvětleno %d %%",
              static_cast<int>(lroundf(skyData.moonIllumination)));
   } else {
-    text[0] = '\0';
+    model.illumination[0] = '\0';
   }
-  lv_label_set_text(skyIlluminationLabel, text);
 
   char fullMoon[12];
   char newMoon[12];
@@ -5525,8 +5572,43 @@ void updateSkyPage() {
   } else {
     text[0] = '\0';
   }
-  lv_label_set_text(skyNextPhasesLabel, text);
+  strlcpy(model.nextPhases, text, sizeof(model.nextPhases));
+  ++model.revision;
+}
+
+void updateSkyPage() {
+  composeSkyModel();
+  if (skyPage == nullptr) {
+#if HODINY_BOARD_LCD7
+    // 7" kulatou stránku nemá: sloupec družic čte model a kotouč Měsíce.
+    renderSkyMoon();
+#endif
+    return;
+  }
+  const SkyViewModel &model = viewModels().sky;
+  const bool english = englishLanguage();
+  lv_label_set_text(skySunTitleLabel, english ? "SUN" : "SLUNCE");
+  lv_label_set_text(skyMoonTitleLabel, english ? "MOON" : "MĚSÍC");
+  for (int index = 0; index < 4; ++index) {
+    lv_label_set_text(skyCaptionLabels[index], model.captions[index]);
+    lv_label_set_text(skyTimeLabels[index], model.times[index]);
+  }
+  for (int index = 0; index < 2; ++index)
+    lv_label_set_text(skyTwilightLabels[index], model.twilight[index]);
+  lv_label_set_text(skyDayLengthLabel, model.dayLength);
+  lv_label_set_text(skyPhaseNameLabel, model.phaseName);
+  lv_label_set_text(skyIlluminationLabel, model.illumination);
+  lv_label_set_text(skyNextPhasesLabel, model.nextPhases);
   applySkyColors();
+}
+
+// Buffer kotouče Měsíce (88 x 88 RGB565, 15 kB v PSRAM). Na 7" ho kreslí
+// sloupec družic, kulatá stránka Slunce a Měsíc tam nevzniká.
+void allocateSkyMoonPixels() {
+  if (skyMoonPixels != nullptr) return;
+  skyMoonPixels = static_cast<uint16_t *>(heap_caps_malloc(
+      SKY_MOON_SIZE * SKY_MOON_SIZE * sizeof(uint16_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
 void createSkyPage(lv_obj_t *screen) {
@@ -5578,9 +5660,7 @@ void createSkyPage(lv_obj_t *screen) {
   skyDayLengthLabel = makeLabel(skyPage, &clock_czech_16, COLOR_TEXT);
   alignCenter(skyDayLengthLabel, 0, SKY_DAY_LENGTH_Y);
 
-  skyMoonPixels = static_cast<uint16_t *>(heap_caps_malloc(
-      SKY_MOON_SIZE * SKY_MOON_SIZE * sizeof(uint16_t),
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  allocateSkyMoonPixels();
   if (skyMoonPixels != nullptr) {
     skyMoonCanvas = lv_canvas_create(skyPage);
     lv_canvas_set_buffer(skyMoonCanvas, skyMoonPixels, SKY_MOON_SIZE,
@@ -6192,7 +6272,8 @@ void updateScreenDots() {
   }
   // Jediná obrazovka nemá mezi čím přepínat a jedna tečka by o ničem
   // nevypovídala. Nastavení ani aktualizace firmwaru do rotace nepatří.
-  const bool visible = count > 1 && !settingsVisible && !firmwareUpdateActive;
+  const bool visible = count > 1 && !settingsVisible && !firmwareUpdateActive &&
+                       ROUND_DIAL_INFO_SHOWN;
   const int gap = 20;
   const int firstX = -((count - 1) * gap) / 2;
   const lv_color_t accent =
@@ -6296,6 +6377,8 @@ void createRadarPage(lv_obj_t *screen) {
   lv_obj_set_width(radarStatusLabel, 340);
   lv_obj_set_style_text_align(radarStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(radarStatusLabel, radarEmptyStateText(false));
+  strlcpy(viewModels().radar.status, radarEmptyStateText(false),
+          sizeof(viewModels().radar.status));
   lv_obj_set_style_bg_color(radarStatusLabel, COLOR_BACKGROUND, 0);
   lv_obj_set_style_bg_opa(radarStatusLabel, LV_OPA_80, 0);
   lv_obj_set_style_pad_all(radarStatusLabel, 6, 0);
@@ -7160,6 +7243,8 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
                         RadarRangeCallback radarRange,
                         RssVisibilityCallback rssVisibility,
                         ForecastVisibilityCallback forecastVisibility) {
+  // Modely obrazovek hned na začátku, než se PSRAM rozdrobí.
+  viewModels();
   savedDayBrightness = constrain(dayBrightness, 1, 100);
   savedNightBrightness = constrain(nightBrightness, 1, 100);
   automaticDayNightEnabled = automaticDayNight;
@@ -7208,6 +7293,9 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lv_obj_set_style_text_letter_space(namedayLabel, 2, 0);
   lv_label_set_text(namedayLabel, "");
   alignCenter(namedayLabel, 0, -20);
+  // Kulatý kód datum a jmeniny nikde neodkrývá, stačí je na 7" schovat tady.
+  setDialInfoVisible(dateLabel, true);
+  setDialInfoVisible(namedayLabel, true);
 
   outsideTitleLabel = makeLabel(content, &clock_czech_20, COLOR_OUTSIDE);
   lv_obj_set_style_text_letter_space(outsideTitleLabel, 2, 0);
@@ -7310,6 +7398,8 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lightningStatusLabel =
       makeLabel(content, &lv_font_montserrat_16, COLOR_ERROR);
   lv_label_set_text(lightningStatusLabel, LV_SYMBOL_CHARGE);
+  strlcpy(viewModels().lightning.text, LV_SYMBOL_CHARGE,
+          sizeof(viewModels().lightning.text));
   lv_obj_add_flag(lightningStatusLabel, LV_OBJ_FLAG_HIDDEN);
   alignConnectionStatusIcons();
 
@@ -7317,7 +7407,11 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
 
   clockDashboardUpdate(values);
   makeChildrenTapThrough(dashboardContent);
+#if !HODINY_BOARD_LCD7
+  // 7" má vlastní meteoradar (ClockDashboardLcd7.h) s textem z modelu
+  // RadarViewModel; kulatá stránka by tam jen držela objekty v PSRAM.
   createRadarPage(screen);
+#endif
   createRssPage(screen);
   createSettingsPage(screen);
 
@@ -7378,7 +7472,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   layoutSchoolPage();
   if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
     activeScreen = DASHBOARD_SCREEN_CLOCK;
-    lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+    if (radarPage != nullptr) lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (!settingsVisible && !firmwareUpdateActive) {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
       lv_obj_move_foreground(primaryClockPage());
@@ -7575,7 +7669,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   if (analogLayoutEnabled()) {
     lv_obj_clear_flag(analogDialLayer, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(analogHandsLayer, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(analogMetricDivider, LV_OBJ_FLAG_HIDDEN);
+    setDialInfoVisible(analogMetricDivider, true);
     lv_label_set_text(analogOutsideTitleLabel,
                       lv_label_get_text(outsideTitleLabel));
     lv_label_set_text(analogRoomTitleLabel, lv_label_get_text(roomTitleLabel));
@@ -7595,20 +7689,20 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
                           analogMetricBUnitLabel, 140, 4);
     updateAnalogMetricDivider();
 
-    setObjectVisible(analogOutsideTitleLabel, outsideConfigured);
-    setObjectVisible(analogOutsideValueLabel, outsideConfigured);
-    setObjectVisible(analogOutsideDecimalLabel, outsideConfigured);
-    setObjectVisible(analogOutsideUnitLabel, outsideConfigured);
-    setObjectVisible(analogRoomTitleLabel, roomConfigured);
-    setObjectVisible(analogRoomValueLabel, roomConfigured);
-    setObjectVisible(analogRoomDecimalLabel, roomConfigured);
-    setObjectVisible(analogRoomUnitLabel, roomConfigured);
-    setObjectVisible(analogMetricATitleLabel, metricAConfigured);
-    setObjectVisible(analogMetricAValueLabel, metricAConfigured);
-    setObjectVisible(analogMetricAUnitLabel, metricAConfigured);
-    setObjectVisible(analogMetricBTitleLabel, metricBConfigured);
-    setObjectVisible(analogMetricBValueLabel, metricBConfigured);
-    setObjectVisible(analogMetricBUnitLabel, metricBConfigured);
+    setDialInfoVisible(analogOutsideTitleLabel, outsideConfigured);
+    setDialInfoVisible(analogOutsideValueLabel, outsideConfigured);
+    setDialInfoVisible(analogOutsideDecimalLabel, outsideConfigured);
+    setDialInfoVisible(analogOutsideUnitLabel, outsideConfigured);
+    setDialInfoVisible(analogRoomTitleLabel, roomConfigured);
+    setDialInfoVisible(analogRoomValueLabel, roomConfigured);
+    setDialInfoVisible(analogRoomDecimalLabel, roomConfigured);
+    setDialInfoVisible(analogRoomUnitLabel, roomConfigured);
+    setDialInfoVisible(analogMetricATitleLabel, metricAConfigured);
+    setDialInfoVisible(analogMetricAValueLabel, metricAConfigured);
+    setDialInfoVisible(analogMetricAUnitLabel, metricAConfigured);
+    setDialInfoVisible(analogMetricBTitleLabel, metricBConfigured);
+    setDialInfoVisible(analogMetricBValueLabel, metricBConfigured);
+    setDialInfoVisible(analogMetricBUnitLabel, metricBConfigured);
 
     lv_obj_t *digitalOnly[] = {
         timeLabel,          outsideTitleLabel,   outsideIntegerLabel,
@@ -7786,11 +7880,11 @@ void clockDashboardUpdate(const ClockValues &values) {
       lv_img_set_src(weatherImage, weatherIcon);
       lv_img_set_zoom(weatherImage, 256);
       alignCenter(weatherImage, 0, -70);
-      lv_obj_clear_flag(weatherImage, LV_OBJ_FLAG_HIDDEN);
+      setDialInfoVisible(weatherImage, true);
     }
     if (weatherConfigured && useAnimation) {
       alignCenter(weatherAnimation, 0, -70);
-      lv_obj_clear_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
+      setDialInfoVisible(weatherAnimation, true);
     } else {
       lv_obj_add_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
     }
@@ -7840,7 +7934,7 @@ void clockDashboardUpdate(const ClockValues &values) {
     lv_obj_add_flag(weatherImage, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_img_set_src(weatherImage, weatherIcon);
-    lv_obj_clear_flag(weatherImage, LV_OBJ_FLAG_HIDDEN);
+    setDialInfoVisible(weatherImage, true);
   }
 
   if (!roomConfigured || !weatherConfigured || !roomUsesWeatherIcon ||
@@ -7853,7 +7947,7 @@ void clockDashboardUpdate(const ClockValues &values) {
 
   if (outsideConfigured && weatherConfigured && outsideUsesWeatherIcon &&
       useAnimation) {
-    lv_obj_clear_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
+    setDialInfoVisible(weatherAnimation, true);
   } else {
     lv_obj_add_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
   }
@@ -8163,8 +8257,11 @@ void clockDashboardSetPlanesVisibilityCallback(
 void clockDashboardSetPlanesAvailable(bool available) {
   // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji majitel
   // nechce, nestojí ani jeden objekt LVGL.
-  if (available && planesPage == nullptr && dashboardScreen != nullptr) {
+  if (available && !planesScreenCreated && dashboardScreen != nullptr) {
+#if !HODINY_BOARD_LCD7
     createPlanesPage(dashboardScreen);
+#endif
+    planesScreenCreated = true;
   }
   if (planesFeatureAvailable == available) return;
   planesFeatureAvailable = available;
@@ -8239,127 +8336,162 @@ const char *planesEmergencyText(const char *code) {
   return english ? "EMERGENCY" : "NOUZE";
 }
 
-void updatePlanesDetail(const PlaneRadarDetail &detail) {
-  if (planesDetailPanel == nullptr) return;
-  if (!detail.open) {
-    lv_obj_add_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
-    return;
-  }
+// Detail letadla do modelu (PlaneDetailViewModel): popisky a hodnoty zvlášť.
+void composePlaneDetailModel(const PlaneRadarDetail &detail) {
+  PlaneDetailViewModel &model = viewModels().planeDetail;
+  ++model.revision;
+  model.open = detail.open;
+  if (!detail.open) return;
   const bool english = englishLanguage();
   const bool metric = dashboardRuntimeConfig.planes.metricUnits;
 
   // Nadpis: callsign, nebo ICAO adresa, když ho letadlo nevysílá.
-  lv_label_set_text(planesDetailTitle,
-                    detail.callsign[0] != '\0'
-                        ? detail.callsign
-                        : (detail.hex[0] != '\0' ? detail.hex : "?"));
+  strlcpy(model.title,
+          detail.callsign[0] != '\0' ? detail.callsign
+                                     : (detail.hex[0] != '\0' ? detail.hex : "?"),
+          sizeof(model.title));
 
-  char line[48];
-  uint8_t row = 0;
-  if (metric) {
-    snprintf(line, sizeof(line), "%s: %d m", english ? "ALTITUDE" : "VÝŠKA",
+  const auto setRow = [&](uint8_t row, const char *caption) {
+    strlcpy(model.captions[row], caption, sizeof(model.captions[row]));
+  };
+  setRow(0, english ? "ALTITUDE" : "VÝŠKA");
+  if (metric)
+    snprintf(model.values[0], sizeof(model.values[0]), "%d m",
              static_cast<int>(std::lround(detail.altitudeFt * 0.3048f)));
-  } else {
-    snprintf(line, sizeof(line), "%s: %d ft", english ? "ALTITUDE" : "VÝŠKA",
+  else
+    snprintf(model.values[0], sizeof(model.values[0]), "%d ft",
              static_cast<int>(std::lround(detail.altitudeFt)));
-  }
-  lv_label_set_text(planesDetailRows[row++], line);
 
-  if (metric) {
-    snprintf(line, sizeof(line), "%s: %d km/h", english ? "SPEED" : "RYCHLOST",
+  setRow(1, english ? "SPEED" : "RYCHLOST");
+  if (metric)
+    snprintf(model.values[1], sizeof(model.values[1]), "%d km/h",
              static_cast<int>(std::lround(detail.groundSpeedKt * 1.852f)));
-  } else {
-    snprintf(line, sizeof(line), "%s: %d kt", english ? "SPEED" : "RYCHLOST",
+  else
+    snprintf(model.values[1], sizeof(model.values[1]), "%d kt",
              static_cast<int>(std::lround(detail.groundSpeedKt)));
-  }
-  lv_label_set_text(planesDetailRows[row++], line);
 
-  if (detail.hasTrack) {
-    snprintf(line, sizeof(line), "%s: %d°", english ? "TRACK" : "SMĚR",
+  setRow(2, english ? "TRACK" : "SMĚR");
+  if (detail.hasTrack)
+    snprintf(model.values[2], sizeof(model.values[2]), "%d°",
              static_cast<int>(std::lround(detail.trackDeg)));
-  } else {
-    snprintf(line, sizeof(line), "%s: %s", english ? "TRACK" : "SMĚR",
-             english ? "unknown" : "neznámý");
-  }
-  lv_label_set_text(planesDetailRows[row++], line);
+  else
+    strlcpy(model.values[2], english ? "unknown" : "neznámý", sizeof(model.values[2]));
 
   // Stoupání a klesání se pozná ze znaménka. Šipka by byla hezčí, jenže písmo
   // clock_czech_16 je česká podmnožina a trojúhelníkové šipky v něm nejsou -
   // LVGL by nenakreslilo nic a řádek by končil prázdnou mezerou.
-  if (metric) {
-    snprintf(line, sizeof(line), "%s: %+.1f m/s",
-             english ? "CLIMB" : "STOUPÁNÍ",
+  setRow(3, english ? "CLIMB" : "STOUPÁNÍ");
+  if (metric)
+    snprintf(model.values[3], sizeof(model.values[3]), "%+.1f m/s",
              static_cast<double>(detail.verticalRateFtMin * 0.00508f));
-  } else {
-    snprintf(line, sizeof(line), "%s: %+d ft/min",
-             english ? "CLIMB" : "STOUPÁNÍ",
+  else
+    snprintf(model.values[3], sizeof(model.values[3]), "%+d ft/min",
              static_cast<int>(std::lround(detail.verticalRateFtMin)));
-  }
-  lv_label_set_text(planesDetailRows[row++], line);
 
   // Typ vypsaný slovy. "C152" pozná málokdo, "CESSNA 152" skoro každý. Server
   // jméno pošle jen u letadel ze své databáze; když ho nemá, stojí tu aspoň
   // zkratka. Obojí veze táž odpověď jako polohu, tedy zadarmo.
   const char *typeText = detail.description[0] != '\0' ? detail.description
                                                        : detail.type;
-  if (typeText[0] != '\0' || detail.registration[0] != '\0') {
-    snprintf(line, sizeof(line), "%s: %s", english ? "TYPE" : "TYP",
-             typeText[0] != '\0' ? typeText : "?");
-  } else {
-    line[0] = '\0';
-  }
-  lv_label_set_text(planesDetailRows[row++], line);
+  if (typeText[0] != '\0' || detail.registration[0] != '\0')
+    strlcpy(model.type, typeText[0] != '\0' ? typeText : "?", sizeof(model.type));
+  else
+    model.type[0] = '\0';
 
   // Registrace pod typem, bez nadpisu - "OK-SCT" se pozná samo. Za ní zdroj:
   // vlastní přijímač (ADS-B doma, "rx":1 od serveru), nebo jen internet.
-  // Řádek má volnou šířku, takže se vejde obojí a panel nemění rozměry.
-  const char *sourceText = detail.ownReceiver
-                               ? (english ? "own receiver" : "vlastní přijímač")
-                               : (english ? "internet" : "internet");
-  if (detail.registration[0] != '\0') {
-    snprintf(line, sizeof(line), "%s  ·  %s", detail.registration, sourceText);
-  } else {
-    snprintf(line, sizeof(line), "%s", sourceText);
-  }
-  lv_label_set_text(planesDetailRegistration, line);
+  strlcpy(model.registration, detail.registration, sizeof(model.registration));
+  strlcpy(model.source,
+          detail.ownReceiver ? (english ? "own receiver" : "vlastní přijímač")
+                             : (english ? "internet" : "internet"),
+          sizeof(model.source));
 
   // Nouzový stav má vlastní řádek, ne náhradní místo po typu: letadlo, které
   // hlásí typ nebo registraci, by o něm jinak neřeklo vůbec nic.
-  if (detail.emergency[0] != '\0') {
-    snprintf(line, sizeof(line), "#FF4848 %s  %s#", detail.emergency,
+  if (detail.emergency[0] != '\0')
+    snprintf(model.emergency, sizeof(model.emergency), "%s  %s", detail.emergency,
              planesEmergencyText(detail.emergency));
-  } else {
-    line[0] = '\0';
-  }
-  lv_label_set_text(planesDetailRows[row++], line);
+  else
+    model.emergency[0] = '\0';
 
   // Trasa. Spousta letů žádnou nemá - všeobecné letectví, vojenské stroje,
   // vrtulníky - a to je normální stav, ne chyba. Dřív po nich zůstalo prázdné
   // místo, nerozeznatelné od hledání, které ještě běží; teď se to napíše.
+  for (char *caption : model.routeCaption) caption[0] = '\0';
+  model.route[1][0] = '\0';
   switch (detail.routeState) {
     case PlaneRouteState::Pending:
-      lv_label_set_text(planesDetailRouteFrom,
-                        english ? "Looking up route..." : "Zjišťuji trasu...");
-      lv_label_set_text(planesDetailRouteTo, "");
+      strlcpy(model.route[0], english ? "Looking up route..." : "Zjišťuji trasu...",
+              sizeof(model.route[0]));
       break;
     case PlaneRouteState::Known:
-      snprintf(line, sizeof(line), "%s: %s", english ? "From" : "Z",
-               detail.route.from[0] != '\0' ? detail.route.from : "?");
-      lv_label_set_text(planesDetailRouteFrom, line);
-      snprintf(line, sizeof(line), "%s: %s", english ? "To" : "Do",
-               detail.route.to[0] != '\0' ? detail.route.to : "?");
-      lv_label_set_text(planesDetailRouteTo, line);
+      strlcpy(model.routeCaption[0], english ? "From" : "Z", sizeof(model.routeCaption[0]));
+      strlcpy(model.route[0], detail.route.from[0] != '\0' ? detail.route.from : "?",
+              sizeof(model.route[0]));
+      strlcpy(model.routeCaption[1], english ? "To" : "Do", sizeof(model.routeCaption[1]));
+      strlcpy(model.route[1], detail.route.to[0] != '\0' ? detail.route.to : "?",
+              sizeof(model.route[1]));
       break;
     case PlaneRouteState::Unknown:
-      lv_label_set_text(planesDetailRouteFrom,
-                        english ? "Route unknown" : "Trasa neznámá");
-      lv_label_set_text(planesDetailRouteTo, "");
+      strlcpy(model.route[0], english ? "Route unknown" : "Trasa neznámá",
+              sizeof(model.route[0]));
       break;
   }
 
   // Dokud letadlo v datech chybí, čísla nejsou živá; přiznat to je poctivější
   // než nechat zmrzlé hodnoty vypadat jako aktuální.
-  if (detail.signalLost) {
+  model.signalLost = detail.signalLost;
+}
+
+// Kulatý panel detailu z modelu.
+void updatePlanesDetail() {
+  if (planesDetailPanel == nullptr) return;
+  const PlaneDetailViewModel &model = viewModels().planeDetail;
+  if (!model.open) {
+    lv_obj_add_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const bool english = englishLanguage();
+  lv_label_set_text(planesDetailTitle, model.title);
+
+  char line[48];
+  uint8_t row = 0;
+  for (uint8_t index = 0; index < PlaneDetailViewModel::VALUE_ROWS; ++index) {
+    snprintf(line, sizeof(line), "%s: %s", model.captions[index], model.values[index]);
+    lv_label_set_text(planesDetailRows[row++], line);
+  }
+
+  if (model.type[0] != '\0')
+    snprintf(line, sizeof(line), "%s: %s", english ? "TYPE" : "TYP", model.type);
+  else
+    line[0] = '\0';
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  // Řádek má volnou šířku, takže se vejde registrace i zdroj a panel nemění
+  // rozměry.
+  if (model.registration[0] != '\0')
+    snprintf(line, sizeof(line), "%s  ·  %s", model.registration, model.source);
+  else
+    snprintf(line, sizeof(line), "%s", model.source);
+  lv_label_set_text(planesDetailRegistration, line);
+
+  if (model.emergency[0] != '\0')
+    snprintf(line, sizeof(line), "#FF4848 %s#", model.emergency);
+  else
+    line[0] = '\0';
+  lv_label_set_text(planesDetailRows[row++], line);
+
+  lv_obj_t *const routeLabels[2] = {planesDetailRouteFrom, planesDetailRouteTo};
+  for (uint8_t index = 0; index < 2; ++index) {
+    if (model.routeCaption[index][0] != '\0')
+      snprintf(line, sizeof(line), "%s: %s", model.routeCaption[index],
+               model.route[index]);
+    else
+      snprintf(line, sizeof(line), "%s", model.route[index]);
+    lv_label_set_text(routeLabels[index], line);
+  }
+
+  if (model.signalLost) {
     lv_label_set_text(planesDetailSignalLost,
                       english ? "signal lost" : "signál ztracen");
     lv_obj_clear_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN);
@@ -8379,11 +8511,7 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
                                      const char *message, bool loading,
                                      bool haveAircraftData,
                                      const PlaneRadarDetail &detail) {
-  if (planesCanvas == nullptr || planesStatusLabel == nullptr ||
-      planesRangeLabel == nullptr) {
-    return;
-  }
-  const bool english = englishLanguage();
+  composePlaneDetailModel(detail);
 #if HODINY_BOARD_LCD7
   planesLcd7.shownCount = shownCount;
   planesLcd7.watchedVisible = watchedVisible;
@@ -8398,6 +8526,11 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
   ++planesLcd7.revision;
   lcd7::planesFrameChanged(pixels);
 #endif
+  if (planesCanvas == nullptr || planesStatusLabel == nullptr ||
+      planesRangeLabel == nullptr) {
+    return;
+  }
+  const bool english = englishLanguage();
 
   if (pixels != nullptr) {
     lv_canvas_set_buffer(planesCanvas, const_cast<uint16_t *>(pixels),
@@ -8438,7 +8571,7 @@ void clockDashboardSetPlanesSnapshot(const uint16_t *pixels, uint8_t shownCount,
   alignCenter(planesRangeLabel, 0, PLANES_RANGE_OFFSET_Y);
 
   updatePlanesClockLabel();
-  updatePlanesDetail(detail);
+  updatePlanesDetail();
 }
 
 namespace {
@@ -8550,7 +8683,7 @@ void updateSatellitesClockLabel() {
   if (satellitesClockLabel == nullptr) return;
   char text[48];
   // Stejný přepínač stavového řádku jako na obou radarech.
-  if (!radarStatusLineEnabled ||
+  if (!ROUND_SATELLITES_TEXT_SHOWN || !radarStatusLineEnabled ||
       !composeStatusLineText(text, sizeof(text))) {
     lv_obj_add_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -8681,7 +8814,8 @@ bool formatSatellitePass(const SatellitePass &pass, char *text, size_t capacity)
 void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
   if (satellitesPassLabel == nullptr) return;
   char text[128];
-  if (!formatSatellitePass(snapshot.pass, text, sizeof(text))) {
+  if (!ROUND_SATELLITES_TEXT_SHOWN ||
+      !formatSatellitePass(snapshot.pass, text, sizeof(text))) {
     lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -8890,8 +9024,8 @@ void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
   setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesStatusLabel, text);
   alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
-  // Obloha ho může schovat, když nemá co říct.
-  lv_obj_clear_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  // Obloha ho může schovat, když nemá co říct. Na 7" má počet družic sloupec.
+  setObjectVisible(satellitesStatusLabel, ROUND_SATELLITES_TEXT_SHOWN);
 
   updateSatellitesPassLabel(snapshot);
   updateSatellitesClockLabel();
@@ -9083,6 +9217,10 @@ void clockDashboardSetSatellitesSkyPage(bool sky) {
     lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
   satellitesSkyPage = sky;
   hideSkyLabels();
+  // Řádek oblohy (tma, Kp) do stránky družic na 7" nepatří a počet družic,
+  // který by ho jinak přepsal, se tam neukazuje.
+  if (!sky && !ROUND_SATELLITES_TEXT_SHOWN && satellitesStatusLabel != nullptr)
+    lv_obj_add_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
   // Do příchodu prvního snímku druhé stránky zůstane vidět ta první;
   // plátno se proto schová a vrátí se s dalším snímkem.
   if (satellitesCanvas != nullptr)
@@ -9255,9 +9393,12 @@ void clockDashboardSetSkyVisible(bool visible) {
 void clockDashboardSetSkyAvailable(bool available) {
 #if HODINY_BOARD_LCD7
   // 7" samostatnou obrazovku Slunce a Měsíc nemá: údaje ukazuje sloupec
-  // družic. Stránka ale vzniká vždycky (skrytá), protože skládá texty
-  // a kotouč Měsíce, ze kterých sloupec čte.
-  if (skyPage == nullptr && dashboardScreen != nullptr) createSkyPage(dashboardScreen);
+  // družic z modelu (SkyViewModel) a kotouč Měsíce ze skyMoonPixels. Kulatá
+  // stránka nevzniká.
+  if (skyMoonPixels == nullptr) {
+    allocateSkyMoonPixels();
+    updateSkyPage();
+  }
   available = false;
 #endif
   // Stránka se zakládá až s prvním zapnutím obrazovky, stejně jako agenda.
@@ -9298,8 +9439,11 @@ void clockDashboardSetAgendaVisibilityCallback(
 void clockDashboardSetAgendaAvailable(bool available) {
   // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji majitel
   // nechce, nestojí ani jeden objekt LVGL.
-  if (available && agendaPage == nullptr && dashboardScreen != nullptr) {
+  if (available && !agendaScreenCreated && dashboardScreen != nullptr) {
+#if !HODINY_BOARD_LCD7
     createAgendaPage(dashboardScreen);
+#endif
+    agendaScreenCreated = true;
   }
   if (agendaFeatureAvailable == available) return;
   agendaFeatureAvailable = available;
@@ -9320,16 +9464,14 @@ void clockDashboardSetAgendaAvailable(bool available) {
 
 void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
                                    bool ready) {
-  if (agendaPage == nullptr) return;
-  ++agendaRevision;
+  if (!agendaScreenCreated) return;
+  AgendaViewModel &model = viewModels().agenda;
+  ++model.revision;
   if (count > CLOCK_AGENDA_MAX_ITEMS) count = CLOCK_AGENDA_MAX_ITEMS;
-  agendaVisibleItemCount = count;
+  model.count = count;
   agendaEllipsisRow = -1;
-  for (size_t index = 0; index < CLOCK_AGENDA_MAX_ITEMS; ++index) {
-    agendaRowStartsDay[index] = false;
-  }
+  for (AgendaRowViewModel &row : model.rows) row.startsDay = false;
   const bool showMessage = count == 0;
-  setObjectVisible(agendaStatusLabel, showMessage);
   if (showMessage) {
     // Text si obrazovka skládá sama, aby se přepnutím jazyka přeložil i on.
     // Úspěšné stažení prázdného kalendáře není chyba: den bez události je
@@ -9343,7 +9485,12 @@ void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
     } else {
       text = englishLanguage() ? "Loading agenda..." : "Načítám agendu...";
     }
-    lv_label_set_text(agendaStatusLabel, text);
+    strlcpy(model.status, text, sizeof(model.status));
+  }
+  if (agendaPage == nullptr) return;
+  setObjectVisible(agendaStatusLabel, showMessage);
+  if (showMessage) {
+    lv_label_set_text(agendaStatusLabel, model.status);
     // Řádky po předchozím naplnění musí zmizet, jinak by hláška ležela přes ně.
     layoutAgendaItems();
   }
@@ -9353,32 +9500,37 @@ void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
 void clockDashboardSetAgendaItem(size_t index, const char *day,
                                  const char *time, const char *title,
                                  uint8_t calendar) {
-  if (agendaPage == nullptr || index >= agendaVisibleItemCount) return;
+  AgendaViewModel &model = viewModels().agenda;
+  if (!agendaScreenCreated || index >= model.count) return;
+  AgendaRowViewModel &row = model.rows[index];
+  row.startsDay = day != nullptr && day[0] != '\0';
+  strlcpy(row.day, row.startsDay ? day : "", sizeof(row.day));
+  strlcpy(row.time, time != nullptr ? time : "", sizeof(row.time));
+  strlcpy(row.title, title != nullptr ? title : "", sizeof(row.title));
+  row.calendar = calendar;
+  ++model.revision;
+
+  if (agendaPage == nullptr) return;
   lv_obj_t *dayLabel = agendaDayLabels[index];
   lv_obj_t *timeLabel = agendaTimeLabels[index];
   lv_obj_t *titleLabel = agendaTitleLabels[index];
   if (dayLabel == nullptr || timeLabel == nullptr || titleLabel == nullptr) {
     return;
   }
-
-  const bool startsDay = day != nullptr && day[0] != '\0';
-  agendaRowStartsDay[index] = startsDay;
-  if (startsDay) lv_label_set_text(dayLabel, day);
-
-  const bool hasTime = time != nullptr && time[0] != '\0';
-  lv_label_set_text(timeLabel, hasTime ? time : AGENDA_ALL_DAY_MARK);
-  agendaRowCalendar[index] = calendar;
+  if (row.startsDay) lv_label_set_text(dayLabel, row.day);
+  // Celodenní událost nemá čas; kulatá stránka místo něj píše pomlčku.
+  lv_label_set_text(timeLabel, row.time[0] != '\0' ? row.time : AGENDA_ALL_DAY_MARK);
   setTextColor(timeLabel, agendaCalendarColor(calendar));
-  lv_label_set_text(titleLabel, title != nullptr ? title : "");
+  lv_label_set_text(titleLabel, row.title);
 
   // Rozmístit jde až po posledním řádku: dřív není známo, kde leží hranice dnů,
   // a řádek s hlavičkou je o její výšku vyšší než ostatní.
-  if (index + 1 == agendaVisibleItemCount) layoutAgendaItems();
+  if (index + 1 == model.count) layoutAgendaItems();
 }
 
 void clockDashboardSetAgendaCalendars(const char *const *names, size_t count,
                                       const char *updated) {
-  ++agendaRevision;
+  ++viewModels().agenda.revision;
   strlcpy(agendaUpdated, updated != nullptr ? updated : "",
           sizeof(agendaUpdated));
   if (count > AGENDA_MAX_CALENDARS) count = AGENDA_MAX_CALENDARS;
@@ -9725,74 +9877,45 @@ bool clockDashboardAutomaticRotationAllowed() {
   return !settingsVisible && !firmwareUpdateActive;
 }
 
-void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
-                                    const char *frameTime, uint16_t radiusKm,
-                                    const char *message, bool loading,
-                                    bool fullPreparationInProgress,
-                                    bool latestFrame,
-                                    uint8_t currentFrameNumber,
-                                    uint8_t animationFrameCount,
-                                    uint16_t displayedRadiusKm, bool mapOnly) {
-  if (radarCanvas == nullptr || radarStatusLabel == nullptr ||
-      radarTitleLabel == nullptr || radarRangeLabel == nullptr)
-    return;
-  radarFullPreparationInProgress = fullPreparationInProgress;
-  const bool haveFrame = pixels != nullptr;
-  if (haveFrame) {
-    lv_canvas_set_buffer(radarCanvas, const_cast<uint16_t *>(pixels),
-                         CHMI_RADAR_VIEW_WIDTH, CHMI_RADAR_VIEW_HEIGHT,
-                         LV_IMG_CF_TRUE_COLOR);
-    lv_obj_clear_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_invalidate(radarCanvas);
-  }
-#if HODINY_BOARD_LCD7
-  lcd7::radarFrameChanged(pixels);
-#endif
-  updateRadarFrameDots(haveFrame ? animationFrameCount : 0, currentFrameNumber);
-  updateRadarRangeDots(radiusKm);
-  updateOverlayStatusLabels();
-
-  // Bez jediného snímku není co překrývat: doprostřed přijde hláška a zbytek
-  // výbavy obrazovky se schová, aby prázdný kruh nevypadal jako porucha.
+// Hláška, řádek o snímku a rozsah do modelu radaru (RadarViewModel).
+void composeRadarModel(bool haveFrame, const char *frameTime, uint16_t radiusKm,
+                       bool busy, bool latestFrame, uint8_t currentFrameNumber,
+                       uint16_t displayedRadiusKm, bool mapOnly) {
+  RadarViewModel &model = viewModels().radar;
+  ++model.revision;
+  model.haveFrame = haveFrame;
+  if (haveFrame) model.frameShown = true;
+  // Bez snímku jen hláška; řádek o snímku a rozsah zůstanou z minula.
   if (!haveFrame) {
-    lv_label_set_text(radarStatusLabel,
-                      radarEmptyStateText(loading || fullPreparationInProgress));
-    alignCenter(radarStatusLabel, 0, 0);
-    lv_obj_clear_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(radarTitleLabel, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(radarRangeLabel, LV_OBJ_FLAG_HIDDEN);
+    strlcpy(model.status, radarEmptyStateText(busy), sizeof(model.status));
     return;
   }
-  lv_obj_add_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
 
   // Řádek o snímku: nejnovější se pojmenuje "NYNÍ" a zezelená, starší nese
   // svoje stáří. Bez zelené v nočním červeném režimu, kde by byla jediná
   // barevná věc na displeji.
-  char frameText[48];
+  char *frameText = model.frame;
+  const size_t frameCapacity = sizeof(model.frame);
   const bool haveTime = frameTime != nullptr && frameTime[0] != '\0';
   if (haveTime && latestFrame) {
     const bool highlight = !redNightVisualEnabled();
-    snprintf(frameText, sizeof(frameText), "%s%s %s%s",
+    snprintf(frameText, frameCapacity, "%s%s %s%s",
              highlight ? "#65FF45 " : "", englishLanguage() ? "NOW" : "NYNÍ",
              frameTime, highlight ? "#" : "");
   } else if (haveTime) {
     const int minutesAgo = radarFrameMinutesAgo(frameTime);
     if (minutesAgo > 0)
-      snprintf(frameText, sizeof(frameText), "-%d %s  %s", minutesAgo,
+      snprintf(frameText, frameCapacity, "-%d %s  %s", minutesAgo,
                englishLanguage() ? "min" : "min", frameTime);
     else
-      snprintf(frameText, sizeof(frameText), "%s", frameTime);
+      snprintf(frameText, frameCapacity, "%s", frameTime);
   } else if (currentFrameNumber == 0 && !mapOnly) {
     // Zatím jen podkladová mapa: na místo času snímku patří, že se radar
     // načítá. Prázdný řádek vypadal, jako by se nic nedělo.
-    snprintf(frameText, sizeof(frameText), "%s",
-             radarEmptyStateText(loading || fullPreparationInProgress));
+    snprintf(frameText, frameCapacity, "%s", radarEmptyStateText(busy));
   } else {
     frameText[0] = '\0';
   }
-  lv_label_set_text(radarTitleLabel, frameText);
-  alignCenter(radarTitleLabel, 0, RADAR_FRAME_LABEL_OFFSET_Y);
-  setObjectVisible(radarTitleLabel, frameText[0] != '\0');
 
   // Rozsah dole nad svými tečkami. Zdroj dat se nejmenuje: vybírá se
   // v nastavení a mění se nanejvýš jednou za život hodin, takže by na každém
@@ -9801,13 +9924,71 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
   // který vybrané přiblížení opravdu dává.
   // Verzálkami: z háčků a čárek mají dashboardové fonty jen ty nad velkými
   // písmeny, takže malé "á" v "Celá ČR" by skončilo prázdným čtverečkem.
-  char rangeText[40];
   if (radiusKm == 0)
-    snprintf(rangeText, sizeof(rangeText), "%s",
+    snprintf(model.range, sizeof(model.range), "%s",
              englishLanguage() ? "ALL OF CZECHIA" : "CELÁ ČR");
   else
-    snprintf(rangeText, sizeof(rangeText), "%u km", displayedRadiusKm);
-  lv_label_set_text(radarRangeLabel, rangeText);
+    snprintf(model.range, sizeof(model.range), "%u km", displayedRadiusKm);
+  model.rangeKm = radiusKm;
+}
+
+void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
+                                    const char *frameTime, uint16_t radiusKm,
+                                    const char *message, bool loading,
+                                    bool fullPreparationInProgress,
+                                    bool latestFrame,
+                                    uint8_t currentFrameNumber,
+                                    uint8_t animationFrameCount,
+                                    uint16_t displayedRadiusKm, bool mapOnly) {
+  const bool haveFrame = pixels != nullptr;
+#if HODINY_BOARD_LCD7
+  // 7" kreslí z modelu a vlastního plátna; kulatá stránka mu není potřeba.
+  radarFullPreparationInProgress = fullPreparationInProgress;
+  composeRadarModel(haveFrame, frameTime, radiusKm,
+                    loading || fullPreparationInProgress, latestFrame,
+                    currentFrameNumber, displayedRadiusKm, mapOnly);
+  lcd7::radarFrameChanged(pixels);
+  // Počet snímků a právě zobrazený snímek pro tečky ve sloupci 7".
+  updateRadarFrameDots(haveFrame ? animationFrameCount : 0, currentFrameNumber);
+#endif
+  if (radarCanvas == nullptr || radarStatusLabel == nullptr ||
+      radarTitleLabel == nullptr || radarRangeLabel == nullptr)
+    return;
+#if !HODINY_BOARD_LCD7
+  radarFullPreparationInProgress = fullPreparationInProgress;
+  composeRadarModel(haveFrame, frameTime, radiusKm,
+                    loading || fullPreparationInProgress, latestFrame,
+                    currentFrameNumber, displayedRadiusKm, mapOnly);
+#endif
+  const RadarViewModel &model = viewModels().radar;
+  if (haveFrame) {
+    lv_canvas_set_buffer(radarCanvas, const_cast<uint16_t *>(pixels),
+                         CHMI_RADAR_VIEW_WIDTH, CHMI_RADAR_VIEW_HEIGHT,
+                         LV_IMG_CF_TRUE_COLOR);
+    lv_obj_clear_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(radarCanvas);
+  }
+  updateRadarFrameDots(haveFrame ? animationFrameCount : 0, currentFrameNumber);
+  updateRadarRangeDots(radiusKm);
+  updateOverlayStatusLabels();
+
+  // Bez jediného snímku není co překrývat: doprostřed přijde hláška a zbytek
+  // výbavy obrazovky se schová, aby prázdný kruh nevypadal jako porucha.
+  if (!haveFrame) {
+    lv_label_set_text(radarStatusLabel, model.status);
+    alignCenter(radarStatusLabel, 0, 0);
+    lv_obj_clear_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(radarTitleLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(radarRangeLabel, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_obj_add_flag(radarStatusLabel, LV_OBJ_FLAG_HIDDEN);
+
+  lv_label_set_text(radarTitleLabel, model.frame);
+  alignCenter(radarTitleLabel, 0, RADAR_FRAME_LABEL_OFFSET_Y);
+  setObjectVisible(radarTitleLabel, model.frame[0] != '\0');
+
+  lv_label_set_text(radarRangeLabel, model.range);
   alignCenter(radarRangeLabel, 0, RADAR_RANGE_LABEL_OFFSET_Y);
   lv_obj_clear_flag(radarRangeLabel, LV_OBJ_FLAG_HIDDEN);
 }
@@ -9847,7 +10028,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
   if (active) {
     clockDashboardSetFirmwareUpdateBlack(false);
     lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+    if (radarPage != nullptr) lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     if (agendaPage != nullptr) lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
     if (schoolPage != nullptr) lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_HIDDEN);
@@ -9882,13 +10063,12 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     if (settingsVisible) {
       lv_obj_clear_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     } else if (activeScreen == DASHBOARD_SCREEN_RADAR) {
-      lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+      if (radarPage != nullptr) lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
       if (radarVisibilityCallback != nullptr) radarVisibilityCallback(true);
     } else if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr) {
       lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
-    } else if (activeScreen == DASHBOARD_SCREEN_AGENDA &&
-               agendaPage != nullptr) {
-      lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_AGENDA && agendaScreenCreated) {
+      if (agendaPage != nullptr) lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
       // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
       // služba by zůstala vypnutá a už nikdy nic nestáhla.
       if (agendaVisibilityCallback != nullptr) agendaVisibilityCallback(true);
@@ -9899,9 +10079,8 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     } else if (activeScreen == DASHBOARD_SCREEN_FORECAST &&
                forecastPage != nullptr) {
       lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
-    } else if (activeScreen == DASHBOARD_SCREEN_PLANES &&
-               planesPage != nullptr) {
-      lv_obj_clear_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_PLANES && planesScreenCreated) {
+      if (planesPage != nullptr) lv_obj_clear_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
       // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
       // služba by zůstala vypnutá a už nikdy nic nestáhla.
       if (planesVisibilityCallback != nullptr) planesVisibilityCallback(true);
@@ -9970,11 +10149,12 @@ void clockDashboardSetLightningAlert(bool active, float nearestKm) {
     else
       strlcpy(text, LV_SYMBOL_CHARGE " <1 km", sizeof(text));
   }
-  if (active == lightningAlertActive &&
-      strcmp(lv_label_get_text(lightningStatusLabel), text) == 0)
-    return;
+  LightningViewModel &model = viewModels().lightning;
+  if (active == lightningAlertActive && strcmp(model.text, text) == 0) return;
   lightningAlertActive = active;
-  lv_label_set_text(lightningStatusLabel, text);
+  model.active = active;
+  strlcpy(model.text, text, sizeof(model.text));
+  lv_label_set_text(lightningStatusLabel, model.text);
   if (valuesLightningLabel != nullptr) {
     lv_label_set_text(valuesLightningLabel, text);
     alignCenter(valuesLightningLabel, 0, 208);
@@ -10012,8 +10192,13 @@ void clockDashboardSetWebMode(uint8_t mode) {
 void clockDashboardSetDate(const char *dateText) {
   if (firmwareUpdateActive) return;
   if (valuesDateLabel != nullptr) lv_label_set_text(valuesDateLabel, dateText);
-  if (strcmp(lv_label_get_text(dateLabel), dateText) == 0) return;
-  lv_label_set_text(dateLabel, dateText);
+  DateViewModel &model = viewModels().date;
+  if (strcmp(model.date, dateText) != 0) {
+    strlcpy(model.date, dateText, sizeof(model.date));
+    ++model.revision;
+  }
+  if (strcmp(lv_label_get_text(dateLabel), model.date) == 0) return;
+  lv_label_set_text(dateLabel, model.date);
   alignCenter(dateLabel, 0, analogLayoutEnabled() ? -142 : -43);
 }
 
@@ -10024,9 +10209,14 @@ void clockDashboardSetNameday(const char *nameday) {
     lv_label_set_text(valuesNamedayLabel, value);
     alignCenter(valuesNamedayLabel, 0, -108);
   }
+  DateViewModel &model = viewModels().date;
+  if (strcmp(model.nameday, value) != 0) {
+    strlcpy(model.nameday, value, sizeof(model.nameday));
+    ++model.revision;
+  }
   if (namedayLabel == nullptr) return;
-  if (strcmp(lv_label_get_text(namedayLabel), value) == 0) return;
-  lv_label_set_text(namedayLabel, value);
+  if (strcmp(lv_label_get_text(namedayLabel), model.nameday) == 0) return;
+  lv_label_set_text(namedayLabel, model.nameday);
   alignCenter(namedayLabel, 0, analogLayoutEnabled() ? -123 : -20);
 }
 
