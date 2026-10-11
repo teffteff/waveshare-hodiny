@@ -725,16 +725,63 @@ constexpr uint32_t HISTORY_INTERVAL_MS = 15UL * 60UL * 1000UL;
 
 struct History {
   float values[CLOCK_VALUE_SLOT_COUNT][HISTORY_POINTS];
-  uint8_t head;   // kam padne příští vzorek
-  uint8_t count;  // kolik vzorků je platných
+  uint8_t head;      // kam padne příští vzorek
+  uint8_t count;     // kolik vzorků je platných
+  uint8_t measured;  // kolik nejnovějších vzorků se naměřilo od startu
   uint32_t version;
 };
 History *history = nullptr;
 uint32_t lastHistorySampleAt = 0;
 
+// Průběh za 24 h z Home Assistantu po startu (clockDashboardLcd7StageHistory).
+// Plní ho úloha HA, do historie ho přelije až úloha loop, která historii
+// jediná čte - přes tuhle odkládací kopii pod zámkem.
+struct StagedHistory {
+  float values[CLOCK_VALUE_SLOT_COUNT][HISTORY_POINTS];
+  bool slots[CLOCK_VALUE_SLOT_COUNT];
+  bool pending;
+};
+StagedHistory *stagedHistory = nullptr;
+portMUX_TYPE stagedHistoryMux = portMUX_INITIALIZER_UNLOCKED;
+
 void allocateHistory() {
   history = static_cast<History *>(
       heap_caps_calloc(1, sizeof(History), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  stagedHistory = static_cast<StagedHistory *>(
+      heap_caps_calloc(1, sizeof(StagedHistory), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
+void stageHistory(size_t slot, const float *buckets) {
+  if (stagedHistory == nullptr || slot >= CLOCK_VALUE_SLOT_COUNT) return;
+  portENTER_CRITICAL(&stagedHistoryMux);
+  memcpy(stagedHistory->values[slot], buckets, sizeof(stagedHistory->values[slot]));
+  stagedHistory->slots[slot] = true;
+  stagedHistory->pending = true;
+  portEXIT_CRITICAL(&stagedHistoryMux);
+}
+
+// Doplní historii odloženým průběhem. Vzorky naměřené od startu mají
+// přednost; odložený průběh vyplní jen místa, kde vzorek chybí.
+void applyStagedHistory() {
+  if (stagedHistory == nullptr || history == nullptr || !stagedHistory->pending) return;
+  portENTER_CRITICAL(&stagedHistoryMux);
+  for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot) {
+    if (!stagedHistory->slots[slot]) continue;
+    for (size_t age = 0; age < HISTORY_POINTS; ++age) {
+      const size_t index = (history->head + HISTORY_POINTS - 1 - age) % HISTORY_POINTS;
+      // Odložený průběh se přelévá po částech, jak úloha HA stahuje entity;
+      // naměřené vzorky od startu poznáme podle počtu, ne podle obsahu.
+      const bool live = age < history->measured && !std::isnan(history->values[slot][index]);
+      if (!live) history->values[slot][index] = stagedHistory->values[slot][HISTORY_POINTS - 1 - age];
+    }
+    stagedHistory->slots[slot] = false;
+  }
+  stagedHistory->pending = false;
+  portEXIT_CRITICAL(&stagedHistoryMux);
+  // Bez naměřeného vzorku by první přidaný přepsal nejnovější odložený;
+  // nejstarší místo kruhu je správně na indexu head.
+  history->count = HISTORY_POINTS;
+  ++history->version;
 }
 
 float slotReadingForHistory(size_t slotIndex) {
@@ -748,6 +795,7 @@ void recordHistorySample() {
     history->values[slot][history->head] = slotReadingForHistory(slot);
   history->head = (history->head + 1) % HISTORY_POINTS;
   if (history->count < HISTORY_POINTS) ++history->count;
+  if (history->measured < HISTORY_POINTS) ++history->measured;
   ++history->version;
   lastHistorySampleAt = millis();
 }
@@ -756,6 +804,7 @@ void recordHistorySample() {
 // HISTORY_INTERVAL_MS.
 void maintainHistory() {
   if (history == nullptr) return;
+  applyStagedHistory();
   if (history->count > 0) {
     if (millis() - lastHistorySampleAt >= HISTORY_INTERVAL_MS) recordHistorySample();
     return;
@@ -800,10 +849,13 @@ struct Tile {
   lv_obj_t *value;
   lv_obj_t *unit;
   lv_obj_t *battery;
-  lv_obj_t *spark;
-  lv_obj_t *since;
   lv_obj_t *range;
+  // Průběh za 24 h v souřadnicích dlaždice; kreslí ho drawTileHistory.
   lv_point_t points[HISTORY_POINTS];
+  uint16_t pointCount;
+  lv_coord_t graphBottom;
+  lv_color_t graphColor;
+  bool night;
   uint32_t drawnVersion;
   size_t drawnSlot;
   lv_coord_t drawnWidth;
@@ -842,6 +894,47 @@ struct ValuesView {
   Tile tiles[CLOCK_VALUE_PAGE_SLOT_COUNT];
 } values;
 
+// Průběh za 24 h přes celou šířku dlaždice pod číslem: jemně vyplněná
+// plocha a čára v barvě hodnoty. Kreslí se po pozadí dlaždice a před
+// popisky, takže číslo zůstává navrchu.
+void drawTileHistory(lv_event_t *event) {
+  const Tile &tile = *static_cast<const Tile *>(lv_event_get_user_data(event));
+  if (tile.pointCount < 2) return;
+  lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(event);
+  lv_area_t area;
+  lv_obj_get_coords(lv_event_get_target(event), &area);
+  lv_draw_rect_dsc_t fill;
+  lv_draw_rect_dsc_init(&fill);
+  fill.bg_color = tile.graphColor;
+  fill.bg_opa = tile.night ? LV_OPA_10 : LV_OPA_20;
+  lv_draw_line_dsc_t stroke;
+  lv_draw_line_dsc_init(&stroke);
+  stroke.color = tile.graphColor;
+  stroke.width = 2;
+  stroke.opa = tile.night ? LV_OPA_50 : LV_OPA_70;
+  stroke.round_start = 1;
+  stroke.round_end = 1;
+  const lv_coord_t bottom = area.y1 + tile.graphBottom;
+  for (uint16_t index = 1; index < tile.pointCount; ++index) {
+    const lv_point_t a = {static_cast<lv_coord_t>(area.x1 + tile.points[index - 1].x),
+                          static_cast<lv_coord_t>(area.y1 + tile.points[index - 1].y)};
+    const lv_point_t b = {static_cast<lv_coord_t>(area.x1 + tile.points[index].x),
+                          static_cast<lv_coord_t>(area.y1 + tile.points[index].y)};
+    // O pixel přes sousední úsek: vyhlazené hrany by jinak mezi úseky
+    // nechaly tenké svislé škvíry.
+    const lv_coord_t right = static_cast<lv_coord_t>(b.x + 1);
+    const lv_point_t quad[4] = {a, {right, b.y}, {right, bottom}, {a.x, bottom}};
+    lv_draw_polygon(ctx, &fill, quad, 4);
+  }
+  for (uint16_t index = 1; index < tile.pointCount; ++index) {
+    const lv_point_t a = {static_cast<lv_coord_t>(area.x1 + tile.points[index - 1].x),
+                          static_cast<lv_coord_t>(area.y1 + tile.points[index - 1].y)};
+    const lv_point_t b = {static_cast<lv_coord_t>(area.x1 + tile.points[index].x),
+                          static_cast<lv_coord_t>(area.y1 + tile.points[index].y)};
+    lv_draw_line(ctx, &stroke, &a, &b);
+  }
+}
+
 void createValues(lv_obj_t *screen) {
   ValuesView &v = values;
   v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -859,13 +952,9 @@ void createValues(lv_obj_t *screen) {
     tile.unit = label(tile.box, &lcd7_text18, TILE_PAD, 52);
     tile.battery = label(tile.box, &lv_font_montserrat_16, 0, 10);
     lv_label_set_text(tile.battery, LV_SYMBOL_BATTERY_EMPTY);
-    tile.spark = lv_line_create(tile.box);
-    lv_obj_set_style_line_width(tile.spark, 2, 0);
-    lv_obj_set_style_line_rounded(tile.spark, true, 0);
-    lv_obj_add_flag(tile.spark, LV_OBJ_FLAG_HIDDEN);
-    tile.since = label(tile.box, &lcd7_text15, TILE_PAD, 0);
-    lv_label_set_text(tile.since, "před 24 h");
-    tile.range = label(tile.box, &lcd7_text15, 0, 0);
+    tile.range = label(tile.box, &lcd7_text15, 0, 10);
+    tile.pointCount = 0;
+    lv_obj_add_event_cb(tile.box, drawTileHistory, LV_EVENT_DRAW_MAIN_END, &tile);
     tile.drawnVersion = UINT32_MAX;
   }
 }
@@ -926,10 +1015,11 @@ void placeTile(Tile &tile, size_t position, size_t count) {
   setPosition(tile.box, x, y);
 }
 
-void showSparkline(Tile &tile, size_t slotIndex, const ValueSlotDisplay &display,
-                   lv_color_t color, const Palette &p, lv_coord_t tileWidth,
-                   lv_coord_t tileHeight, lv_coord_t sparkY,
-                   lv_coord_t sparkHeight, bool tall) {
+// Rozsah za 24 h vpravo nahoře a průběh přes spodní část dlaždice. Osa x je
+// vždy celých 24 h, nejnovější vzorek vpravo; mezery bez hodnoty se přeskočí.
+void showHistory(Tile &tile, size_t slotIndex, const ValueSlotDisplay &display,
+                 lv_color_t color, const Palette &p, lv_coord_t tileWidth,
+                 lv_coord_t tileHeight, bool batteryShown) {
   const size_t count = history == nullptr ? 0 : history->count;
   float low = NAN;
   float high = NAN;
@@ -942,43 +1032,9 @@ void showSparkline(Tile &tile, size_t slotIndex, const ValueSlotDisplay &display
     ++valid;
   }
   const bool visible = valid >= 2;
-  setVisible(tile.spark, visible);
-  setVisible(tile.since, visible && tall);
-  setVisible(tile.range, visible && tall);
-  if (!visible) return;
-  if (lv_color_to32(lv_obj_get_style_line_color(tile.spark, 0)) != lv_color_to32(color))
-    lv_obj_set_style_line_color(tile.spark, color, 0);
-  setColor(tile.since, p.muted);
-  setColor(tile.range, p.muted);
-
-  if (tile.drawnVersion == history->version && tile.drawnSlot == slotIndex &&
-      tile.drawnWidth == tileWidth && tile.drawnHeight == tileHeight)
-    return;
-  tile.drawnVersion = history->version;
-  tile.drawnSlot = slotIndex;
-  tile.drawnWidth = tileWidth;
-  tile.drawnHeight = tileHeight;
-
-  // Osa x je vždy celých 24 h, nejnovější vzorek vpravo; mezery bez
-  // hodnoty čára přeskočí.
-  const lv_coord_t width = tileWidth - 2 * TILE_PAD;
-  const float span = high - low > 1e-6f ? high - low : 1.0f;
-  uint16_t points = 0;
-  for (size_t age = count; age-- > 0;) {
-    const float value = historyAt(slotIndex, age);
-    if (std::isnan(value)) continue;
-    const lv_coord_t x = static_cast<lv_coord_t>(
-        width - 1 - static_cast<int32_t>(age) * (width - 1) / (HISTORY_POINTS - 1));
-    const lv_coord_t y = static_cast<lv_coord_t>(
-        high - low > 1e-6f ? (high - value) / span * (sparkHeight - 2) + 1
-                           : sparkHeight / 2);
-    tile.points[points++] = {x, y};
-  }
-  lv_line_set_points(tile.spark, tile.points, points);
-  setPosition(tile.spark, TILE_PAD, sparkY);
-  if (tall) {
-    const lv_coord_t captionY = tileHeight - 10 - lv_font_get_line_height(&lcd7_text15);
-    setPosition(tile.since, TILE_PAD, captionY);
+  setVisible(tile.range, visible);
+  lv_coord_t titleWidth = tileWidth - 2 * TILE_PAD - 24;
+  if (visible) {
     char lowText[16];
     char highText[16];
     char text[40];
@@ -986,10 +1042,55 @@ void showSparkline(Tile &tile, size_t slotIndex, const ValueSlotDisplay &display
     formatValue(highText, sizeof(highText), high, display.decimals);
     snprintf(text, sizeof(text), "%s – %s", lowText, highText);
     setText(tile.range, text);
+    setColor(tile.range, p.muted);
     lv_obj_update_layout(tile.range);
-    setPosition(tile.range, tileWidth - TILE_PAD - lv_obj_get_width(tile.range),
-                captionY);
+    const lv_coord_t right = tileWidth - TILE_PAD - (batteryShown ? 28 : 0);
+    setPosition(tile.range, right - lv_obj_get_width(tile.range), 10);
+    titleWidth = std::max<lv_coord_t>(
+        40, right - lv_obj_get_width(tile.range) - 10 - TILE_PAD);
   }
+  if (lv_obj_get_width(tile.title) != titleWidth) lv_obj_set_width(tile.title, titleWidth);
+  const bool colorChanged = lv_color_to32(tile.graphColor) != lv_color_to32(color) ||
+                            tile.night != p.night;
+  tile.graphColor = color;
+  tile.night = p.night;
+  if (!visible) {
+    if (tile.pointCount != 0) {
+      tile.pointCount = 0;
+      lv_obj_invalidate(tile.box);
+    }
+    return;
+  }
+  if (tile.drawnVersion == history->version && tile.drawnSlot == slotIndex &&
+      tile.drawnWidth == tileWidth && tile.drawnHeight == tileHeight) {
+    if (colorChanged) lv_obj_invalidate(tile.box);
+    return;
+  }
+  tile.drawnVersion = history->version;
+  tile.drawnSlot = slotIndex;
+  tile.drawnWidth = tileWidth;
+  tile.drawnHeight = tileHeight;
+
+  // Spodní třetina dlaždice pod číslem, nad okrajem.
+  const lv_coord_t graphTop = tileHeight * 68 / 100;
+  const lv_coord_t graphHeight = tileHeight - 8 - graphTop;
+  tile.graphBottom = tileHeight - 4;
+  const lv_coord_t width = tileWidth - 2 * TILE_PAD;
+  const float span = high - low > 1e-6f ? high - low : 1.0f;
+  uint16_t points = 0;
+  for (size_t age = count; age-- > 0;) {
+    const float value = historyAt(slotIndex, age);
+    if (std::isnan(value)) continue;
+    const lv_coord_t x = static_cast<lv_coord_t>(
+        TILE_PAD + width - 1 -
+        static_cast<int32_t>(age) * (width - 1) / (HISTORY_POINTS - 1));
+    const lv_coord_t y = static_cast<lv_coord_t>(
+        graphTop + (high - low > 1e-6f ? (high - value) / span * graphHeight
+                                       : graphHeight / 2));
+    tile.points[points++] = {x, y};
+  }
+  tile.pointCount = points;
+  lv_obj_invalidate(tile.box);
 }
 
 void syncValues(const Palette &p) {
@@ -1047,19 +1148,14 @@ void syncValues(const Palette &p) {
     const lv_font_t *font = large ? &lcd7_number72 : &lcd7_number44;
     if (lv_obj_get_style_text_font(tile.value, 0) != font)
       lv_obj_set_style_text_font(tile.value, font, 0);
-    // Pod číslem čára průběhu; ve vysoké dlaždici i popisek s rozsahem.
-    const bool tall = tileHeight >= 150;
-    const lv_coord_t captionHeight = tall ? lv_font_get_line_height(&lcd7_text15) + 4 : 0;
-    const lv_coord_t sparkHeight = tall ? 56 : 24;
-    const lv_coord_t sparkY = tileHeight - 12 - captionHeight - sparkHeight;
-    // Číslo uprostřed plochy mezi názvem a čárou.
+    // Číslo hned pod názvem, průběh za 24 h ve spodní třetině pod ním.
     const lv_coord_t titleBottom = 10 + lv_font_get_line_height(&lcd7_text15);
-    setPosition(tile.value, TILE_PAD,
-                titleBottom + (sparkY - titleBottom -
-                               lv_font_get_line_height(font)) / 2);
+    const lv_coord_t graphTop = tileHeight * 68 / 100;
+    const lv_coord_t free = graphTop - titleBottom - lv_font_get_line_height(font) * 3 / 4;
+    setPosition(tile.value, TILE_PAD, titleBottom - 8 + std::max<lv_coord_t>(0, free / 2));
     const lv_color_t color = scaled(p, reading, *display.colorScale);
-    showSparkline(tile, slotIndex, display, color, p, tileWidth, tileHeight,
-                  sparkY, sparkHeight, tall);
+    showHistory(tile, slotIndex, display, color, p, tileWidth, tileHeight,
+                batteryLow);
     setColor(tile.value, color);
     setColor(tile.unit, color);
     setColor(tile.title, p.muted);
@@ -2437,6 +2533,7 @@ struct PlanesView {
   lv_obj_t *detail[PLANES_DETAIL_LINES];
   lv_obj_t *values[PLANES_DETAIL_LINES];
   lv_obj_t *hint;
+  lv_obj_t *selection;
   StatusIcons icons;
   const uint16_t *pixels;
 } planes;
@@ -2448,6 +2545,16 @@ void createPlanes(lv_obj_t *screen) {
   v.canvas = lv_canvas_create(v.root);
   lv_obj_set_pos(v.canvas, 0, MAP_TOP);
   lv_obj_add_flag(v.canvas, LV_OBJ_FLAG_HIDDEN);
+  // Kroužek vybraného letadla nad mapou: ukáže se hned po klepnutí, mapa se
+  // mezitím teprve překresluje.
+  v.selection = lv_obj_create(v.root);
+  lv_obj_remove_style_all(v.selection);
+  lv_obj_set_size(v.selection, 34, 34);
+  lv_obj_set_style_radius(v.selection, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(v.selection, 2, 0);
+  lv_obj_set_style_border_color(v.selection, COLOR_TEXT, 0);
+  lv_obj_clear_flag(v.selection, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(v.selection, LV_OBJ_FLAG_HIDDEN);
   // Sloupec pod lištou: čas, datum a tečky obrazovek jsou v liště.
   v.column = panel(v.root, PLANES_COLUMN_X, MAP_TOP + 1, PLANES_COLUMN_W,
                    SCREEN_HEIGHT - MAP_TOP - 1);
@@ -2537,6 +2644,16 @@ void syncPlanes(const Palette &p) {
   // Detail vybraného letadla, nebo nápověda.
   const bool open = planesDetailPanel != nullptr &&
                     !lv_obj_has_flag(planesDetailPanel, LV_OBJ_FLAG_HIDDEN);
+  int16_t selectedX = 0;
+  int16_t selectedY = 0;
+  const bool ring = planeRadarServiceSelectedPoint(selectedX, selectedY);
+  setVisible(v.selection, ring && v.pixels != nullptr);
+  if (ring) {
+    setPosition(v.selection, selectedX - 17, MAP_TOP + selectedY - 17);
+    if (lv_color_to32(lv_obj_get_style_border_color(v.selection, 0)) !=
+        lv_color_to32(p.text))
+      lv_obj_set_style_border_color(v.selection, p.text, 0);
+  }
   setVisible(v.title, open);
   setVisible(v.hint, !open && planesLcd7.haveAircraftData);
   setText(v.hint, englishLanguage() ? "Tap a plane for details"

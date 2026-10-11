@@ -25,6 +25,7 @@
 #include "TrafficService.h"
 #include "SharedFrames.h"
 #include "MemoryCensus.h"
+#include "HaHistoryBuckets.h"
 #include "AgendaService.h"
 #include "SchoolService.h"
 #include "Astronomy.h"
@@ -104,6 +105,8 @@ ClockAppearanceConfig activeAppearance;
 ClockAppearanceConfig pendingAppearance;
 SemaphoreHandle_t runtimeConfigMutex = nullptr;
 TaskHandle_t homeAssistantTaskHandle = nullptr;
+// USB HISTORYRELOAD: znovu načíst průběh hodnot z historie HA (7").
+volatile bool historyReloadRequested = false;
 TaskHandle_t rssTaskHandle = nullptr;
 TaskHandle_t agendaTaskHandle = nullptr;
 TaskHandle_t schoolTaskHandle = nullptr;
@@ -2559,6 +2562,10 @@ void handleUsbCommands() {
         previewClockAppearanceFromWeb(appearance);
         Serial.println("CLOCKSTYLE_SET");
 #if HODINY_BOARD_LCD7
+      } else if (usbCommand == "HISTORYRELOAD") {
+        historyReloadRequested = true;
+        if (homeAssistantTaskHandle != nullptr) xTaskNotifyGive(homeAssistantTaskHandle);
+        Serial.println("HISTORY_RELOAD");
       } else if (usbCommand == "HISTORYDEMO" && !screenshotTransferActive) {
         clockDashboardLcd7HistoryDemo();
         Serial.println("HISTORY_DEMO");
@@ -3616,6 +3623,81 @@ bool fetchHomeAssistantStates(const ClockConfig &config, ClockValues &values,
   return fetchHomeAssistantStates(client, config, values, includeBatteries);
 }
 
+#if HODINY_BOARD_LCD7
+// Průběh hodnot za 24 h z historie Home Assistantu, aby dlaždice 7" měly
+// graf hned po startu, ne až za den. Jedna entita na dotaz; odpověď (u čidla
+// měnícího se každou minutu desítky kB) se čte po kouscích (HaHistoryBuckets).
+void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config) {
+  constexpr size_t POINTS = 96;
+  constexpr int64_t STEP = 15 * 60;
+  const time_t now = time(nullptr);
+  if (now < VALID_TIME_THRESHOLD) return;
+  const int64_t start = static_cast<int64_t>(now) - POINTS * STEP;
+  const time_t startTime = static_cast<time_t>(start);
+  struct tm utc;
+  gmtime_r(&startTime, &utc);
+  char startText[24];
+  strftime(startText, sizeof(startText), "%Y-%m-%dT%H:%M:%SZ", &utc);
+  static float buckets[POINTS];
+  for (size_t slotIndex = 0; slotIndex < CLOCK_VALUE_SLOT_COUNT; ++slotIndex) {
+    const ClockValueSlotConfig &slot = clockConfigValueSlot(config, slotIndex);
+    if (!slot.enabled || slot.entityId[0] == '\0') continue;
+    NetworkOperationGuard networkGuard(HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
+    if (!networkGuard) return;
+    const String url = String(config.homeAssistantUrl) + "/api/history/period/" +
+                       startText + "?filter_entity_id=" + slot.entityId +
+                       "&minimal_response&no_attributes";
+    HTTPClient http;
+    http.useHTTP10(true);  // bez chunked kódování, tělo jde rovnou ze socketu
+    http.setConnectTimeout(HOME_ASSISTANT_CONNECT_TIMEOUT_MS);
+    http.setTimeout(HOME_ASSISTANT_RESPONSE_TIMEOUT_MS);
+    if (!http.begin(client, url)) continue;
+    http.addHeader("Authorization", String("Bearer ") + config.homeAssistantToken);
+    http.addHeader("Accept", "application/json");
+    if (http.GET() != HTTP_CODE_OK) {
+      http.end();
+      continue;
+    }
+    HaHistoryBuckets parser(start, STEP, POINTS);
+    NetworkClient *stream = http.getStreamPtr();
+    char chunk[512];
+    unsigned long lastDataAt = millis();
+    while (http.connected() || stream->available()) {
+      const int available = stream->available();
+      if (available <= 0) {
+        if (millis() - lastDataAt > HOME_ASSISTANT_RESPONSE_TIMEOUT_MS) break;
+        delay(5);
+        continue;
+      }
+      const int read = stream->readBytes(chunk, std::min<int>(available, sizeof(chunk)));
+      if (read <= 0) break;
+      parser.feed(chunk, static_cast<size_t>(read));
+      lastDataAt = millis();
+    }
+    http.end();
+    const size_t records = parser.finish(buckets);
+    if (records > 0) clockDashboardLcd7StageHistory(slotIndex, buckets);
+    Serial.printf("[historie] %s: %u zaznamu, %.1f %.1f %.1f\n", slot.entityId,
+                  static_cast<unsigned>(records), buckets[0], buckets[POINTS / 2],
+                  buckets[POINTS - 1]);
+  }
+}
+
+void fetchHomeAssistantHistory(const ClockConfig &config) {
+  if (config.homeAssistantUrl[0] == '\0' || config.homeAssistantToken[0] == '\0')
+    return;
+  if (String(config.homeAssistantUrl).startsWith("https://")) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
+    streamHomeAssistantHistory(client, config);
+    return;
+  }
+  WiFiClient client;
+  streamHomeAssistantHistory(client, config);
+}
+#endif
+
 bool fetchDayNightStates(NetworkClient &client, const ClockConfig &config,
                          ClockValues &values) {
   values.sunStateAvailable = false;
@@ -4177,6 +4259,17 @@ void homeAssistantTask(void *) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
       continue;
     }
+#if HODINY_BOARD_LCD7
+    // Jednou po startu, až HA poprvé odpoví a je známý čas (a na USB
+    // HISTORYRELOAD).
+    static bool historyLoaded = false;
+    if ((!historyLoaded || historyReloadRequested) &&
+        time(nullptr) >= VALID_TIME_THRESHOLD) {
+      historyLoaded = true;
+      historyReloadRequested = false;
+      fetchHomeAssistantHistory(config);
+    }
+#endif
 
     const unsigned long fullRefreshAt = millis() + HOME_ASSISTANT_REFRESH_MS;
     while (static_cast<long>(millis() - fullRefreshAt) < 0) {

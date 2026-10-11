@@ -39,6 +39,7 @@ run_test day_night_logic "$FIRMWARE_DIR/DayNightLogic.cpp" "$FIRMWARE_DIR/Astron
 run_test astronomy "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test screen_schedule "$FIRMWARE_DIR/ScreenSchedule.cpp" "$FIRMWARE_DIR/Astronomy.cpp" || failures=$((failures + 1))
 run_test semver "$FIRMWARE_DIR/SemVer.cpp" || failures=$((failures + 1))
+run_test ha_history "$FIRMWARE_DIR/HaHistoryBuckets.cpp" || failures=$((failures + 1))
 run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1))
 run_test home_assistant_connection_policy || failures=$((failures + 1))
 run_test clock_config "$FIRMWARE_DIR/ClockConfig.cpp" || failures=$((failures + 1))

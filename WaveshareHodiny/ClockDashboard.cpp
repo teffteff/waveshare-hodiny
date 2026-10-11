@@ -39,6 +39,7 @@ void create();
 void sync(bool force);
 void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
+void stageHistory(size_t slot, const float *buckets);
 void rssTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
 void trafficFrameChanged(const uint16_t *pixels);
@@ -8187,6 +8188,8 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   x = static_cast<int16_t>(x + STAGE_X);
   y = static_cast<int16_t>(y - (SCREEN_HEIGHT - PLANE_RADAR_HEIGHT));
   if (x >= PLANE_RADAR_WIDTH || y < 0) return;
+  if (planeRadarServiceHandleTap(x, y)) lcd7::sync(true);
+  return;
 #endif
   planeRadarServiceHandleTap(x, y);
 }
@@ -10437,6 +10440,12 @@ bool clockDashboardTrafficMapPage() {
 
 #if HODINY_BOARD_LCD7
 #include "ClockDashboardLcd7.h"
+#endif
+
+#if HODINY_BOARD_LCD7
+void clockDashboardLcd7StageHistory(size_t slot, const float *buckets) {
+  lcd7::stageHistory(slot, buckets);
+}
 #endif
 
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE

@@ -131,6 +131,10 @@ bool planeRadarServiceHandleTap(int16_t x, int16_t y);
 void planeRadarServiceChangeRange(int8_t direction);
 
 bool planeRadarServiceDetailOpen();
+// Kde na posledním nakresleném snímku leží vybrané letadlo (pixely obrazu).
+// 7" podle toho kreslí kroužek výběru hned po klepnutí, ne až s dalším
+// snímkem. false bez výběru nebo když letadlo na snímku není.
+bool planeRadarServiceSelectedPoint(int16_t &x, int16_t &y);
 // Zavře detail; používá to podržení prstu, kterým se odchází na jinou
 // obrazovku.
 void planeRadarServiceCloseDetail();

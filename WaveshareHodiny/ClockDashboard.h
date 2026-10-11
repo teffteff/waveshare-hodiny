@@ -305,6 +305,12 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                                     uint8_t animationFrameCount,
                                     uint16_t displayedRadiusKm, bool mapOnly);
 
+#if HODINY_BOARD_LCD7
+// Průběh slotu za 24 h z Home Assistantu: 96 hodnot po 15 minutách od
+// nejstarší, NAN = mezera. Volá úloha HA, je bezpečné.
+void clockDashboardLcd7StageHistory(size_t slot, const float *buckets);
+#endif
+
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
 // Vyplní průběh hodnot ukázkou, aby šel screenshot dlaždic bez čekání 24 h.
 void clockDashboardLcd7HistoryDemo();

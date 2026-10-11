@@ -1013,7 +1013,8 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
 
     // Vybrané letadlo dostane bílý kroužek: barva ikony teď nese výšku a
     // azurová seděla příliš blízko modré hladinové.
-    if (static_cast<int>(entry.index) == selectedIndex)
+    // Na 7" kreslí kroužek výběru obrazovka nad mapou, hned po klepnutí.
+    if (!RECTANGULAR_VIEW && static_cast<int>(entry.index) == selectedIndex)
       drawMapCircle(pixels, x, y, 16, paletteColor(COLOR_WHITE), 100);
     // Nouze červený kroužek, hlídaný let zelený, nízký přelet azurový,
     // vojenské purpurové. Všechny širší než výběr, aby byly vidět na první
@@ -1808,6 +1809,22 @@ void planeRadarServiceChangeRange(int8_t direction) {
   }
   portEXIT_CRITICAL(&stateMux);
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+}
+
+bool planeRadarServiceSelectedPoint(int16_t &x, int16_t &y) {
+  bool found = false;
+  portENTER_CRITICAL(&stateMux);
+  if (selectedHex[0] != '\0') {
+    for (uint8_t index = 0; index < planePointCount; ++index) {
+      if (strcmp(planePoints[index].hex, selectedHex) != 0) continue;
+      x = planePoints[index].x;
+      y = planePoints[index].y;
+      found = true;
+      break;
+    }
+  }
+  portEXIT_CRITICAL(&stateMux);
+  return found;
 }
 
 bool planeRadarServiceDetailOpen() {
