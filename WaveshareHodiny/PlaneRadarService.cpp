@@ -204,6 +204,9 @@ bool redrawRequested = false;
 // ukazoval na úplně jiné letadlo.
 char selectedHex[8] = "";
 uint8_t selectionMissCount = 0;
+// Dosah se změnil s otevřeným detailem (7"): když vybrané letadlo v novém
+// stažení není, je mimo dosah a pouští se hned, bez lhůty "signál ztracen".
+bool selectionRangeChanged = false;
 AdsbAircraft selectionCache;
 bool selectionCacheValid = false;
 
@@ -1343,6 +1346,8 @@ void reconcileSelection() {
     return;
   }
   const int index = adsbFindByHex(liveList, aircraftCount, selectedHex);
+  const bool rangeChanged = selectionRangeChanged;
+  selectionRangeChanged = false;
   if (index >= 0) {
     selectionMissCount = 0;
     selectionCache = liveList[index];
@@ -1365,7 +1370,7 @@ void reconcileSelection() {
         routeFetchQueued = true;
       }
     }
-  } else if (++selectionMissCount > DETAIL_GRACE_POLLS) {
+  } else if (rangeChanged || ++selectionMissCount > DETAIL_GRACE_POLLS) {
     selectedHex[0] = '\0';
     selectionMissCount = 0;
     selectionCacheValid = false;
@@ -1788,8 +1793,9 @@ bool planeRadarServiceHandleTap(int16_t x, int16_t y) {
 void planeRadarServiceChangeRange(int8_t direction) {
   bool notify = false;
   portENTER_CRITICAL(&stateMux);
-  // S otevřeným detailem se dosah nemění - nejdřív se zavírá.
-  if (selectedHex[0] == '\0') {
+  // Na kulatém detail zakrývá mapu, takže se s ním dosah nemění - nejdřív se
+  // zavírá. Na 7" je detail ve sloupci vedle mapy a dosah jde měnit vždycky.
+  if (HODINY_BOARD_LCD7 || selectedHex[0] == '\0') {
     // Na krajích se zastaví, nepřeskočí dokola - stejně jako dosah
     // meteoradaru. Skok ze sta kilometrů rovnou na deset by navíc rozjel
     // zbytečné stažení.
@@ -1804,6 +1810,7 @@ void planeRadarServiceChangeRange(int8_t direction) {
       // sedla jinam a jejich počet by nesouhlasil. Do stažení se proto
       // nekreslí a místo počtu svítí "Načítám letadla...".
       aircraftStale = true;
+      if (selectedHex[0] != '\0') selectionRangeChanged = true;
       notify = true;
     }
   }
