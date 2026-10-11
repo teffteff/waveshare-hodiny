@@ -109,6 +109,7 @@ h2 { margin-bottom: 18px; font-size: clamp(2rem, 4vw, 3.6rem); line-height: 1.04
 .firmware-select-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: .8rem; text-align: left; }
 .firmware-select { width: 100%; margin-bottom: 14px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--text); font: inherit; cursor: pointer; }
 .firmware-select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.firmware-select-label[hidden], .firmware-select[hidden] { display: none; }
 .firmware-select:disabled { cursor: wait; opacity: .62; }
 .install-action { width: 100%; font-size: 1rem; }
 esp-web-install-button:not([ready]) { display: none; }
