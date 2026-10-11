@@ -11,9 +11,9 @@
 // jeden malý dotaz za deset minut. Co ukázat na radaru a kdy přepnout
 // obrazovku, rozhoduje smyčka v hodinách, stejně jako u deště.
 //
-// Vlastní úloha je tu ze stejného důvodu jako u deště a blesků: adresu zadává
-// majitel, takže se ověřuje proti svazku kořenů Mozilly, a na to je potřeba
-// výrazně větší zásobník, než má úloha home-assistant.
+// Dotaz běží ze stejného důvodu jako u deště a blesků mimo úlohu
+// home-assistant (svazek kořenů Mozilly potřebuje větší zásobník), jako krok
+// společného pracovníka net-poll (NetPoll.h).
 
 struct WeatherWarningStatus {
   // Roste s každou úspěšnou odpovědí, aby obrazovka poznala změnu.

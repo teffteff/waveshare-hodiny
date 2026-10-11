@@ -43,6 +43,7 @@
 #include "LightningService.h"
 #include "NetworkDiagnostics.h"
 #include "NetworkCoordinator.h"
+#include "NetPoll.h"
 #include "TlsBundle.h"
 #include "TlsMemory.h"
 #include "TmepService.h"
@@ -108,10 +109,12 @@ SemaphoreHandle_t runtimeConfigMutex = nullptr;
 TaskHandle_t homeAssistantTaskHandle = nullptr;
 // USB HISTORYRELOAD: znovu načíst průběh hodnot z historie HA (7").
 volatile bool historyReloadRequested = false;
-TaskHandle_t rssTaskHandle = nullptr;
-TaskHandle_t agendaTaskHandle = nullptr;
-TaskHandle_t schoolTaskHandle = nullptr;
-TaskHandle_t forecastTaskHandle = nullptr;
+// Kroky textového pracovníka net-text (NetPoll.h); -1, dokud nejsou
+// zaregistrované. netPollWake() nahrazuje dřívější notifikaci vlastních úloh.
+int rssJob = -1;
+int agendaJob = -1;
+int schoolJob = -1;
+int forecastJob = -1;
 String usbCommand;
 bool screenshotTransferActive = false;
 unsigned long displayResyncAt = 0;
@@ -470,10 +473,10 @@ bool saveRuntimeConfig(const ClockConfig &config, bool tokenWasSubmitted) {
   if (homeAssistantTaskHandle != nullptr) xTaskNotifyGive(homeAssistantTaskHandle);
   // Bez tohoto by se změna adresy nebo zapnutí kanálu projevily až po
   // doběhnutí nastaveného intervalu, tedy klidně za dvě hodiny.
-  if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
-  if (agendaTaskHandle != nullptr) xTaskNotifyGive(agendaTaskHandle);
-  if (schoolTaskHandle != nullptr) xTaskNotifyGive(schoolTaskHandle);
-  if (forecastTaskHandle != nullptr) xTaskNotifyGive(forecastTaskHandle);
+  netPollWake(rssJob);
+  netPollWake(agendaJob);
+  netPollWake(schoolJob);
+  netPollWake(forecastJob);
   return true;
 }
 
@@ -760,7 +763,7 @@ void handleSettingsOpen() {
 // Kanál zpráv se stahuje na pozadí i se zavřenou obrazovkou, takže otevření
 // nic nezapíná; jen zkrátí čekání, když jsou zprávy v mezipaměti staré.
 void handleAgendaVisibility(bool visible) {
-  if (!visible || agendaTaskHandle == nullptr) return;
+  if (!visible || agendaJob < 0) return;
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigAgendaAvailable(config)) return;
   AgendaStatus status;
@@ -771,12 +774,12 @@ void handleAgendaVisibility(bool visible) {
       status.lastSuccessAgeMs < AGENDA_VISIBILITY_REFRESH_MS) {
     return;
   }
-  // Notifikace v agendaTask nuluje deadline, takže se stahuje hned.
-  xTaskNotifyGive(agendaTaskHandle);
+  // Probuzení kroku agendy nuluje deadline, takže se stahuje hned.
+  netPollWake(agendaJob);
 }
 
 void handleSchoolVisibility(bool visible) {
-  if (!visible || schoolTaskHandle == nullptr) return;
+  if (!visible || schoolJob < 0) return;
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigSchoolAvailable(config)) return;
   SchoolStatus status;
@@ -785,11 +788,11 @@ void handleSchoolVisibility(bool visible) {
       status.lastSuccessAgeMs < SCHOOL_VISIBILITY_REFRESH_MS) {
     return;
   }
-  xTaskNotifyGive(schoolTaskHandle);
+  netPollWake(schoolJob);
 }
 
 void handleRssVisibility(bool visible) {
-  if (!visible || rssTaskHandle == nullptr) return;
+  if (!visible || rssJob < 0) return;
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigRssAvailable(config)) return;
   RssStatus status;
@@ -802,8 +805,8 @@ void handleRssVisibility(bool visible) {
       status.lastSuccessAgeMs < RSS_VISIBILITY_REFRESH_MS) {
     return;
   }
-  // Notifikace v rssTask nuluje deadline, takže se stahuje hned.
-  xTaskNotifyGive(rssTaskHandle);
+  // Probuzení kroku zpráv nuluje deadline, takže se stahuje hned.
+  netPollWake(rssJob);
 }
 
 // Přijme zkoušku kanálu z web serveru a počká na úlohu kanálu, která ji
@@ -813,7 +816,7 @@ bool runAgendaProbeFromWeb(const ClockAgendaConfig &config,
                            const ClockAgendaCalendarsConfig &calendars,
                            int &httpStatus, String &error) {
   error = "";
-  if (agendaTaskHandle == nullptr) {
+  if (agendaJob < 0) {
     error = F("Úloha agendy neběží.");
     return false;
   }
@@ -828,7 +831,7 @@ bool runAgendaProbeFromWeb(const ClockAgendaConfig &config,
   agendaProbeRequest.error[0] = '\0';
   agendaProbeDone = false;
   agendaProbePending = true;
-  xTaskNotifyGive(agendaTaskHandle);
+  netPollWake(agendaJob);
 
   const unsigned long deadline = millis() + AGENDA_PROBE_TIMEOUT_MS;
   while (!agendaProbeDone) {
@@ -850,7 +853,7 @@ bool runAgendaProbeFromWeb(const ClockAgendaConfig &config,
 bool runSettingsShareFromWeb(const SettingsShareRequest &request,
                              SettingsShareResult &result) {
   result = SettingsShareResult{};
-  if (agendaTaskHandle == nullptr) {
+  if (agendaJob < 0) {
     strlcpy(result.error, "Úloha pro přenos zálohy neběží.",
             sizeof(result.error));
     return false;
@@ -862,7 +865,7 @@ bool runSettingsShareFromWeb(const SettingsShareRequest &request,
   settingsShareRequest = request;
   settingsShareDone = false;
   settingsSharePending = true;
-  xTaskNotifyGive(agendaTaskHandle);
+  netPollWake(agendaJob);
 
   const unsigned long deadline = millis() + SETTINGS_SHARE_TIMEOUT_MS;
   while (!settingsShareDone) {
@@ -930,7 +933,7 @@ bool runBackgroundWorkFromWeb(void (*work)(void *), void *context) {
 bool runSchoolProbeFromWeb(const ClockSchoolConfig &config, int &httpStatus,
                            String &error) {
   httpStatus = 0;
-  if (schoolTaskHandle == nullptr) {
+  if (schoolJob < 0) {
     error = F("Úloha rozvrhu neběží.");
     return false;
   }
@@ -944,7 +947,7 @@ bool runSchoolProbeFromWeb(const ClockSchoolConfig &config, int &httpStatus,
   schoolProbeRequest.error[0] = '\0';
   schoolProbeDone = false;
   schoolProbePending = true;
-  xTaskNotifyGive(schoolTaskHandle);
+  netPollWake(schoolJob);
 
   const unsigned long deadline = millis() + SCHOOL_PROBE_TIMEOUT_MS;
   while (!schoolProbeDone) {
@@ -1002,7 +1005,7 @@ bool runSatellitesProbeFromWeb(const ClockSatellitesConfig &config,
 bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
                         String &error) {
   httpStatus = 0;
-  if (rssTaskHandle == nullptr) {
+  if (rssJob < 0) {
     error = F("Úloha kanálu zpráv neběží.");
     return false;
   }
@@ -1019,7 +1022,7 @@ bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
   rssProbeRequest.error[0] = '\0';
   rssProbeDone = false;
   rssProbePending = true;
-  xTaskNotifyGive(rssTaskHandle);
+  netPollWake(rssJob);
 
   const unsigned long deadline = millis() + RSS_PROBE_TIMEOUT_MS;
   while (!rssProbeDone) {
@@ -1050,7 +1053,7 @@ bool runRssProbeFromWeb(const ClockRssConfig &config, int &httpStatus,
 void handleForecastVisibility(bool visible) {
   displayModeStartedAt = millis();
   automaticRotationPaused = false;
-  if (!visible || forecastTaskHandle == nullptr) return;
+  if (!visible || forecastJob < 0) return;
   const ClockConfig &config = loopConfigSnapshot();
   if (!clockConfigForecastAvailable(config)) return;
   WeatherForecastStatus status;
@@ -1060,8 +1063,8 @@ void handleForecastVisibility(bool visible) {
       status.lastSuccessAgeMs < FORECAST_VISIBILITY_REFRESH_MS) {
     return;
   }
-  // Notifikace ve forecastTask nuluje deadline, takže se stahuje hned.
-  xTaskNotifyGive(forecastTaskHandle);
+  // Probuzení kroku předpovědi nuluje deadline, takže se stahuje hned.
+  netPollWake(forecastJob);
 }
 
 void handleRadarVisibility(bool visible) {
@@ -2688,9 +2691,9 @@ void handleUsbCommands() {
         Serial.println(saveRuntimeConfig(config, true) ? "PLANES_SET"
                                                        : "PLANES_SET_FAILED");
       } else if (usbCommand == "RSSFETCH" && !screenshotTransferActive) {
-        // Notifikace v rssTask nuluje deadline, takže tohle opravdu vynutí
+        // Probuzení kroku zpráv nuluje deadline, takže tohle opravdu vynutí
         // stažení i uprostřed nastaveného intervalu.
-        if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
+        netPollWake(rssJob);
         Serial.println("RSS_FETCH_REQUESTED");
       } else if (usbCommand == "RSSSHOW" && !screenshotTransferActive) {
         // Otevření sériem: připojení k portu desku resetuje, takže ručně
@@ -2727,9 +2730,9 @@ void handleUsbCommands() {
         Serial.println(saveRuntimeConfig(config, true) ? "RADAR_SOURCE_SET"
                                                        : "RADAR_SOURCE_FAILED");
       } else if (usbCommand == "FORECASTFETCH" && !screenshotTransferActive) {
-        // Notifikace ve forecastTask nuluje deadline, takže tohle opravdu
+        // Probuzení kroku předpovědi nuluje deadline, takže tohle opravdu
         // vynutí stažení i uprostřed nastaveného intervalu.
-        if (forecastTaskHandle != nullptr) xTaskNotifyGive(forecastTaskHandle);
+        netPollWake(forecastJob);
         Serial.println("FORECAST_FETCH_REQUESTED");
       } else if (usbCommand == "FORECASTSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje,
@@ -2992,7 +2995,7 @@ void maintainNetworkTime() {
     }
     // Čas se právě synchronizoval, takže teď má smysl stáhnout zprávy: bez něj
     // by se u nich nedal spočítat místní čas vydání.
-    if (rssTaskHandle != nullptr) xTaskNotifyGive(rssTaskHandle);
+    netPollWake(rssJob);
     const ClockConfig &config = loopConfigSnapshot();
     const bool radarAvailable = clockConfigRadarAvailable(config);
     chmiRadarServiceSetActive(
@@ -3870,9 +3873,9 @@ int weatherCodeForState(const String &state) {
   return -1;
 }
 
-// Agenda má vlastní úlohu ze stejného důvodu jako kanál zpráv: adresu zadává
-// majitel, takže se ověřuje proti svazku kořenů Mozilly, a ten potřebuje
-// výrazně víc zásobníku než jeden připnutý kořen.
+// Agenda běží mimo home-assistant (v net-text) ze stejného důvodu jako kanál
+// zpráv: adresu zadává majitel, takže se ověřuje proti svazku kořenů Mozilly,
+// a ten potřebuje výrazně víc zásobníku než jeden připnutý kořen.
 // Vrací, za jak dlouho je další pokus, nebo 0, když se agenda nepoužívá.
 unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
                                   const ClockAgendaCalendarsConfig &calendars,
@@ -3938,45 +3941,63 @@ void runPendingAgendaProbe() {
   agendaProbePending = false;
 }
 
-void agendaTask(void *) {
+// Stav kroků textového pracovníka. Dřív ležel na zásobnících vlastních úloh
+// v PSRAM; adresy by ve statických proměnných braly vnitřní RAM, proto je
+// struktura v PSRAM (textJobsBegin). Čte a píše ji jen pracovník net-text.
+struct TextJobsState {
   unsigned long nextAgendaRefreshAt = 0;
   char lastAgendaUrl[CLOCK_AGENDA_URL_LENGTH] = "";
+  ClockAgendaCalendarsConfig lastCalendars;
+  unsigned long nextSchoolRefreshAt = 0;
+  char lastSchoolUrl[CLOCK_SCHOOL_URL_LENGTH] = "";
+  unsigned long nextRssRefreshAt = 0;
+  char lastRssUrl[CLOCK_RSS_URL_LENGTH] = "";
+  RssLocation lastRssLocation;
+  unsigned long nextForecastRefreshAt = 0;
+  unsigned long nextHistoryAt = 0;
+  bool forecastCacheHolds = false;
+  // Probuzení nuluje termíny předpovědi jen po čekání na další stažení, ne
+  // po čekání na síť - stejně jako dřív notifikace forecastTask.
+  bool forecastWakeResets = false;
+  float lastForecastLatitude = NAN;
+  float lastForecastLongitude = NAN;
+};
+TextJobsState *textJobs = nullptr;
+
+// Jeden průchod dřívější úlohy "agenda". Vrací, kdy ho pracovník zavolá znovu.
+uint32_t agendaStep(bool woken) {
+  TextJobsState &state = *textJobs;
+  // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
+  if (woken && !agendaProbePending && !settingsSharePending)
+    state.nextAgendaRefreshAt = 0;
+  // Zkouška z webu má přednost, stejně jako u kanálu zpráv.
+  if (agendaProbePending) {
+    runPendingAgendaProbe();
+    return 0;
+  }
+  if (settingsSharePending) {
+    settingsShareExecute(settingsShareRequest, settingsShareResult);
+    // Stejné pořadí jako u zkoušky: pending pouští další žádost, takže se
+    // nuluje až po zapsání výsledku.
+    settingsShareDone = true;
+    settingsSharePending = false;
+    return 0;
+  }
   ClockAgendaConfig config;
   ClockAgendaCalendarsConfig calendars;
-  ClockAgendaCalendarsConfig lastCalendars;
-  for (;;) {
-    // Zkouška z webu má přednost, stejně jako u kanálu zpráv.
-    if (agendaProbePending) {
-      runPendingAgendaProbe();
-      continue;
-    }
-    if (settingsSharePending) {
-      settingsShareExecute(settingsShareRequest, settingsShareResult);
-      // Stejné pořadí jako u zkoušky: pending pouští další žádost, takže se
-      // nuluje až po zapsání výsledku.
-      settingsShareDone = true;
-      settingsSharePending = false;
-      continue;
-    }
-    copyRuntimeAgendaConfig(config, calendars);
-    if (WiFi.status() != WL_CONNECTED) {
-      nextAgendaRefreshAt = 0;
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
-      continue;
-    }
-    const unsigned long waitMs =
-        maintainAgendaFetch(config, calendars, nextAgendaRefreshAt,
-                            lastAgendaUrl, sizeof(lastAgendaUrl), lastCalendars);
-    // Vypnutá agenda nemá kdy pokračovat sama; probudí ji až uložení nastavení.
-    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
-                                             : pdMS_TO_TICKS(waitMs)) > 0) {
-      // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
-      if (!agendaProbePending && !settingsSharePending) nextAgendaRefreshAt = 0;
-    }
+  copyRuntimeAgendaConfig(config, calendars);
+  if (WiFi.status() != WL_CONNECTED) {
+    state.nextAgendaRefreshAt = 0;
+    return HOME_ASSISTANT_RETRY_MS;
   }
+  const unsigned long waitMs = maintainAgendaFetch(
+      config, calendars, state.nextAgendaRefreshAt, state.lastAgendaUrl,
+      sizeof(state.lastAgendaUrl), state.lastCalendars);
+  // Vypnutá agenda nemá kdy pokračovat sama; probudí ji až uložení nastavení.
+  return waitMs == 0 ? NET_POLL_IDLE : waitMs;
 }
 
-// Škola má vlastní úlohu ze stejného důvodu jako agenda: adresu zadává
+// Škola běží v net-text ze stejného důvodu jako agenda: adresu zadává
 // majitel, ověřuje se proti svazku kořenů Mozilly a zásobník leží v PSRAM.
 // Vrací, za jak dlouho je další pokus, nebo 0, když se škola nepoužívá.
 unsigned long maintainSchoolFetch(const ClockSchoolConfig &config,
@@ -4013,44 +4034,39 @@ unsigned long maintainSchoolFetch(const ClockSchoolConfig &config,
   return interval;
 }
 
-void schoolTask(void *) {
-  unsigned long nextRefreshAt = 0;
-  char lastUrl[CLOCK_SCHOOL_URL_LENGTH] = "";
-  ClockSchoolConfig config;
-  for (;;) {
-    if (schoolProbePending) {
-      int httpStatus = 0;
-      String error;
-      const bool ok =
-          schoolServiceProbe(schoolProbeRequest.config, httpStatus, error);
-      schoolProbeRequest.httpStatus = httpStatus;
-      schoolProbeRequest.ok = ok;
-      strlcpy(schoolProbeRequest.error, error.c_str(),
-              sizeof(schoolProbeRequest.error));
-      // Pending pouští další žádost, takže se nuluje až po zapsání výsledku.
-      schoolProbeDone = true;
-      schoolProbePending = false;
-      continue;
-    }
-    copyRuntimeSchoolConfig(config);
-    if (WiFi.status() != WL_CONNECTED) {
-      nextRefreshAt = 0;
-      // Bez sítě se nestahuje, takže by stáří rozvrhu nikdo nehlídal.
-      schoolServiceExpireStale();
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
-      continue;
-    }
-    const unsigned long waitMs =
-        maintainSchoolFetch(config, nextRefreshAt, lastUrl, sizeof(lastUrl));
-    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
-                                             : pdMS_TO_TICKS(waitMs)) > 0) {
-      // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
-      if (!schoolProbePending) nextRefreshAt = 0;
-    }
+uint32_t schoolStep(bool woken) {
+  TextJobsState &state = *textJobs;
+  // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení.
+  if (woken && !schoolProbePending) state.nextSchoolRefreshAt = 0;
+  if (schoolProbePending) {
+    int httpStatus = 0;
+    String error;
+    const bool ok =
+        schoolServiceProbe(schoolProbeRequest.config, httpStatus, error);
+    schoolProbeRequest.httpStatus = httpStatus;
+    schoolProbeRequest.ok = ok;
+    strlcpy(schoolProbeRequest.error, error.c_str(),
+            sizeof(schoolProbeRequest.error));
+    // Pending pouští další žádost, takže se nuluje až po zapsání výsledku.
+    schoolProbeDone = true;
+    schoolProbePending = false;
+    return 0;
   }
+  ClockSchoolConfig config;
+  copyRuntimeSchoolConfig(config);
+  if (WiFi.status() != WL_CONNECTED) {
+    state.nextSchoolRefreshAt = 0;
+    // Bez sítě se nestahuje, takže by stáří rozvrhu nikdo nehlídal.
+    schoolServiceExpireStale();
+    return HOME_ASSISTANT_RETRY_MS;
+  }
+  const unsigned long waitMs =
+      maintainSchoolFetch(config, state.nextSchoolRefreshAt,
+                          state.lastSchoolUrl, sizeof(state.lastSchoolUrl));
+  return waitMs == 0 ? NET_POLL_IDLE : waitMs;
 }
 
-// Kanál zpráv má vlastní úlohu. Do úlohy home-assistant se nevešel: její
+// Kanál zpráv běží v net-text. Do úlohy home-assistant se nevešel: její
 // zásobník je vyměřený na TLS s jedním připnutým kořenem a na parsování JSON,
 // kdežto ověření proti svazku kořenů Mozilly potřebuje výrazně víc.
 // Vrací, za jak dlouho je další pokus, nebo 0, když se kanál nepoužívá.
@@ -4118,36 +4134,29 @@ void runPendingRssProbe() {
   rssProbePending = false;
 }
 
-void rssTask(void *) {
-  unsigned long nextRssRefreshAt = 0;
-  char lastRssUrl[CLOCK_RSS_URL_LENGTH] = "";
-  RssLocation lastRssLocation;
+uint32_t rssStep(bool woken) {
+  TextJobsState &state = *textJobs;
+  // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení: zkouška
+  // kanálu není jeho obnovením, takže deadline platí dál.
+  if (woken && !rssProbePending) state.nextRssRefreshAt = 0;
+  // Zkouška z webu má přednost. Běží tady právě proto, že ověření proti
+  // svazku kořenů Mozilly se do zásobníku smyčky displeje nevejde.
+  if (rssProbePending) {
+    runPendingRssProbe();
+    return 0;
+  }
   ClockRssConfig config;
   RssLocation location;
-  for (;;) {
-    // Zkouška z webu má přednost. Běží tady právě proto, že ověření proti
-    // svazku kořenů Mozilly se do zásobníku smyčky displeje nevejde.
-    if (rssProbePending) {
-      runPendingRssProbe();
-      continue;
-    }
-    copyRuntimeRssConfig(&config, location);
-    if (WiFi.status() != WL_CONNECTED) {
-      nextRssRefreshAt = 0;
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
-      continue;
-    }
-    const unsigned long waitMs =
-        maintainRssFetch(config, location, nextRssRefreshAt, lastRssUrl,
-                         sizeof(lastRssUrl), lastRssLocation);
-    // Vypnutý kanál nemá kdy pokračovat sám; probudí ho až uložení nastavení.
-    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
-                                             : pdMS_TO_TICKS(waitMs)) > 0) {
-      // Probuzení kvůli zkoušce nesmí zahodit naplánované stažení: zkouška
-      // kanálu není jeho obnovením, takže deadline platí dál.
-      if (!rssProbePending) nextRssRefreshAt = 0;
-    }
+  copyRuntimeRssConfig(&config, location);
+  if (WiFi.status() != WL_CONNECTED) {
+    state.nextRssRefreshAt = 0;
+    return HOME_ASSISTANT_RETRY_MS;
   }
+  const unsigned long waitMs = maintainRssFetch(
+      config, location, state.nextRssRefreshAt, state.lastRssUrl,
+      sizeof(state.lastRssUrl), state.lastRssLocation);
+  // Vypnutý kanál nemá kdy pokračovat sám; probudí ho až uložení nastavení.
+  return waitMs == 0 ? NET_POLL_IDLE : waitMs;
 }
 
 // Vrací, za jak dlouho je další pokus, nebo 0, když se předpověď nepoužívá.
@@ -4204,48 +4213,59 @@ unsigned long maintainHistoryFetch(const ForecastTaskConfig &config,
   return interval;
 }
 
-void forecastTask(void *) {
-  unsigned long nextRefreshAt = 0;
-  unsigned long nextHistoryAt = 0;
-  bool cacheHolds = false;
-  ForecastTaskConfig config;
-  float lastLatitude = NAN;
-  float lastLongitude = NAN;
-  for (;;) {
-    copyRuntimeForecastConfig(config);
-    // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný" a
-    // předpověď by se navíc neměla podle čeho oříznout na hodiny od současné
-    // dál. Čekání na NTP je tedy levnější než pokus, který nemůže vyjít.
-    if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
-      nextRefreshAt = 0;
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
-      continue;
-    }
-    // Jiné město znamená jinou předpověď; ta stará se nesmí dokreslit vedle
-    // nové hlavičky.
-    if (config.latitude != lastLatitude || config.longitude != lastLongitude) {
-      if (cacheHolds) {
-        weatherForecastServiceClear();
-        cacheHolds = false;
-      }
-      lastLatitude = config.latitude;
-      lastLongitude = config.longitude;
-      nextRefreshAt = 0;
-    }
-    unsigned long waitMs =
-        maintainForecastFetch(config, nextRefreshAt, cacheHolds);
-    const unsigned long historyWaitMs =
-        maintainHistoryFetch(config, nextHistoryAt);
-    if (historyWaitMs != 0 && (waitMs == 0 || historyWaitMs < waitMs))
-      waitMs = historyWaitMs;
-    // Vypnutá obrazovka nemá kdy pokračovat sama; probudí ji až uložení
-    // nastavení.
-    if (ulTaskNotifyTake(pdTRUE, waitMs == 0 ? portMAX_DELAY
-                                             : pdMS_TO_TICKS(waitMs)) > 0) {
-      nextRefreshAt = 0;
-      nextHistoryAt = 0;
-    }
+uint32_t forecastStep(bool woken) {
+  TextJobsState &state = *textJobs;
+  if (woken && state.forecastWakeResets) {
+    state.nextForecastRefreshAt = 0;
+    state.nextHistoryAt = 0;
   }
+  state.forecastWakeResets = false;
+  ForecastTaskConfig config;
+  copyRuntimeForecastConfig(config);
+  // Bez času ze sítě by TLS odmítlo každý certifikát jako "ještě neplatný" a
+  // předpověď by se navíc neměla podle čeho oříznout na hodiny od současné
+  // dál. Čekání na NTP je tedy levnější než pokus, který nemůže vyjít.
+  if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
+    state.nextForecastRefreshAt = 0;
+    return HOME_ASSISTANT_RETRY_MS;
+  }
+  // Jiné město znamená jinou předpověď; ta stará se nesmí dokreslit vedle
+  // nové hlavičky.
+  if (config.latitude != state.lastForecastLatitude ||
+      config.longitude != state.lastForecastLongitude) {
+    if (state.forecastCacheHolds) {
+      weatherForecastServiceClear();
+      state.forecastCacheHolds = false;
+    }
+    state.lastForecastLatitude = config.latitude;
+    state.lastForecastLongitude = config.longitude;
+    state.nextForecastRefreshAt = 0;
+  }
+  unsigned long waitMs = maintainForecastFetch(
+      config, state.nextForecastRefreshAt, state.forecastCacheHolds);
+  const unsigned long historyWaitMs =
+      maintainHistoryFetch(config, state.nextHistoryAt);
+  if (historyWaitMs != 0 && (waitMs == 0 || historyWaitMs < waitMs))
+    waitMs = historyWaitMs;
+  state.forecastWakeResets = true;
+  // Vypnutá obrazovka nemá kdy pokračovat sama; probudí ji až uložení
+  // nastavení.
+  return waitMs == 0 ? NET_POLL_IDLE : waitMs;
+}
+
+// Zaregistruje kroky textového pracovníka. Pořadí je priorita: agenda nese
+// i přenos zálohy a zkoušky z webu, na které čeká formulář; zprávy stahují
+// nejdéle, proto jsou poslední.
+void textJobsBegin() {
+  void *memory = heap_caps_calloc(1, sizeof(TextJobsState),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  textJobs = memory != nullptr ? new (memory) TextJobsState()
+                               : new (std::nothrow) TextJobsState();
+  if (textJobs == nullptr) return;
+  agendaJob = netPollRegister(NetPollWorker::Text, "agenda", agendaStep);
+  schoolJob = netPollRegister(NetPollWorker::Text, "school", schoolStep);
+  forecastJob = netPollRegister(NetPollWorker::Text, "forecast", forecastStep);
+  rssJob = netPollRegister(NetPollWorker::Text, "rss", rssStep);
 }
 
 void homeAssistantTask(void *) {
@@ -4413,11 +4433,6 @@ void applyPendingHomeAssistantValues() {
 }
 }  // namespace
 
-// Zásobník úloh zpráv, agendy a školy. Diagnostika (taskStacks) ukazuje, že
-// i s TLS a parsováním jim z 20 kB zbývá přes 15 kB; na 7", kde PSRAM chybí,
-// stačí 12 kB s rezervou přes 7 kB.
-constexpr uint32_t TEXT_TASK_STACK = HODINY_BOARD_LCD7 ? 12288 : 20480;
-
 void setup() {
   Serial.setTxBufferSize(4096);
   Serial.begin(FIRMWARE_RELEASE ? 115200 : 921600);
@@ -4560,38 +4575,24 @@ void setup() {
       &homeAssistantTaskHandle, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   configurationWebSetHomeAssistantTask(homeAssistantTaskHandle);
-  // Ověření proti svazku kořenů Mozilly projde při handshaku stovky
-  // certifikátů a je na zásobník výrazně náročnější než jeden připnutý kořen,
-  // který používají ostatní služby. Rezervu hlídá diagnostika: "Zásobník
-  // zpráv" ukazuje, kolik úloze nejméně zbývalo.
-  xTaskCreatePinnedToCoreWithCaps(
-      rssTask, "rss", TEXT_TASK_STACK, nullptr, 1, &rssTaskHandle, 0,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  configurationWebSetRssTask(rssTaskHandle);
+  // Zprávy, agenda, rozvrh a předpověď se ověřují proti svazku kořenů
+  // Mozilly; handshake projde stovky certifikátů a je na zásobník výrazně
+  // náročnější než jeden připnutý kořen v úloze home-assistant. Místo čtyř
+  // vlastních úloh jsou to kroky jednoho pracovníka net-text (NetPoll.h);
+  // rezervu jeho zásobníku ukazuje diagnostika ("Zásobník zpráv" a netPoll).
+  textJobsBegin();
+  const TaskHandle_t textWorker = netPollWorkerTask(NetPollWorker::Text);
+  configurationWebSetRssTask(textWorker);
   configurationWebSetRssProbe(runRssProbeFromWeb);
-  // Agenda se ověřuje proti svazku kořenů Mozilly, takže její handshake stojí
-  // stejně zásobníku jako u kanálu zpráv.
-  xTaskCreatePinnedToCoreWithCaps(
-      agendaTask, "agenda", TEXT_TASK_STACK, nullptr, 1, &agendaTaskHandle, 0,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  configurationWebSetAgendaTask(agendaTaskHandle);
+  configurationWebSetAgendaTask(textWorker);
   configurationWebSetAgendaProbe(runAgendaProbeFromWeb);
   configurationWebSetSettingsShare(runSettingsShareFromWeb);
-  // Rozvrh se ověřuje proti svazku kořenů Mozilly stejně jako agenda.
-  xTaskCreatePinnedToCoreWithCaps(
-      schoolTask, "school", TEXT_TASK_STACK, nullptr, 1, &schoolTaskHandle, 0,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  configurationWebSetSchoolTask(schoolTaskHandle);
+  configurationWebSetSchoolTask(textWorker);
   configurationWebSetSchoolProbe(runSchoolProbeFromWeb);
   configurationWebSetSatellitesProbe(runSatellitesProbeFromWeb);
   configurationWebSetBackgroundWork(runBackgroundWorkFromWeb);
   configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
   configurationWebSetScreenControl(showScreenFromWeb, currentScreenForWeb);
-  // Předpověď se ověřuje proti svazku kořenů Mozilly, takže její handshake
-  // stojí stejně zásobníku jako u kanálu zpráv.
-  xTaskCreatePinnedToCoreWithCaps(
-      forecastTask, "forecast", 20480, nullptr, 1, &forecastTaskHandle, 0,
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   firmwareUpdateServiceBegin(handleFirmwareUpdateLifecycle);
   maintainFirmwareDisplayStatus();
   configurationWebBegin(loadRuntimeConfigForWeb, saveRuntimeConfig,

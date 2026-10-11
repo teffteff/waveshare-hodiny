@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
-#include <freertos/idf_additions.h>
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +12,7 @@
 
 #include "ClockConfig.h"
 #include "HttpDownload.h"
+#include "NetPoll.h"
 #include "NetworkCoordinator.h"
 #include "PsramGrowBuffer.h"
 #include "TlsBundle.h"
@@ -97,7 +97,7 @@ struct Request {
   char url[CLOCK_LIGHTNING_URL_LENGTH] = "";
 };
 
-TaskHandle_t taskHandle = nullptr;
+int pollJob = -1;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t strokeMutex = nullptr;
 Request request;
@@ -304,127 +304,132 @@ bool fetchStrokes(const char *baseUrl, float latitude, float longitude,
   return true;
 }
 
-void lightningTask(void *) {
+// Takt, po kterém se hlídá síť, čas a termín dotazu; dřív timeout notifikace
+// vlastní úlohy.
+constexpr uint32_t TICK_MS = 500;
+// Stav dřívější úlohy "lightning"; čte a píše ho jen krok níže.
+uint32_t lastRevision = UINT32_MAX;
+double cursor = 0.0;
+float lastLatitude = NAN;
+float lastLongitude = NAN;
+float lastRadiusKm = 0.0f;
+uint32_t failures = 0;
+char lastUrl[CLOCK_LIGHTNING_URL_LENGTH] = "";
+
+// Jeden průchod dřívější úlohy; běží ve společném pracovníkovi net-poll
+// (NetPoll.h) jako první, protože podle něj se přepíná na bouřku. Vrací, kdy
+// ho zavolat znovu.
+uint32_t lightningStep(bool) {
   Request current;
-  uint32_t lastRevision = UINT32_MAX;
-  double cursor = 0.0;
-  float lastLatitude = NAN;
-  float lastLongitude = NAN;
-  float lastRadiusKm = 0.0f;
-  uint32_t failures = 0;
-  char lastUrl[CLOCK_LIGHTNING_URL_LENGTH] = "";
+  portENTER_CRITICAL(&stateMux);
+  current = request;
+  const uint32_t revision = requestRevision;
+  const bool stopped = suspended;
+  portEXIT_CRITICAL(&stateMux);
 
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+  if (stopped || !current.enabled || current.url[0] == '\0') {
+    if (strokes != nullptr) releaseStorage();
+    cursor = 0.0;
+    lastRadiusKm = 0.0f;
+    lastUrl[0] = '\0';
     portENTER_CRITICAL(&stateMux);
-    current = request;
-    const uint32_t revision = requestRevision;
-    const bool stopped = suspended;
+    live = false;
+    haveSuccess = false;
     portEXIT_CRITICAL(&stateMux);
-
-    if (stopped || !current.enabled || current.url[0] == '\0') {
-      if (strokes != nullptr) releaseStorage();
-      cursor = 0.0;
-      lastRadiusKm = 0.0f;
-      lastUrl[0] = '\0';
-      portENTER_CRITICAL(&stateMux);
-      live = false;
-      haveSuccess = false;
-      portEXIT_CRITICAL(&stateMux);
-      setStatus(current.enabled ? "Chybí adresa serveru blesků" : "Vypnuto");
-      continue;
-    }
-    // Jiný server znamená jiná data: údery ani kurzor starého zdroje k novému
-    // nepatří, a bez vyprázdnění by na radaru dál visely.
-    if (strcmp(current.url, lastUrl) != 0) {
-      if (strokes != nullptr) releaseStorage();
-      strlcpy(lastUrl, current.url, sizeof(lastUrl));
-      cursor = 0.0;
-      lastRadiusKm = 0.0f;
-      lastLatitude = NAN;
-      portENTER_CRITICAL(&stateMux);
-      live = false;
-      haveSuccess = false;
-      nextFetchAt = 0;
-      portEXIT_CRITICAL(&stateMux);
-    }
-    if (!ensureStorage()) {
-      setStatus("Pro blesky není dostatek PSRAM");
-      continue;
-    }
-    if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
-      setStatus("Čekám na síť");
-      continue;
-    }
-
-    float latitude = 0.0f;
-    float longitude = 0.0f;
-    float radiusKm = 0.0f;
-    requestCircle(current, latitude, longitude, radiusKm);
-    const uint32_t period =
-        current.radarVisible ? VISIBLE_PERIOD_MS : BACKGROUND_PERIOD_MS;
-    bool fetchNow = false;
-    if (revision != lastRevision) {
-      lastRevision = revision;
-      // Jiný kruh znamená začít znovu: kurzor serveru platí jen pro údery,
-      // o které si hodiny už jednou řekly.
-      const bool moved =
-          !std::isfinite(lastLatitude) ||
-          lightningDistanceKm(latitude, longitude, lastLatitude,
-                              lastLongitude) > CIRCLE_MOVE_KM ||
-          radiusKm > lastRadiusKm;
-      if (moved) {
-        cursor = 0.0;
-        fetchNow = true;
-      }
-      // Otevřený radar chce data hned, ne až za minutu.
-      if (current.radarVisible && period < currentPeriodMs) fetchNow = true;
-      lastLatitude = latitude;
-      lastLongitude = longitude;
-      lastRadiusKm = radiusKm;
-    }
+    setStatus(current.enabled ? "Chybí adresa serveru blesků" : "Vypnuto");
+    // Ven z tohohle stavu vede jen změna nastavení, a ta úlohu probudí.
+    return NET_POLL_IDLE;
+  }
+  // Jiný server znamená jiná data: údery ani kurzor starého zdroje k novému
+  // nepatří, a bez vyprázdnění by na radaru dál visely.
+  if (strcmp(current.url, lastUrl) != 0) {
+    if (strokes != nullptr) releaseStorage();
+    strlcpy(lastUrl, current.url, sizeof(lastUrl));
+    cursor = 0.0;
+    lastRadiusKm = 0.0f;
+    lastLatitude = NAN;
     portENTER_CRITICAL(&stateMux);
-    currentPeriodMs = period;
-    requestRadiusKm = radiusKm;
-    const long untilDue = static_cast<long>(nextFetchAt - millis());
-    portEXIT_CRITICAL(&stateMux);
-    if (!fetchNow && untilDue > 0) continue;
-
-    const bool ok = fetchStrokes(current.url, latitude, longitude, radiusKm,
-                                 cursor);
-    uint32_t wait = period;
-    if (ok) {
-      failures = 0;
-    } else if (networkBusy) {
-      wait = BUSY_RETRY_MS;
-    } else {
-      ++failures;
-      wait = period << (failures < 4 ? failures : 4);
-      if (wait > MAX_BACKOFF_MS) wait = MAX_BACKOFF_MS;
-    }
-    portENTER_CRITICAL(&stateMux);
-    // Server, který se k LightningMaps teprve připojuje, bude mít data za pár
-    // vteřin; čekat na ně celou minutu nemá smysl.
-    if (ok && !live) wait = WAITING_RETRY_MS;
-    nextFetchAt = millis() + wait;
+    live = false;
+    haveSuccess = false;
+    nextFetchAt = 0;
     portEXIT_CRITICAL(&stateMux);
   }
+  if (!ensureStorage()) {
+    setStatus("Pro blesky není dostatek PSRAM");
+    return TICK_MS;
+  }
+  if (WiFi.status() != WL_CONNECTED || time(nullptr) < VALID_TIME_THRESHOLD) {
+    setStatus("Čekám na síť");
+    return TICK_MS;
+  }
+
+  float latitude = 0.0f;
+  float longitude = 0.0f;
+  float radiusKm = 0.0f;
+  requestCircle(current, latitude, longitude, radiusKm);
+  const uint32_t period =
+      current.radarVisible ? VISIBLE_PERIOD_MS : BACKGROUND_PERIOD_MS;
+  bool fetchNow = false;
+  if (revision != lastRevision) {
+    lastRevision = revision;
+    // Jiný kruh znamená začít znovu: kurzor serveru platí jen pro údery,
+    // o které si hodiny už jednou řekly.
+    const bool moved =
+        !std::isfinite(lastLatitude) ||
+        lightningDistanceKm(latitude, longitude, lastLatitude,
+                            lastLongitude) > CIRCLE_MOVE_KM ||
+        radiusKm > lastRadiusKm;
+    if (moved) {
+      cursor = 0.0;
+      fetchNow = true;
+    }
+    // Otevřený radar chce data hned, ne až za minutu.
+    if (current.radarVisible && period < currentPeriodMs) fetchNow = true;
+    lastLatitude = latitude;
+    lastLongitude = longitude;
+    lastRadiusKm = radiusKm;
+  }
+  portENTER_CRITICAL(&stateMux);
+  currentPeriodMs = period;
+  requestRadiusKm = radiusKm;
+  const long untilDue = static_cast<long>(nextFetchAt - millis());
+  portEXIT_CRITICAL(&stateMux);
+  if (!fetchNow && untilDue > 0)
+    return netPollWithin(static_cast<uint32_t>(untilDue), TICK_MS);
+
+  const bool ok = fetchStrokes(current.url, latitude, longitude, radiusKm,
+                               cursor);
+  uint32_t wait = period;
+  if (ok) {
+    failures = 0;
+  } else if (networkBusy) {
+    wait = BUSY_RETRY_MS;
+  } else {
+    ++failures;
+    wait = period << (failures < 4 ? failures : 4);
+    if (wait > MAX_BACKOFF_MS) wait = MAX_BACKOFF_MS;
+  }
+  portENTER_CRITICAL(&stateMux);
+  // Server, který se k LightningMaps teprve připojuje, bude mít data za pár
+  // vteřin; čekat na ně celou minutu nemá smysl.
+  if (ok && !live) wait = WAITING_RETRY_MS;
+  nextFetchAt = millis() + wait;
+  portEXIT_CRITICAL(&stateMux);
+  return TICK_MS;
 }
 }  // namespace
 
 void lightningServiceBegin() {
-  if (taskHandle != nullptr) return;
+  if (pollJob >= 0) return;
   strokeMutex = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCoreWithCaps(lightningTask, "lightning", 12288, nullptr, 1,
-                                  &taskHandle, 0,
-                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  pollJob = netPollRegister(NetPollWorker::Alerts, "lightning", lightningStep);
 }
 
 void lightningServicePrepareForFirmwareUpdate() {
   portENTER_CRITICAL(&stateMux);
   suspended = true;
   portEXIT_CRITICAL(&stateMux);
-  if (taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  netPollWake(pollJob);
 }
 
 void lightningServiceSetActive(bool enabled, const char *feedUrl,
@@ -458,7 +463,7 @@ void lightningServiceSetActive(bool enabled, const char *feedUrl,
     ++requestRevision;
   }
   portEXIT_CRITICAL(&stateMux);
-  if (changed && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  if (changed) netPollWake(pollJob);
 }
 
 uint32_t lightningServiceGeneration() {

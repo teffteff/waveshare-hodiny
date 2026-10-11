@@ -11,9 +11,10 @@
 // odpovědi. Rozhodnutí "přepnout na radar" tady nepadá: to dělá smyčka
 // v hodinách podle nastavených prahů, stejně jako u blesků.
 //
-// Vlastní úloha je tu ze stejného důvodu jako u blesků a rozvrhu: adresu zadává
-// majitel, takže se ověřuje proti svazku kořenů Mozilly, a na to je potřeba
-// výrazně větší zásobník, než má úloha home-assistant.
+// Dotaz neběží v úloze home-assistant: adresu zadává majitel, takže se ověřuje
+// proti svazku kořenů Mozilly, a na to je potřeba výrazně větší zásobník.
+// Místo vlastní úlohy je to krok společného pracovníka net-poll (NetPoll.h)
+// spolu s blesky, výstrahami a upozorněními.
 
 struct RainAlertStatus {
   // Roste s každou odpovědí, i neúspěšnou, aby obrazovka poznala změnu.
