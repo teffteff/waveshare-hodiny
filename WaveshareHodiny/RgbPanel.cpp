@@ -57,6 +57,10 @@ constexpr uint8_t ISR_RESTART_SETTLE_FRAMES = 3;
 volatile uint8_t isrStrikes = 0;
 volatile uint8_t isrSettleFrames = 0;
 volatile uint32_t isrRepairCount = 0;
+// Kdy (sekundy od startu) proběhly poslední opravy, ať jde dohledat, při čem
+// obraz ujíždí (diagnostika displayRepairTimes).
+constexpr size_t REPAIR_HISTORY = 16;
+volatile uint32_t repairTimes[REPAIR_HISTORY] = {};
 
 uint32_t lineDurationUs() {
   return (panelTimings.h_res + panelTimings.hsync_pulse_width +
@@ -120,6 +124,8 @@ bool IRAM_ATTR onBounceFrameFinished(
     if (++isrStrikes >= ISR_STRIKES_TO_RESTART) {
       isrStrikes = 0;
       isrSettleFrames = ISR_RESTART_SETTLE_FRAMES;
+      repairTimes[isrRepairCount % REPAIR_HISTORY] =
+          static_cast<uint32_t>(now / 1000000);
       ++isrRepairCount;
       restart = true;
     }
@@ -220,6 +226,17 @@ bool LCD_MaintainSync() {
 }
 
 uint32_t LCD_SyncRepairCount() { return syncRepairCount + isrRepairCount; }
+
+size_t LCD_RecentRepairTimes(uint32_t *output, size_t capacity) {
+  portENTER_CRITICAL(&frameFinishedMux);
+  const uint32_t total = isrRepairCount;
+  const size_t count =
+      std::min<size_t>(capacity, std::min<size_t>(total, REPAIR_HISTORY));
+  for (size_t index = 0; index < count; ++index)
+    output[index] = repairTimes[(total - count + index) % REPAIR_HISTORY];
+  portEXIT_CRITICAL(&frameFinishedMux);
+  return count;
+}
 
 uint32_t LCD_PhaseGlitchCount() { return phaseGlitchCount; }
 

@@ -897,11 +897,25 @@ bool screenAvailable(uint8_t screen) {
   }
 }
 
+// Historie přepnutí pro diagnostiku (clockDashboardRecentEvents). Píše jen
+// úloha loop, čte webová úloha; při souběhu může vyjít jedna položka stará.
+constexpr size_t EVENT_HISTORY = 16;
+uint32_t eventSeconds[EVENT_HISTORY] = {};
+uint8_t eventCodes[EVENT_HISTORY] = {};
+uint32_t eventCount = 0;
+
+void recordDashboardEvent(uint8_t code) {
+  eventSeconds[eventCount % EVENT_HISTORY] = millis() / 1000;
+  eventCodes[eventCount % EVENT_HISTORY] = code;
+  ++eventCount;
+}
+
 void setActiveScreen(uint8_t screen) {
   if (!screenAvailable(screen)) screen = DASHBOARD_SCREEN_CLOCK;
   if (activeScreen == screen || settingsVisible) return;
   const uint8_t previous = activeScreen;
   activeScreen = screen;
+  recordDashboardEvent(screen);
   if (screen == DASHBOARD_SCREEN_RADAR) {
     // Při návratu na radar neodkrývej snímek, který zůstal v canvasu z
     // předchozího cyklu. Canvas znovu zobrazí až první snapshot nové animace.
@@ -8016,6 +8030,7 @@ void clockDashboardSetNightMode(bool enabled) {
   const bool wasRedNight = redNightVisualEnabled();
   const bool modeChanged = nightModeEnabled != enabled;
   nightModeEnabled = enabled;
+  if (modeChanged) recordDashboardEvent(enabled ? 101 : 100);
   if (firmwareUpdateActive) return;
   if (analogLayoutEnabled() && wasRedNight != redNightVisualEnabled()) {
     rebuildAnalogDialCache();
@@ -9335,6 +9350,18 @@ bool clockDashboardSwipeForecast(int8_t direction) {
   updateForecastChartIcons(next != FORECAST_PAGE_DAYS);
   if (forecastChart != nullptr) lv_obj_invalidate(forecastChart);
   return true;
+}
+
+size_t clockDashboardRecentEvents(uint32_t *seconds, uint8_t *codes,
+                                  size_t capacity) {
+  const uint32_t total = eventCount;
+  const size_t count = std::min<size_t>(capacity, std::min<size_t>(total, EVENT_HISTORY));
+  for (size_t index = 0; index < count; ++index) {
+    const size_t slot = (total - count + index) % EVENT_HISTORY;
+    seconds[index] = eventSeconds[slot];
+    codes[index] = eventCodes[slot];
+  }
+  return count;
 }
 
 bool clockDashboardSwipeSchool() {

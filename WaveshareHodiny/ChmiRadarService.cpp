@@ -54,9 +54,10 @@ constexpr bool LAYERED_VIEW = HODINY_BOARD_LCD7;
 // Kopie stažených PNG drží kulatý, aby změna rozsahu jen přepočítala výřez.
 // Na 7" je to ~140 kB PSRAM, která chybí; změna rozsahu tam snímky stáhne znovu.
 constexpr bool CACHE_PNG = !LAYERED_VIEW;
-// Kolik nových snímků se smí doplnit posunem animace. Na 7" jen jeden, a jeho
-// buffer se drží od začátku (ensureBuffers): po delší době by se 77 kB v kuse
-// v rozdrobené PSRAM nenašlo a obnova by se zasekla. Víc nových snímků najednou
+// Kolik nových snímků se smí doplnit posunem animace. Buffer prvního se drží
+// od začátku (ensureBuffers): po hodinách provozu se snímek v kuse (230 kB na
+// kulatém, 77 kB na 7") v rozdrobené PSRAM nenašel a obnova se zasekla na
+// starých snímcích. Na 7" se doplňuje jen jeden; víc nových snímků najednou
 // (radar dlouho schovaný) se přepíše do stávajících snímků celým načtením.
 constexpr size_t MAX_REFRESH_SHIFT = LAYERED_VIEW ? 1 : MAX_PENDING_REFRESH_FRAMES;
 // Stupně odrazivosti ČHMÚ na 7" stačí po bajtu na pixel; RainViewer dekóduje
@@ -316,10 +317,11 @@ bool ensureBuffers() {
     if (buffer == nullptr) return false;
   }
   ensureDecodeBuffer(LAYERED_VIEW ? LEVEL_DECODE_BYTES : COLOR_DECODE_BYTES);
-  if (LAYERED_VIEW && pendingPreparedFrames[0] == nullptr) {
+  // Bez vyhrazeného bufferu radar funguje dál, jen obnova pak volí celé
+  // načtení (viz refreshAnimation).
+  if (pendingPreparedFrames[0] == nullptr) {
     pendingPreparedFrames[0] = static_cast<uint8_t *>(heap_caps_malloc(
         RADAR_PIXEL_COUNT, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (pendingPreparedFrames[0] == nullptr) return false;
   }
   if (pngBuffer == nullptr) {
     pngBuffer = static_cast<uint8_t *>(heap_caps_malloc(
@@ -2193,15 +2195,26 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
   for (size_t slot = 0; slot < shift; ++slot) {
     const char *fileName = latestNames[selectedStart + firstNew + slot];
     size_t pngSize = 0;
-    if (!downloadPngWithRetry(http, fileName, pngSize, revision) ||
-        !cachePendingPng(slot, pngSize) ||
-        !decodeRadar(pngBuffer, pngSize, latitude, longitude, radiusKm,
-                     mapOpacityValue, decodeBuffer) ||
-        !packPendingFrame(slot) || !requestMatches(revision)) {
+    // Paměť pro nový snímek (kopie PNG, buffer snímku) se v rozdrobené PSRAM
+    // nemusí najít. Pak radši celé načtení do stávajících snímků než viset na
+    // starých; při chybě sítě ne - to by jen stáhlo šest snímků místo jednoho.
+    bool outOfMemory = false;
+    bool prepared = downloadPngWithRetry(http, fileName, pngSize, revision);
+    if (prepared && !cachePendingPng(slot, pngSize)) {
+      prepared = false;
+      outOfMemory = true;
+    }
+    if (prepared && !decodeRadar(pngBuffer, pngSize, latitude, longitude,
+                                 radiusKm, mapOpacityValue, decodeBuffer))
+      prepared = false;
+    if (prepared && !packPendingFrame(slot)) {
+      prepared = false;
+      outOfMemory = true;
+    }
+    if (!prepared || !requestMatches(revision)) {
       setStatus(false, "Nove snimky CHMU se nepodarilo pripravit");
       pendingRefreshCount = 0;
-      // Na 7" radši celé načtení do stávajících snímků než viset na starých.
-      if (LAYERED_VIEW && requestMatches(revision))
+      if (outOfMemory && requestMatches(revision))
         return loadAnimation(latitude, longitude, radiusKm, wantedFrameCount,
                              mapOpacityValue, revision);
       return false;

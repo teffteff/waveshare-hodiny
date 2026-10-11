@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "Board.h"
@@ -17,6 +18,8 @@ void LCD_Resync();
 // resynchronizuje. Volat průběžně z hlavní smyčky; vrací true při opravě.
 bool LCD_MaintainSync();
 uint32_t LCD_SyncRepairCount();
+// Časy (sekundy od startu) posledních nejvýš 16 oprav fáze, od nejstarší.
+size_t LCD_RecentRepairTimes(uint32_t *output, size_t capacity);
 // Počet jednotlivých snímků odeslaných mimo správnou fázi (i krátkých
 // škubnutí, která se srovnají sama).
 uint32_t LCD_PhaseGlitchCount();

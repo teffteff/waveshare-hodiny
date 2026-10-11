@@ -159,6 +159,10 @@ void clockDashboardSetSchoolVisibilityCallback(RssVisibilityCallback visibility)
 // není založená; volající pak data předá znovu.
 struct SchoolFeed;
 bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message);
+
+// Posledních nejvýš 16 přepnutí obrazovky a nočního režimu pro diagnostiku:
+// sekundy od startu a kód (číslo obrazovky, 100 = den, 101 = noc).
+size_t clockDashboardRecentEvents(uint32_t *seconds, uint8_t *codes, size_t capacity);
 bool clockDashboardForecastVisible();
 void clockDashboardSetForecastVisible(bool visible);
 // Vypnutá obrazovka se do rotace ani pod gesto nepustí.

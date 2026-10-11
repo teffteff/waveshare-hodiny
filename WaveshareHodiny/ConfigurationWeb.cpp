@@ -4255,6 +4255,27 @@ void handleDiagnostics() {
   result += LCD_SyncRepairCount();
   result += F(",\"displayPhaseGlitches\":");
   result += LCD_PhaseGlitchCount();
+  {
+    uint32_t times[16];
+    const size_t repairs = LCD_RecentRepairTimes(times, 16);
+    result += F(",\"displayRepairTimes\":[");
+    for (size_t index = 0; index < repairs; ++index) {
+      if (index > 0) result += ',';
+      result += times[index];
+    }
+    uint8_t codes[16];
+    const size_t events = clockDashboardRecentEvents(times, codes, 16);
+    result += F("],\"screenEvents\":[");
+    for (size_t index = 0; index < events; ++index) {
+      if (index > 0) result += ',';
+      result += '[';
+      result += times[index];
+      result += ',';
+      result += codes[index];
+      result += ']';
+    }
+    result += ']';
+  }
   result += F(",\"resetReason\":");
   result += static_cast<int>(esp_reset_reason());
   result += F(",\"crashes\":");
