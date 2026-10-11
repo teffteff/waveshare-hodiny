@@ -2575,9 +2575,15 @@ void handleUsbCommands() {
     const char character = static_cast<char>(Serial.read());
     if (character == '\n' || character == '\r') {
       usbCommand.trim();
-      // Obrazovka z USB je ruční volba jako tah prstem: plán obrazovek ji
-      // nepřebije hned, ale až po SCHEDULE_RETURN_MS.
-      if (usbCommand.endsWith("SHOW")) lastManualScreenChangeAt = millis();
+      // Obrazovka otevřená přes USB (RADARSHOW, PLANESSHOW, ...) se počítá
+      // jako ruční přepnutí, stejně jako z webu. Jinak by ji automatická
+      // rotace, jejíž čas běžel od posledního střídání, hned přepnula na
+      // další obrazovku a screenshot by zachytil jinou.
+      if (usbCommand.endsWith("SHOW") && !screenshotTransferActive) {
+        displayModeStartedAt = millis();
+        radarRotationWaitingForCycle = false;
+        lastManualScreenChangeAt = millis();
+      }
       if (usbCommand == "SCREENSHOT" && !screenshotTransferActive) {
         Serial.println("WSFB1_BEGIN");
         if (!displayDriverBeginFramebufferCapture(Serial)) {
