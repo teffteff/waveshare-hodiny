@@ -159,6 +159,16 @@ lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, lv_coord_t x,
   return object;
 }
 
+// Popisek s pevnou šířkou na jediný řádek: LV_LABEL_LONG_DOT zkracuje až
+// tehdy, když text přeteče výšku, takže s výškou podle obsahu by se dlouhý
+// text zalomil. Výška jednoho řádku písma ho utne třemi tečkami.
+void singleLine(lv_obj_t *object) {
+  const lv_coord_t height =
+      lv_font_get_line_height(lv_obj_get_style_text_font(object, LV_PART_MAIN));
+  if (lv_obj_get_style_height(object, LV_PART_MAIN) != height)
+    lv_obj_set_height(object, height);
+}
+
 // Desetinná tečka z formatMetricValue po česku jako čárka.
 void formatValue(char *buffer, size_t capacity, float value, uint8_t decimals) {
   formatMetricValue(buffer, capacity, value, decimals);
@@ -483,10 +493,13 @@ void createDigital(lv_obj_t *screen) {
 
   v.agendaHead = label(v.root, &lcd7_text15, BAND_COLUMN_3, BAND_Y + 4, 218);
   lv_obj_set_style_text_letter_space(v.agendaHead, 2, 0);
+  singleLine(v.agendaHead);
   v.agendaFirst = label(v.root, &lcd7_text22, BAND_COLUMN_3, BAND_Y + 30, 218);
   lv_label_set_recolor(v.agendaFirst, true);
+  singleLine(v.agendaFirst);
   v.agendaSecond = label(v.root, &lcd7_text18, BAND_COLUMN_3, BAND_Y + 70, 218);
   lv_label_set_recolor(v.agendaSecond, true);
+  singleLine(v.agendaSecond);
 
   v.status = makeStatusIcons(v.root);
   v.dots = makePageDots(v.root);
@@ -669,8 +682,10 @@ void createAnalog(lv_obj_t *screen) {
   v.rain = label(v.root, &lcd7_text18, SIDE_PAD, 376, SIDE_CONTENT);
   v.agendaFirst = label(v.root, &lcd7_text18, SIDE_PAD, 402, SIDE_CONTENT);
   lv_label_set_recolor(v.agendaFirst, true);
+  singleLine(v.agendaFirst);
   v.agendaSecond = label(v.root, &lcd7_text15, SIDE_PAD, 426, SIDE_CONTENT);
   lv_label_set_recolor(v.agendaSecond, true);
+  singleLine(v.agendaSecond);
   v.status = makeStatusIcons(v.root);
   v.dots = makePageDots(v.root);
 }
@@ -2060,6 +2075,7 @@ void syncAgenda(const Palette &p) {
       setText(head, day);
       setColor(head, agendaDayIsToday(day) ? p.text : p.muted);
       setWidth(head, style.width);
+      singleLine(head);
       setPosition(head, style.x, y - agendaHeadHeight(column));
     }
     const bool more = placement.more[index];
@@ -2074,6 +2090,9 @@ void syncAgenda(const Palette &p) {
     setText(title, more ? "…" : row.title);
     setColor(title, more ? p.muted : p.text);
     setWidth(title, style.width - style.timeWidth - style.timeGap);
+    // Dlouhý titulek na jeden řádek se třemi tečkami, jinak by se zalomil
+    // přes další řádek.
+    singleLine(title);
     setPosition(title, more ? style.x : style.x + style.timeWidth + style.timeGap, y);
   }
   setVisible(v.divider, rightUsed);
