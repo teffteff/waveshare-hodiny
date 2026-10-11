@@ -18,7 +18,12 @@
 //    "drives": [{"to": "Do Prahy", "min": 30, "usual": 29,
 //                "detail": "přes Mirošovice (Strančice 31)", "better": false}],
 //    (starší server posílal "back" a důvod zdržení v textu cesty)
-//    "texts": [...], "warnings": [...], "departures": [...]}
+//    "texts": [...], "warnings": [...], "departures": [...],
+//    "map": {"w": 440, "h": 438, "shape": "rect"}}
+//
+// 7" si v adrese řekne o obdélník své mapy (&w=440&h=438&shape=rect) a server
+// pak promítá rovnou do něj; "map" to potvrzuje. Starší server parametry
+// přeskočí, "map" nepošle a 7" kruh přepočítá sám (trafficFitToRect).
 
 constexpr uint8_t TRAFFIC_MAX_LINES = 8;
 constexpr uint8_t TRAFFIC_MAX_POINTS = 120;
@@ -114,6 +119,11 @@ struct TrafficData {
   int64_t sampleTime = 0;
   // Provoz je starší než 25 minut.
   bool stale = false;
+  // Pro jakou mapu server body promítl ("map" v odpovědi na ?w=&h=&shape=).
+  // Nula u staršího serveru, který promítá jen do kruhu 480 x 480.
+  int16_t mapWidth = 0;
+  int16_t mapHeight = 0;
+  bool mapRect = false;
   uint8_t lineCount = 0;
   TrafficLine lines[TRAFFIC_MAX_LINES];
   uint8_t placeCount = 0;
@@ -146,3 +156,14 @@ TrafficParseStatus trafficFeedParse(const char *json, size_t length,
 // Převede interpunkci, kterou písmo hodin nemá (·, →, –, …, nezlomitelná
 // mezera), na znaky, které má. Mění text na místě; výsledek nikdy není delší.
 void trafficFoldText(char *text);
+
+// Adresa dopravy s mapou pro server: za parametry (?for=hodiny) přidá
+// &w=..&h=..&shape=rect|round. S nulovou šířkou, s "w=" už v adrese, nebo
+// když se delší adresa nevejde do output, ji opíše beze změny.
+void trafficRequestUrl(const char *url, int width, int height, bool rect,
+                       char *output, size_t capacity);
+
+// Server body promítl přesně pro tuhle mapu; jinak (starší server, jiný
+// rozměr) je volající musí přepočítat sám.
+bool trafficProjectedFor(const TrafficData &data, int width, int height,
+                         bool rect);

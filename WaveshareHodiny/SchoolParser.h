@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "Board.h"
+
 // Rozbor rozvrhu a úkolů z vlastního serveru (infra/school), oddělený od
 // stahování, aby šel testovat na počítači - stejně jako AgendaParser vedle
 // AgendaService.
@@ -47,9 +49,21 @@
 
 // Základní škola má nejvýš osm hodin denně, s nultou a odpolední devět.
 constexpr size_t SCHOOL_MAX_LESSONS = 10;
-// Kolik dnů stojí na kruhu vedle sebe. Server jich posílá tolik, kolik má
-// nastaveno; hodiny si nechají první dva.
-constexpr size_t SCHOOL_MAX_DAYS = 2;
+// Kolik dnů stojí na kruhu vedle sebe (ClockDashboard.cpp). Server jich
+// posílá tolik, kolik má nastaveno; kulatý si nechá první dva.
+constexpr size_t SCHOOL_ROUND_DAYS = 2;
+#if HODINY_BOARD_LCD7
+// 7" kreslí týdenní mřížku PO-PÁ a serveru si o pět dnů řekne v adrese
+// (?days=5). Dny navíc stojí 3 x sizeof(SchoolDay) v každém SchoolFeed.
+constexpr size_t SCHOOL_MAX_DAYS = 5;
+constexpr size_t SCHOOL_REQUEST_DAYS = 5;
+#else
+constexpr size_t SCHOOL_MAX_DAYS = SCHOOL_ROUND_DAYS;
+// Kulatý o počet dnů neříká a dostane výchozí počet serveru.
+constexpr size_t SCHOOL_REQUEST_DAYS = 0;
+#endif
+// Sloupce týdenní mřížky 7": pondělí až pátek.
+constexpr size_t SCHOOL_WEEK_COLUMNS = 5;
 // Kolik úkolů si hodiny nechají. Na kruh se jich pod rozvrh vejde méně;
 // kolik jich server poslal celkem, nese SchoolFeed::homeworkTotal.
 constexpr size_t SCHOOL_MAX_HOMEWORK = 8;
@@ -160,7 +174,8 @@ struct SchoolMeal {
 
 struct SchoolDay {
   char day[SCHOOL_DAY_LENGTH] = "";
-  // Jen u DNES a ZÍTRA, kde samotný popisek den v týdnu neřekne.
+  // "PONDĚLÍ"... Bez ?days= jen u DNES a ZÍTRA, kde samotný popisek den
+  // v týdnu neřekne; s ?days= u každého dne.
   char weekday[SCHOOL_DAY_LENGTH] = "";
   // Rozvrh je dnešní, takže má smysl zvýraznit právě probíhající hodinu.
   bool today = false;
@@ -247,3 +262,38 @@ SchoolLessonTime schoolLessonTime(const SchoolLesson &lesson);
 // nejde přečíst.
 int schoolCurrentLesson(const SchoolLessonTime *lessons, size_t count,
                         int minuteOfDay);
+
+// Adresa rozvrhu s počtem dnů pro server (?days=N, nebo &days=N za
+// existujícími parametry). Bez days (0), s parametrem days už v adrese, nebo
+// když se delší adresa nevejde do output, se opíše beze změny. Starší server
+// parametr přeskočí a pošle svůj výchozí počet dnů.
+void schoolRequestUrl(const char *url, size_t days, char *output,
+                      size_t capacity);
+
+// Den v týdnu (0 pondělí ... 6 neděle) podle "weekday", jinak podle zkratky
+// na začátku popisku ("ČT 17.9."), u DNES a ZÍTRA podle todayWeekday
+// (stejné číslování; -1 neznámý). -1, když to nejde poznat.
+int schoolDayWeekday(const SchoolDay &day, int todayWeekday);
+
+// Týdenní mřížka 7": sloupce pondělí až pátek, řádky podle čísla hodiny.
+// Dny se do sloupců rovnají podle dne v týdnu; ve středu odpoledne tak
+// pondělí a úterý patří příštímu týdnu (nextWeek). Den o víkendu nebo druhý
+// den se stejným dnem v týdnu (po svátku) se vynechá.
+struct SchoolWeekGrid {
+  // Index dne ve feedu pro každý sloupec, -1 prázdný sloupec.
+  int8_t day[SCHOOL_WEEK_COLUMNS] = {-1, -1, -1, -1, -1};
+  // Sloupec patří příštímu týdnu: leží před prvním dnem feedu.
+  bool nextWeek[SCHOOL_WEEK_COLUMNS] = {};
+  // Číslo hodiny prvního řádku ("0." u nulté hodiny); -1, když hodiny nemají
+  // čísla a řádek je pořadí v dni.
+  int8_t firstHour = -1;
+  uint8_t rows = 0;
+  // Řádek každé hodiny dne ve feedu, -1 hodina se nekreslí.
+  int8_t row[SCHOOL_MAX_DAYS][SCHOOL_MAX_LESSONS] = {};
+};
+
+// Číslo hodiny z "3." nebo "3"; -1 u čehokoli jiného.
+int schoolLessonNumber(const char *hour);
+
+void schoolBuildWeekGrid(const SchoolFeed &feed, int todayWeekday,
+                         SchoolWeekGrid &grid);

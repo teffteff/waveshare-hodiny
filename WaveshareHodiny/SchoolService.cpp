@@ -266,7 +266,12 @@ static bool schoolServiceDownload(const ClockSchoolConfig &config,
     WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
                                 : plainClient;
     httpDownloadPrepare(http);
-    if (http.begin(client, config.url)) {
+    // 7" si řekne o týden (?days=5); kulatý adresu nemění. Pět dnů s osmi
+    // hodinami a plnou druhou stránkou má kolem 11 kB, strop odpovědi stačí.
+    char requestUrl[CLOCK_SCHOOL_URL_LENGTH + 16];
+    schoolRequestUrl(config.url, SCHOOL_REQUEST_DAYS, requestUrl,
+                     sizeof(requestUrl));
+    if (http.begin(client, requestUrl)) {
       httpStatus = http.GET();
       if (httpStatus == HTTP_CODE_OK) {
         const int declaredSize = http.getSize();

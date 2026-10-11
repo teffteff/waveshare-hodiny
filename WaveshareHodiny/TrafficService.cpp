@@ -206,7 +206,15 @@ bool fetchTraffic(const char *url) {
       setStatusMessage("Síť je zaneprázdněná");
       return false;
     }
+#if HODINY_BOARD_LCD7
+    // 7" si řekne o obdélník své mapy; starší server parametry přeskočí.
+    char mapUrl[CLOCK_TRAFFIC_URL_LENGTH + 40];
+    trafficRequestUrl(url, TRAFFIC_LCD7_MAP_WIDTH, TRAFFIC_LCD7_MAP_HEIGHT, true,
+                      mapUrl, sizeof(mapUrl));
+    length = download(mapUrl, httpStatus, tooLarge);
+#else
     length = download(url, httpStatus, tooLarge);
+#endif
   }
   if (length < 0) {
     char message[64];
@@ -232,9 +240,12 @@ bool fetchTraffic(const char *url) {
   }
   Serial.printf("[doprava] OK, %ld B\n", length);
 #if HODINY_BOARD_LCD7
-  // Server promítá do kruhu 480 x 480; 7" má mapu obdélníkovou.
-  trafficFitToRect(storage->scratch, TRAFFIC_LCD7_MAP_WIDTH,
-                   TRAFFIC_LCD7_MAP_HEIGHT, 34, 2.2f);
+  // Server, který mapu promítl rovnou pro obdélník 7", to potvrdí v "map";
+  // starší promítá do kruhu 480 x 480 a ten se přepočítá tady.
+  if (!trafficProjectedFor(storage->scratch, TRAFFIC_LCD7_MAP_WIDTH,
+                           TRAFFIC_LCD7_MAP_HEIGHT, true))
+    trafficFitToRect(storage->scratch, TRAFFIC_LCD7_MAP_WIDTH,
+                     TRAFFIC_LCD7_MAP_HEIGHT, 34, 2.2f);
 #endif
   return true;
 }

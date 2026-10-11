@@ -1,6 +1,7 @@
 #include "TrafficFeed.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "JsonScan.h"
@@ -308,6 +309,24 @@ TrafficParseStatus trafficFeedParse(const char *json, size_t length,
       number <= MAX_EPOCH)
     data.sampleTime = number;
   data.stale = jsonReadBoolMember(objectBegin, objectEnd, "stale");
+  data.mapWidth = 0;
+  data.mapHeight = 0;
+  data.mapRect = false;
+  const JsonValue map = jsonFindMember(objectBegin, objectEnd, "map");
+  if (map.isObject()) {
+    int64_t width = 0;
+    int64_t height = 0;
+    char shape[8] = "";
+    copyText(jsonFindMember(map.begin, map.end, "shape"), shape, sizeof(shape));
+    if (readInteger(jsonFindMember(map.begin, map.end, "w"), width) &&
+        readInteger(jsonFindMember(map.begin, map.end, "h"), height) &&
+        width > 0 && width <= 4096 && height > 0 && height <= 4096 &&
+        (strcmp(shape, "rect") == 0 || strcmp(shape, "round") == 0)) {
+      data.mapWidth = static_cast<int16_t>(width);
+      data.mapHeight = static_cast<int16_t>(height);
+      data.mapRect = strcmp(shape, "rect") == 0;
+    }
+  }
 
   JsonArrayCursor cursor = jsonOpenArray(lines);
   while (data.lineCount < TRAFFIC_MAX_LINES && jsonNextItem(cursor)) {
@@ -399,4 +418,36 @@ TrafficParseStatus trafficFeedParse(const char *json, size_t length,
   data.departureCount = parseTextList(objectBegin, objectEnd, "departures",
                                       data.departures, TRAFFIC_MAX_DEPARTURES);
   return TrafficParseStatus::Ok;
+}
+
+void trafficRequestUrl(const char *url, int width, int height, bool rect,
+                       char *output, size_t capacity) {
+  if (output == nullptr || capacity == 0) return;
+  if (url == nullptr) url = "";
+  strlcpy(output, url, capacity);
+  const size_t length = strlen(url);
+  if (width <= 0 || height <= 0 || length == 0) return;
+  const char *query = strchr(url, '?');
+  // Majitel si mapu mohl do adresy napsat sám; ta má přednost.
+  if (query != nullptr) {
+    for (const char *cursor = query; cursor != nullptr;
+         cursor = strchr(cursor + 1, '&')) {
+      if (strncmp(cursor + 1, "w=", 2) == 0) return;
+    }
+  }
+  const char *separator = query == nullptr                 ? "?"
+                          : url[length - 1] == '?' ||
+                                  url[length - 1] == '&' ? ""
+                                                         : "&";
+  char parameters[48];
+  snprintf(parameters, sizeof(parameters), "%sw=%d&h=%d&shape=%s", separator,
+           width, height, rect ? "rect" : "round");
+  if (length + strlen(parameters) + 1 > capacity) return;
+  strlcat(output, parameters, capacity);
+}
+
+bool trafficProjectedFor(const TrafficData &data, int width, int height,
+                         bool rect) {
+  return data.mapWidth == width && data.mapHeight == height &&
+         data.mapRect == rect;
 }

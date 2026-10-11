@@ -654,6 +654,13 @@ zahodí a řekne proč — popisky DNES a ZÍTRA by už neseděly. O prázdniná
 bez úkolů obrazovka řekne `Žádné vyučování` a automatické střídání ji
 přeskočí; podržením prstu se na ni dostaneš pořád.
 
+Sedmipalcová deska si k adrese sama přidá `?days=5` a rozvrh kreslí jako
+týdenní mřížku pondělí až pátek: pět školních dnů od dneška, každý ve sloupci
+svého dne v týdnu (ve středu odpoledne tak pondělí a úterý patří příštímu
+týdnu a mají tlumenou hlavičku), řádky podle čísla hodiny, probíhající hodina
+zvýrazněná, suplování oranžově a odpadlé hodiny přeškrtnuté. Starší server
+parametr přeskočí a pošle dva dny; kulatý displej adresu nemění.
+
 ### Předpověď počasí
 
 Samostatná obrazovka ukazuje předpověď z Open-Meteo pro město uložené v záložce
@@ -851,6 +858,9 @@ Benešova, dálnici D1 mezi sjezdy 15 a 56 oběma směry a objížďku po II/113
 Ondřejov. Všechno počítá vlastní server
 (toulky, `/api/doprava?for=hodiny`) a posílá to už promítnuté do pixelů
 displeje, takže hodiny jen stahují a kreslí; odpověď má dva až tři kilobajty.
+Sedmipalcová deska si přidá `&w=440&h=438&shape=rect` a dostane mapu
+promítnutou rovnou do svého obdélníku (potvrzenou v `"map"`); u staršího
+serveru, který posílá jen kruh 480 × 480, ho přepočítá sama.
 
 **Mapa** (první stránka): silnice jsou zelené a úseky, kde se jede pomalu,
 stojí kolona (40 km/h a méně) nebo se stojí (15 km/h a méně), se přebarví

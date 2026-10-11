@@ -21,6 +21,9 @@ extern "C" const lv_font_t clock_czech_14;
 #ifndef TRAFFIC_FIXTURE
 #error "TRAFFIC_FIXTURE musí ukazovat na tools/fixtures/doprava-hodiny.json"
 #endif
+#ifndef TRAFFIC_RECT_FIXTURE
+#error "TRAFFIC_RECT_FIXTURE musí ukazovat na tools/fixtures/doprava-hodiny-rect.json"
+#endif
 
 namespace {
 
@@ -192,6 +195,34 @@ int main(int argc, char **argv) {
       assert(wide[index] == 0x1234);
     assert(wideResult.legendDrawn);
     assert(wideResult.placeLabelCount == fitted.placeCount);
+  }
+
+  // Server, který promítl rovnou pro obdélník 7" ("map"), se nepřepočítává:
+  // body se kreslí, jak přišly, a vejdou se do obdélníku s okrajem.
+  {
+    static TrafficData rect;
+    const std::string rectText = readFile(TRAFFIC_RECT_FIXTURE);
+    assert(trafficFeedParse(rectText.data(), rectText.size(), rect) ==
+           TrafficParseStatus::Ok);
+    constexpr int W = TRAFFIC_LCD7_MAP_WIDTH;
+    constexpr int H = TRAFFIC_LCD7_MAP_HEIGHT;
+    assert(trafficProjectedFor(rect, W, H, true));
+    std::vector<uint16_t> wide(W * H + 64, 0x1234);
+    TrafficRenderLayout layout;
+    layout.width = W;
+    layout.height = H;
+    layout.rectangular = true;
+    TrafficRenderResult rectResult;
+    trafficRender(wide.data(), &rect, false, false, font, nullptr, rectResult, layout);
+    for (size_t index = W * H; index < wide.size(); ++index)
+      assert(wide[index] == 0x1234);
+    assert(rectResult.legendDrawn);
+    assert(rectResult.placeLabelCount == rect.placeCount);
+    for (uint8_t index = 0; index < rectResult.placeLabelCount; ++index) {
+      const MapLabelBox &box = rectResult.placeLabels[index];
+      assert(box.x >= 0 && box.y >= 0 && box.x + box.width <= W &&
+             box.y + box.height <= H);
+    }
   }
 
   return 0;
