@@ -2575,6 +2575,9 @@ void handleUsbCommands() {
     const char character = static_cast<char>(Serial.read());
     if (character == '\n' || character == '\r') {
       usbCommand.trim();
+      // Obrazovka z USB je ruční volba jako tah prstem: plán obrazovek ji
+      // nepřebije hned, ale až po SCHEDULE_RETURN_MS.
+      if (usbCommand.endsWith("SHOW")) lastManualScreenChangeAt = millis();
       if (usbCommand == "SCREENSHOT" && !screenshotTransferActive) {
         Serial.println("WSFB1_BEGIN");
         if (!displayDriverBeginFramebufferCapture(Serial)) {
