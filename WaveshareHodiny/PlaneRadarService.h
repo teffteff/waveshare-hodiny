@@ -135,6 +135,8 @@ bool planeRadarServiceDetailOpen();
 // 7" podle toho kreslí kroužek výběru hned po klepnutí, ne až s dalším
 // snímkem. false bez výběru nebo když letadlo na snímku není.
 bool planeRadarServiceSelectedPoint(int16_t &x, int16_t &y);
+// Poloha prvního nakresleného letadla na mapě (vývojové USB PLANEPICK).
+bool planeRadarServiceFirstPoint(int16_t &x, int16_t &y);
 // Zavře detail; používá to podržení prstu, kterým se odchází na jinou
 // obrazovku.
 void planeRadarServiceCloseDetail();

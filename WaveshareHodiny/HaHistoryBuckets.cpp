@@ -59,7 +59,9 @@ HaHistoryBuckets::HaHistoryBuckets(int64_t start, int64_t step, size_t count)
     : start_(start),
       step_(step > 0 ? step : 1),
       count_(count < MAX_BUCKETS ? count : MAX_BUCKETS),
-      current_(NAN) {
+      current_(NAN),
+      rangeLow_(NAN),
+      rangeHigh_(NAN) {
   for (float &value : values_) value = NAN;
 }
 
@@ -119,10 +121,24 @@ void HaHistoryBuckets::record(int64_t time, float value) {
     while (static_cast<int64_t>(nextFill_) < bucket && nextFill_ < count_)
       values_[nextFill_++] = current_;
   }
+  if (time >= rangeFrom_) {
+    // Stav platný na začátku rozsahu trvá až do první změny po něm.
+    if (!rangeOpened_) includeInRange(current_);
+    rangeOpened_ = true;
+    includeInRange(value);
+  }
   current_ = value;
 }
 
+void HaHistoryBuckets::includeInRange(float value) {
+  if (isnan(value)) return;
+  rangeLow_ = isnan(rangeLow_) || value < rangeLow_ ? value : rangeLow_;
+  rangeHigh_ = isnan(rangeHigh_) || value > rangeHigh_ ? value : rangeHigh_;
+}
+
 size_t HaHistoryBuckets::finish(float *output) {
+  if (!rangeOpened_ && rangeFrom_ != INT64_MAX) includeInRange(current_);
+  rangeOpened_ = true;
   while (nextFill_ < count_) values_[nextFill_++] = current_;
   memcpy(output, values_, count_ * sizeof(float));
   return records_;

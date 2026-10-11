@@ -39,7 +39,7 @@ void create();
 void sync(bool force);
 void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
-void stageHistory(size_t slot, const float *buckets);
+void stageHistory(size_t slot, const float *buckets, float dayLow, float dayHigh);
 bool handleSwipe(int8_t direction);
 void rssTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
@@ -10511,8 +10511,8 @@ bool clockDashboardLcd7Swipe(int8_t direction) {
   return lcd7::handleSwipe(direction);
 }
 
-void clockDashboardLcd7StageHistory(size_t slot, const float *buckets) {
-  lcd7::stageHistory(slot, buckets);
+void clockDashboardLcd7StageHistory(size_t slot, const float *buckets, float dayLow, float dayHigh) {
+  lcd7::stageHistory(slot, buckets, dayLow, dayHigh);
 }
 #endif
 

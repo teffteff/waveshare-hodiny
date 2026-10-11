@@ -23,9 +23,18 @@ class HaHistoryBuckets {
   // od nejstarší. Vrací počet přečtených záznamů s časem.
   size_t finish(float *output);
 
+  // Nejnižší a nejvyšší stav od "from" (Unix sekundy), včetně stavu, který
+  // v tu chvíli platil; počítá všechny záznamy, ne jen konce úseků - jako
+  // min/max od půlnoci v Home Assistantu. Nastavit před feed(), číst po
+  // finish(); NAN, když číslo není.
+  void setRangeFrom(int64_t from) { rangeFrom_ = from; }
+  float rangeLow() const { return rangeLow_; }
+  float rangeHigh() const { return rangeHigh_; }
+
  private:
   void parseObject();
   void record(int64_t time, float value);
+  void includeInRange(float value);
 
   int64_t start_;
   int64_t step_;
@@ -34,6 +43,10 @@ class HaHistoryBuckets {
   size_t nextFill_ = 0;
   float current_;
   size_t records_ = 0;
+  int64_t rangeFrom_ = INT64_MAX;
+  bool rangeOpened_ = false;
+  float rangeLow_;
+  float rangeHigh_;
   // Rozebíraný objekt {...}; objekty bez atributů mají kolem 150 B.
   char object_[384];
   size_t objectLength_ = 0;

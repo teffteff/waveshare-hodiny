@@ -2770,6 +2770,23 @@ void handleUsbCommands() {
         // takže ručně nalistovaná letadla by screenshot nikdy nezastihl.
         clockDashboardSetPlanesVisible(true);
         Serial.println("PLANES_SHOWN");
+      } else if (usbCommand == "PLANEPICK" && !screenshotTransferActive) {
+        // Klepne na první letadlo: trefit pohyblivé letadlo přes TAP po
+        // osmivteřinovém screenshotu je loterie.
+        int16_t x = 0;
+        int16_t y = 0;
+        if (planeRadarServiceFirstPoint(x, y)) {
+#if HODINY_BOARD_LCD7
+          clockDashboardHandleSingleTap(static_cast<int16_t>(x - STAGE_X),
+                                        static_cast<int16_t>(y + SCREEN_HEIGHT -
+                                                             PLANE_RADAR_HEIGHT));
+#else
+          clockDashboardHandleSingleTap(x, y);
+#endif
+          Serial.println("PLANE_PICKED");
+        } else {
+          Serial.println("PLANE_NONE");
+        }
       } else if (usbCommand == "TRAFFICSHOW" && !screenshotTransferActive) {
         // Ze stejného důvodu jako RSSSHOW: připojení k portu desku resetuje.
         // Viditelná doprava se hned ptá serveru, mapa přijde po stažení.
@@ -3683,6 +3700,14 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
   char startText[24];
   strftime(startText, sizeof(startText), "%Y-%m-%dT%H:%M:%SZ", &utc);
   static float buckets[POINTS];
+  // Min a max od místní půlnoci, jako je počítá Home Assistant.
+  struct tm local;
+  localtime_r(&now, &local);
+  local.tm_hour = 0;
+  local.tm_min = 0;
+  local.tm_sec = 0;
+  local.tm_isdst = -1;
+  const int64_t midnight = static_cast<int64_t>(mktime(&local));
   for (size_t slotIndex = 0; slotIndex < CLOCK_VALUE_SLOT_COUNT; ++slotIndex) {
     const ClockValueSlotConfig &slot = clockConfigValueSlot(config, slotIndex);
     if (!slot.enabled || slot.entityId[0] == '\0') continue;
@@ -3703,6 +3728,7 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
       continue;
     }
     HaHistoryBuckets parser(start, STEP, POINTS);
+    parser.setRangeFrom(midnight);
     NetworkClient *stream = http.getStreamPtr();
     char chunk[512];
     unsigned long lastDataAt = millis();
@@ -3720,7 +3746,9 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
     }
     http.end();
     const size_t records = parser.finish(buckets);
-    if (records > 0) clockDashboardLcd7StageHistory(slotIndex, buckets);
+    if (records > 0)
+      clockDashboardLcd7StageHistory(slotIndex, buckets, parser.rangeLow(),
+                                     parser.rangeHigh());
     Serial.printf("[historie] %s: %u zaznamu, %.1f %.1f %.1f\n", slot.entityId,
                   static_cast<unsigned>(records), buckets[0], buckets[POINTS / 2],
                   buckets[POINTS - 1]);

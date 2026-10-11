@@ -737,6 +737,11 @@ struct History {
   uint8_t count;     // kolik vzorků je platných
   uint8_t measured;  // kolik nejnovějších vzorků se naměřilo od startu
   uint32_t version;
+  // Min a max od místní půlnoci ze všech hodnot, ne jen z čtvrthodinových
+  // vzorků - stejně jako min/max v Home Assistantu. dayKey: rok*1000+den.
+  float dayLow[CLOCK_VALUE_SLOT_COUNT];
+  float dayHigh[CLOCK_VALUE_SLOT_COUNT];
+  int32_t dayKey;
 };
 History *history = nullptr;
 uint32_t lastHistorySampleAt = 0;
@@ -746,6 +751,9 @@ uint32_t lastHistorySampleAt = 0;
 // jediná čte - přes tuhle odkládací kopii pod zámkem.
 struct StagedHistory {
   float values[CLOCK_VALUE_SLOT_COUNT][HISTORY_POINTS];
+  float dayLow[CLOCK_VALUE_SLOT_COUNT];
+  float dayHigh[CLOCK_VALUE_SLOT_COUNT];
+  int32_t dayKey;
   bool slots[CLOCK_VALUE_SLOT_COUNT];
   bool pending;
 };
@@ -759,10 +767,50 @@ void allocateHistory() {
       heap_caps_calloc(1, sizeof(StagedHistory), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
-void stageHistory(size_t slot, const float *buckets) {
+// Dnešní den jako rok*1000+den v roce; 0, dokud není známý čas.
+int32_t localDayKey() {
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return 0;
+  struct tm local;
+  localtime_r(&now, &local);
+  return local.tm_year * 1000 + local.tm_yday;
+}
+
+// Vrací true, když hodnota rozsah rozšířila.
+bool widenDayRange(float &low, float &high, float value) {
+  if (std::isnan(value)) return false;
+  bool changed = false;
+  if (std::isnan(low) || value < low) {
+    low = value;
+    changed = true;
+  }
+  if (std::isnan(high) || value > high) {
+    high = value;
+    changed = true;
+  }
+  return changed;
+}
+
+// Po půlnoci začíná rozsah znovu.
+void rollDayRange() {
+  const int32_t day = localDayKey();
+  if (day == 0 || day == history->dayKey) return;
+  history->dayKey = day;
+  for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot) {
+    history->dayLow[slot] = NAN;
+    history->dayHigh[slot] = NAN;
+  }
+  ++history->version;
+}
+
+void stageHistory(size_t slot, const float *buckets, float dayLow, float dayHigh) {
   if (stagedHistory == nullptr || slot >= CLOCK_VALUE_SLOT_COUNT) return;
+  const int32_t day = localDayKey();
   portENTER_CRITICAL(&stagedHistoryMux);
   memcpy(stagedHistory->values[slot], buckets, sizeof(stagedHistory->values[slot]));
+  stagedHistory->dayLow[slot] = dayLow;
+  stagedHistory->dayHigh[slot] = dayHigh;
+  stagedHistory->dayKey = day;
   stagedHistory->slots[slot] = true;
   stagedHistory->pending = true;
   portEXIT_CRITICAL(&stagedHistoryMux);
@@ -781,6 +829,11 @@ void applyStagedHistory() {
       // naměřené vzorky od startu poznáme podle počtu, ne podle obsahu.
       const bool live = age < history->measured && !std::isnan(history->values[slot][index]);
       if (!live) history->values[slot][index] = stagedHistory->values[slot][HISTORY_POINTS - 1 - age];
+    }
+    // Rozsah z HA platí jen pro dnešek; živé hodnoty od startu v něm zůstanou.
+    if (stagedHistory->dayKey != 0 && stagedHistory->dayKey == history->dayKey) {
+      widenDayRange(history->dayLow[slot], history->dayHigh[slot], stagedHistory->dayLow[slot]);
+      widenDayRange(history->dayLow[slot], history->dayHigh[slot], stagedHistory->dayHigh[slot]);
     }
     stagedHistory->slots[slot] = false;
   }
@@ -812,7 +865,16 @@ void recordHistorySample() {
 // HISTORY_INTERVAL_MS.
 void maintainHistory() {
   if (history == nullptr) return;
+  rollDayRange();
   applyStagedHistory();
+  // Každá přečtená hodnota rozšíří dnešní rozsah, i mezi vzorky grafu.
+  if (history->dayKey != 0) {
+    for (size_t slot = 0; slot < CLOCK_VALUE_SLOT_COUNT; ++slot) {
+      if (widenDayRange(history->dayLow[slot], history->dayHigh[slot],
+                        slotReadingForHistory(slot)))
+        ++history->version;
+    }
+  }
   if (history->count > 0) {
     if (millis() - lastHistorySampleAt >= HISTORY_INTERVAL_MS) recordHistorySample();
     return;
@@ -1066,14 +1128,20 @@ void showHistory(Tile &tile, size_t slotIndex, const ValueSlotDisplay &display,
     ++valid;
   }
   const bool visible = valid >= 2;
-  setVisible(tile.range, visible);
+  // Čísla vpravo nahoře: min a max od půlnoci (jako v Home Assistantu),
+  // graf dál ukazuje posledních 24 h.
+  const float dayLow = history == nullptr ? NAN : history->dayLow[slotIndex];
+  const float dayHigh = history == nullptr ? NAN : history->dayHigh[slotIndex];
+  const bool rangeShown = history != nullptr && history->dayKey != 0 &&
+                          !std::isnan(dayLow) && !std::isnan(dayHigh);
+  setVisible(tile.range, rangeShown);
   lv_coord_t titleWidth = tileWidth - 2 * TILE_PAD - 24;
-  if (visible) {
+  if (rangeShown) {
     char lowText[16];
     char highText[16];
     char text[40];
-    formatValue(lowText, sizeof(lowText), low, display.decimals);
-    formatValue(highText, sizeof(highText), high, display.decimals);
+    formatValue(lowText, sizeof(lowText), dayLow, display.decimals);
+    formatValue(highText, sizeof(highText), dayHigh, display.decimals);
     snprintf(text, sizeof(text), "%s – %s", lowText, highText);
     setText(tile.range, text);
     setColor(tile.range, p.muted);
@@ -2827,6 +2895,7 @@ constexpr int PLANES_COLUMN_W = SCREEN_WIDTH - PLANES_COLUMN_X;
 constexpr int PLANES_PAD = 14;
 constexpr int PLANES_CONTENT = PLANES_COLUMN_W - 2 * PLANES_PAD;
 constexpr int PLANES_DETAIL_Y = 118;
+constexpr int PLANES_OPEN_Y = 78;
 constexpr int PLANES_DETAIL_LINES = PLANES_DETAIL_ROW_COUNT + 4;
 
 struct PlanesView {
@@ -2879,6 +2948,8 @@ void createPlanes(lv_obj_t *screen) {
   v.title = label(c, &lcd7_text22, PLANES_PAD, PLANES_DETAIL_Y, PLANES_CONTENT);
   for (size_t index = 0; index < PLANES_DETAIL_LINES; ++index) {
     v.detail[index] = label(c, &lcd7_text15, PLANES_PAD, 0, PLANES_CONTENT);
+    lv_label_set_long_mode(v.detail[index], LV_LABEL_LONG_WRAP);
+    lv_label_set_recolor(v.detail[index], true);
     v.values[index] = label(c, &lcd7_text15, PLANES_PAD, 0, PLANES_CONTENT);
   }
   v.hint = label(c, &lcd7_text15, PLANES_PAD, PLANES_DETAIL_Y, PLANES_CONTENT);
@@ -2923,6 +2994,120 @@ void composePlanesStatus(const Palette &p, char *text, size_t capacity) {
   }
 }
 
+// Text za "JMÉNO: " z řádku kulatého detailu; bez dvojtečky celý řádek.
+const char *planesRowValue(lv_obj_t *row) {
+  if (row == nullptr) return "";
+  const char *text = lv_label_get_text(row);
+  const char *colon = strstr(text, ": ");
+  return colon != nullptr ? colon + 2 : text;
+}
+
+// Detail vybraného letadla ve sloupci 160 px: volací znak, typ slovy a trasa
+// nahoře, pak čtyři čísla velkým písmem s malým popiskem nad sebou (vždy
+// stejně, ať je hodnota krátká, nebo dlouhá), dole registrace a zdroj.
+// Čte texty kulatého detailu, aby obojí ukazovalo totéž.
+void syncPlanesDetail(const Palette &p, lv_coord_t top) {
+  PlanesView &v = planes;
+  const bool english = englishLanguage();
+  const lv_color_t main = p.night ? COLOR_ERROR : COLOR_TEXT;
+  const lv_coord_t bottom = SCREEN_HEIGHT - MAP_TOP - 4;
+  size_t next = 0;
+  lv_coord_t y = top;
+  // Další volný popisek; false, když se pod spodní okraj nevejde.
+  auto place = [&](lv_obj_t *object, const char *text, const lv_font_t *font,
+                   lv_color_t color, lv_coord_t gapAfter) {
+    setFont(object, font);
+    setText(object, text);
+    setColor(object, color);
+    setPosition(object, PLANES_PAD, y);
+    lv_obj_update_layout(object);
+    const lv_coord_t height = lv_obj_get_height(object);
+    if (y + height > bottom) return false;
+    setVisible(object, true);
+    y += height + gapAfter;
+    return true;
+  };
+  auto take = [&]() -> lv_obj_t * {
+    return next < PLANES_DETAIL_LINES ? v.detail[next++] : nullptr;
+  };
+
+  setText(v.title, lv_label_get_text(planesDetailTitle));
+  setColor(v.title, p.night ? COLOR_ERROR : COLOR_ROOM);
+  setPosition(v.title, PLANES_PAD, y);
+  y += lv_font_get_line_height(&lcd7_text22) + 2;
+
+  char text[96];
+  char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+  agendaBuildColorTag(tag, p.muted);
+  bool fits = true;
+  // Typ slovy ("Boeing 737-800"), až na dva řádky.
+  const char *type = planesRowValue(planesDetailRows[PLANES_DETAIL_TYPE_ROW]);
+  if (lv_label_get_text(planesDetailRows[PLANES_DETAIL_TYPE_ROW])[0] != '\0' &&
+      strcmp(type, "?") != 0) {
+    if (lv_obj_t *object = take()) fits = place(object, type, &lcd7_text18, main, 6);
+  }
+  // Nouze má přednost před vším dalším.
+  const char *emergency = lv_label_get_text(planesDetailRows[PLANES_DETAIL_ROW_COUNT - 1]);
+  if (fits && emergency[0] != '\0') {
+    if (lv_obj_t *object = take()) fits = place(object, emergency, &lcd7_text18, main, 6);
+  }
+  // Trasa: "Z Praha" / "Do Londýn" s tlumenou předložkou, nebo stav hledání.
+  for (lv_obj_t *route : {planesDetailRouteFrom, planesDetailRouteTo}) {
+    const char *raw = lv_label_get_text(route);
+    if (!fits || raw[0] == '\0') continue;
+    const char *colon = strstr(raw, ": ");
+    if (colon != nullptr) {
+      snprintf(text, sizeof(text), "%s%.*s# %s", tag, static_cast<int>(colon - raw), raw,
+               colon + 2);
+    } else {
+      snprintf(text, sizeof(text), "%s%s#", tag, raw);
+    }
+    if (lv_obj_t *object = take()) fits = place(object, text, &lcd7_text15, main, 2);
+  }
+  y += 6;
+  // Výška, rychlost, směr, stoupání: popisek malým, číslo velkým.
+  for (uint8_t row = 0; fits && row < 4; ++row) {
+    const char *raw = lv_label_get_text(planesDetailRows[row]);
+    const char *colon = strstr(raw, ": ");
+    if (colon == nullptr) continue;
+    snprintf(text, sizeof(text), "%.*s", static_cast<int>(colon - raw), raw);
+    lv_obj_t *caption = take();
+    if (caption == nullptr) break;
+    fits = place(caption, text, &lcd7_text15, p.muted, 0);
+    lv_obj_t *value = v.values[row];
+    // Desetinná čárka jako všude jinde na displeji (kulatý píše "-2.9 m/s").
+    char number[32];
+    strlcpy(number, colon + 2, sizeof(number));
+    if (!english) {
+      for (char *c = number; *c != '\0'; ++c)
+        if (*c == '.') *c = ',';
+    }
+    if (fits) fits = place(value, number, &lcd7_text22, main, 2);
+    if (!fits) setVisible(caption, false);
+  }
+  // Registrace a zdroj (vlastní přijímač / internet) pod sebou, tlumeně;
+  // když letadlo zmizí z dat, místo zdroje "signál ztracen".
+  if (fits) {
+    strlcpy(text, lv_label_get_text(planesDetailRegistration), sizeof(text));
+    static const char SEPARATOR[] = "  ·  ";
+    char *dot = strstr(text, SEPARATOR);
+    if (dot != nullptr) {
+      const size_t skip = sizeof(SEPARATOR) - 1;
+      dot[0] = '\n';
+      memmove(dot + 1, dot + skip, strlen(dot + skip) + 1);
+    }
+    if (!lv_obj_has_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN)) {
+      char *newline = strchr(text, '\n');
+      if (newline != nullptr) *newline = '\0';
+      const size_t length = strlen(text);
+      snprintf(text + length, sizeof(text) - length, "%s%s", length > 0 ? "\n" : "",
+               english ? "signal lost" : "signál ztracen");
+    }
+    y += 4;
+    if (lv_obj_t *object = take()) place(object, text, &lcd7_text15, p.muted, 0);
+  }
+}
+
 void syncPlanes(const Palette &p) {
   PlanesView &v = planes;
   syncTopBar(v.bar, p);
@@ -2961,84 +3146,21 @@ void syncPlanes(const Palette &p) {
         lv_color_to32(p.text))
       lv_obj_set_style_border_color(v.selection, p.text, 0);
   }
+  // Otevřený detail potřebuje celý sloupec: počet letadel ustoupí, dosah
+  // s tečkami zůstane.
+  setVisible(v.status, !open);
+  const lv_coord_t top = open ? PLANES_OPEN_Y : PLANES_DETAIL_Y;
+  setPosition(v.lines[0], PLANES_PAD, top - 10);
   setVisible(v.title, open);
   setVisible(v.hint, !open && planesLcd7.haveAircraftData);
   setText(v.hint, englishLanguage() ? "Tap a plane for details"
                                     : "Klepnutím na letadlo zobrazíš detail");
   setColor(v.hint, p.muted);
-  lv_obj_t *sources[PLANES_DETAIL_LINES] = {};
-  if (open) {
-    setText(v.title, lv_label_get_text(planesDetailTitle));
-    setColor(v.title, p.night ? COLOR_ERROR : COLOR_ROOM);
-    size_t count = 0;
-    for (lv_obj_t *row : planesDetailRows) sources[count++] = row;
-    sources[count++] = planesDetailRegistration;
-    sources[count++] = planesDetailRouteFrom;
-    sources[count++] = planesDetailRouteTo;
-    if (!lv_obj_has_flag(planesDetailSignalLost, LV_OBJ_FLAG_HIDDEN))
-      sources[count++] = planesDetailSignalLost;
-  }
-  // Řádky kulatého jsou "VÝŠKA: 4663 m"; tady jméno tlumeně vlevo a hodnota
-  // vpravo, a když se vedle nevejde, na vlastním řádku pod jménem.
-  lv_coord_t y = PLANES_DETAIL_Y + 32;
-  const lv_coord_t step = lv_font_get_line_height(&lcd7_text15) + 3;
   for (size_t index = 0; index < PLANES_DETAIL_LINES; ++index) {
-    lv_obj_t *row = v.detail[index];
-    lv_obj_t *value = v.values[index];
-    const char *source = sources[index] != nullptr ? lv_label_get_text(sources[index]) : "";
-    // Kulatý píše nouzi do řádku s recolor značkou; tady stačí text.
-    if (source[0] == '#') {
-      const char *space = strchr(source, ' ');
-      source = space != nullptr ? space + 1 : source;
-    }
-    const bool shown = open && y + step <= SCREEN_HEIGHT - MAP_TOP - 46 && source[0] != '\0';
-    setVisible(row, shown);
-    if (!shown) {
-      setVisible(value, false);
-      continue;
-    }
-    char line[64];
-    strlcpy(line, source, sizeof(line));
-    size_t length = strlen(line);
-    if (length > 0 && line[length - 1] == '#') line[--length] = '\0';
-    const lv_color_t main = p.night ? COLOR_ERROR : COLOR_TEXT;
-    char *colon = strstr(line, ": ");
-    if (colon == nullptr) {
-      setVisible(value, false);
-      setText(row, line);
-      setColor(row, p.night ? COLOR_ERROR
-                            : (index >= PLANES_DETAIL_ROW_COUNT ? COLOR_MUTED : main));
-      setPosition(row, PLANES_PAD, y);
-      y += step;
-      continue;
-    }
-    *colon = '\0';
-    const char *valueText = colon + 2;
-    setText(row, line);
-    setColor(row, p.muted);
-    setPosition(row, PLANES_PAD, y);
-    setText(value, valueText);
-    setColor(value, main);
-    setVisible(value, true);
-    const lv_coord_t nameWidth =
-        lv_txt_get_width(line, strlen(line), &lcd7_text15, 0, LV_TEXT_FLAG_NONE);
-    const lv_coord_t valueWidth = std::min<lv_coord_t>(
-        PLANES_CONTENT,
-        lv_txt_get_width(valueText, strlen(valueText), &lcd7_text15, 0, LV_TEXT_FLAG_NONE) + 1);
-    setWidth(value, valueWidth);
-    if (nameWidth + 8 + valueWidth <= PLANES_CONTENT) {
-      setPosition(value, PLANES_PAD + PLANES_CONTENT - valueWidth, y);
-      y += step;
-    } else {
-      y += step;
-      if (y + step > SCREEN_HEIGHT - MAP_TOP - 46) {
-        setVisible(value, false);
-        continue;
-      }
-      setPosition(value, PLANES_PAD, y);
-      y += step;
-    }
+    setVisible(v.detail[index], false);
+    setVisible(v.values[index], false);
   }
+  if (open) syncPlanesDetail(p, top);
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
 
 }

@@ -1811,6 +1811,17 @@ void planeRadarServiceChangeRange(int8_t direction) {
   if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
+bool planeRadarServiceFirstPoint(int16_t &x, int16_t &y) {
+  portENTER_CRITICAL(&stateMux);
+  const bool found = planePointCount > 0;
+  if (found) {
+    x = planePoints[0].x;
+    y = planePoints[0].y;
+  }
+  portEXIT_CRITICAL(&stateMux);
+  return found;
+}
+
 bool planeRadarServiceSelectedPoint(int16_t &x, int16_t &y) {
   bool found = false;
   portENTER_CRITICAL(&stateMux);
