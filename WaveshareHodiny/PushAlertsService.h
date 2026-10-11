@@ -14,8 +14,9 @@
 // a stránka nastavení ho ukazuje. Čte se po startu, po změně adresy nebo
 // polohy a pak každou půlhodinu.
 //
-// Vlastní úloha ze stejného důvodu jako u srážek: adresu zadává majitel, takže
-// se ověřuje proti svazku kořenů Mozilly a na to je potřeba velký zásobník.
+// Dotaz běží jako krok pracovníka net-poll (NetPoll.h) ze stejného důvodu jako
+// u srážek: adresu zadává majitel, takže se ověřuje proti svazku kořenů
+// Mozilly a na to je potřeba velký zásobník.
 
 void pushAlertsServiceBegin();
 void pushAlertsServicePrepareForFirmwareUpdate();

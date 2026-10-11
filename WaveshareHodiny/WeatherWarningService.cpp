@@ -4,13 +4,13 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
-#include <freertos/idf_additions.h>
 
 #include <cstring>
 #include <new>
 
 #include "ClockConfig.h"
 #include "HttpDownload.h"
+#include "NetPoll.h"
 #include "NetworkCoordinator.h"
 #include "TlsBundle.h"
 
@@ -77,7 +77,7 @@ class BoundedBufferStream : public Stream {
   bool overflowed_ = false;
 };
 
-TaskHandle_t taskHandle = nullptr;
+int pollJob = -1;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 Request request;
 uint32_t requestRevision = 0;
@@ -208,72 +208,79 @@ bool fetchWarnings(const Request &current) {
   return true;
 }
 
-void weatherWarningTask(void *) {
+// Takt, po kterém se hlídá Wi-Fi a termín dotazu; dřív timeout notifikace
+// vlastní úlohy.
+constexpr uint32_t TICK_MS = 1000;
+uint32_t lastRevision = UINT32_MAX;
+uint32_t failures = 0;
+
+// Jeden průchod dřívější úlohy "warnings"; běží ve společném pracovníkovi
+// net-poll (NetPoll.h). Vrací, kdy ho zavolat znovu.
+uint32_t weatherWarningStep(bool) {
   Request current;
-  uint32_t lastRevision = UINT32_MAX;
-  uint32_t failures = 0;
+  portENTER_CRITICAL(&stateMux);
+  current = request;
+  const uint32_t revision = requestRevision;
+  const bool stopped = suspended;
+  portEXIT_CRITICAL(&stateMux);
 
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+  if (stopped || !current.enabled || current.url[0] == '\0') {
     portENTER_CRITICAL(&stateMux);
-    current = request;
-    const uint32_t revision = requestRevision;
-    const bool stopped = suspended;
+    haveSuccess = false;
+    *storedFeed = WeatherWarningFeed{};
     portEXIT_CRITICAL(&stateMux);
+    setStatus(current.enabled ? "Chybí adresa serveru výstrah" : "Vypnuto");
+    lastRevision = revision;
+    // Ven z tohohle stavu vede jen změna nastavení, a ta úlohu probudí.
+    return NET_POLL_IDLE;
+  }
 
-    if (stopped || !current.enabled || current.url[0] == '\0') {
-      portENTER_CRITICAL(&stateMux);
-      haveSuccess = false;
-      *storedFeed = WeatherWarningFeed{};
-      portEXIT_CRITICAL(&stateMux);
-      setStatus(current.enabled ? "Chybí adresa serveru výstrah" : "Vypnuto");
-      lastRevision = revision;
-      continue;
-    }
-    // Změna adresy, polohy nebo jazyka znamená jinou odpověď; stará už
-    // neplatí a na další dotaz se nečeká.
-    if (revision != lastRevision) {
-      lastRevision = revision;
-      failures = 0;
-      portENTER_CRITICAL(&stateMux);
-      haveSuccess = false;
-      *storedFeed = WeatherWarningFeed{};
-      nextFetchAt = 0;
-      portEXIT_CRITICAL(&stateMux);
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-      setStatus("Bez Wi-Fi");
-      continue;
-    }
-
+  // Změna adresy, polohy nebo jazyka znamená jinou odpověď; stará už
+  // neplatí a na další dotaz se nečeká.
+  if (revision != lastRevision) {
+    lastRevision = revision;
+    failures = 0;
     portENTER_CRITICAL(&stateMux);
-    const uint32_t due = nextFetchAt;
-    portEXIT_CRITICAL(&stateMux);
-    if (due != 0 && static_cast<long>(millis() - due) < 0) continue;
-
-    const bool ok = fetchWarnings(current);
-    const uint32_t period =
-        static_cast<uint32_t>(current.refreshMinutes) * 60U * 1000U;
-    uint32_t wait = period;
-    if (ok) {
-      failures = 0;
-    } else if (networkBusy) {
-      wait = BUSY_RETRY_MS;
-    } else {
-      ++failures;
-      wait = period << (failures < 4 ? failures : 4);
-      if (wait > MAX_BACKOFF_MS) wait = MAX_BACKOFF_MS;
-    }
-    portENTER_CRITICAL(&stateMux);
-    nextFetchAt = millis() + wait;
+    haveSuccess = false;
+    *storedFeed = WeatherWarningFeed{};
+    nextFetchAt = 0;
     portEXIT_CRITICAL(&stateMux);
   }
+  if (WiFi.status() != WL_CONNECTED) {
+    setStatus("Bez Wi-Fi");
+    return TICK_MS;
+  }
+
+  portENTER_CRITICAL(&stateMux);
+  const uint32_t due = nextFetchAt;
+  portEXIT_CRITICAL(&stateMux);
+  const long untilDue = static_cast<long>(due - millis());
+  if (due != 0 && untilDue > 0)
+    return netPollWithin(static_cast<uint32_t>(untilDue), TICK_MS);
+
+  const bool ok = fetchWarnings(current);
+  const uint32_t period =
+      static_cast<uint32_t>(current.refreshMinutes) * 60U * 1000U;
+  uint32_t wait = period;
+  if (ok) {
+    failures = 0;
+  } else if (networkBusy) {
+    wait = BUSY_RETRY_MS;
+  } else {
+    ++failures;
+    wait = period << (failures < 4 ? failures : 4);
+    if (wait > MAX_BACKOFF_MS) wait = MAX_BACKOFF_MS;
+  }
+  portENTER_CRITICAL(&stateMux);
+  nextFetchAt = millis() + wait;
+  portEXIT_CRITICAL(&stateMux);
+  return TICK_MS;
 }
 
 }  // namespace
 
 void weatherWarningServiceBegin() {
-  if (taskHandle != nullptr) return;
+  if (pollJob >= 0) return;
   if (storedFeed == nullptr) {
     void *memory = heap_caps_calloc(1, sizeof(WeatherWarningFeed),
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -285,16 +292,15 @@ void weatherWarningServiceBegin() {
         MAX_RESPONSE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (responseBuffer == nullptr) return;
   }
-  xTaskCreatePinnedToCoreWithCaps(weatherWarningTask, "warnings", 12288,
-                                  nullptr, 1, &taskHandle, 0,
-                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  pollJob = netPollRegister(NetPollWorker::Alerts, "warnings",
+                            weatherWarningStep);
 }
 
 void weatherWarningServicePrepareForFirmwareUpdate() {
   portENTER_CRITICAL(&stateMux);
   suspended = true;
   portEXIT_CRITICAL(&stateMux);
-  if (taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  netPollWake(pollJob);
 }
 
 void weatherWarningServiceSetActive(bool enabled, const char *feedUrl,
@@ -320,7 +326,7 @@ void weatherWarningServiceSetActive(bool enabled, const char *feedUrl,
     changed = true;
   }
   portEXIT_CRITICAL(&stateMux);
-  if (changed && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  if (changed) netPollWake(pollJob);
 }
 
 void weatherWarningServiceStatus(WeatherWarningStatus &status) {

@@ -8,9 +8,9 @@
 constexpr uint32_t NETWORK_TLS_HANDSHAKE_TIMEOUT_S = 5;
 
 // Zámek níže drží jedno stažení najednou: Home Assistant a Open-Meteo
-// (WaveshareHodiny.ino) i většina služeb s vlastní úlohou (zprávy, agenda,
-// škola, družice, blesky, radar, letadla, výstrahy…) ho berou kolem svého
-// dotazu. Nebere ho dálkové nastavení, jehož dlouhé dotazování by ho drželo
+// (WaveshareHodiny.ino), služby s vlastní úlohou (družice, radar, letadla,
+// doprava…) i kroky společných pracovníků (NetPoll.h: zprávy, agenda, škola,
+// předpověď, blesky, déšť, výstrahy, upozornění) ho berou kolem svého dotazu. Nebere ho dálkové nastavení, jehož dlouhé dotazování by ho drželo
 // desítky sekund. Vnitřní RAM handshakům šetří TlsMemory.cpp, který alokace
 // mbedTLS posílá do PSRAM (diagnostika: tlsInternalFallbacks); svazek kořenů
 // sdílený souběžnými spojeními viz TlsBundle.h.

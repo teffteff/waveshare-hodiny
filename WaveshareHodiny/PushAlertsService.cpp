@@ -3,11 +3,11 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <freertos/idf_additions.h>
 
 #include <cstring>
 
 #include "HttpDownload.h"
+#include "NetPoll.h"
 #include "NetworkCoordinator.h"
 #include "TlsBundle.h"
 
@@ -53,7 +53,7 @@ struct Desired {
   float longitude = 0.0f;
 };
 
-TaskHandle_t taskHandle = nullptr;
+int pollJob = -1;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 // Chtěný stav a revize; úloha si je pod zámkem zkopíruje.
 Desired desired;
@@ -133,84 +133,90 @@ void describeFailure(int status) {
   }
 }
 
-void pushAlertsTask(void *) {
-  // Odpověď v PSRAM zásobníku úlohy.
-  char response[MAX_RESPONSE_BYTES];
+// Takt, po kterém se hlídá termín a Wi-Fi; dřív timeout notifikace vlastní
+// úlohy.
+constexpr uint32_t TICK_MS = 5000;
+uint32_t failures = 0;
+uint32_t nextAt = 0;
+bool scheduled = false;
+uint32_t lastRevision = UINT32_MAX;
+
+// Jeden průchod dřívější úlohy "push-alerts"; běží ve společném pracovníkovi
+// net-poll (NetPoll.h). Vrací, kdy ho zavolat znovu.
+uint32_t pushAlertsStep(bool) {
   Desired current;
-  uint32_t failures = 0;
-  uint32_t nextAt = 0;
-  bool scheduled = false;
-  uint32_t lastRevision = UINT32_MAX;
+  portENTER_CRITICAL(&stateMux);
+  current = desired;
+  const uint32_t revision = desiredRevision;
+  const bool stopped = suspended;
+  const bool refresh = refreshRequested;
+  refreshRequested = false;
+  portEXIT_CRITICAL(&stateMux);
+  // Ven vede jen nová adresa či poloha nebo nový start služby, a obojí úlohu
+  // probudí.
+  if (stopped || !current.valid) return NET_POLL_IDLE;
 
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
-    portENTER_CRITICAL(&stateMux);
-    current = desired;
-    const uint32_t revision = desiredRevision;
-    const bool stopped = suspended;
-    const bool refresh = refreshRequested;
-    refreshRequested = false;
-    portEXIT_CRITICAL(&stateMux);
-    if (stopped || !current.valid) continue;
-
-    // Nová adresa nebo poloha se čte hned, i když stará čeká na opakování.
-    if (revision != lastRevision || refresh) {
-      if (revision != lastRevision) failures = 0;
-      lastRevision = revision;
-      scheduled = false;
-    }
-    if (scheduled && static_cast<long>(millis() - nextAt) < 0) continue;
-    if (WiFi.status() != WL_CONNECTED) {
-      setStatus("Čeká na Wi-Fi");
-      continue;
-    }
-
-    int status = 0;
-    {
-      NetworkOperationGuard guard(NETWORK_GUARD_MS);
-      if (!guard) continue;
-      status = getSettings(current, response, sizeof(response));
-    }
-    PushAlertsServerSettings parsed;
-    const bool readable =
-        status == 200 &&
-        pushAlertsParseAnswer(response, response + strlen(response), parsed);
-    if (readable) {
-      portENTER_CRITICAL(&stateMux);
-      // Mezitím se mohla změnit adresa nebo poloha; pak by to nepatřilo sem.
-      if (desiredRevision == revision) serverSettings = parsed;
-      portEXIT_CRITICAL(&stateMux);
-      setStatus(parsed.known ? "Nastavení je načtené"
-                             : "Server zatím nezná polohu domu");
-      failures = 0;
-      nextAt = millis() + REFRESH_MS;
-      scheduled = true;
-      continue;
-    }
-    if (status == 200)
-      setStatus("Server poslal nečitelnou odpověď");
-    else
-      describeFailure(status);
-    ++failures;
-    uint32_t wait = FIRST_RETRY_MS << (failures < 6 ? failures - 1 : 5);
-    if (wait > MAX_RETRY_MS) wait = MAX_RETRY_MS;
-    nextAt = millis() + wait;
-    scheduled = true;
+  // Nová adresa nebo poloha se čte hned, i když stará čeká na opakování.
+  if (revision != lastRevision || refresh) {
+    if (revision != lastRevision) failures = 0;
+    lastRevision = revision;
+    scheduled = false;
   }
+  const long untilDue = static_cast<long>(nextAt - millis());
+  if (scheduled && untilDue > 0)
+    return netPollWithin(static_cast<uint32_t>(untilDue), TICK_MS);
+  if (WiFi.status() != WL_CONNECTED) {
+    setStatus("Čeká na Wi-Fi");
+    return TICK_MS;
+  }
+
+  // Odpověď v PSRAM zásobníku pracovníka; žije jen po dobu kroku.
+  char response[MAX_RESPONSE_BYTES];
+  int status = 0;
+  {
+    NetworkOperationGuard guard(NETWORK_GUARD_MS);
+    if (!guard) return TICK_MS;
+    status = getSettings(current, response, sizeof(response));
+  }
+  PushAlertsServerSettings parsed;
+  const bool readable =
+      status == 200 &&
+      pushAlertsParseAnswer(response, response + strlen(response), parsed);
+  if (readable) {
+    portENTER_CRITICAL(&stateMux);
+    // Mezitím se mohla změnit adresa nebo poloha; pak by to nepatřilo sem.
+    if (desiredRevision == revision) serverSettings = parsed;
+    portEXIT_CRITICAL(&stateMux);
+    setStatus(parsed.known ? "Nastavení je načtené"
+                           : "Server zatím nezná polohu domu");
+    failures = 0;
+    nextAt = millis() + REFRESH_MS;
+    scheduled = true;
+    return TICK_MS;
+  }
+  if (status == 200)
+    setStatus("Server poslal nečitelnou odpověď");
+  else
+    describeFailure(status);
+  ++failures;
+  uint32_t wait = FIRST_RETRY_MS << (failures < 6 ? failures - 1 : 5);
+  if (wait > MAX_RETRY_MS) wait = MAX_RETRY_MS;
+  nextAt = millis() + wait;
+  scheduled = true;
+  return TICK_MS;
 }
 }  // namespace
 
 void pushAlertsServiceBegin() {
-  if (taskHandle != nullptr) {
+  if (pollJob >= 0) {
     portENTER_CRITICAL(&stateMux);
     suspended = false;
     portEXIT_CRITICAL(&stateMux);
-    xTaskNotifyGive(taskHandle);
+    netPollWake(pollJob);
     return;
   }
-  xTaskCreatePinnedToCoreWithCaps(pushAlertsTask, "push-alerts", 12288,
-                                  nullptr, 1, &taskHandle, 0,
-                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  pollJob = netPollRegister(NetPollWorker::Alerts, "push-alerts",
+                            pushAlertsStep);
 }
 
 void pushAlertsServicePrepareForFirmwareUpdate() {
@@ -243,7 +249,7 @@ void pushAlertsServiceSetConfig(const ClockPushAlertsConfig &alerts,
   if (!next.valid)
     strlcpy(statusMessage, "Vypnuto", sizeof(statusMessage));
   portEXIT_CRITICAL(&stateMux);
-  if (changed && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  if (changed) netPollWake(pollJob);
 }
 
 void pushAlertsServiceRefresh() {
@@ -258,7 +264,7 @@ void pushAlertsServiceRefresh() {
     wake = true;
   }
   portEXIT_CRITICAL(&stateMux);
-  if (wake && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  if (wake) netPollWake(pollJob);
 }
 
 void pushAlertsServiceLowPass(PushAlertsLowPass &lowPass) {

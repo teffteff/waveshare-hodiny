@@ -41,6 +41,7 @@
 #include "HttpDownload.h"
 #include "JsonScan.h"
 #include "NetworkCoordinator.h"
+#include "NetPoll.h"
 #include "NetworkDiagnostics.h"
 #include "DeviceName.h"
 #include "SettingsBackup.h"
@@ -4366,7 +4367,19 @@ void handleDiagnostics() {
                 ? 0
                 : static_cast<uint32_t>(
                       uxTaskGetStackHighWaterMark(schoolTaskForDiagnostics));
-  result += F("},\"memoryCensus\":{\"lvglPsram\":");
+  // Zprávy, agenda a rozvrh sdílí pracovníka net-text, takže výše vychází
+  // totéž číslo; výstrahy, déšť, blesky a upozornění běží v net-poll.
+  {
+    const TaskHandle_t alertsWorker = netPollWorkerTask(NetPollWorker::Alerts);
+    result += F(",\"netPoll\":");
+    result += alertsWorker == nullptr
+                  ? 0
+                  : static_cast<uint32_t>(
+                        uxTaskGetStackHighWaterMark(alertsWorker));
+  }
+  result += F("},");
+  netPollAppendDiagnosticsJson(result);
+  result += F(",\"memoryCensus\":{\"lvglPsram\":");
   {
     uint32_t lvglPsram = 0;
     uint32_t lvglInternal = 0;
