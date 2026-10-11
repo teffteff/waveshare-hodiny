@@ -27,6 +27,8 @@ constexpr int BUS_RADIUS = 9;
 constexpr int PLACE_RADIUS = 4;
 
 bool nightPalette = false;
+// Rozměr právě kreslené mapy (trafficRender ho nastaví na začátku).
+TrafficRenderLayout currentLayout;
 
 uint16_t rgb565(uint32_t rgb) {
   return static_cast<uint16_t>(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) |
@@ -44,6 +46,10 @@ uint16_t palette(uint16_t color) {
 }
 
 bool insideLabelCircle(const MapLabelBox &box) {
+  if (currentLayout.rectangular)
+    return box.x >= 0 && box.y >= 0 &&
+           box.x + box.width <= currentLayout.width &&
+           box.y + box.height <= currentLayout.height;
   const int corners[4][2] = {{box.x, box.y},
                              {box.x + box.width, box.y},
                              {box.x, box.y + box.height},
@@ -69,8 +75,8 @@ void drawCapsule(uint16_t *pixels, float x0, float y0, float x1, float y1,
   const int right = static_cast<int>(ceilf(fmaxf(x0, x1) + radius + 1.0f));
   const int top = static_cast<int>(floorf(fminf(y0, y1) - radius - 1.0f));
   const int bottom = static_cast<int>(ceilf(fmaxf(y0, y1) + radius + 1.0f));
-  for (int y = top < 0 ? 0 : top; y <= bottom && y < MAP_CANVAS_HEIGHT; ++y) {
-    for (int x = left < 0 ? 0 : left; x <= right && x < MAP_CANVAS_WIDTH; ++x) {
+  for (int y = top < 0 ? 0 : top; y <= bottom && y < currentLayout.height; ++y) {
+    for (int x = left < 0 ? 0 : left; x <= right && x < currentLayout.width; ++x) {
       const float px = static_cast<float>(x) - x0;
       const float py = static_cast<float>(y) - y0;
       float t = lengthSquared > 0.0f ? (px * dx + py * dy) / lengthSquared : 0.0f;
@@ -207,9 +213,9 @@ bool placeLabel(const uint16_t *pixels, uint16_t background,
     for (int row = candidate.y; row < candidate.y + candidate.height; ++row)
       for (int column = candidate.x; column < candidate.x + candidate.width;
            ++column)
-        if (row >= 0 && row < MAP_CANVAS_HEIGHT && column >= 0 &&
-            column < MAP_CANVAS_WIDTH &&
-            pixels[row * MAP_CANVAS_WIDTH + column] != background)
+        if (row >= 0 && row < currentLayout.height && column >= 0 &&
+            column < currentLayout.width &&
+            pixels[row * currentLayout.width + column] != background)
           ++covered;
     if (best < 0 || covered < bestCovered) {
       best = index;
@@ -232,6 +238,8 @@ const char *levelName(uint8_t level, bool english) {
   }
 }
 
+int labelHeightFor(MapLabelFont &font) { return font.labelHeight(); }
+
 void drawLegend(uint16_t *pixels, MapLabelFont &font, bool english,
                 TrafficRenderResult &result) {
   constexpr int SWATCH = 12;
@@ -244,23 +252,75 @@ void drawLegend(uint16_t *pixels, MapLabelFont &font, bool english,
     total += SWATCH + SWATCH_GAP + font.width(levelName(level, english));
   total += ITEM_GAP * (static_cast<int>(sizeof(levels)) - 1);
   const int height = font.labelHeight();
-  int x = TRAFFIC_MAP_CENTER - total / 2;
-  const MapLabelBox box{x, TRAFFIC_LEGEND_Y, total, height};
+  const int legendY = currentLayout.rectangular
+                          ? currentLayout.height - height - 6
+                          : TRAFFIC_LEGEND_Y;
+  int x = currentLayout.rectangular ? 10 : TRAFFIC_MAP_CENTER - total / 2;
+  const MapLabelBox box{x, legendY, total, height};
   if (!insideLabelCircle(box)) return;
-  const int middle = TRAFFIC_LEGEND_Y + height / 2;
+  const int middle = legendY + height / 2;
   for (uint8_t level : levels) {
     drawCapsule(pixels, static_cast<float>(x + 2), static_cast<float>(middle),
                 static_cast<float>(x + SWATCH - 2), static_cast<float>(middle),
                 2.0f, palette(trafficLevelColor(level)), -1.0f);
     x += SWATCH + SWATCH_GAP;
     const char *name = levelName(level, english);
-    font.draw(pixels, x, TRAFFIC_LEGEND_Y + 3, name, palette(rgb565(0xB5B5B5)));
+    font.draw(pixels, x, legendY + 3, name, palette(rgb565(0xB5B5B5)));
     x += font.width(name) + ITEM_GAP;
   }
   result.legendDrawn = true;
 }
 
 }  // namespace
+
+void trafficFitToRect(TrafficData &data, int width, int height, int margin,
+                      float maxScale) {
+  int minX = INT16_MAX, minY = INT16_MAX, maxX = INT16_MIN, maxY = INT16_MIN;
+  const auto include = [&](int x, int y) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  };
+  for (uint8_t line = 0; line < data.lineCount; ++line)
+    for (uint8_t point = 0; point < data.lines[line].pointCount; ++point)
+      include(data.lines[line].x[point], data.lines[line].y[point]);
+  for (uint8_t index = 0; index < data.placeCount; ++index)
+    include(data.places[index].x, data.places[index].y);
+  for (uint8_t index = 0; index < data.exitCount; ++index)
+    include(data.exits[index].x, data.exits[index].y);
+  if (minX > maxX) return;
+  const float spanX = static_cast<float>(maxX - minX > 1 ? maxX - minX : 1);
+  const float spanY = static_cast<float>(maxY - minY > 1 ? maxY - minY : 1);
+  float scale = fminf((width - 2.0f * margin) / spanX, (height - 2.0f * margin) / spanY);
+  if (scale > maxScale) scale = maxScale;
+  // Obálka na střed obdélníku.
+  const float offsetX = width / 2.0f - scale * (minX + maxX) / 2.0f;
+  const float offsetY = height / 2.0f - scale * (minY + maxY) / 2.0f;
+  const auto mapX = [&](int16_t x) {
+    return static_cast<int16_t>(lroundf(offsetX + scale * x));
+  };
+  const auto mapY = [&](int16_t y) {
+    return static_cast<int16_t>(lroundf(offsetY + scale * y));
+  };
+  for (uint8_t line = 0; line < data.lineCount; ++line)
+    for (uint8_t point = 0; point < data.lines[line].pointCount; ++point) {
+      data.lines[line].x[point] = mapX(data.lines[line].x[point]);
+      data.lines[line].y[point] = mapY(data.lines[line].y[point]);
+    }
+  for (uint8_t index = 0; index < data.placeCount; ++index) {
+    data.places[index].x = mapX(data.places[index].x);
+    data.places[index].y = mapY(data.places[index].y);
+  }
+  for (uint8_t index = 0; index < data.exitCount; ++index) {
+    data.exits[index].x = mapX(data.exits[index].x);
+    data.exits[index].y = mapY(data.exits[index].y);
+  }
+  for (uint8_t index = 0; index < data.busCount; ++index) {
+    data.buses[index].x = mapX(data.buses[index].x);
+    data.buses[index].y = mapY(data.buses[index].y);
+  }
+}
 
 uint32_t trafficLevelRgb(uint8_t level) {
   switch (level) {
@@ -278,12 +338,15 @@ uint16_t trafficLevelColor(uint8_t level) {
 
 void trafficRender(uint16_t *pixels, const TrafficData *data, bool night,
                    bool english, MapLabelFont &labelFont, void (*yield)(),
-                   TrafficRenderResult &result) {
+                   TrafficRenderResult &result,
+                   const TrafficRenderLayout &layout) {
   result = TrafficRenderResult{};
   nightPalette = night;
+  currentLayout = layout;
+  const MapCanvasSize canvasSize(layout.width, layout.height);
   const uint16_t background = palette(COLOR_BLACK);
   for (size_t index = 0;
-       index < static_cast<size_t>(TRAFFIC_MAP_SIZE) * TRAFFIC_MAP_SIZE; ++index)
+       index < static_cast<size_t>(layout.width) * layout.height; ++index)
     pixels[index] = background;
   if (yield != nullptr) yield();
   if (data == nullptr) return;
@@ -307,9 +370,15 @@ void trafficRender(uint16_t *pixels, const TrafficData *data, bool night,
   MapLabelPlacer placer;
   // Pásy LVGL popisků: tečky obrazovek, stavový řádek, nadpis a dole stavová
   // hláška s legendou.
-  placer.claim({0, 16, TRAFFIC_MAP_SIZE, TRAFFIC_TOP_BAND_END_Y - 16});
-  placer.claim({0, TRAFFIC_LEGEND_Y - 2, TRAFFIC_MAP_SIZE,
-                TRAFFIC_MAP_SIZE - (TRAFFIC_LEGEND_Y - 2)});
+  if (layout.rectangular) {
+    // Jen legenda vlevo dole; nadpis a cesty jsou na 7" mimo mapu.
+    const int legendTop = layout.height - labelHeightFor(labelFont) - 8;
+    placer.claim({0, legendTop, layout.width / 2 + 60, layout.height - legendTop});
+  } else {
+    placer.claim({0, 16, TRAFFIC_MAP_SIZE, TRAFFIC_TOP_BAND_END_Y - 16});
+    placer.claim({0, TRAFFIC_LEGEND_Y - 2, TRAFFIC_MAP_SIZE,
+                  TRAFFIC_MAP_SIZE - (TRAFFIC_LEGEND_Y - 2)});
+  }
 
   // Sjezdy D1: kroužek s číslem přímo na dálnici.
   for (uint8_t index = 0; index < data->exitCount; ++index) {

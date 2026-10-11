@@ -41,6 +41,7 @@ void fillHistoryDemo();
 void radarFrameChanged(const uint16_t *pixels);
 void rssTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
+void trafficFrameChanged(const uint16_t *pixels);
 bool stageAtLeft();
 }  // namespace lcd7
 #endif
@@ -198,6 +199,8 @@ enum TrafficPage : uint8_t {
 };
 lv_obj_t *trafficPage = nullptr;
 lv_obj_t *trafficCanvas = nullptr;
+// Roste s každým snímkem dopravy, pro dopravu 7".
+uint32_t trafficRevision = 0;
 lv_obj_t *trafficClockLabel = nullptr;
 lv_obj_t *trafficTitleLabel = nullptr;
 lv_obj_t *trafficStatusLabel = nullptr;
@@ -10381,9 +10384,18 @@ void clockDashboardSetTrafficSnapshot(const TrafficSnapshot &snapshot) {
   if (trafficLastSnapshot != nullptr && trafficLastSnapshot != &snapshot)
     *trafficLastSnapshot = snapshot;
   applyTrafficSnapshot(snapshot);
+#if HODINY_BOARD_LCD7
+  ++trafficRevision;
+  lcd7::trafficFrameChanged(snapshot.pixels);
+#endif
 }
 
 bool clockDashboardSwipeTraffic(int8_t direction) {
+#if HODINY_BOARD_LCD7
+  // 7" má mapu i cesty na jedné stránce; tažení vede na další obrazovku.
+  (void)direction;
+  return false;
+#endif
   if (activeScreen != DASHBOARD_SCREEN_TRAFFIC || trafficPage == nullptr ||
       settingsVisible || firmwareUpdateActive)
     return false;

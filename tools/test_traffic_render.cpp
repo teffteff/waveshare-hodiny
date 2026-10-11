@@ -157,5 +157,42 @@ int main(int argc, char **argv) {
   // Červený noční režim: v obrázku jen červený kanál.
   trafficRender(pixels.data(), &data, true, false, font, nullptr, result);
   for (uint16_t pixel : pixels) assert((pixel & 0x07FF) == 0);
+  // 7": obálka všech bodů se po trafficFitToRect vejde do obdélníku
+  // s okrajem a aspoň jedním směrem ho vyplní; mapa se nakreslí do obdélníku
+  // a nic nesáhne za jeho šířku.
+  {
+    static TrafficData fitted;
+    fitted = data;
+    constexpr int W = TRAFFIC_LCD7_MAP_WIDTH;
+    constexpr int H = TRAFFIC_LCD7_MAP_HEIGHT;
+    constexpr int MARGIN = 34;
+    trafficFitToRect(fitted, W, H, MARGIN, 10.0f);
+    int minX = W, minY = H, maxX = 0, maxY = 0;
+    for (uint8_t line = 0; line < fitted.lineCount; ++line)
+      for (uint8_t point = 0; point < fitted.lines[line].pointCount; ++point) {
+        const int x = fitted.lines[line].x[point];
+        const int y = fitted.lines[line].y[point];
+        minX = x < minX ? x : minX;
+        maxX = x > maxX ? x : maxX;
+        minY = y < minY ? y : minY;
+        maxY = y > maxY ? y : maxY;
+      }
+    assert(minX >= MARGIN - 1 && maxX <= W - MARGIN + 1);
+    assert(minY >= MARGIN - 1 && maxY <= H - MARGIN + 1);
+    assert(maxX - minX >= W - 2 * MARGIN - 2 || maxY - minY >= H - 2 * MARGIN - 2);
+    std::vector<uint16_t> wide(W * H + 64, 0x1234);
+    TrafficRenderLayout layout;
+    layout.width = W;
+    layout.height = H;
+    layout.rectangular = true;
+    TrafficRenderResult wideResult;
+    trafficRender(wide.data(), &fitted, false, false, font, nullptr, wideResult,
+                  layout);
+    for (size_t index = W * H; index < wide.size(); ++index)
+      assert(wide[index] == 0x1234);
+    assert(wideResult.legendDrawn);
+    assert(wideResult.placeLabelCount == fitted.placeCount);
+  }
+
   return 0;
 }

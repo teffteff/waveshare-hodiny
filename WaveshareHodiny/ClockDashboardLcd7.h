@@ -21,7 +21,7 @@ bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
                                Agenda, Rss, School, Planes,
-                               RoundLeft };
+                               RoundLeft, Traffic };
 HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
@@ -2651,6 +2651,224 @@ void syncPlanes(const Palette &p) {
   showPageDots(v.dots, p, -(PLANES_PAD + 5), SCREEN_HEIGHT - 22, NARROW_DOT_GAP);
 }
 
+// --- Doprava ----------------------------------------------------------------
+// Pod lištou vlevo mapa 440 x 438 (služba dopravy ji kreslí do obdélníku
+// a trasy na něj roztáhne), vpravo čtyři cesty z domova: doba jízdy velkým
+// písmem, obvyklá doba, zdržení v barvě (do 2 min zelená, do 6 oranžová,
+// pak červená) a kudy jet. Dole stav D1, upozornění a stáří dat.
+
+constexpr int TRAFFIC7_MAP_Y = SCREEN_HEIGHT - TRAFFIC_LCD7_MAP_HEIGHT;
+constexpr int TRAFFIC7_COLUMN_X = TRAFFIC_LCD7_MAP_WIDTH + 1;
+constexpr int TRAFFIC7_PAD = 20;
+constexpr int TRAFFIC7_CONTENT = SCREEN_WIDTH - TRAFFIC7_COLUMN_X - 2 * TRAFFIC7_PAD;
+constexpr int TRAFFIC7_CARDS_BOTTOM = SCREEN_HEIGHT - 56;
+constexpr int TRAFFIC7_CARD_H = (TRAFFIC7_CARDS_BOTTOM - TRAFFIC7_MAP_Y) / TRAFFIC_MAX_DRIVES;
+
+struct TrafficCard {
+  lv_obj_t *name;
+  lv_obj_t *usual;
+  lv_obj_t *minutes;
+  lv_obj_t *unit;
+  lv_obj_t *delta;
+  lv_obj_t *detail;
+  lv_obj_t *line;
+};
+
+struct TrafficView {
+  lv_obj_t *root;
+  TopBar bar;
+  lv_obj_t *canvas;
+  lv_obj_t *status;
+  lv_obj_t *divider;
+  TrafficCard cards[TRAFFIC_MAX_DRIVES];
+  lv_obj_t *notes;
+  lv_obj_t *updated;
+  const uint16_t *pixels;
+  uint32_t drawnRevision;
+  bool drawnNight;
+  bool drawnEnglish;
+} traffic;
+
+void createTraffic(lv_obj_t *screen) {
+  TrafficView &v = traffic;
+  v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
+  v.canvas = lv_canvas_create(v.root);
+  lv_obj_set_pos(v.canvas, 0, TRAFFIC7_MAP_Y);
+  lv_obj_add_flag(v.canvas, LV_OBJ_FLAG_HIDDEN);
+  v.status = label(v.root, &lcd7_text22, 0, SCREEN_HEIGHT / 2 - 14,
+                   TRAFFIC_LCD7_MAP_WIDTH);
+  lv_obj_set_style_text_align(v.status, LV_TEXT_ALIGN_CENTER, 0);
+  v.divider = line(v.root, TRAFFIC_LCD7_MAP_WIDTH, TRAFFIC7_MAP_Y, 1,
+                   SCREEN_HEIGHT - TRAFFIC7_MAP_Y);
+  const lv_coord_t x = TRAFFIC7_COLUMN_X + TRAFFIC7_PAD;
+  for (size_t index = 0; index < TRAFFIC_MAX_DRIVES; ++index) {
+    TrafficCard &card = v.cards[index];
+    const lv_coord_t top = TRAFFIC7_MAP_Y + index * TRAFFIC7_CARD_H;
+    card.name = label(v.root, &lcd7_text18, x, top + 6, TRAFFIC7_CONTENT / 2 + 30);
+    card.usual = label(v.root, &lcd7_text15, x, top + 9);
+    card.minutes = label(v.root, &lcd7_number44, x, top + 29);
+    card.unit = label(v.root, &lcd7_text18, x, top + 49);
+    card.delta = label(v.root, &lcd7_text22, x, top + 41, 150);
+    card.detail = label(v.root, &lcd7_text15, x, top + TRAFFIC7_CARD_H - 24,
+                        TRAFFIC7_CONTENT);
+    card.line = line(v.root, x, top + TRAFFIC7_CARD_H - 1, TRAFFIC7_CONTENT, 1);
+  }
+  v.notes = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 8, TRAFFIC7_CONTENT);
+  lv_label_set_recolor(v.notes, true);
+  v.updated = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 30, TRAFFIC7_CONTENT);
+  lv_label_set_recolor(v.updated, true);
+  v.drawnRevision = UINT32_MAX;
+}
+
+void trafficFrameChanged(const uint16_t *pixels) {
+  if (!created) return;
+  TrafficView &v = traffic;
+  if (pixels != nullptr && pixels != v.pixels) {
+    lv_canvas_set_buffer(v.canvas, const_cast<uint16_t *>(pixels),
+                         TRAFFIC_LCD7_MAP_WIDTH, TRAFFIC_LCD7_MAP_HEIGHT,
+                         LV_IMG_CF_TRUE_COLOR);
+    v.pixels = pixels;
+  }
+  setVisible(v.canvas, pixels != nullptr);
+  if (pixels != nullptr && !lv_obj_has_flag(v.root, LV_OBJ_FLAG_HIDDEN))
+    lv_obj_invalidate(v.canvas);
+}
+
+lv_color_t trafficDelayColor(const Palette &p, int delay) {
+  if (p.night) return COLOR_ERROR;
+  if (delay <= 2) return COLOR_AIR;
+  if (delay <= 6) return COLOR_ROOM;
+  return COLOR_ERROR;
+}
+
+void syncTrafficCard(const Palette &p, TrafficCard &card, const TrafficDrive *drive,
+                     lv_coord_t top) {
+  lv_obj_t *objects[] = {card.name, card.usual, card.minutes, card.unit,
+                         card.delta, card.detail};
+  for (lv_obj_t *object : objects) setVisible(object, drive != nullptr);
+  setBackground(card.line, p.line);
+  if (drive == nullptr) return;
+  const bool english = englishLanguage();
+  const lv_coord_t x = TRAFFIC7_COLUMN_X + TRAFFIC7_PAD;
+  char text[TRAFFIC_TEXT_LENGTH + 8];
+  setText(card.name, drive->to);
+  setColor(card.name, p.muted);
+
+  if (drive->usualMinutes >= 0)
+    snprintf(text, sizeof(text), english ? "usually %d min" : "obvykle %d min",
+             drive->usualMinutes);
+  else
+    text[0] = '\0';
+  setText(card.usual, text);
+  setColor(card.usual, p.muted);
+  lv_obj_update_layout(card.usual);
+  setPosition(card.usual, x + TRAFFIC7_CONTENT - lv_obj_get_width(card.usual), top + 9);
+
+  const bool known = drive->minutes >= 0;
+  const int delay = known && drive->usualMinutes >= 0 ? drive->minutes - drive->usualMinutes : 0;
+  const lv_color_t color = trafficDelayColor(p, delay);
+  if (known)
+    snprintf(text, sizeof(text), "%d", drive->minutes);
+  else
+    strlcpy(text, "–", sizeof(text));
+  setText(card.minutes, text);
+  setColor(card.minutes, color);
+  lv_obj_update_layout(card.minutes);
+  lv_coord_t after = x + lv_obj_get_width(card.minutes) + 6;
+  setText(card.unit, "min");
+  setColor(card.unit, color);
+  setPosition(card.unit, after, top + 49);
+  lv_obj_update_layout(card.unit);
+  after += lv_obj_get_width(card.unit) + 14;
+  if (!known)
+    text[0] = '\0';
+  else if (delay > 0)
+    snprintf(text, sizeof(text), "+%d", delay);
+  else
+    strlcpy(text, english ? "no delay" : "bez zdržení", sizeof(text));
+  setText(card.delta, text);
+  setColor(card.delta, color);
+  setPosition(card.delta, after, delay > 0 ? top + 44 : top + 47);
+  setFont(card.delta, delay > 0 ? &lcd7_text22 : &lcd7_text18);
+
+  setText(card.detail, drive->detail);
+  setColor(card.detail, p.night ? COLOR_ERROR : (drive->better ? COLOR_AIR : COLOR_TEXT));
+}
+
+void syncTraffic(const Palette &p) {
+  TrafficView &v = traffic;
+  syncTopBar(v.bar, p);
+  const bool english = englishLanguage();
+  if (v.drawnRevision == trafficRevision && v.drawnNight == p.night &&
+      v.drawnEnglish == english)
+    return;
+  v.drawnRevision = trafficRevision;
+  v.drawnNight = p.night;
+  v.drawnEnglish = english;
+
+  const TrafficSnapshot *snapshot = trafficLastSnapshot;
+  const bool haveData = snapshot != nullptr && snapshot->haveData;
+  setBackground(v.divider, p.line);
+
+  // Bez dat hláška místo mapy: chyba, načítání nebo čekání.
+  const char *status = "";
+  if (snapshot == nullptr || !haveData) {
+    if (snapshot != nullptr && snapshot->message[0] != '\0')
+      status = english ? "Traffic is not available right now" : "Doprava teď není k dispozici";
+    else if (snapshot != nullptr && snapshot->loading)
+      status = english ? "Loading traffic..." : "Načítám dopravu...";
+    else
+      status = english ? "Waiting for data" : "Čekám na data";
+  }
+  setText(v.status, status);
+  setColor(v.status, p.muted);
+  setVisible(v.status, !haveData);
+
+  const TrafficTexts *texts = haveData ? &snapshot->texts : nullptr;
+  for (size_t index = 0; index < TRAFFIC_MAX_DRIVES; ++index) {
+    const TrafficDrive *drive =
+        texts != nullptr && index < texts->driveCount ? &texts->drives[index] : nullptr;
+    syncTrafficCard(p, v.cards[index], drive, TRAFFIC7_MAP_Y + index * TRAFFIC7_CARD_H);
+  }
+
+  // Upozornění (oranžově) a stav D1 v jednom řádku.
+  char notes[TRAFFIC_TEXT_LENGTH * 3];
+  notes[0] = '\0';
+  if (texts != nullptr) {
+    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+    for (uint8_t index = 0; index < texts->warningCount; ++index) {
+      agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_ROOM);
+      if (notes[0] != '\0') strlcat(notes, "  ·  ", sizeof(notes));
+      strlcat(notes, tag, sizeof(notes));
+      appendEscaped(notes, sizeof(notes), texts->warnings[index]);
+      strlcat(notes, "#", sizeof(notes));
+    }
+    for (uint8_t index = 0; index < texts->textCount; ++index) {
+      if (notes[0] != '\0') strlcat(notes, "  ·  ", sizeof(notes));
+      appendEscaped(notes, sizeof(notes), texts->texts[index]);
+    }
+  }
+  setText(v.notes, notes);
+  setColor(v.notes, p.muted);
+
+  char updated[64];
+  updated[0] = '\0';
+  if (texts != nullptr && texts->sampleTime > 0) {
+    const time_t when = static_cast<time_t>(texts->sampleTime);
+    struct tm local;
+    char clock[8] = "";
+    if (localtime_r(&when, &local) != nullptr) strftime(clock, sizeof(clock), "%H:%M", &local);
+    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
+    agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_ROOM);
+    snprintf(updated, sizeof(updated), "%s %s%s%s%s", english ? "traffic at" : "provoz v",
+             clock, texts->stale ? "  " : "", texts->stale ? tag : "",
+             texts->stale ? (english ? "old data#" : "stará data#") : "");
+  }
+  setText(v.updated, updated);
+  setColor(v.updated, p.muted);
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -2680,6 +2898,8 @@ HomeMode desiredMode() {
     return HomeMode::School;
   if (activeScreen == DASHBOARD_SCREEN_PLANES && planesPage != nullptr)
     return HomeMode::Planes;
+  if (activeScreen == DASHBOARD_SCREEN_TRAFFIC && trafficPage != nullptr)
+    return HomeMode::Traffic;
   // Slunce a Měsíc i družice (s noční oblohou) zůstávají kulaté: jeviště
   // vlevo a vpravo sloupec domovské obrazovky s hodnotami.
   if ((activeScreen == DASHBOARD_SCREEN_SKY && skyPage != nullptr) ||
@@ -2704,8 +2924,10 @@ void create() {
   createRss(screen);
   createSchool(screen);
   createPlanes(screen);
+  createTraffic(screen);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
-                         radar.root, agenda.root, rss.root, school.root, planes.root})
+                         radar.root, agenda.root, rss.root, school.root, planes.root,
+                         traffic.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -2735,6 +2957,11 @@ void applyMode(HomeMode mode) {
   setVisible(school.root, mode == HomeMode::School);
   if (mode == HomeMode::Planes && planes.pixels != nullptr) lv_obj_invalidate(planes.canvas);
   setVisible(planes.root, mode == HomeMode::Planes);
+  if (mode == HomeMode::Traffic) {
+    traffic.drawnRevision = UINT32_MAX;
+    if (traffic.pixels != nullptr) lv_obj_invalidate(traffic.canvas);
+  }
+  setVisible(traffic.root, mode == HomeMode::Traffic);
   const bool stageLeft = mode == HomeMode::Analog || mode == HomeMode::RoundLeft;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -2772,6 +2999,7 @@ void sync(bool force) {
     case HomeMode::Rss: syncRss(p); break;
     case HomeMode::School: syncSchool(p); break;
     case HomeMode::Planes: syncPlanes(p); break;
+    case HomeMode::Traffic: syncTraffic(p); break;
     case HomeMode::RoundLeft:
       syncAnalog(p);
       // Kulatá stránka má tečky obrazovek sama nahoře.

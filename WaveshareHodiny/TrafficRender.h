@@ -32,6 +32,10 @@ constexpr int TRAFFIC_LEGEND_Y = 392;
 // Spodní hrana pásu nahoře (tečky obrazovek, stavový řádek, nadpis).
 constexpr int TRAFFIC_TOP_BAND_END_Y = 93;
 
+// Mapa obrazovky Doprava na 7": vlevo pod lištou, vedle sloupce s cestami.
+constexpr int TRAFFIC_LCD7_MAP_WIDTH = 440;
+constexpr int TRAFFIC_LCD7_MAP_HEIGHT = 438;
+
 // Barva úrovně provozu v RGB565 (bez nočního převodu).
 uint16_t trafficLevelColor(uint8_t level);
 // Totéž jako 0xRRGGBB pro popisky LVGL na textové stránce.
@@ -45,6 +49,21 @@ struct TrafficRenderResult {
   bool legendDrawn = false;
 };
 
+// Rozměr a tvar mapy. Kulatý 2,1" kreslí do kruhu 480 x 480 s pásy pro
+// popisky obrazovky; 7" do obdélníku vlevo od sloupce s cestami, popisky
+// smí až k jeho okraji a legenda leží vlevo dole.
+struct TrafficRenderLayout {
+  int width = TRAFFIC_MAP_SIZE;
+  int height = TRAFFIC_MAP_SIZE;
+  bool rectangular = false;
+};
+
+// Server promítá do kruhu 480 x 480; obdélník 7" má jiný tvar i velikost.
+// Posune a zvětší všechny body (čáry, místa, sjezdy, autobusy) tak, aby
+// jejich obálka vyplnila width x height s okrajem margin, nejvýš maxScale krát.
+void trafficFitToRect(TrafficData &data, int width, int height, int margin,
+                      float maxScale);
+
 // Nakreslí mapu. Bez dat (data == nullptr) jen černé pozadí. night převede
 // všechny barvy do odstínů červené jako na ostatních mapových obrazovkách.
 // labelFont píše česká jména míst (clock_czech_14 bez verzálek); patří úloze,
@@ -52,4 +71,5 @@ struct TrafficRenderResult {
 // úloha pustila procesor hlídacímu psu.
 void trafficRender(uint16_t *pixels, const TrafficData *data, bool night,
                    bool english, MapLabelFont &labelFont, void (*yield)(),
-                   TrafficRenderResult &result);
+                   TrafficRenderResult &result,
+                   const TrafficRenderLayout &layout = TrafficRenderLayout{});

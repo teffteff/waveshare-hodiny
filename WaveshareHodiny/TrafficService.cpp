@@ -237,6 +237,11 @@ bool fetchTraffic(const char *url) {
     return false;
   }
   Serial.printf("[doprava] OK, %ld B\n", length);
+#if HODINY_BOARD_LCD7
+  // Server promítá do kruhu 480 x 480; 7" má mapu obdélníkovou.
+  trafficFitToRect(storage->scratch, TRAFFIC_LCD7_MAP_WIDTH,
+                   TRAFFIC_LCD7_MAP_HEIGHT, 34, 2.2f);
+#endif
   return true;
 }
 
@@ -298,8 +303,14 @@ void drawFrame(bool night, bool english, uint32_t lease) {
   uint16_t *pixels = sharedFrame(target);
   if (pixels == nullptr) return;
   TrafficRenderResult result;
+  TrafficRenderLayout layout;
+#if HODINY_BOARD_LCD7
+  layout.width = TRAFFIC_LCD7_MAP_WIDTH;
+  layout.height = TRAFFIC_LCD7_MAP_HEIGHT;
+  layout.rectangular = true;
+#endif
   trafficRender(pixels, withData ? &storage->live : nullptr, night, english,
-                placeFont, yieldToScheduler, result);
+                placeFont, yieldToScheduler, result, layout);
   portENTER_CRITICAL(&stateMux);
   if (!sharedFramesLeaseValid(SharedFrameUser::Traffic, lease)) {
     redrawRequested = true;
