@@ -25,11 +25,14 @@
 #include "ClockConfig.h"
 #include "CzechMapData.h"
 #include "EuropeMapData.h"
+#include "HttpDownload.h"
 #include "LightningService.h"
 #include "MapCanvas.h"
 #include "RainViewerSource.h"
 #include "NetworkCoordinator.h"
+#include "RadarBundle.h"
 #include "SharedFrames.h"
+#include "TlsBundle.h"
 
 namespace {
 constexpr char FRAME_BASE_URL[] =
@@ -226,8 +229,39 @@ int dataY0 = 0;
 uint16_t decodedLineCount = 0;
 bool decodedLinesSequential = true;
 
+// --- Snímky ze serveru (7") -------------------------------------------------
+// Server vedle srážkové předpovědi (/radar.bin, RadarBundle.h) posílá hotové
+// snímky stupňů odrazivosti zabalené zlibem. Hodiny je drží zabalené ve dvou
+// bufferech (do jednoho se stahuje, z druhého se kreslí) a před kreslením
+// rozbalí jen jeden do decodeBuffer. Odpadne PNG dekodér, stažené PNG
+// i šest rozbalených snímků - přes 400 kB PSRAM - a s nimi i práce, při které
+// RGB panel ztrácel synchronizaci. Bez serveru nebo při jeho výpadku se
+// stahuje z ČHMÚ jako dřív.
+constexpr bool SERVER_FRAMES = LAYERED_VIEW;
+// Šest snímků lehkého deště má 20 kB, celé Česko pod deštěm odhadem 80 kB.
+// Co se nevejde, server ubere od nejstaršího snímku.
+constexpr size_t SERVER_BUNDLE_CAPACITY = 96 * 1024;
+// Po chybě serveru se čtvrt hodiny stahuje rovnou z ČHMÚ.
+constexpr unsigned long SERVER_RETRY_MS = 15UL * 60UL * 1000UL;
+char serverUrl[CLOCK_RAIN_URL_LENGTH] = "";
+uint8_t *serverBundles[2] = {};
+uint8_t activeServerBundle = 0;
+RadarBundle serverBundle;
+bool serverFramesActive = false;
+uint32_t serverBundleGeneration = 0;
+unsigned long serverFailedAt = 0;
+bool serverFailed = false;
+int serverHttpStatus = 0;
+uint32_t serverBundleBytes = 0;
+char serverEtag[48] = "";
+// Který snímek leží rozbalený v decodeBuffer (překreslení stojícího snímku
+// kvůli bleskům ho nemusí rozbalovat znovu).
+uint32_t inflatedGeneration = 0;
+int inflatedIndex = -1;
+
 void advanceAnimation(unsigned long now);
 bool showPreparedFrame(size_t index, unsigned long now);
+const uint8_t *serverFrameLevels(size_t index);
 int firstPreparedFrame();
 uint8_t rgb565ToRgb332(uint16_t color);
 uint16_t nightRadarColor(uint8_t color);
@@ -1835,6 +1869,8 @@ bool loadAnimation(float latitude, float longitude, uint16_t radiusKm,
     return false;
   }
   portENTER_CRITICAL(&stateMux);
+  // Snímky ze serveru tu končí; animaci od teď skládají snímky z ČHMÚ.
+  serverFramesActive = false;
   fullPreparationInProgress = true;
   ++generation;
   portEXIT_CRITICAL(&stateMux);
@@ -2261,9 +2297,11 @@ int firstPreparedFrame() {
 
 bool showPreparedFrame(size_t index, unsigned long now) {
   portENTER_CRITICAL(&stateMux);
+  const bool fromServer = serverFramesActive;
   const bool valid = active && index < animationFrameCount &&
                      preparedFrameReady[index] &&
-                     preparedFrames[index] != nullptr &&
+                     (fromServer ? index < serverBundle.count
+                                 : preparedFrames[index] != nullptr) &&
                      preparedFrameRevisions[index] == requestRevision;
   const bool nightVisual = redNightMode;
   const float latitude = centerLatitude;
@@ -2274,7 +2312,9 @@ bool showPreparedFrame(size_t index, unsigned long now) {
   portEXIT_CRITICAL(&stateMux);
   if (!valid) return false;
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;
-  const uint8_t *source = preparedFrames[index];
+  const uint8_t *source =
+      fromServer ? serverFrameLevels(index) : preparedFrames[index];
+  if (source == nullptr) return false;
   uint32_t lease = 0;
   if (LAYERED_VIEW) {
     if (!composeView(targetBuffer, source, nightVisual, latitude, longitude,
@@ -2374,6 +2414,238 @@ void refreshLightningOverlay(unsigned long now) {
       now - overlayDrawnAt < OVERLAY_REFRESH_MS)
     return;
   showPreparedFrame(static_cast<size_t>(frame), now);
+}
+
+// Snímek ze serveru rozbalený do decodeBuffer, nebo nullptr.
+const uint8_t *serverFrameLevels(size_t index) {
+  if (index >= serverBundle.count || serverBundles[activeServerBundle] == nullptr ||
+      !ensureDecodeBuffer(LEVEL_DECODE_BYTES))
+    return nullptr;
+  uint8_t *levels = reinterpret_cast<uint8_t *>(decodeBuffer);
+  if (inflatedGeneration == serverBundleGeneration &&
+      inflatedIndex == static_cast<int>(index))
+    return levels;
+  inflatedIndex = -1;
+  const RadarBundleFrame &frame = serverBundle.frames[index];
+  if (!radarBundleInflate(serverBundles[activeServerBundle] + frame.offset,
+                          frame.size, levels, RADAR_PIXEL_COUNT))
+    return nullptr;
+  inflatedGeneration = serverBundleGeneration;
+  inflatedIndex = static_cast<int>(index);
+  return levels;
+}
+
+// Uvolní, co potřebuje jen stahování z ČHMÚ: rozbalené snímky, PNG a jeho
+// dekodér. decodeBuffer zůstává - rozbalují se do něj snímky ze serveru.
+void releaseDirectFrameBuffers() {
+  releaseUnusedFrames(0);
+  for (uint8_t *&frame : pendingPreparedFrames) {
+    if (frame != nullptr) heap_caps_free(frame);
+    frame = nullptr;
+  }
+  cachedPngCount = 0;
+  if (pngBuffer != nullptr) heap_caps_free(pngBuffer);
+  pngBuffer = nullptr;
+  if (pngDecoder != nullptr) {
+    pngDecoder->~PNG();
+    heap_caps_free(pngDecoder);
+    pngDecoder = nullptr;
+  }
+}
+
+void releaseServerBundles() {
+  portENTER_CRITICAL(&stateMux);
+  serverFramesActive = false;
+  ready = false;
+  for (bool &frameReady : preparedFrameReady) frameReady = false;
+  portEXIT_CRITICAL(&stateMux);
+  for (uint8_t *&bundle : serverBundles) {
+    if (bundle != nullptr) heap_caps_free(bundle);
+    bundle = nullptr;
+  }
+  serverBundle = RadarBundle{};
+  serverEtag[0] = '\0';
+}
+
+class BundleSink : public Print {
+ public:
+  BundleSink(uint8_t *buffer, size_t capacity)
+      : buffer_(buffer), capacity_(capacity) {}
+  size_t write(uint8_t value) override { return write(&value, 1); }
+  size_t write(const uint8_t *data, size_t size) override {
+    const size_t accepted = min(size, capacity_ - length_);
+    memcpy(buffer_ + length_, data, accepted);
+    length_ += accepted;
+    if (accepted != size) overflowed_ = true;
+    return accepted;
+  }
+  size_t length() const { return length_; }
+  bool overflowed() const { return overflowed_; }
+
+ private:
+  uint8_t *buffer_;
+  size_t capacity_;
+  size_t length_ = 0;
+  bool overflowed_ = false;
+};
+
+// Chce se teď stahovat ze serveru? Po jeho chybě až za SERVER_RETRY_MS.
+bool serverFramesWanted(unsigned long now) {
+  if (!SERVER_FRAMES) return false;
+  portENTER_CRITICAL(&stateMux);
+  const bool configured = serverUrl[0] != '\0';
+  portEXIT_CRITICAL(&stateMux);
+  return configured && (!serverFailed || now - serverFailedAt >= SERVER_RETRY_MS);
+}
+
+// Celá animace ze serveru. Stáhne se do volného bufferu a teprve hotová
+// a zkontrolovaná nahradí tu, která se právě přehrává.
+bool loadServerAnimation(float latitude, float longitude, uint16_t radiusKm,
+                         uint8_t wantedFrameCount, uint32_t revision) {
+  if (WiFi.status() != WL_CONNECTED) {
+    setStatus(false, "Wi-Fi neni pripojena");
+    return false;
+  }
+  char base[CLOCK_RAIN_URL_LENGTH];
+  portENTER_CRITICAL(&stateMux);
+  strlcpy(base, serverUrl, sizeof(base));
+  portEXIT_CRITICAL(&stateMux);
+  if (base[0] == '\0') return false;
+  for (uint8_t *&bundle : serverBundles) {
+    if (bundle == nullptr)
+      bundle = static_cast<uint8_t *>(heap_caps_malloc(
+          SERVER_BUNDLE_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (serverBundles[0] == nullptr || serverBundles[1] == nullptr ||
+      !ensureDecodeBuffer(LEVEL_DECODE_BYTES)) {
+    setStatus(false, "Nedostatek pameti pro radar");
+    return false;
+  }
+  // Celou republiku server nezná; dostane její střed a poloměr.
+  if (radiusKm == 0) {
+    latitude = WHOLE_COUNTRY_LATITUDE;
+    longitude = WHOLE_COUNTRY_LONGITUDE;
+  }
+  const uint16_t viewRadiusKm = radiusKm == 0 ? WHOLE_COUNTRY_RADIUS_KM : radiusKm;
+  char url[CLOCK_RAIN_URL_LENGTH + 160];
+  snprintf(url, sizeof(url),
+           "%s?lat=%.4f&lon=%.4f&r=%u&w=%u&h=%u&shape=%s&n=%u&max=%u", base,
+           latitude, longitude, static_cast<unsigned>(viewRadiusKm),
+           static_cast<unsigned>(CHMI_RADAR_WIDTH),
+           static_cast<unsigned>(CHMI_RADAR_HEIGHT),
+           SCREEN_ROUND ? "round" : "rect",
+           static_cast<unsigned>(wantedFrameCount),
+           static_cast<unsigned>(SERVER_BUNDLE_CAPACITY));
+
+  setStatus(true, "Obnovuji radar...");
+  const uint8_t target = 1 - activeServerBundle;
+  int status = 0;
+  size_t length = 0;
+  bool overflowed = false;
+  char etag[sizeof(serverEtag)] = "";
+  {
+    NetworkOperationGuard networkGuard(15000);
+    if (!networkGuard) {
+      setStatus(false, "Sit je zaneprazdnena");
+      return false;
+    }
+    const bool secure = strncmp(url, "https://", 8) == 0;
+    WiFiClientSecure secureClient;
+    WiFiClient plainClient;
+    if (secure) {
+      tlsUseCertificateBundle(secureClient);
+      secureClient.setHandshakeTimeout(NETWORK_TLS_HANDSHAKE_TIMEOUT_S);
+    }
+    WiFiClient &client = secure ? static_cast<WiFiClient &>(secureClient)
+                                : plainClient;
+    HTTPClient http;
+    http.setConnectTimeout(6000);
+    http.setTimeout(15000);
+    http.setReuse(false);
+    httpDownloadPrepare(http);
+    static const char *headerKeys[] = {"ETag"};
+    http.collectHeaders(headerKeys, 1);
+    if (http.begin(client, url)) {
+      // Stejný pohled a nic nového: server odpoví 304 bez těla.
+      if (serverFramesActive && serverEtag[0] != '\0')
+        http.addHeader("If-None-Match", serverEtag);
+      status = http.GET();
+      if (status == HTTP_CODE_OK) {
+        BundleSink sink(serverBundles[target], SERVER_BUNDLE_CAPACITY);
+        const int read = httpDownloadBody(http, sink, 15000);
+        length = read >= 0 ? sink.length() : 0;
+        overflowed = sink.overflowed();
+        strlcpy(etag, http.header("ETag").c_str(), sizeof(etag));
+      }
+      http.end();
+    }
+    client.stop();
+  }
+  portENTER_CRITICAL(&stateMux);
+  serverHttpStatus = status;
+  lastHttpStatus = status;
+  portEXIT_CRITICAL(&stateMux);
+  if (!requestMatches(revision)) return false;
+  if (status == HTTP_CODE_NOT_MODIFIED && serverFramesActive) {
+    setStatus(false, "");
+    return true;
+  }
+  RadarBundle parsed;
+  if (status != HTTP_CODE_OK || overflowed ||
+      !radarBundleParse(serverBundles[target], length, CHMI_RADAR_WIDTH,
+                        CHMI_RADAR_HEIGHT, parsed)) {
+    setStatus(false, "Server radaru neodpovida");
+    return false;
+  }
+
+  // Poprvé ze serveru: snímky z ČHMÚ už nikdo nepotřebuje.
+  if (!serverFramesActive) releaseDirectFrameBuffers();
+  char names[RADAR_BUNDLE_MAX_FRAMES][FILE_NAME_CAPACITY] = {};
+  char times[RADAR_BUNDLE_MAX_FRAMES][6] = {};
+  for (uint8_t index = 0; index < parsed.count; ++index) {
+    chmiFrameName(static_cast<time_t>(parsed.frames[index].slot), names[index],
+                  FILE_NAME_CAPACITY);
+    frameTimeFromName(names[index], times[index]);
+  }
+  const unsigned long now = millis();
+  portENTER_CRITICAL(&stateMux);
+  if (!active || revision != requestRevision) {
+    portEXIT_CRITICAL(&stateMux);
+    return false;
+  }
+  activeServerBundle = target;
+  serverBundle = parsed;
+  serverFramesActive = true;
+  ++serverBundleGeneration;
+  serverBundleBytes = static_cast<uint32_t>(length);
+  strlcpy(serverEtag, etag, sizeof(serverEtag));
+  animationFrameCount = parsed.count;
+  for (size_t index = 0; index < MAX_ANIMATION_FRAME_COUNT; ++index) {
+    const bool present = index < parsed.count;
+    preparedFrameReady[index] = present;
+    preparedFrameRevisions[index] = present ? revision : 0;
+    strlcpy(preparedFrameTimes[index], present ? times[index] : "",
+            sizeof(preparedFrameTimes[index]));
+    strlcpy(preparedFrameNames[index], present ? names[index] : "",
+            sizeof(preparedFrameNames[index]));
+  }
+  strlcpy(latestIndexFile, names[parsed.count - 1], sizeof(latestIndexFile));
+  pendingRefreshCount = 0;
+  preparationInProgress = false;
+  fullPreparationInProgress = false;
+  ready = true;
+  activeRadiusKm = radiusKm;
+  // Nová animace začne nejnovějším snímkem a po pauze jede od nejstaršího.
+  animationPause = true;
+  animationPauseStartedAt = now;
+  lastAnimationStepAt = now;
+  ++generation;
+  const bool shouldDisplay = visible;
+  portEXIT_CRITICAL(&stateMux);
+  serverFailed = false;
+  if (shouldDisplay) showPreparedFrame(parsed.count - 1, now);
+  setStatus(false, "");
+  return true;
 }
 
 void radarTask(void *) {
@@ -2497,24 +2769,43 @@ void radarTask(void *) {
     }
     if (reloadNow || !haveFrames ||
         static_cast<long>(now - nextAttemptAt) >= 0) {
-      const bool fullPreparation = reloadNow || !haveFrames;
+      bool fullPreparation = reloadNow || !haveFrames;
       portENTER_CRITICAL(&stateMux);
       const bool rainViewer = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
       portEXIT_CRITICAL(&stateMux);
       // RainViewer nemá co doplňovat po jednom snímku: dlaždice se necachují a
       // posun animace o jeden krok by stejně znamenal stáhnout celý snímek.
-      const bool success =
-          rainViewer
-              ? loadRainViewerAnimation(latitude, longitude, radiusKm,
-                                        wantedFrameCount, mapOpacityValue,
-                                        revision)
-              : (fullPreparation
-                     ? loadAnimation(latitude, longitude, radiusKm,
-                                     wantedFrameCount, mapOpacityValue,
-                                     revision)
-                     : refreshLatestFrame(latitude, longitude, radiusKm,
+      bool success = false;
+      bool direct = true;
+      if (!rainViewer && serverFramesWanted(now)) {
+        success = loadServerAnimation(latitude, longitude, radiusKm,
+                                      wantedFrameCount, revision);
+        // Server nejde: čtvrt hodiny rovnou z ČHMÚ.
+        direct = !success && requestMatches(revision);
+        if (direct) {
+          serverFailed = true;
+          serverFailedAt = millis();
+        }
+      }
+      if (direct && serverFramesActive) {
+        // Buffery serveru se uvolní, aby měly snímky z ČHMÚ (nebo RainVieweru)
+        // stejně místa jako dřív, a animace se načte celá znovu.
+        releaseServerBundles();
+        fullPreparation = true;
+      }
+      if (direct)
+        success =
+            rainViewer
+                ? loadRainViewerAnimation(latitude, longitude, radiusKm,
                                           wantedFrameCount, mapOpacityValue,
-                                          revision));
+                                          revision)
+                : (fullPreparation
+                       ? loadAnimation(latitude, longitude, radiusKm,
+                                       wantedFrameCount, mapOpacityValue,
+                                       revision)
+                       : refreshLatestFrame(latitude, longitude, radiusKm,
+                                            wantedFrameCount, mapOpacityValue,
+                                            revision));
       portENTER_CRITICAL(&stateMux);
       const bool requestChanged = revision != requestRevision;
       if (!requestChanged) reloadRequested = false;
@@ -2612,12 +2903,26 @@ void chmiRadarServicePrepareForFirmwareUpdate() {
   decodeTarget = nullptr;
   cachedPngCount = 0;
   pendingRefreshCount = 0;
+  releaseServerBundles();
   animationFrameCount = 0;
   displayedFrame = -1;
   ready = false;
   loading = false;
   preparationInProgress = false;
   fullPreparationInProgress = false;
+}
+
+void chmiRadarServiceSetFrameServer(const char *rainUrl) {
+  char url[CLOCK_RAIN_URL_LENGTH] = "";
+  if (SERVER_FRAMES) radarBundleUrlFromRainUrl(rainUrl, url, sizeof(url));
+  portENTER_CRITICAL(&stateMux);
+  if (strcmp(url, serverUrl) != 0) {
+    strlcpy(serverUrl, url, sizeof(serverUrl));
+    // Nový zdroj (nebo žádný): animace se načte znovu odjinud.
+    serverFailed = false;
+    reloadRequested = true;
+  }
+  portEXIT_CRITICAL(&stateMux);
 }
 
 void chmiRadarServiceSetActive(bool requestedVisible, bool backgroundRefresh,
@@ -2861,6 +3166,10 @@ void chmiRadarServiceDiagnostics(ChmiRadarDiagnostics &diagnostics) {
     ++diagnostics.preparedFrameCount;
   }
   diagnostics.lastHttpStatus = lastHttpStatus;
+  diagnostics.serverFrames = serverFramesActive;
+  diagnostics.serverFailed = serverFailed;
+  diagnostics.serverBundleBytes = serverBundleBytes;
+  diagnostics.serverHttpStatus = serverHttpStatus;
   diagnostics.lastDownloadedBytes = lastDownloadedBytes;
   diagnostics.lastDecodeResult = lastDecodeResult;
   diagnostics.lastDecodedLineCount = lastDecodedLineCount;

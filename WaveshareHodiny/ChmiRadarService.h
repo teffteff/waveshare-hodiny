@@ -52,6 +52,12 @@ struct ChmiRadarDiagnostics {
   uint8_t preparedFrameCount = 0;
   uint8_t animationFrameCount = 0;
   uint8_t pendingRefreshCount = 0;
+  // Snímky vykreslené serverem (7"): právě se přehrávají, velikost poslední
+  // odpovědi, její HTTP stav a jestli server naposledy selhal.
+  bool serverFrames = false;
+  bool serverFailed = false;
+  uint32_t serverBundleBytes = 0;
+  int serverHttpStatus = 0;
   uint16_t radiusKm = 50;
   uint32_t lastSuccessfulRefreshAgeMs = 0;
   uint32_t nextRefreshInMs = 0;
@@ -76,6 +82,9 @@ void chmiRadarServiceSetActive(bool visible, bool backgroundRefresh,
                                bool showLegend, bool showPrecipitation,
                                uint8_t source);
 void chmiRadarServiceSetRedNightMode(bool enabled);
+// Adresa srážkové předpovědi (/rain.json). Na 7" se z ní odvodí adresa
+// snímků vykreslených serverem (/radar.bin); prázdná nebo jiná = ČHMÚ přímo.
+void chmiRadarServiceSetFrameServer(const char *rainUrl);
 // Údery blesků přes radar a kruh výstrahy kolem polohy. Údery samotné drží
 // LightningService; radar si je při kreslení každého snímku jen přečte.
 void chmiRadarServiceSetLightning(bool overlay, float alarmLatitude,

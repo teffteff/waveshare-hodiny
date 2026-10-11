@@ -85,6 +85,8 @@ run_test remote_config "$FIRMWARE_DIR/RemoteConfig.cpp" || failures=$((failures 
 run_test sky_render "$FIRMWARE_DIR/SkyRender.cpp" "$FIRMWARE_DIR/SkyCanvas.cpp" "$FIRMWARE_DIR/SkyFeed.cpp" "$FIRMWARE_DIR/SatelliteFeed.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 TRAFFIC_FIXTURE="-DTRAFFIC_FIXTURE=\"$ROOT_DIR/tools/fixtures/doprava-hodiny.json\""
 run_test traffic_feed "$FIRMWARE_DIR/TrafficFeed.cpp" "$FIRMWARE_DIR/JsonScan.cpp" "$TRAFFIC_FIXTURE" || failures=$((failures + 1))
+RADAR_BUNDLE_FIXTURE="-DRADAR_BUNDLE_FIXTURE=\"$ROOT_DIR/tools/fixtures/radar_bundle.bin\""
+run_test radar_bundle "$FIRMWARE_DIR/RadarBundle.cpp" "$RADAR_BUNDLE_FIXTURE" -lz || failures=$((failures + 1))
 # Mapa dopravy píše jména míst písmem hodin, takže potřebuje kousek LVGL:
 # načtení glyfů (lv_font, lv_font_fmt_txt, lv_utils) a font ClockCzechFont14.
 # Ty jsou v C, proto se překládají zvlášť.

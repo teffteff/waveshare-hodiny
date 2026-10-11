@@ -4419,6 +4419,14 @@ void handleDiagnostics() {
   result += radar.animationFrameCount;
   result += F(",\"pendingRefreshCount\":");
   result += radar.pendingRefreshCount;
+  result += F(",\"serverFrames\":");
+  result += radar.serverFrames ? F("true") : F("false");
+  result += F(",\"serverFailed\":");
+  result += radar.serverFailed ? F("true") : F("false");
+  result += F(",\"serverBundleBytes\":");
+  result += radar.serverBundleBytes;
+  result += F(",\"serverHttpStatus\":");
+  result += radar.serverHttpStatus;
   result += F(",\"lastSuccessfulRefreshAvailable\":");
   result += radar.lastSuccessfulRefreshAvailable ? F("true") : F("false");
   result += F(",\"lastSuccessfulRefreshAgeMs\":");

@@ -600,7 +600,20 @@ void applyPushAlertsState(const ClockConfig &config) {
 // vidět: jeho smysl je přepnout na radar ve chvíli, kdy se na hodiny nikdo
 // nedívá. Radar vypnutý v pořadí obrazovek ale nemá kam přepnout, takže se
 // v tom případě nestahuje nic.
+#if !FIRMWARE_RELEASE
+// USB RADARSERVER: jiný server snímků radaru do restartu.
+String radarServerOverride;
+#endif
+
 void applyRainAlertState(const ClockConfig &config) {
+  // Server srážkové předpovědi vykresluje i snímky radaru (7").
+#if !FIRMWARE_RELEASE
+  chmiRadarServiceSetFrameServer(radarServerOverride.length() > 0
+                                     ? radarServerOverride.c_str()
+                                     : config.rainAlert.url);
+#else
+  chmiRadarServiceSetFrameServer(config.rainAlert.url);
+#endif
   const bool available =
       config.rainAlert.enabled && clockConfigRadarAvailable(config);
   rainAlertServiceSetActive(available, config.rainAlert.url,
@@ -2695,6 +2708,14 @@ void handleUsbCommands() {
         config.forecast.enabled = true;
         Serial.println(saveRuntimeConfig(config, true) ? "FORECAST_ON"
                                                        : "FORECAST_ON_FAILED");
+      } else if (usbCommand.startsWith("RADARSERVER")) {
+        // "RADARSERVER http://pocitac:18096/rain.json": snímky radaru do
+        // restartu z jiného serveru (zkouška nové verze infra/rain bez
+        // nasazení); samotné "RADARSERVER" vrátí adresu z nastavení.
+        radarServerOverride = usbCommand.substring(strlen("RADARSERVER"));
+        radarServerOverride.trim();
+        applyRainAlertState(loopConfigSnapshot());
+        Serial.println("RADAR_SERVER_SET");
       } else if ((usbCommand == "RADARCHMI" ||
                   usbCommand == "RADARRAINVIEWER") &&
                  !screenshotTransferActive) {
@@ -2856,7 +2877,8 @@ void handleUsbCommands() {
         }
       }
       usbCommand = "";
-    } else if (usbCommand.length() < 32) {
+    } else if (usbCommand.length() < 200) {
+      // Delší kvůli adrese v RADARSERVER.
       usbCommand += character;
     } else {
       usbCommand = "";
