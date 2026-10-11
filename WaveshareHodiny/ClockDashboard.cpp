@@ -43,6 +43,7 @@ void rssTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
 void trafficFrameChanged(const uint16_t *pixels);
 bool stageAtLeft();
+void adaptSettings();
 }  // namespace lcd7
 #endif
 
@@ -550,6 +551,9 @@ bool weatherAnimationRevealPending = false;
 unsigned long weatherAnimationRevealAt = 0;
 bool firmwareUpdateActive = false;
 uint8_t settingsPageIndex = 0;
+// Tlačítka Zrušit a Uložit; na 7" je adaptSettings() přestaví na textová.
+lv_obj_t *settingsCancelButton = nullptr;
+lv_obj_t *settingsSaveButton = nullptr;
 uint8_t settingsSelectedClockStyle = CLOCK_STYLE_DIGITAL;
 uint8_t selectedWebMode = 0;
 bool automaticFirmwareUpdateEnabled = false;
@@ -6796,6 +6800,7 @@ void createSettingsPage(lv_obj_t *screen) {
   updateWebPasswordPage();
 
   lv_obj_t *cancelButton = lv_btn_create(settingsPage);
+  settingsCancelButton = cancelButton;
   lv_obj_set_size(cancelButton, 64, 64);
   alignCenter(cancelButton, 50, 180);
   lv_obj_set_style_radius(cancelButton, LV_RADIUS_CIRCLE, 0);
@@ -6806,6 +6811,7 @@ void createSettingsPage(lv_obj_t *screen) {
   lv_obj_center(cancelLabel);
 
   lv_obj_t *saveButton = lv_btn_create(settingsPage);
+  settingsSaveButton = saveButton;
   lv_obj_set_size(saveButton, 64, 64);
   alignCenter(saveButton, -50, 180);
   lv_obj_set_style_radius(saveButton, LV_RADIUS_CIRCLE, 0);
@@ -6818,6 +6824,10 @@ void createSettingsPage(lv_obj_t *screen) {
   showSettingsSubpage(0);
 
   lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
+#if HODINY_BOARD_LCD7
+  // Na 7" přes celou obrazovku: hlavička, sekce vlevo, obsah vpravo.
+  lcd7::adaptSettings();
+#endif
 }
 // Čas a datum hodnotové obrazovky se řídí stejnými barvami jako digitální
 // ciferník, včetně červené noční palety.

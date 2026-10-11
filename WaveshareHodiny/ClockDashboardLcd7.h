@@ -2869,6 +2869,123 @@ void syncTraffic(const Palette &p) {
   setColor(v.updated, p.muted);
 }
 
+// --- Nastavení --------------------------------------------------------------
+// Stejné ovladače jako na kulatém (createSettingsPage), jen rozložené přes
+// celou obrazovku: nahoře hlavička s adresou a tlačítky Zrušit/Uložit, vlevo
+// sekce místo šipek, vpravo obsah vybrané sekce. Logika (náhled jasu,
+// ukládání, firmware) zůstává kulatá.
+
+constexpr int SETTINGS_HEADER_H = 68;
+constexpr int SETTINGS_NAV_W = 224;
+constexpr int SETTINGS_NAV_BUTTON_H = 62;
+const lv_color_t SETTINGS_NAV_SELECTED = LV_COLOR_MAKE(29, 43, 48);
+const lv_color_t SETTINGS_BUTTON_BORDER = LV_COLOR_MAKE(58, 58, 58);
+
+struct SettingsView {
+  lv_obj_t *title;
+  lv_obj_t *subtitle;
+  lv_obj_t *nav[SETTINGS_PAGE_COUNT];
+  lv_obj_t *navLabels[SETTINGS_PAGE_COUNT];
+  lv_obj_t *cancelLabel;
+  lv_obj_t *saveLabel;
+  uint8_t drawnPage;
+  bool drawnEnglish;
+} settings;
+
+void settingsNavEvent(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_SHORT_CLICKED) return;
+  showSettingsSubpage(static_cast<uint8_t>(
+      reinterpret_cast<uintptr_t>(lv_event_get_user_data(event))));
+}
+
+// Tlačítko jako pilulka s textem místo kulatého s ikonou.
+lv_obj_t *restyleSettingsButton(lv_obj_t *button, lv_coord_t width, lv_coord_t x,
+                                lv_color_t background, lv_color_t text, bool border) {
+  lv_obj_set_size(button, width, 50);
+  lv_obj_set_align(button, LV_ALIGN_TOP_LEFT);
+  lv_obj_set_pos(button, x, (SETTINGS_HEADER_H - 50) / 2);
+  lv_obj_set_style_radius(button, 25, 0);
+  lv_obj_set_style_bg_color(button, background, 0);
+  lv_obj_set_style_border_width(button, border ? 2 : 0, 0);
+  lv_obj_set_style_border_color(button, SETTINGS_BUTTON_BORDER, 0);
+  lv_obj_t *caption = lv_obj_get_child(button, 0);
+  lv_obj_set_style_text_font(caption, &lcd7_text22, 0);
+  lv_obj_set_style_text_color(caption, text, 0);
+  return caption;
+}
+
+void adaptSettings() {
+  SettingsView &v = settings;
+  lv_obj_t *page = settingsPage;
+  lv_obj_set_parent(page, lv_scr_act());
+  lv_obj_set_align(page, LV_ALIGN_TOP_LEFT);
+  lv_obj_set_pos(page, 0, 0);
+  lv_obj_set_size(page, SCREEN_WIDTH, SCREEN_HEIGHT);
+  // První potomek je ozdobný prstenec po okraji kulatého displeje.
+  lv_obj_add_flag(lv_obj_get_child(page, 0), LV_OBJ_FLAG_HIDDEN);
+  for (lv_obj_t *object : {settingsPreviousButton, settingsNextButton, settingsPageNumberLabel})
+    if (object != nullptr) lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+
+  v.title = label(page, &lcd7_text28, 24, 16);
+  v.subtitle = label(page, &lcd7_text15, 0, 28);
+  line(page, 0, SETTINGS_HEADER_H, SCREEN_WIDTH, 1);
+  line(page, SETTINGS_NAV_W, SETTINGS_HEADER_H, 1, SCREEN_HEIGHT - SETTINGS_HEADER_H);
+
+  v.cancelLabel = restyleSettingsButton(settingsCancelButton, 128, SCREEN_WIDTH - 20 - 128 - 12 - 128,
+                                        COLOR_BACKGROUND, COLOR_TEXT, true);
+  v.saveLabel = restyleSettingsButton(settingsSaveButton, 128, SCREEN_WIDTH - 20 - 128,
+                                      COLOR_AIR, COLOR_BACKGROUND, false);
+
+  for (uint8_t index = 0; index < SETTINGS_PAGE_COUNT; ++index) {
+    lv_obj_t *button = lv_btn_create(page);
+    lv_obj_set_pos(button, 14, SETTINGS_HEADER_H + 12 + index * (SETTINGS_NAV_BUTTON_H + 6));
+    lv_obj_set_size(button, SETTINGS_NAV_W - 26, SETTINGS_NAV_BUTTON_H);
+    lv_obj_set_style_radius(button, 12, 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_border_width(button, 0, 0);
+    lv_obj_set_style_bg_color(button, COLOR_BACKGROUND, 0);
+    lv_obj_add_event_cb(button, settingsNavEvent, LV_EVENT_SHORT_CLICKED,
+                        reinterpret_cast<void *>(static_cast<uintptr_t>(index)));
+    v.nav[index] = button;
+    v.navLabels[index] = label(button, &lcd7_text22, 2, 0);
+    lv_obj_align(v.navLabels[index], LV_ALIGN_LEFT_MID, 4, 0);
+    // Obsah sekce do pravé části; ovladače jsou zarovnané na střed panelu.
+    lv_obj_t *content = settingsContent[index];
+    lv_obj_set_align(content, LV_ALIGN_TOP_LEFT);
+    lv_obj_set_pos(content, SETTINGS_NAV_W + 1, SETTINGS_HEADER_H + 1);
+    lv_obj_set_size(content, SCREEN_WIDTH - SETTINGS_NAV_W - 1,
+                    SCREEN_HEIGHT - SETTINGS_HEADER_H - 1);
+  }
+  v.drawnPage = UINT8_MAX;
+}
+
+void syncSettings() {
+  SettingsView &v = settings;
+  if (v.title == nullptr) return;
+  const bool english = englishLanguage();
+  setText(v.title, english ? "Settings" : "Nastavení");
+  lv_obj_update_layout(v.title);
+  // Adresa z kulaté stránky Systém ("IP: 192.168.1.166").
+  setText(v.subtitle, wifiAddressLabel != nullptr ? lv_label_get_text(wifiAddressLabel) : "");
+  setColor(v.subtitle, COLOR_MUTED);
+  setPosition(v.subtitle, lv_obj_get_x(v.title) + lv_obj_get_width(v.title) + 16, 28);
+  if (v.drawnPage == settingsPageIndex && v.drawnEnglish == english) return;
+  v.drawnPage = settingsPageIndex;
+  v.drawnEnglish = english;
+  static const char *const CZECH[SETTINGS_PAGE_COUNT] = {
+      "Vzhled", "Jas den/noc", "Ikony a vteřiny", "Systém", "Heslo webu"};
+  static const char *const ENGLISH[SETTINGS_PAGE_COUNT] = {
+      "Appearance", "Brightness", "Icons & seconds", "System", "Web password"};
+  for (uint8_t index = 0; index < SETTINGS_PAGE_COUNT; ++index) {
+    const bool selected = index == settingsPageIndex;
+    setText(v.navLabels[index], english ? ENGLISH[index] : CZECH[index]);
+    setColor(v.navLabels[index], selected ? COLOR_TEXT : COLOR_MUTED);
+    setBackground(v.nav[index], selected ? SETTINGS_NAV_SELECTED : COLOR_BACKGROUND);
+  }
+  setText(v.cancelLabel, english ? "Cancel" : "Zrušit");
+  setText(v.saveLabel, english ? "Save" : "Uložit");
+}
+
 // --- Přepínání ------------------------------------------------------------
 
 // Objekty a texty obrazovek 7" patří do PSRAM, ne do interní RAM: je jich
@@ -2977,6 +3094,7 @@ void sync(bool force) {
   if (!created) return;
   const PsramAllocations psram;
   maintainHistory();
+  if (settingsVisible) syncSettings();
   const HomeMode mode = desiredMode();
   if (mode != shownMode) {
     applyMode(mode);
