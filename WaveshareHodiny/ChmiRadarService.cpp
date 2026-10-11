@@ -91,6 +91,10 @@ inline bool mapInsideView(int dx, int dy, int radius) {
 }
 constexpr unsigned long REFRESH_INTERVAL_MS = 300000;
 constexpr unsigned long RETRY_INTERVAL_MS = 60000;
+// Dokud radar nemá co ukázat (typicky první načtení hned po startu, kdy síť
+// a DNS ještě nejsou ustálené), zkouší se dřív: 10, 20 a 40 s, pak po minutě.
+constexpr unsigned long FIRST_RETRY_MS = 10000;
+constexpr uint8_t FAST_RETRIES = 3;
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 constexpr unsigned long ANIMATION_STEP_MS = 500;
 constexpr unsigned long PREPARATION_FRAME_MIN_MS = 500;
@@ -174,6 +178,7 @@ unsigned long lastProgressiveFrameShownAt = 0;
 char frameTime[6] = "";
 char statusMessage[64] = "Čekám na otevření radaru";
 unsigned long nextAttemptAt = 0;
+uint8_t consecutiveFailures = 0;
 unsigned long lastSuccessfulRefreshAt = 0;
 uint32_t requestRevision = 0;
 int lastHttpStatus = 0;
@@ -2513,10 +2518,18 @@ void radarTask(void *) {
       const bool requestChanged = revision != requestRevision;
       if (!requestChanged) reloadRequested = false;
       portEXIT_CRITICAL(&stateMux);
+      if (success)
+        consecutiveFailures = 0;
+      else if (consecutiveFailures < UINT8_MAX)
+        ++consecutiveFailures;
+      const unsigned long retryMs =
+          !haveFrames && consecutiveFailures <= FAST_RETRIES
+              ? FIRST_RETRY_MS << (consecutiveFailures - 1)
+              : RETRY_INTERVAL_MS;
       nextAttemptAt = requestChanged
                           ? 0
                           : millis() + (success ? millisecondsUntilNextRefreshSlot()
-                                                : RETRY_INTERVAL_MS);
+                                                : retryMs);
       if (success && !requestChanged) lastSuccessfulRefreshAt = millis();
       continue;
     }
