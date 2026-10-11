@@ -1,7 +1,9 @@
 name: Tests
 
 # Testy na počítači: firmwarové moduly přes tools/run_host_tests.sh (testy
-# serverové části běží od 27. 9. 2026 v jejím soukromém repozitáři). Běží
+# serverové části běží od 27. 9. 2026 v jejím soukromém repozitáři) a kouřový
+# test balení obou desek (tools/test_release_package.sh). Překlad firmwaru
+# je ve firmware-build.yml. Běží
 # při každém pushi a PR a public-release.yml je volá před sestavením, aby
 # nevyšel firmware s rozbitým parserem.
 #
@@ -39,3 +41,14 @@ jobs:
       - name: Host tests
         run: bash tools/run_host_tests.sh
 
+  # Balení a validace webu s umělými obrazy obou desek; bez arduino-cli,
+  # takže chybu v prepare_release_package.py nebo validate_pages_bundle.py
+  # odhalí za pár sekund i v PR, který firmware nemění.
+  release-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Packaging smoke test
+        run: bash tools/test_release_package.sh

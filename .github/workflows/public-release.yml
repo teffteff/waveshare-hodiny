@@ -47,27 +47,12 @@ jobs:
             exit 1
           fi
 
-      - name: Install pinned Arduino CLI
-        env:
-          ARDUINO_CLI_VERSION: 1.5.1
-          ARDUINO_CLI_SHA256: 28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b
-        run: |
-          archive="$RUNNER_TEMP/arduino-cli.tar.gz"
-          install_dir="$RUNNER_TEMP/arduino-cli"
-          curl --fail --location --silent --show-error \
-            "https://github.com/arduino/arduino-cli/releases/download/v$ARDUINO_CLI_VERSION/arduino-cli_${ARDUINO_CLI_VERSION}_Linux_64bit.tar.gz" \
-            --output "$archive"
-          echo "$ARDUINO_CLI_SHA256  $archive" | sha256sum --check --strict
-          mkdir -p "$install_dir"
-          tar -xzf "$archive" -C "$install_dir" arduino-cli
-          echo "$install_dir" >> "$GITHUB_PATH"
-
-      - name: Install pinned toolchain
-        run: |
-          arduino-cli core update-index --config-file arduino-cli.yaml
-          arduino-cli core install esp32:esp32@3.0.7 --config-file arduino-cli.yaml
-          arduino-cli lib install lvgl@8.3.10 --config-file arduino-cli.yaml
-          arduino-cli lib install PNGdec@1.0.1 --config-file arduino-cli.yaml
+      # Stejné nastavení i cache jako firmware-build.yml při každém pushi,
+      # takže den vydání není první běh stahování toolchainu ani SDK 7".
+      - name: Firmware toolchain
+        uses: ./.github/actions/firmware-toolchain
+        with:
+          lcd7: true
 
       - name: Build public release without local secrets
         env:
@@ -80,17 +65,13 @@ jobs:
         env:
           RELEASE_CHANNEL: public
           BOARD: lcd7
-        run: |
-          # Skript SDK kopíruje stock core 3.0.7 z datového adresáře Arduino CLI.
-          export ARDUINO_STOCK_DATA_DIR="$(arduino-cli config get directories.data --config-file arduino-cli.yaml)"
-          ./build-release.sh "${{ inputs.version }}"
+        # ARDUINO_STOCK_DATA_DIR pro tools/setup_lcd7_sdk.sh nastavuje akce toolchainu.
+        run: ./build-release.sh "${{ inputs.version }}"
 
       - name: Validate complete Pages and OTA bundle
         run: |
-          mkdir -p _site/screenshots _site/media _site/firmware
-          cp -R docs/. _site/
-          cp screenshots/*.png _site/screenshots/
-          cp media/waveshare-hodiny-minute-transition.mp4 _site/media/
+          # Statická část webu včetně obsahových verzí CSS a JS jako v pages.yml.
+          python3 tools/prepare_pages_site.py _site
           cp build/waveshare-hodiny-release/${{ inputs.version }}-public/package/manifest.json _site/firmware/
           cp build/waveshare-hodiny-release/${{ inputs.version }}-public/package/ota.json _site/firmware/
           cp build/waveshare-hodiny-release/${{ inputs.version }}-public/package/waveshare-hodiny.*.bin _site/firmware/

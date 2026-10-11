@@ -1,0 +1,78 @@
+name: Firmware build
+
+# Veřejný release build obou desek při každém pushi a PR. Dřív se firmware
+# překládal jen v public-release.yml v den vydání, takže rozbitý překlad 7"
+# nebo výpadek stahování jeho knihoven se ukázal až tehdy. Nastavení
+# toolchainu (a jeho cache) sdílí s release přes
+# .github/actions/firmware-toolchain; push do main tak cache naplní i pro
+# release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_VERSION: 0.0.0-ci
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [lcd21, lcd7]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Firmware toolchain
+        uses: ./.github/actions/firmware-toolchain
+        with:
+          lcd7: ${{ matrix.board == 'lcd7' }}
+
+      # Stejný build jako release (public kanál, bez lokálních secrets);
+      # prepare_release_package.py při tom ověří i značku desky v obrazu.
+      - name: Build public release
+        env:
+          RELEASE_CHANNEL: public
+          BOARD: ${{ matrix.board }}
+        run: ./build-release.sh "$CI_VERSION"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.board }}
+          path: build/waveshare-hodiny-release/${{ env.CI_VERSION }}-public${{ matrix.board == 'lcd7' && '-lcd7' || '' }}/package/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Web s balíčky obou desek přesně tak, jak by ho nasadil pages.yml.
+  pages-bundle:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-*
+          path: packages
+
+      - name: Validate complete Pages and OTA bundle
+        run: |
+          python3 tools/prepare_pages_site.py _site
+          cp packages/firmware-lcd21/manifest.json packages/firmware-lcd21/ota.json _site/firmware/
+          cp packages/firmware-lcd21/waveshare-hodiny.*.bin _site/firmware/
+          cp packages/firmware-lcd7/manifest-lcd7.json packages/firmware-lcd7/ota-lcd7.json _site/firmware/
+          cp packages/firmware-lcd7/waveshare-hodiny-lcd7.*.bin _site/firmware/
+          python3 tools/validate_pages_bundle.py _site

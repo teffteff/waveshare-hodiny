@@ -25,6 +25,10 @@ VERSION_PATTERN = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 OTA_SLOT_SIZE = 6 * 1024 * 1024
+# Značka desky, kterou firmware zapéká do obrazu (OtaMetadata.cpp) a před
+# aktivací OTA v obrazu hledá. Balíček s obrazem jiné desky nebo bez značky
+# neprojde, takže hodiny v terénu takový obraz nikdy neodmítnou až po stažení.
+BOARD_TAG_PATTERN = re.compile(rb"HODINY_BOARD_TAG=([a-z0-9]{1,15});")
 BOARDS = {
     "lcd21": {
         "suffix": "",
@@ -43,6 +47,15 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def check_board_tag(path: Path, board: str) -> None:
+    tags = {match.decode() for match in BOARD_TAG_PATTERN.findall(path.read_bytes())}
+    if tags != {board}:
+        found = ", ".join(sorted(tags)) or "žádnou"
+        raise SystemExit(
+            f"Obraz {path} nese značku desky {found}, čekána jen {board}."
+        )
 
 
 def main() -> None:
@@ -73,6 +86,8 @@ def main() -> None:
             raise SystemExit(f"Flash část neexistuje nebo je prázdná: {source}")
     if not ota_source.is_file() or not 0 < ota_source.stat().st_size < OTA_SLOT_SIZE:
         raise SystemExit("OTA obraz je prázdný nebo se nevejde do 6MiB slotu.")
+    check_board_tag(flash_parts[3][0], board)
+    check_board_tag(ota_source, board)
 
     package_dir.mkdir(parents=True, exist_ok=True)
     for child in package_dir.iterdir():

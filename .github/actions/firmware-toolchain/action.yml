@@ -1,0 +1,88 @@
+name: Firmware toolchain
+description: >
+  Arduino CLI, core esp32 3.0.7, LVGL a PNGdec v pevných verzích, volitelně
+  i SDK pro 7" (tools/setup_lcd7_sdk.sh). Datový adresář Arduina i SDK 7" se
+  drží v cache, takže build v CI i release nestahují ~3 GB při každém běhu
+  a release nikdy není první běh nastavení. Jen pro Linux runner.
+
+inputs:
+  lcd7:
+    description: Připravit i SDK pro 7" desku
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Arduino CLI
+      shell: bash
+      env:
+        ARDUINO_CLI_VERSION: 1.5.1
+        ARDUINO_CLI_SHA256: 28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b
+      run: |
+        archive="$RUNNER_TEMP/arduino-cli.tar.gz"
+        install_dir="$RUNNER_TEMP/arduino-cli"
+        curl --fail --location --silent --show-error --retry 3 \
+          "https://github.com/arduino/arduino-cli/releases/download/v$ARDUINO_CLI_VERSION/arduino-cli_${ARDUINO_CLI_VERSION}_Linux_64bit.tar.gz" \
+          --output "$archive"
+        echo "$ARDUINO_CLI_SHA256  $archive" | sha256sum --check --strict
+        mkdir -p "$install_dir"
+        tar -xzf "$archive" -C "$install_dir" arduino-cli
+        echo "$install_dir" >> "$GITHUB_PATH"
+
+    # Datový adresář (core, kompilátory) a knihovny podle arduino-cli.yaml;
+    # bez nastavení jsou to ~/.arduino15 a ~/Arduino.
+    - name: Locate Arduino directories
+      id: dirs
+      shell: bash
+      run: |
+        data="$(arduino-cli config get directories.data --config-file arduino-cli.yaml)"
+        user="$(arduino-cli config get directories.user --config-file arduino-cli.yaml)"
+        echo "data=$data" >> "$GITHUB_OUTPUT"
+        echo "user=$user" >> "$GITHUB_OUTPUT"
+        # setup_lcd7_sdk.sh kopíruje hardware a odkazuje nástroje odsud.
+        echo "ARDUINO_STOCK_DATA_DIR=$data" >> "$GITHUB_ENV"
+        sdk_sha="$(sed -n 's/^ZIP_SHA256="\([0-9a-f]*\)"$/\1/p' tools/setup_lcd7_sdk.sh)"
+        core="$(sed -n 's/^CORE_VERSION="\([^"]*\)"$/\1/p' tools/setup_lcd7_sdk.sh)"
+        if [[ ${#sdk_sha} -ne 64 || -z "$core" ]]; then
+          echo "V tools/setup_lcd7_sdk.sh chybí ZIP_SHA256 nebo CORE_VERSION." >&2
+          exit 1
+        fi
+        echo "sdk_sha=$sdk_sha" >> "$GITHUB_OUTPUT"
+        echo "core=$core" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Arduino core and libraries
+      id: core-cache
+      uses: actions/cache@v6
+      with:
+        path: |
+          ${{ steps.dirs.outputs.data }}
+          ${{ steps.dirs.outputs.user }}/libraries
+        key: arduino-${{ runner.os }}-cli-1.5.1-esp32-3.0.7-lvgl-8.3.10-pngdec-1.0.1-v1
+
+    - name: Install pinned toolchain
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.core-cache.outputs.cache-hit }}
+      run: |
+        # Z cache stačí ověřit instalaci; index se stahuje jen poprvé.
+        if [[ "$CACHE_HIT" != "true" ]]; then
+          arduino-cli core update-index --config-file arduino-cli.yaml
+        fi
+        arduino-cli core install esp32:esp32@3.0.7 --config-file arduino-cli.yaml
+        arduino-cli lib install lvgl@8.3.10 --config-file arduino-cli.yaml
+        arduino-cli lib install PNGdec@1.0.1 --config-file arduino-cli.yaml
+
+    # Klíč nese verzi core a SHA-256 ZIPu knihoven (stejné hodnoty si skript
+    # zapisuje do .ready) a otisk skriptu, který určuje rozložení adresáře.
+    - name: Cache 7-inch SDK
+      if: ${{ inputs.lcd7 == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: .arduino/sdk-lcd7
+        key: sdk-lcd7-${{ runner.os }}-core-${{ steps.dirs.outputs.core }}-zip-${{ steps.dirs.outputs.sdk_sha }}-${{ hashFiles('tools/setup_lcd7_sdk.sh') }}
+
+    - name: Prepare 7-inch SDK
+      if: ${{ inputs.lcd7 == 'true' }}
+      shell: bash
+      run: tools/setup_lcd7_sdk.sh
