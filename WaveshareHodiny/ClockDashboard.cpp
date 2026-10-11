@@ -619,6 +619,14 @@ bool redNightVisualEnabled() {
   return nightModeEnabled && nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
 }
 
+// Rozvržení 7": datum, hodnoty, ikonu počasí, stavové ikony a tečky obrazovek
+// ukazuje pravý sloupec (ClockDashboardLcd7.h), takže v kulatém ciferníku
+// zůstanou jen ručičky a značky. Řádek s časem a počet družic s přelety nad
+// mapou družic nahrazuje lišta a sloupec vpravo. Kulatý kód tyhle popisky na
+// 7" vůbec neodkrývá, místo aby je 7" po každé změně znovu schovával.
+constexpr bool ROUND_DIAL_INFO_SHOWN = !HODINY_BOARD_LCD7;
+constexpr bool ROUND_SATELLITES_TEXT_SHOWN = !HODINY_BOARD_LCD7;
+
 void updateRadarWarningLabel();
 
 // Zkrátí text po celých znacích UTF-8 a připojí tři tečky, aby se vešel do
@@ -1046,6 +1054,11 @@ void setObjectVisible(lv_obj_t *object, bool visible) {
   } else {
     lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
   }
+}
+
+// Údaj uvnitř kulatého ciferníku; na 7" zůstane schovaný (ROUND_DIAL_INFO_SHOWN).
+void setDialInfoVisible(lv_obj_t *object, bool visible) {
+  setObjectVisible(object, visible && ROUND_DIAL_INFO_SHOWN);
 }
 
 bool webPasswordResetArmed() {
@@ -2126,8 +2139,10 @@ void alignConnectionStatusIcons() {
 
   lv_obj_t *icons[] = {lightningStatusLabel, wifiStatusLabel, statusLabel,
                        webStatusLabel};
-  const bool visible[] = {lightningAlertActive, showWifi, showHomeAssistant,
-                          showWeb};
+  const bool visible[] = {lightningAlertActive && ROUND_DIAL_INFO_SHOWN,
+                          showWifi && ROUND_DIAL_INFO_SHOWN,
+                          showHomeAssistant && ROUND_DIAL_INFO_SHOWN,
+                          showWeb && ROUND_DIAL_INFO_SHOWN};
   constexpr int ICON_COUNT = 4;
   // Ikony stojí po STATUS_SPACING od středu ke středu. Blesk nese i vzdálenost,
   // takže je širší; řada se proto skládá podle skutečných šířek s mezerou,
@@ -6192,7 +6207,8 @@ void updateScreenDots() {
   }
   // Jediná obrazovka nemá mezi čím přepínat a jedna tečka by o ničem
   // nevypovídala. Nastavení ani aktualizace firmwaru do rotace nepatří.
-  const bool visible = count > 1 && !settingsVisible && !firmwareUpdateActive;
+  const bool visible = count > 1 && !settingsVisible && !firmwareUpdateActive &&
+                       ROUND_DIAL_INFO_SHOWN;
   const int gap = 20;
   const int firstX = -((count - 1) * gap) / 2;
   const lv_color_t accent =
@@ -7208,6 +7224,9 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lv_obj_set_style_text_letter_space(namedayLabel, 2, 0);
   lv_label_set_text(namedayLabel, "");
   alignCenter(namedayLabel, 0, -20);
+  // Kulatý kód datum a jmeniny nikde neodkrývá, stačí je na 7" schovat tady.
+  setDialInfoVisible(dateLabel, true);
+  setDialInfoVisible(namedayLabel, true);
 
   outsideTitleLabel = makeLabel(content, &clock_czech_20, COLOR_OUTSIDE);
   lv_obj_set_style_text_letter_space(outsideTitleLabel, 2, 0);
@@ -7575,7 +7594,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   if (analogLayoutEnabled()) {
     lv_obj_clear_flag(analogDialLayer, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(analogHandsLayer, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(analogMetricDivider, LV_OBJ_FLAG_HIDDEN);
+    setDialInfoVisible(analogMetricDivider, true);
     lv_label_set_text(analogOutsideTitleLabel,
                       lv_label_get_text(outsideTitleLabel));
     lv_label_set_text(analogRoomTitleLabel, lv_label_get_text(roomTitleLabel));
@@ -7595,20 +7614,20 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
                           analogMetricBUnitLabel, 140, 4);
     updateAnalogMetricDivider();
 
-    setObjectVisible(analogOutsideTitleLabel, outsideConfigured);
-    setObjectVisible(analogOutsideValueLabel, outsideConfigured);
-    setObjectVisible(analogOutsideDecimalLabel, outsideConfigured);
-    setObjectVisible(analogOutsideUnitLabel, outsideConfigured);
-    setObjectVisible(analogRoomTitleLabel, roomConfigured);
-    setObjectVisible(analogRoomValueLabel, roomConfigured);
-    setObjectVisible(analogRoomDecimalLabel, roomConfigured);
-    setObjectVisible(analogRoomUnitLabel, roomConfigured);
-    setObjectVisible(analogMetricATitleLabel, metricAConfigured);
-    setObjectVisible(analogMetricAValueLabel, metricAConfigured);
-    setObjectVisible(analogMetricAUnitLabel, metricAConfigured);
-    setObjectVisible(analogMetricBTitleLabel, metricBConfigured);
-    setObjectVisible(analogMetricBValueLabel, metricBConfigured);
-    setObjectVisible(analogMetricBUnitLabel, metricBConfigured);
+    setDialInfoVisible(analogOutsideTitleLabel, outsideConfigured);
+    setDialInfoVisible(analogOutsideValueLabel, outsideConfigured);
+    setDialInfoVisible(analogOutsideDecimalLabel, outsideConfigured);
+    setDialInfoVisible(analogOutsideUnitLabel, outsideConfigured);
+    setDialInfoVisible(analogRoomTitleLabel, roomConfigured);
+    setDialInfoVisible(analogRoomValueLabel, roomConfigured);
+    setDialInfoVisible(analogRoomDecimalLabel, roomConfigured);
+    setDialInfoVisible(analogRoomUnitLabel, roomConfigured);
+    setDialInfoVisible(analogMetricATitleLabel, metricAConfigured);
+    setDialInfoVisible(analogMetricAValueLabel, metricAConfigured);
+    setDialInfoVisible(analogMetricAUnitLabel, metricAConfigured);
+    setDialInfoVisible(analogMetricBTitleLabel, metricBConfigured);
+    setDialInfoVisible(analogMetricBValueLabel, metricBConfigured);
+    setDialInfoVisible(analogMetricBUnitLabel, metricBConfigured);
 
     lv_obj_t *digitalOnly[] = {
         timeLabel,          outsideTitleLabel,   outsideIntegerLabel,
@@ -7786,11 +7805,11 @@ void clockDashboardUpdate(const ClockValues &values) {
       lv_img_set_src(weatherImage, weatherIcon);
       lv_img_set_zoom(weatherImage, 256);
       alignCenter(weatherImage, 0, -70);
-      lv_obj_clear_flag(weatherImage, LV_OBJ_FLAG_HIDDEN);
+      setDialInfoVisible(weatherImage, true);
     }
     if (weatherConfigured && useAnimation) {
       alignCenter(weatherAnimation, 0, -70);
-      lv_obj_clear_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
+      setDialInfoVisible(weatherAnimation, true);
     } else {
       lv_obj_add_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
     }
@@ -7840,7 +7859,7 @@ void clockDashboardUpdate(const ClockValues &values) {
     lv_obj_add_flag(weatherImage, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_img_set_src(weatherImage, weatherIcon);
-    lv_obj_clear_flag(weatherImage, LV_OBJ_FLAG_HIDDEN);
+    setDialInfoVisible(weatherImage, true);
   }
 
   if (!roomConfigured || !weatherConfigured || !roomUsesWeatherIcon ||
@@ -7853,7 +7872,7 @@ void clockDashboardUpdate(const ClockValues &values) {
 
   if (outsideConfigured && weatherConfigured && outsideUsesWeatherIcon &&
       useAnimation) {
-    lv_obj_clear_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
+    setDialInfoVisible(weatherAnimation, true);
   } else {
     lv_obj_add_flag(weatherAnimation, LV_OBJ_FLAG_HIDDEN);
   }
@@ -8550,7 +8569,7 @@ void updateSatellitesClockLabel() {
   if (satellitesClockLabel == nullptr) return;
   char text[48];
   // Stejný přepínač stavového řádku jako na obou radarech.
-  if (!radarStatusLineEnabled ||
+  if (!ROUND_SATELLITES_TEXT_SHOWN || !radarStatusLineEnabled ||
       !composeStatusLineText(text, sizeof(text))) {
     lv_obj_add_flag(satellitesClockLabel, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -8681,7 +8700,8 @@ bool formatSatellitePass(const SatellitePass &pass, char *text, size_t capacity)
 void updateSatellitesPassLabel(const SatelliteSnapshot &snapshot) {
   if (satellitesPassLabel == nullptr) return;
   char text[128];
-  if (!formatSatellitePass(snapshot.pass, text, sizeof(text))) {
+  if (!ROUND_SATELLITES_TEXT_SHOWN ||
+      !formatSatellitePass(snapshot.pass, text, sizeof(text))) {
     lv_obj_add_flag(satellitesPassLabel, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -8890,8 +8910,8 @@ void clockDashboardSetSatellitesSnapshot(const SatelliteSnapshot &snapshot) {
   setTextColor(satellitesStatusLabel, redNight ? COLOR_ERROR : COLOR_OUTSIDE);
   lv_label_set_text(satellitesStatusLabel, text);
   alignCenter(satellitesStatusLabel, 0, SATELLITES_STATUS_OFFSET_Y);
-  // Obloha ho může schovat, když nemá co říct.
-  lv_obj_clear_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
+  // Obloha ho může schovat, když nemá co říct. Na 7" má počet družic sloupec.
+  setObjectVisible(satellitesStatusLabel, ROUND_SATELLITES_TEXT_SHOWN);
 
   updateSatellitesPassLabel(snapshot);
   updateSatellitesClockLabel();
@@ -9083,6 +9103,10 @@ void clockDashboardSetSatellitesSkyPage(bool sky) {
     lv_obj_add_flag(satellitesDetailPanel, LV_OBJ_FLAG_HIDDEN);
   satellitesSkyPage = sky;
   hideSkyLabels();
+  // Řádek oblohy (tma, Kp) do stránky družic na 7" nepatří a počet družic,
+  // který by ho jinak přepsal, se tam neukazuje.
+  if (!sky && !ROUND_SATELLITES_TEXT_SHOWN && satellitesStatusLabel != nullptr)
+    lv_obj_add_flag(satellitesStatusLabel, LV_OBJ_FLAG_HIDDEN);
   // Do příchodu prvního snímku druhé stránky zůstane vidět ta první;
   // plátno se proto schová a vrátí se s dalším snímkem.
   if (satellitesCanvas != nullptr)

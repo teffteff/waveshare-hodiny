@@ -716,23 +716,6 @@ void syncAnalog(const Palette &p) {
   showStatusIcons(v.status, p, SIDE_WIDTH - SIDE_PAD, SCREEN_HEIGHT - 32, true);
 }
 
-// Na kulatém ciferníku jsou hodnoty, datum a ikony uvnitř kruhu. Na 7" je
-// má pravý sloupec, takže v ciferníku zůstanou jen ručičky a značky.
-void hideRoundDialContent() {
-  lv_obj_t *objects[] = {
-      analogOutsideTitleLabel, analogOutsideValueLabel, analogOutsideDecimalLabel,
-      analogOutsideUnitLabel,  analogRoomTitleLabel,    analogRoomValueLabel,
-      analogRoomDecimalLabel,  analogRoomUnitLabel,     analogMetricATitleLabel,
-      analogMetricAValueLabel, analogMetricAUnitLabel,  analogMetricBTitleLabel,
-      analogMetricBValueLabel, analogMetricBUnitLabel,  analogMetricDivider,
-      dateLabel,               namedayLabel,            weatherImage,
-      weatherAnimation,        wifiStatusLabel,         statusLabel,
-      webStatusLabel,          lightningStatusLabel,    screenDotsBacking,
-  };
-  for (lv_obj_t *object : objects) setVisible(object, false);
-  for (lv_obj_t *dot : screenDots) setVisible(dot, false);
-}
-
 // --- Dlaždice hodnot ------------------------------------------------------
 
 // Průběh hodnot za posledních 24 h pro čáru v dlaždici. Vzorek každých
@@ -3944,20 +3927,8 @@ void sync(bool force) {
     applyMode(mode);
     force = true;
   }
-  // Kulatý kód při každé změně hodnot odkrývá své popisky v ciferníku; skrýt
-  // je musí ještě před vykreslením, ne až s další synchronizací.
-  if (mode == HomeMode::Analog) hideRoundDialContent();
-  // Řádek s datem, časem a teplotou v kruhu družic leží pod lištou; počet
-  // družic a přelety jsou ve sloupci vpravo. Noční obloze zůstává v kruhu
-  // řádek s tmou a Kp.
-  if (mode == HomeMode::RoundLeft) {
-    setVisible(satellitesClockLabel, false);
-    // Průhledné, ne skryté: kulatý kód je skrývá podle obsahu a sloupec se
-    // podle toho řídí.
-    const lv_opa_t opa = clockDashboardSatellitesSkyPage() ? LV_OPA_COVER : LV_OPA_TRANSP;
-    for (lv_obj_t *object : {satellitesStatusLabel, satellitesPassLabel})
-      if (lv_obj_get_style_opa(object, 0) != opa) lv_obj_set_style_opa(object, opa, 0);
-  }
+  // Popisky uvnitř kulatého ciferníku a řádky nad mapou družic kulatý kód
+  // na 7" sám neodkrývá (ROUND_DIAL_INFO_SHOWN, ROUND_SATELLITES_TEXT_SHOWN).
   const uint32_t now = millis();
   if (!force && now - lastSyncAt < SYNC_INTERVAL_MS) return;
   lastSyncAt = now;
