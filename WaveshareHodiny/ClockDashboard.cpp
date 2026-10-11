@@ -4415,6 +4415,8 @@ ForecastRow forecastRows[FORECAST_MAX_ROWS];
 constexpr uint8_t FORECAST_PAGE_CHART = 0;
 constexpr uint8_t FORECAST_PAGE_DAYS = 1;
 constexpr uint8_t FORECAST_PAGE_HISTORY = 2;
+// 7": předpověď na dalších 24 hodin (zítřek), tažením doleva od grafu.
+constexpr uint8_t FORECAST_PAGE_NEXT = 3;
 uint8_t forecastPageIndex = FORECAST_PAGE_CHART;
 // Předpověď s 24 hodinami má přes kilobajt; drží se v PSRAM, aby neubírala
 // interní RAM, na které závisí TLS. Založí se s první staženou předpovědí.
@@ -4740,6 +4742,22 @@ void forecastChartHours(const WeatherForecastData &data,
     ++hours;
     --count;
   }
+  // Graf "dnes" je vždycky jen 24 hodin dopředu; 7" stahuje víc pro zítřek.
+  if (count > WEATHER_FORECAST_CHART_HOURS) count = WEATHER_FORECAST_CHART_HOURS;
+}
+
+// Hodiny za grafem "dnes" (7", stránka zítřka): od jeho poslední hodiny dál,
+// aby čára navazovala.
+bool forecastNextHours(const WeatherForecastData &data,
+                       const WeatherForecastHour *&hours, size_t &count) {
+  const WeatherForecastHour *today = nullptr;
+  size_t todayCount = 0;
+  forecastChartHours(data, today, todayCount);
+  if (today == nullptr || todayCount < WEATHER_FORECAST_CHART_HOURS) return false;
+  hours = today + todayCount - 1;
+  const size_t remaining = static_cast<size_t>(data.hours + data.hourCount - hours);
+  count = std::min<size_t>(remaining, 25);
+  return count >= 2;
 }
 
 // Co graf právě kreslí: předpověď, nebo na stránce minulosti naměřených
@@ -4754,6 +4772,8 @@ bool forecastChartView(const WeatherForecastHour *&hours, size_t &count,
     return count > 0;
   }
   if (!forecastDisplayedAvailable || forecastDisplayed == nullptr) return false;
+  if (forecastPageIndex == FORECAST_PAGE_NEXT)
+    return forecastNextHours(*forecastDisplayed, hours, count);
   forecastChartHours(*forecastDisplayed, hours, count);
   return count > 0;
 }
@@ -4803,8 +4823,9 @@ void drawForecastChart(lv_event_t *event) {
   // Graf minulosti celý leží před "teď" a značku nemá.
   float nowPosition = 0.0f;
   const time_t nowTime = time(nullptr);
+  // Zítřek (7") celý leží po "teď" a značku nemá stejně jako minulost.
   const bool nowKnown =
-      !historyMode && nowTime > 1700000000 &&
+      !historyMode && forecastPageIndex != FORECAST_PAGE_NEXT && nowTime > 1700000000 &&
       weatherForecastChartNowPosition(hours, count,
                                       static_cast<int64_t>(nowTime),
                                       nowPosition);
@@ -8910,7 +8931,8 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
       // Ve dne Slunce od východu do západu; tma přijde na řadu po západu.
       const bool daytime = sky.sunUp && sky.dayFrom <= now && sky.dayTo > now &&
                            now > 1700000000;
-      if (daytime) {
+      // Na 7" jsou Slunce a Měsíc ve sloupci vedle oblohy, v kruhu se neopakují.
+      if (daytime && !HODINY_BOARD_LCD7) {
         char from[8];
         char to[8];
         formatLocalClock(sky.dayFrom, from, sizeof(from));
@@ -8937,7 +8959,7 @@ void clockDashboardSetSkySnapshot(const SkySnapshot &sky) {
         append(part);
       }
       // Měsíc: nahoře je, když dřív zapadne, než vyjde.
-      if (sky.hasMoon && (sky.moonRise > 0 || sky.moonSet > 0)) {
+      if (!HODINY_BOARD_LCD7 && sky.hasMoon && (sky.moonRise > 0 || sky.moonSet > 0)) {
         const bool up = sky.moonSet > 0 &&
                         (sky.moonRise == 0 || sky.moonSet < sky.moonRise);
         char clock[8];
@@ -9353,14 +9375,22 @@ bool clockDashboardSwipeForecast(int8_t direction) {
   // stránky dál nevede nic.
   uint8_t next = forecastPageIndex;
 #if HODINY_BOARD_LCD7
-  // Na 7" jsou dny trvale pod grafem; tažení střídá jen předpověď
-  // a naměřených 24 hodin.
+  // Na 7" jsou dny trvale pod grafem; tažení střídá naměřených 24 hodin,
+  // předpověď a zítřek (doleva k budoucnosti).
   if (forecastPageIndex == FORECAST_PAGE_DAYS) forecastPageIndex = FORECAST_PAGE_CHART;
-  if (direction > 0 && forecastPageIndex == FORECAST_PAGE_HISTORY)
-    next = FORECAST_PAGE_CHART;
-  else if (direction < 0 && forecastPageIndex == FORECAST_PAGE_CHART &&
-           forecastHistoryAvailable)
-    next = FORECAST_PAGE_HISTORY;
+  const WeatherForecastHour *ignoredHours = nullptr;
+  size_t ignoredCount = 0;
+  const bool nextAvailable = forecastDisplayedAvailable && forecastDisplayed != nullptr &&
+                             forecastNextHours(*forecastDisplayed, ignoredHours, ignoredCount);
+  if (direction > 0) {
+    if (forecastPageIndex == FORECAST_PAGE_HISTORY) next = FORECAST_PAGE_CHART;
+    else if (forecastPageIndex == FORECAST_PAGE_CHART && nextAvailable)
+      next = FORECAST_PAGE_NEXT;
+  } else {
+    if (forecastPageIndex == FORECAST_PAGE_NEXT) next = FORECAST_PAGE_CHART;
+    else if (forecastPageIndex == FORECAST_PAGE_CHART && forecastHistoryAvailable)
+      next = FORECAST_PAGE_HISTORY;
+  }
 #else
   if (direction > 0) {
     if (forecastPageIndex == FORECAST_PAGE_HISTORY) next = FORECAST_PAGE_CHART;

@@ -17,7 +17,16 @@
 // Graf na obrazovce předpovědi pokrývá den dopředu, stejně jako graf na
 // nástěnce, a kousek zpátky, aby bylo vidět, kde v něm je teď.
 constexpr size_t WEATHER_FORECAST_PAST_HOURS = 3;
-constexpr size_t WEATHER_FORECAST_MAX_HOURS = 24 + WEATHER_FORECAST_PAST_HOURS;
+// Graf ukazuje 24 hodin dopředu; 7" má navíc stránku se zítřkem, takže
+// stahuje 48.
+#if defined(HODINY_BOARD_LCD7) && HODINY_BOARD_LCD7
+constexpr size_t WEATHER_FORECAST_AHEAD_HOURS = 48;
+#else
+constexpr size_t WEATHER_FORECAST_AHEAD_HOURS = 24;
+#endif
+constexpr size_t WEATHER_FORECAST_CHART_HOURS = 24 + WEATHER_FORECAST_PAST_HOURS;
+constexpr size_t WEATHER_FORECAST_MAX_HOURS =
+    WEATHER_FORECAST_AHEAD_HOURS + WEATHER_FORECAST_PAST_HOURS;
 // Open-Meteo posílá první den jako dnešek; druhá stránka obrazovky z něj
 // ukazuje nanejvýš týden následujících dnů.
 constexpr size_t WEATHER_FORECAST_MAX_DAYS = 7;

@@ -1026,7 +1026,8 @@ void drawMapOverlay(uint16_t *buffer, float markerLatitude,
       }
   }
 
-  if (showLegend) drawIntensityLegend(buffer, projection.rainViewer);
+  // Na 7" je stupnice ve sloupci vedle mapy, i se slovy.
+  if (showLegend && !LAYERED_VIEW) drawIntensityLegend(buffer, projection.rainViewer);
 }
 
 void drawDisplayRing(uint16_t *buffer) {
