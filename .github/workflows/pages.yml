@@ -22,6 +22,9 @@ concurrency:
 
 jobs:
   deploy:
+    # Pre-release (zrcadlo SDK 7", kandidáti) web nemění; prostředí github-pages
+    # by jeho tag stejně odmítlo a běh by skončil chybou.
+    if: github.event_name != 'release' || !github.event.release.prerelease
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
