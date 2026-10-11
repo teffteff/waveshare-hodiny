@@ -375,7 +375,7 @@ lv_color_t warningColor(const Palette &p) {
 
 // Nejbližší události z modelu agendy. Bez zapnuté agendy nic.
 uint8_t agendaEventCount() {
-  if (!agendaFeatureAvailable || agendaPage == nullptr) return 0;
+  if (!agendaFeatureAvailable || !agendaScreenCreated) return 0;
   return viewModels().agenda.count;
 }
 
@@ -536,7 +536,7 @@ void showAgenda(lv_obj_t *head, lv_obj_t *first, lv_obj_t *second,
     setText(first, text);
     setColor(first, p.text);
   } else {
-    setText(first, agendaFeatureAvailable && agendaPage != nullptr ? model.status : "");
+    setText(first, agendaFeatureAvailable && agendaScreenCreated ? model.status : "");
     setColor(first, p.muted);
   }
   setVisible(second, count > 1);
@@ -3794,16 +3794,17 @@ HomeMode desiredMode() {
   if (settingsVisible || firmwareUpdateActive) return HomeMode::None;
   if (activeScreen == DASHBOARD_SCREEN_FORECAST && forecastPage != nullptr)
     return HomeMode::Forecast;
-  if (activeScreen == DASHBOARD_SCREEN_RADAR && radarPage != nullptr)
-    return HomeMode::Radar;
-  if (activeScreen == DASHBOARD_SCREEN_AGENDA && agendaPage != nullptr)
-    return HomeMode::Agenda;
+  // Meteoradar, agenda a radar letadel nemají na 7" kulatou stránku (ani
+  // Slunce a Měsíc, které ukazuje sloupec družic); kreslí je tenhle soubor
+  // z modelů (DashboardViewModels.h). Obrazovka je aktivní, jen když je
+  // dostupná (screenAvailable), takže stačí porovnat.
+  if (activeScreen == DASHBOARD_SCREEN_RADAR) return HomeMode::Radar;
+  if (activeScreen == DASHBOARD_SCREEN_AGENDA) return HomeMode::Agenda;
   if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr)
     return HomeMode::Rss;
   if (activeScreen == DASHBOARD_SCREEN_SCHOOL && schoolPage != nullptr)
     return HomeMode::School;
-  if (activeScreen == DASHBOARD_SCREEN_PLANES && planesPage != nullptr)
-    return HomeMode::Planes;
+  if (activeScreen == DASHBOARD_SCREEN_PLANES) return HomeMode::Planes;
   if (activeScreen == DASHBOARD_SCREEN_TRAFFIC && trafficPage != nullptr)
     return HomeMode::Traffic;
   // Družice (s noční oblohou) zůstávají kulaté: jeviště vlevo pod lištou,

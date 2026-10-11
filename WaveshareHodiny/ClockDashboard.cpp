@@ -144,6 +144,9 @@ lv_obj_t *valueSlotBatteryIcons[CLOCK_VALUE_PAGE_SLOT_COUNT] = {};
 lv_obj_t *dashboardScreen = nullptr;
 lv_obj_t *forecastPage = nullptr;
 lv_obj_t *planesPage = nullptr;
+// Obrazovka radaru letadel je založená. Na 2,1" totéž co planesPage !=
+// nullptr; 7" kulatou stránku nezakládá (mapa, sloupec i detail jsou jeho).
+bool planesScreenCreated = false;
 lv_obj_t *planesCanvas = nullptr;
 lv_obj_t *planesClockLabel = nullptr;
 lv_obj_t *planesStatusLabel = nullptr;
@@ -233,6 +236,9 @@ lv_obj_t *skyBodyLabels[SKY_MAX_BODIES] = {};
 lv_obj_t *skyEventLabels[SKY_MAX_EVENTS] = {};
 lv_obj_t *rssPage = nullptr;
 lv_obj_t *agendaPage = nullptr;
+// Obrazovka agendy je založená. Na 2,1" totéž co agendaPage != nullptr; 7"
+// kulatou stránku nezakládá a kreslí agendu sám z modelu.
+bool agendaScreenCreated = false;
 lv_obj_t *agendaHeaderLabel = nullptr;
 lv_obj_t *agendaStatusLabel = nullptr;
 lv_obj_t *agendaLegendLabel = nullptr;
@@ -929,9 +935,9 @@ bool screenAvailable(uint8_t screen) {
     case DASHBOARD_SCREEN_FORECAST:
       return forecastFeatureAvailable && forecastPage != nullptr;
     case DASHBOARD_SCREEN_PLANES:
-      return planesFeatureAvailable && planesPage != nullptr;
+      return planesFeatureAvailable && planesScreenCreated;
     case DASHBOARD_SCREEN_AGENDA:
-      return agendaFeatureAvailable && agendaPage != nullptr;
+      return agendaFeatureAvailable && agendaScreenCreated;
     case DASHBOARD_SCREEN_SKY:
       return skyFeatureAvailable && skyPage != nullptr;
     case DASHBOARD_SCREEN_SCHOOL:
@@ -967,7 +973,7 @@ void setActiveScreen(uint8_t screen) {
     // Při návratu na radar neodkrývej snímek, který zůstal v canvasu z
     // předchozího cyklu. Canvas znovu zobrazí až první snapshot nové animace.
     viewModels().radar.frameShown = false;
-    lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
+    if (radarCanvas != nullptr) lv_obj_add_flag(radarCanvas, LV_OBJ_FLAG_HIDDEN);
     updateRadarFrameDots(0, 0);
     // Popisky patří ke snímku, který zrovna zmizel; nechat je viset nad
     // prázdnou stránkou by tvrdilo, že se něco ukazuje.
@@ -5596,6 +5602,15 @@ void updateSkyPage() {
   applySkyColors();
 }
 
+// Buffer kotouče Měsíce (88 x 88 RGB565, 15 kB v PSRAM). Na 7" ho kreslí
+// sloupec družic, kulatá stránka Slunce a Měsíc tam nevzniká.
+void allocateSkyMoonPixels() {
+  if (skyMoonPixels != nullptr) return;
+  skyMoonPixels = static_cast<uint16_t *>(heap_caps_malloc(
+      SKY_MOON_SIZE * SKY_MOON_SIZE * sizeof(uint16_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
 void createSkyPage(lv_obj_t *screen) {
   const SkyPsramAllocations psramAllocations;
   skyPage = lv_obj_create(screen);
@@ -5645,9 +5660,7 @@ void createSkyPage(lv_obj_t *screen) {
   skyDayLengthLabel = makeLabel(skyPage, &clock_czech_16, COLOR_TEXT);
   alignCenter(skyDayLengthLabel, 0, SKY_DAY_LENGTH_Y);
 
-  skyMoonPixels = static_cast<uint16_t *>(heap_caps_malloc(
-      SKY_MOON_SIZE * SKY_MOON_SIZE * sizeof(uint16_t),
-      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  allocateSkyMoonPixels();
   if (skyMoonPixels != nullptr) {
     skyMoonCanvas = lv_canvas_create(skyPage);
     lv_canvas_set_buffer(skyMoonCanvas, skyMoonPixels, SKY_MOON_SIZE,
@@ -7394,7 +7407,11 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
 
   clockDashboardUpdate(values);
   makeChildrenTapThrough(dashboardContent);
+#if !HODINY_BOARD_LCD7
+  // 7" má vlastní meteoradar (ClockDashboardLcd7.h) s textem z modelu
+  // RadarViewModel; kulatá stránka by tam jen držela objekty v PSRAM.
   createRadarPage(screen);
+#endif
   createRssPage(screen);
   createSettingsPage(screen);
 
@@ -7455,7 +7472,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   layoutSchoolPage();
   if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
     activeScreen = DASHBOARD_SCREEN_CLOCK;
-    lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+    if (radarPage != nullptr) lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (!settingsVisible && !firmwareUpdateActive) {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
       lv_obj_move_foreground(primaryClockPage());
@@ -8240,8 +8257,11 @@ void clockDashboardSetPlanesVisibilityCallback(
 void clockDashboardSetPlanesAvailable(bool available) {
   // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji majitel
   // nechce, nestojí ani jeden objekt LVGL.
-  if (available && planesPage == nullptr && dashboardScreen != nullptr) {
+  if (available && !planesScreenCreated && dashboardScreen != nullptr) {
+#if !HODINY_BOARD_LCD7
     createPlanesPage(dashboardScreen);
+#endif
+    planesScreenCreated = true;
   }
   if (planesFeatureAvailable == available) return;
   planesFeatureAvailable = available;
@@ -9373,9 +9393,12 @@ void clockDashboardSetSkyVisible(bool visible) {
 void clockDashboardSetSkyAvailable(bool available) {
 #if HODINY_BOARD_LCD7
   // 7" samostatnou obrazovku Slunce a Měsíc nemá: údaje ukazuje sloupec
-  // družic. Stránka ale vzniká vždycky (skrytá), protože skládá texty
-  // a kotouč Měsíce, ze kterých sloupec čte.
-  if (skyPage == nullptr && dashboardScreen != nullptr) createSkyPage(dashboardScreen);
+  // družic z modelu (SkyViewModel) a kotouč Měsíce ze skyMoonPixels. Kulatá
+  // stránka nevzniká.
+  if (skyMoonPixels == nullptr) {
+    allocateSkyMoonPixels();
+    updateSkyPage();
+  }
   available = false;
 #endif
   // Stránka se zakládá až s prvním zapnutím obrazovky, stejně jako agenda.
@@ -9416,8 +9439,11 @@ void clockDashboardSetAgendaVisibilityCallback(
 void clockDashboardSetAgendaAvailable(bool available) {
   // Stránka se zakládá až s prvním zapnutím obrazovky, takže dokud ji majitel
   // nechce, nestojí ani jeden objekt LVGL.
-  if (available && agendaPage == nullptr && dashboardScreen != nullptr) {
+  if (available && !agendaScreenCreated && dashboardScreen != nullptr) {
+#if !HODINY_BOARD_LCD7
     createAgendaPage(dashboardScreen);
+#endif
+    agendaScreenCreated = true;
   }
   if (agendaFeatureAvailable == available) return;
   agendaFeatureAvailable = available;
@@ -9438,7 +9464,7 @@ void clockDashboardSetAgendaAvailable(bool available) {
 
 void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
                                    bool ready) {
-  if (agendaPage == nullptr) return;
+  if (!agendaScreenCreated) return;
   AgendaViewModel &model = viewModels().agenda;
   ++model.revision;
   if (count > CLOCK_AGENDA_MAX_ITEMS) count = CLOCK_AGENDA_MAX_ITEMS;
@@ -9461,6 +9487,7 @@ void clockDashboardSetAgendaStatus(const char *message, uint8_t count,
     }
     strlcpy(model.status, text, sizeof(model.status));
   }
+  if (agendaPage == nullptr) return;
   setObjectVisible(agendaStatusLabel, showMessage);
   if (showMessage) {
     lv_label_set_text(agendaStatusLabel, model.status);
@@ -9474,14 +9501,7 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
                                  const char *time, const char *title,
                                  uint8_t calendar) {
   AgendaViewModel &model = viewModels().agenda;
-  if (agendaPage == nullptr || index >= model.count) return;
-  lv_obj_t *dayLabel = agendaDayLabels[index];
-  lv_obj_t *timeLabel = agendaTimeLabels[index];
-  lv_obj_t *titleLabel = agendaTitleLabels[index];
-  if (dayLabel == nullptr || timeLabel == nullptr || titleLabel == nullptr) {
-    return;
-  }
-
+  if (!agendaScreenCreated || index >= model.count) return;
   AgendaRowViewModel &row = model.rows[index];
   row.startsDay = day != nullptr && day[0] != '\0';
   strlcpy(row.day, row.startsDay ? day : "", sizeof(row.day));
@@ -9490,6 +9510,13 @@ void clockDashboardSetAgendaItem(size_t index, const char *day,
   row.calendar = calendar;
   ++model.revision;
 
+  if (agendaPage == nullptr) return;
+  lv_obj_t *dayLabel = agendaDayLabels[index];
+  lv_obj_t *timeLabel = agendaTimeLabels[index];
+  lv_obj_t *titleLabel = agendaTitleLabels[index];
+  if (dayLabel == nullptr || timeLabel == nullptr || titleLabel == nullptr) {
+    return;
+  }
   if (row.startsDay) lv_label_set_text(dayLabel, row.day);
   // Celodenní událost nemá čas; kulatá stránka místo něj píše pomlčku.
   lv_label_set_text(timeLabel, row.time[0] != '\0' ? row.time : AGENDA_ALL_DAY_MARK);
@@ -9919,6 +9946,8 @@ void clockDashboardSetRadarSnapshot(const uint16_t *pixels,
                     loading || fullPreparationInProgress, latestFrame,
                     currentFrameNumber, displayedRadiusKm, mapOnly);
   lcd7::radarFrameChanged(pixels);
+  // Počet snímků a právě zobrazený snímek pro tečky ve sloupci 7".
+  updateRadarFrameDots(haveFrame ? animationFrameCount : 0, currentFrameNumber);
 #endif
   if (radarCanvas == nullptr || radarStatusLabel == nullptr ||
       radarTitleLabel == nullptr || radarRangeLabel == nullptr)
@@ -9997,7 +10026,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
   if (active) {
     clockDashboardSetFirmwareUpdateBlack(false);
     lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+    if (radarPage != nullptr) lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
     if (rssPage != nullptr) lv_obj_add_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
     if (agendaPage != nullptr) lv_obj_add_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
     if (schoolPage != nullptr) lv_obj_add_flag(schoolPage, LV_OBJ_FLAG_HIDDEN);
@@ -10032,13 +10061,12 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     if (settingsVisible) {
       lv_obj_clear_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     } else if (activeScreen == DASHBOARD_SCREEN_RADAR) {
-      lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
+      if (radarPage != nullptr) lv_obj_clear_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
       if (radarVisibilityCallback != nullptr) radarVisibilityCallback(true);
     } else if (activeScreen == DASHBOARD_SCREEN_RSS && rssPage != nullptr) {
       lv_obj_clear_flag(rssPage, LV_OBJ_FLAG_HIDDEN);
-    } else if (activeScreen == DASHBOARD_SCREEN_AGENDA &&
-               agendaPage != nullptr) {
-      lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_AGENDA && agendaScreenCreated) {
+      if (agendaPage != nullptr) lv_obj_clear_flag(agendaPage, LV_OBJ_FLAG_HIDDEN);
       // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
       // služba by zůstala vypnutá a už nikdy nic nestáhla.
       if (agendaVisibilityCallback != nullptr) agendaVisibilityCallback(true);
@@ -10049,9 +10077,8 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     } else if (activeScreen == DASHBOARD_SCREEN_FORECAST &&
                forecastPage != nullptr) {
       lv_obj_clear_flag(forecastPage, LV_OBJ_FLAG_HIDDEN);
-    } else if (activeScreen == DASHBOARD_SCREEN_PLANES &&
-               planesPage != nullptr) {
-      lv_obj_clear_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
+    } else if (activeScreen == DASHBOARD_SCREEN_PLANES && planesScreenCreated) {
+      if (planesPage != nullptr) lv_obj_clear_flag(planesPage, LV_OBJ_FLAG_HIDDEN);
       // Bez tohohle by se po přerušené aktualizaci obrazovka vrátila, ale
       // služba by zůstala vypnutá a už nikdy nic nestáhla.
       if (planesVisibilityCallback != nullptr) planesVisibilityCallback(true);
