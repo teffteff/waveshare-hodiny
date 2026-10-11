@@ -1336,7 +1336,9 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_AGENDA:
       return clockConfigAgendaAvailable(config);
     case ROTATION_SCREEN_SKY:
-      return clockConfigSkyAvailable(config);
+      // 7" samostatnou obrazovku Slunce a Měsíc nemá (údaje jsou u družic);
+      // bez téhle výjimky by podržení prstu skočilo na hodiny.
+      return !HODINY_BOARD_LCD7 && clockConfigSkyAvailable(config);
     case ROTATION_SCREEN_SCHOOL:
       return clockConfigSchoolAvailable(config);
     case ROTATION_SCREEN_SATELLITES:
@@ -1365,7 +1367,8 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
       return clockConfigAgendaAvailable(config) &&
              config.agenda.automaticRotation;
     case ROTATION_SCREEN_SKY:
-      return clockConfigSkyAvailable(config) && config.sky.automaticRotation;
+      return !HODINY_BOARD_LCD7 && clockConfigSkyAvailable(config) &&
+             config.sky.automaticRotation;
     case ROTATION_SCREEN_SCHOOL:
       return clockConfigSchoolAvailable(config) &&
              config.school.automaticRotation;
