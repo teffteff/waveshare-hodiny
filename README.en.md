@@ -335,7 +335,9 @@ cities keep the abbreviations you are used to. RainViewer serves Web Mercator
 tiles and its zoom goes in powers of two, so you get the nearest available
 range rather than exactly the number you set - the caption therefore shows the
 radius actually reached. Tiles are not cached, so changing the range downloads
-the animation again.
+the animation again. The regular five-minute refresh, however, only downloads
+frames the clock does not hold yet (RainViewer publishes one every ten minutes)
+and shifts the animation by them, just like with CHMI.
 
 With RainViewer on, automatic rotation through the radar keeps working abroad
 too - what switches it off is an unavailable radar, not a foreign location by

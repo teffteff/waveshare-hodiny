@@ -104,6 +104,103 @@ void testCapsAtFrameLimit() {
   assert(index.frames[index.frameCount - 1].time == 1029);
 }
 
+// Index se snímky s časy start, start + 600, ... (RainViewer vydává snímek po
+// deseti minutách) a cestami odvozenými z času.
+RainViewerIndex makeIndex(int64_t start, size_t count) {
+  RainViewerIndex index;
+  for (size_t frame = 0; frame < count; ++frame) {
+    const int64_t time = start + static_cast<int64_t>(frame) * 600;
+    index.frames[frame].time = time;
+    snprintf(index.frames[frame].path, sizeof(index.frames[frame].path),
+             "/v2/radar/%lld", static_cast<long long>(time));
+  }
+  index.frameCount = count;
+  return index;
+}
+
+void testPlanUnchanged() {
+  // Pravidelná obnova po pěti minutách často žádný nový snímek nenajde.
+  const RainViewerIndex held = makeIndex(1000, 6);
+  const RainViewerRefreshPlan plan =
+      rainViewerPlanRefresh(held.frames, 6, makeIndex(1000, 6), 1);
+  assert(plan.kind == RainViewerRefreshKind::Unchanged);
+  assert(plan.shift == 0);
+}
+
+void testPlanShiftsByNewFrames() {
+  // Jeden nový snímek: nejstarší vypadne, stáhne se jen ten nejnovější.
+  const RainViewerIndex held = makeIndex(1000, 6);
+  RainViewerRefreshPlan plan =
+      rainViewerPlanRefresh(held.frames, 6, makeIndex(1600, 6), 1);
+  assert(plan.kind == RainViewerRefreshKind::Shift);
+  assert(plan.shift == 1);
+
+  // Dva nové snímky s dovoleným posunem o čtyři (kulatý).
+  plan = rainViewerPlanRefresh(held.frames, 6, makeIndex(2200, 6), 4);
+  assert(plan.kind == RainViewerRefreshKind::Shift);
+  assert(plan.shift == 2);
+}
+
+void testPlanReloadsBeyondShiftLimit() {
+  // Na 7" se doplňuje nejvýš jeden snímek; víc znamená celé načtení.
+  const RainViewerIndex held = makeIndex(1000, 6);
+  assert(rainViewerPlanRefresh(held.frames, 6, makeIndex(2200, 6), 1).kind ==
+         RainViewerRefreshKind::Reload);
+  // Všechno nové (radar dlouho schovaný) se načte celé i bez stropu.
+  assert(rainViewerPlanRefresh(held.frames, 6, makeIndex(9000, 6), 15).kind ==
+         RainViewerRefreshKind::Reload);
+}
+
+void testPlanReloadsOnMismatch() {
+  const RainViewerIndex held = makeIndex(1000, 6);
+  // Jiný počet snímků (index jich zrovna vydal méně).
+  assert(rainViewerPlanRefresh(held.frames, 6, makeIndex(1600, 5), 4).kind ==
+         RainViewerRefreshKind::Reload);
+  // Nic drženo.
+  assert(rainViewerPlanRefresh(held.frames, 0, makeIndex(1000, 6), 4).kind ==
+         RainViewerRefreshKind::Reload);
+  assert(rainViewerPlanRefresh(nullptr, 6, makeIndex(1000, 6), 4).kind ==
+         RainViewerRefreshKind::Reload);
+  // Stejné časy, ale snímek uprostřed dostal jinou cestu (přepočítaný).
+  RainViewerIndex changed = makeIndex(1000, 6);
+  strcpy(changed.frames[3].path, "/v2/radar/reprocessed");
+  assert(rainViewerPlanRefresh(held.frames, 6, changed, 4).kind ==
+         RainViewerRefreshKind::Reload);
+  // Díra v řadě: snímky nenavazují v žádném dovoleném posunu.
+  RainViewerIndex gap = makeIndex(1600, 6);
+  gap.frames[2] = makeIndex(50000, 1).frames[0];
+  assert(rainViewerPlanRefresh(held.frames, 6, gap, 4).kind ==
+         RainViewerRefreshKind::Reload);
+  // Index šel zpátky (starší snímky než držené).
+  assert(rainViewerPlanRefresh(held.frames, 6, makeIndex(400, 6), 4).kind ==
+         RainViewerRefreshKind::Reload);
+}
+
+void testPlanSingleFrame() {
+  // Jediný snímek se neposouvá: buď je stejný, nebo se načte znovu.
+  const RainViewerIndex held = makeIndex(1000, 1);
+  assert(rainViewerPlanRefresh(held.frames, 1, makeIndex(1000, 1), 4).kind ==
+         RainViewerRefreshKind::Unchanged);
+  assert(rainViewerPlanRefresh(held.frames, 1, makeIndex(1600, 1), 4).kind ==
+         RainViewerRefreshKind::Reload);
+}
+
+void testPlanOverParsedIndex() {
+  // Skutečná odpověď: hodiny drží čtyři snímky z doby před tím nejnovějším
+  // (první čtyři z pěti) a index teď vydá poslední čtyři. Mezi čtvrtým
+  // a pátým je v řadě díra, na posunu to nic nemění - rozhoduje cesta a čas.
+  RainViewerIndex all;
+  assert(rainViewerParseIndex(REAL_INDEX, 5, all));
+  RainViewerIndex newestFour;
+  assert(rainViewerParseIndex(REAL_INDEX, 4, newestFour));
+  const RainViewerRefreshPlan plan =
+      rainViewerPlanRefresh(all.frames, 4, newestFour, 1);
+  assert(plan.kind == RainViewerRefreshKind::Shift);
+  assert(plan.shift == 1);
+  assert(rainViewerPlanRefresh(newestFour.frames, 4, newestFour, 1).kind ==
+         RainViewerRefreshKind::Unchanged);
+}
+
 }  // namespace
 
 int main() {
@@ -114,6 +211,12 @@ int main() {
   testRejectsUnusableResponses();
   testRejectsOverlongPath();
   testCapsAtFrameLimit();
+  testPlanUnchanged();
+  testPlanShiftsByNewFrames();
+  testPlanReloadsBeyondShiftLimit();
+  testPlanReloadsOnMismatch();
+  testPlanSingleFrame();
+  testPlanOverParsedIndex();
   printf("rain_viewer_index OK\n");
   return 0;
 }

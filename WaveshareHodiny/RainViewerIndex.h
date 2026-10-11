@@ -36,3 +36,34 @@ struct RainViewerIndex {
 // snímků radaru. Vrací false, když odpověď nemá ani jeden použitelný snímek.
 bool rainViewerParseIndex(const char *payload, size_t wantedFrames,
                           RainViewerIndex &index);
+
+// Stejný snímek? Cesta k dlaždicím i čas se musí shodovat: snímek se stejným
+// časem, ale jinou cestou RainViewer přepočítal a stahuje se znovu.
+bool rainViewerSameFrame(const RainViewerFrame &first,
+                         const RainViewerFrame &second);
+
+// Co udělat s animací při pravidelné obnově. Minulé snímky se u RainVieweru
+// nemění, takže stačí stáhnout jen ty, které v držené animaci ještě nejsou.
+enum class RainViewerRefreshKind : uint8_t {
+  // Index nabízí přesně držené snímky; nic se nestahuje.
+  Unchanged,
+  // Nejstarších `shift` snímků vypadne a na konec přibude `shift` nových.
+  Shift,
+  // Snímky na sebe nenavazují (jiný počet, posun přes strop, díra v řadě):
+  // animace se načte celá.
+  Reload,
+};
+
+struct RainViewerRefreshPlan {
+  RainViewerRefreshKind kind = RainViewerRefreshKind::Reload;
+  size_t shift = 0;
+};
+
+// Porovná držené snímky (od nejstaršího) s novým indexem. Posun se hledá
+// nejmenší možný a nejvýš `maxShift`. Nové snímky se vždy přidávají na konec:
+// posun o celou délku animace (všechno nové) i animace o jednom snímku se
+// načtou celé, protože posunem by se nic neušetřilo.
+RainViewerRefreshPlan rainViewerPlanRefresh(const RainViewerFrame *held,
+                                            size_t heldCount,
+                                            const RainViewerIndex &index,
+                                            size_t maxShift);
