@@ -39,6 +39,8 @@ constexpr int TILE_PAD = 14;
 static_assert(3 * 3 == CLOCK_VALUE_PAGE_SLOT_COUNT,
               "dlaždice musí pokrýt jednu stránku hodnot");
 constexpr uint32_t SYNC_INTERVAL_MS = 100;
+// Výška lišty nahoře; tečky obrazovek leží v její půlce i tam, kde lišta není.
+constexpr int BAR_HEIGHT = 40;
 
 const lv_color_t TILE_BACKGROUND = LV_COLOR_MAKE(11, 11, 11);
 const lv_color_t TILE_BORDER = LV_COLOR_MAKE(34, 34, 34);
@@ -345,6 +347,16 @@ void showPageDots(const PageDots &view, const Palette &p, lv_coord_t centerX,
   }
 }
 
+// Tečky vždycky vpravo nahoře, poslední 20 px od pravého okraje rodiče
+// širokého parentWidth - stejně jako v liště ostatních obrazovek.
+lv_coord_t pageDotsLeft(lv_coord_t parentWidth) {
+  uint8_t count = 0;
+  for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position)
+    if (screenAvailable(clockConfigScreenAt(dashboardRuntimeConfig, position)))
+      ++count;
+  return parentWidth - 20 - (count > 1 ? (count - 1) * HOME_DOT_GAP : 0);
+}
+
 // Výstraha ČHMÚ (název ve barvě stupně, za ním čas) a blížící se déšť. Stav
 // drží kulatý ciferník kvůli řádku na radaru.
 bool warningActive() { return radarWarningEvent[0] != '\0'; }
@@ -586,7 +598,7 @@ void syncDigital(const Palette &p) {
                             v.bandDividers[1]})
     setBackground(divider, p.line);
   showStatusIcons(v.status, p, 32, SCREEN_HEIGHT - 32, false);
-  showPageDots(v.dots, p, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 24);
+  showPageDots(v.dots, p, -pageDotsLeft(SCREEN_WIDTH), BAR_HEIGHT / 2);
 }
 
 // --- Analogový ciferník: kulatý ciferník vlevo, sloupec vpravo ------------
@@ -680,7 +692,8 @@ void syncAnalog(const Palette &p) {
   setColor(v.rain, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
   showAgenda(nullptr, v.agendaFirst, v.agendaSecond, p);
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
-  showPageDots(v.dots, p, -(SIDE_PAD + 5), SCREEN_HEIGHT - 24);
+  // Nad datem: sloupec nemá lištu, ale tečky patří vpravo nahoru.
+  showPageDots(v.dots, p, -pageDotsLeft(SIDE_WIDTH), 12);
   showStatusIcons(v.status, p, SIDE_WIDTH - SIDE_PAD, SCREEN_HEIGHT - 32, true);
 }
 
@@ -798,8 +811,7 @@ struct Tile {
 };
 
 // Horní lišta 800 x 40 obrazovek s množstvím dat: čas, datum, obě teploty,
-// výstraha a tečky obrazovek.
-constexpr int BAR_HEIGHT = 40;
+// výstraha a tečky obrazovek (BAR_HEIGHT nahoře u ostatních rozměrů).
 
 struct TopBar {
   lv_obj_t *time;
@@ -892,12 +904,7 @@ void syncTopBar(TopBar &v, const Palette &p) {
   setColor(v.warning, warningColor(p));
   setBackground(v.line, p.line);
   // Tečky vpravo; jejich šířka určuje, kde končí výstraha.
-  uint8_t count = 0;
-  for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position)
-    if (screenAvailable(clockConfigScreenAt(dashboardRuntimeConfig, position)))
-      ++count;
-  const lv_coord_t dotsLeft =
-      SCREEN_WIDTH - 20 - (count > 1 ? (count - 1) * HOME_DOT_GAP : 0);
+  const lv_coord_t dotsLeft = pageDotsLeft(SCREEN_WIDTH);
   showPageDots(v.dots, p, -dotsLeft, BAR_HEIGHT / 2);
   lv_obj_update_layout(v.warning);
   setPosition(v.warning, dotsLeft - 16 - lv_obj_get_width(v.warning), 12);
