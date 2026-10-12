@@ -6,6 +6,7 @@
 #include "SatelliteService.h"
 #include "TrafficRender.h"
 #include "TrafficService.h"
+#include "HomeControlService.h"
 #include "Astronomy.h"
 #include "ClockDashboard.h"
 #include "DashboardViewModels.h"
@@ -43,12 +44,17 @@ void radarFrameChanged(const uint16_t *pixels);
 void stageHistory(size_t slot, const float *buckets, float dayLow, float dayHigh);
 bool handleSwipe(int8_t direction);
 void rssTap(int16_t x, int16_t y);
+void controlsTap(int16_t x, int16_t y);
 void planesFrameChanged(const uint16_t *pixels);
 void trafficFrameChanged(const uint16_t *pixels);
 bool stageAtLeft();
 void adaptSettings();
 }  // namespace lcd7
 #endif
+
+// Ovládání (definice u konce souboru, před 7").
+int controlsTileAt(int16_t x, int16_t y);
+void clockDashboardMaintainControls();
 
 namespace {
 const lv_color_t COLOR_BACKGROUND = LV_COLOR_MAKE(0, 0, 0);
@@ -226,6 +232,19 @@ bool trafficFeatureAvailable = false;
 uint8_t trafficPageShown = TRAFFIC_PAGE_MAP;
 // Poslední snímek kvůli překreslení po přepnutí stránky. Leží v PSRAM.
 TrafficSnapshot *trafficLastSnapshot = nullptr;
+// Obrazovka Ovládání: dlaždice vypínačů a světel se štítkem HA. Stav nese
+// HomeControlService; snímek (v PSRAM) se kopíruje jen při změně.
+lv_obj_t *controlsPage = nullptr;
+bool controlsFeatureAvailable = false;
+HomeControlSnapshot *controlsSnapshot = nullptr;
+// Roste s každým novým snímkem ovládání, pro 7".
+uint32_t controlsRevision = 0;
+constexpr uint8_t ROUND_CONTROLS_TILES = 4;
+lv_obj_t *controlsTitleLabel = nullptr;
+lv_obj_t *controlsStatusLabel = nullptr;
+lv_obj_t *controlsTiles[ROUND_CONTROLS_TILES] = {};
+lv_obj_t *controlsTileNames[ROUND_CONTROLS_TILES] = {};
+lv_obj_t *controlsTileStates[ROUND_CONTROLS_TILES] = {};
 // Druhá stránka obrazovky družic: noční obloha. Přepíná se tažením prstu,
 // stejně jako stránky hodnot nebo školy; tečka obrazovky se nemění.
 bool nightSkyAvailable = false;
@@ -487,6 +506,7 @@ enum DashboardScreen : uint8_t {
   DASHBOARD_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL,
   DASHBOARD_SCREEN_SATELLITES = CLOCK_SCREEN_SATELLITES,
   DASHBOARD_SCREEN_TRAFFIC = CLOCK_SCREEN_TRAFFIC,
+  DASHBOARD_SCREEN_CONTROLS = CLOCK_SCREEN_CONTROLS,
 };
 uint8_t activeScreen = DASHBOARD_SCREEN_CLOCK;
 bool radarFeatureAvailable = true;
@@ -607,6 +627,7 @@ RadarRangeCallback radarRangeCallback = nullptr;
 RssVisibilityCallback planesVisibilityCallback = nullptr;
 RssVisibilityCallback satellitesVisibilityCallback = nullptr;
 RssVisibilityCallback trafficVisibilityCallback = nullptr;
+RssVisibilityCallback controlsVisibilityCallback = nullptr;
 WebPasswordResetCallback webPasswordResetCallback = nullptr;
 bool webPasswordConfigured = false;
 // Smazání chce druhé klepnutí do pěti sekund; 0 = nepotvrzuje se.
@@ -920,6 +941,7 @@ lv_obj_t *overlayPage(uint8_t screen) {
     case DASHBOARD_SCREEN_SCHOOL: return schoolPage;
     case DASHBOARD_SCREEN_SATELLITES: return satellitesPage;
     case DASHBOARD_SCREEN_TRAFFIC: return trafficPage;
+    case DASHBOARD_SCREEN_CONTROLS: return controlsPage;
     case DASHBOARD_SCREEN_FORECAST: return forecastPage;
     case DASHBOARD_SCREEN_PLANES: return planesPage;
     default: return nullptr;
@@ -946,6 +968,8 @@ bool screenAvailable(uint8_t screen) {
       return satellitesFeatureAvailable && satellitesPage != nullptr;
     case DASHBOARD_SCREEN_TRAFFIC:
       return trafficFeatureAvailable && trafficPage != nullptr;
+    case DASHBOARD_SCREEN_CONTROLS:
+      return controlsFeatureAvailable && controlsPage != nullptr;
     default: return true;
   }
 }
@@ -1068,6 +1092,11 @@ void setActiveScreen(uint8_t screen) {
     if (trafficVisibilityCallback != nullptr)
       trafficVisibilityCallback(isTraffic);
   }
+  // Ovládání čte stav z HA jen viditelné.
+  const bool wasControls = previous == DASHBOARD_SCREEN_CONTROLS;
+  const bool isControls = screen == DASHBOARD_SCREEN_CONTROLS;
+  if (wasControls != isControls && controlsVisibilityCallback != nullptr)
+    controlsVisibilityCallback(isControls);
   // Stránka se právě vytáhla dopředu, takže ukazatel musí zpátky nad ni.
   updateScreenDots();
 }
@@ -7518,6 +7547,7 @@ void clockDashboardApplyConfiguration(const ClockConfig &config) {
   clockDashboardSetSchoolAvailable(clockConfigSchoolAvailable(config));
   clockDashboardSetSatellitesAvailable(clockConfigSatellitesAvailable(config));
   clockDashboardSetTrafficAvailable(clockConfigTrafficAvailable(config));
+  clockDashboardSetControlsAvailable(clockConfigControlsAvailable(config));
   // Vypínač úkolů mění rozvržení bez nového stažení.
   layoutSchoolPage();
   if (!radarFeatureAvailable && activeScreen == DASHBOARD_SCREEN_RADAR) {
@@ -8338,6 +8368,16 @@ void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   // Zahodit se musí i klepnutí mimo letadla: jinak by potlačení čekalo dál a
   // spolklo nejbližší dvojklepnutí, kterým se přepíná denní režim.
   if (consumeSuppressedTap()) return;
+  if (activeScreen == DASHBOARD_SCREEN_CONTROLS) {
+#if HODINY_BOARD_LCD7
+    lcd7::controlsTap(static_cast<int16_t>(x + STAGE_X), y);
+#else
+    const int index = controlsTileAt(x, y);
+    if (index >= 0 && homeControlServicePress(static_cast<uint8_t>(index)))
+      clockDashboardMaintainControls();
+#endif
+    return;
+  }
   if (activeScreen == DASHBOARD_SCREEN_SATELLITES) {
 #if HODINY_BOARD_LCD7
     // Kulaté družice stojí na 7" u levého okraje, ne na místě jeviště.
@@ -10114,6 +10154,8 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
       lv_obj_add_flag(satellitesPage, LV_OBJ_FLAG_HIDDEN);
     if (trafficPage != nullptr)
       lv_obj_add_flag(trafficPage, LV_OBJ_FLAG_HIDDEN);
+    if (controlsPage != nullptr)
+      lv_obj_add_flag(controlsPage, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(settingsPage, LV_OBJ_FLAG_HIDDEN);
     if (activeScreen == DASHBOARD_SCREEN_RADAR &&
         radarVisibilityCallback != nullptr)
@@ -10129,6 +10171,9 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
     if (activeScreen == DASHBOARD_SCREEN_TRAFFIC &&
         trafficVisibilityCallback != nullptr)
       trafficVisibilityCallback(false);
+    if (activeScreen == DASHBOARD_SCREEN_CONTROLS &&
+        controlsVisibilityCallback != nullptr)
+      controlsVisibilityCallback(false);
     lv_obj_clear_flag(firmwareUpdateOverlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(firmwareUpdateOverlay);
     updateScreenDots();
@@ -10168,6 +10213,10 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
                trafficPage != nullptr) {
       lv_obj_clear_flag(trafficPage, LV_OBJ_FLAG_HIDDEN);
       if (trafficVisibilityCallback != nullptr) trafficVisibilityCallback(true);
+    } else if (activeScreen == DASHBOARD_SCREEN_CONTROLS &&
+               controlsPage != nullptr) {
+      lv_obj_clear_flag(controlsPage, LV_OBJ_FLAG_HIDDEN);
+      if (controlsVisibilityCallback != nullptr) controlsVisibilityCallback(true);
     } else {
       lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     }
@@ -10755,6 +10804,264 @@ bool clockDashboardSwipeTraffic(int8_t direction) {
 
 bool clockDashboardTrafficMapPage() {
   return trafficPageShown == TRAFFIC_PAGE_MAP;
+}
+
+// --- Ovládání ----------------------------------------------------------------
+
+// Text stavu dlaždice: "ZAP · 70 %", "ZAP · 23 W", "VYP", "nedostupné"...
+// Společný pro kulatou stránku i 7". Kulaté písmo tečku "·" nemá, proto
+// oddělovač volí volající.
+void controlsStateText(const HomeControlTile &tile, bool english,
+                       const char *separator, char *out, size_t capacity) {
+  const HomeControlItem &item = tile.item;
+  switch (item.state) {
+    case HomeControlState::Unavailable:
+      strlcpy(out, english ? "unavailable" : "nedostupné", capacity);
+      return;
+    case HomeControlState::Stateless:
+      strlcpy(out, english ? "run" : "spustit", capacity);
+      return;
+    case HomeControlState::Off:
+      strlcpy(out, english ? "OFF" : "VYP", capacity);
+      return;
+    case HomeControlState::On:
+      break;
+  }
+  const char *on = english ? "ON" : "ZAP";
+  // Čekající přepnutí ještě nemá jas ani příkon nového stavu.
+  if (!tile.pending && item.brightnessPercent >= 0) {
+    snprintf(out, capacity, "%s%s%d %%", on, separator, item.brightnessPercent);
+  } else if (!tile.pending && item.powerWatts >= 1000.0f) {
+    snprintf(out, capacity, "%s%s%.1f kW", on, separator,
+             item.powerWatts / 1000.0f);
+    if (!english) {
+      char *dot = strrchr(out, '.');
+      if (dot != nullptr) *dot = ',';
+    }
+  } else if (!tile.pending && item.powerWatts >= 0.5f) {
+    snprintf(out, capacity, "%s%s%d W", on, separator,
+             static_cast<int>(item.powerWatts + 0.5f));
+  } else {
+    strlcpy(out, on, capacity);
+  }
+}
+
+// Řádek pod dlaždicemi: načítání, chyba, prázdný štítek, nebo nic.
+void controlsStatusText(const HomeControlSnapshot &snapshot, uint8_t shown,
+                        bool english, char *out, size_t capacity) {
+  out[0] = '\0';
+  if (snapshot.message[0] != '\0') {
+    strlcpy(out, snapshot.message, capacity);
+  } else if (!snapshot.haveData) {
+    strlcpy(out, english ? "Loading..." : "Načítám...", capacity);
+  } else if (snapshot.count == 0) {
+    strlcpy(out,
+            english ? "No entities with the label in Home Assistant"
+                    : "V Home Assistantu nic nemá štítek",
+            capacity);
+  } else if (snapshot.count > shown) {
+    snprintf(out, capacity, english ? "+%u more" : "a %u další",
+             static_cast<unsigned>(snapshot.count - shown));
+  }
+}
+
+lv_color_t controlsTileColor(const HomeControlTile &tile) {
+  const bool night = redNightVisualEnabled();
+  if (tile.item.state == HomeControlState::On)
+    return night ? lv_color_make(72, 0, 0) : lv_color_make(196, 140, 40);
+  return night ? lv_color_make(20, 0, 0) : lv_color_make(34, 34, 34);
+}
+
+lv_color_t controlsTextColor(const HomeControlTile &tile) {
+  if (redNightVisualEnabled()) return COLOR_ERROR;
+  if (tile.item.state == HomeControlState::Unavailable) return COLOR_MUTED;
+  return tile.item.state == HomeControlState::On ? COLOR_BACKGROUND : COLOR_TEXT;
+}
+
+// Kulatá stránka: 2×2 dlaždice uprostřed kruhu (rohy bloku 350×260 leží
+// 218 px od středu, kruh má poloměr 240).
+constexpr int ROUND_CONTROLS_TILE_W = 165;
+constexpr int ROUND_CONTROLS_TILE_H = 120;
+constexpr int ROUND_CONTROLS_GAP = 20;
+constexpr int ROUND_CONTROLS_TOP = 240 - ROUND_CONTROLS_TILE_H - ROUND_CONTROLS_GAP / 2 + 10;
+
+int roundControlsTileX(uint8_t index) {
+  return 240 - ROUND_CONTROLS_TILE_W - ROUND_CONTROLS_GAP / 2 +
+         (index % 2) * (ROUND_CONTROLS_TILE_W + ROUND_CONTROLS_GAP);
+}
+
+int roundControlsTileY(uint8_t index) {
+  return ROUND_CONTROLS_TOP + (index / 2) * (ROUND_CONTROLS_TILE_H + ROUND_CONTROLS_GAP);
+}
+
+int controlsTileAt(int16_t x, int16_t y) {
+  if (controlsSnapshot == nullptr) return -1;
+  const uint8_t shown = controlsSnapshot->count < ROUND_CONTROLS_TILES
+                            ? controlsSnapshot->count
+                            : ROUND_CONTROLS_TILES;
+  for (uint8_t index = 0; index < shown; ++index) {
+    const int left = roundControlsTileX(index);
+    const int top = roundControlsTileY(index);
+    if (x >= left && x < left + ROUND_CONTROLS_TILE_W && y >= top &&
+        y < top + ROUND_CONTROLS_TILE_H)
+      return index;
+  }
+  return -1;
+}
+
+void applyControlsRound() {
+  if (controlsPage == nullptr || controlsSnapshot == nullptr) return;
+  const bool english = englishLanguage();
+  const bool night = redNightVisualEnabled();
+  lv_label_set_text(controlsTitleLabel, english ? "CONTROLS" : "OVLÁDÁNÍ");
+  setTextColor(controlsTitleLabel, night ? COLOR_ERROR : COLOR_MUTED);
+  const HomeControlSnapshot &snapshot = *controlsSnapshot;
+  const uint8_t shown =
+      snapshot.count < ROUND_CONTROLS_TILES ? snapshot.count : ROUND_CONTROLS_TILES;
+  char text[64];
+  for (uint8_t index = 0; index < ROUND_CONTROLS_TILES; ++index) {
+    lv_obj_t *tile = controlsTiles[index];
+    if (index >= shown) {
+      lv_obj_add_flag(tile, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    const HomeControlTile &data = snapshot.tiles[index];
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(tile, controlsTileColor(data), 0);
+    // Čekající přepnutí: obrys, dokud ho HA nepotvrdí.
+    lv_obj_set_style_border_width(tile, data.pending ? 3 : 0, 0);
+    lv_obj_set_style_border_color(tile, night ? COLOR_ERROR : COLOR_TEXT, 0);
+    lv_label_set_text(controlsTileNames[index], data.item.name);
+    controlsStateText(data, english, "  ", text, sizeof(text));
+    lv_label_set_text(controlsTileStates[index], text);
+    setTextColor(controlsTileNames[index], controlsTextColor(data));
+    setTextColor(controlsTileStates[index], controlsTextColor(data));
+  }
+  controlsStatusText(snapshot, shown, english, text, sizeof(text));
+  lv_label_set_text(controlsStatusLabel, text);
+  setTextColor(controlsStatusLabel,
+               night ? COLOR_ERROR
+                     : (snapshot.message[0] != '\0' ? COLOR_ERROR : COLOR_MUTED));
+}
+
+void createControlsPage(lv_obj_t *screen) {
+  controlsPage = lv_obj_create(screen);
+  lv_obj_set_size(controlsPage, 480, 480);
+  lv_obj_center(controlsPage);
+  lv_obj_set_style_bg_color(controlsPage, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(controlsPage, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(controlsPage, 0, 0);
+  lv_obj_set_style_pad_all(controlsPage, 0, 0);
+  lv_obj_set_style_radius(controlsPage, 0, 0);
+  lv_obj_clear_flag(controlsPage, LV_OBJ_FLAG_SCROLLABLE);
+
+  controlsTitleLabel = makeLabel(controlsPage, &clock_czech_20, COLOR_MUTED);
+  lv_obj_set_width(controlsTitleLabel, 300);
+  lv_obj_set_style_text_align(controlsTitleLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(controlsTitleLabel, 90, 62);
+  for (uint8_t index = 0; index < ROUND_CONTROLS_TILES; ++index) {
+    lv_obj_t *tile = lv_obj_create(controlsPage);
+    lv_obj_set_size(tile, ROUND_CONTROLS_TILE_W, ROUND_CONTROLS_TILE_H);
+    lv_obj_set_pos(tile, roundControlsTileX(index), roundControlsTileY(index));
+    lv_obj_set_style_radius(tile, 18, 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_set_style_pad_all(tile, 10, 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *name = makeLabel(tile, &clock_czech_18, COLOR_TEXT);
+    lv_obj_set_width(name, ROUND_CONTROLS_TILE_W - 20);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(name, 44);
+    lv_obj_set_pos(name, 0, 0);
+    lv_obj_t *state = makeLabel(tile, &clock_czech_20, COLOR_TEXT);
+    lv_obj_set_width(state, ROUND_CONTROLS_TILE_W - 20);
+    lv_label_set_long_mode(state, LV_LABEL_LONG_DOT);
+    lv_obj_align(state, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_HIDDEN);
+    controlsTiles[index] = tile;
+    controlsTileNames[index] = name;
+    controlsTileStates[index] = state;
+  }
+  controlsStatusLabel = makeLabel(controlsPage, &clock_czech_16, COLOR_MUTED);
+  lv_obj_set_width(controlsStatusLabel, 320);
+  lv_obj_set_style_text_align(controlsStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(controlsStatusLabel, LV_LABEL_LONG_DOT);
+  lv_obj_set_pos(controlsStatusLabel, 80,
+                 roundControlsTileY(2) + ROUND_CONTROLS_TILE_H + 14);
+
+  makeChildrenTapThrough(controlsPage);
+  lv_obj_add_flag(controlsPage, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(controlsPage, LV_OBJ_FLAG_HIDDEN);
+}
+
+bool clockDashboardControlsVisible() {
+  return activeScreen == DASHBOARD_SCREEN_CONTROLS;
+}
+
+void clockDashboardSetControlsVisible(bool visible) {
+  setActiveScreen(visible ? DASHBOARD_SCREEN_CONTROLS : DASHBOARD_SCREEN_CLOCK);
+}
+
+void clockDashboardSetControlsVisibilityCallback(
+    RssVisibilityCallback visibility) {
+  controlsVisibilityCallback = visibility;
+}
+
+void clockDashboardSetControlsAvailable(bool available) {
+  // Stránka i snímek vznikají až s prvním zapnutím obrazovky.
+  if (available && controlsSnapshot == nullptr) {
+    void *memory = heap_caps_calloc(1, sizeof(HomeControlSnapshot),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory != nullptr) {
+      controlsSnapshot = new (memory) HomeControlSnapshot();
+      controlsSnapshot->generation = UINT32_MAX;
+    }
+  }
+  if (available && controlsPage == nullptr && dashboardScreen != nullptr &&
+      controlsSnapshot != nullptr) {
+#if HODINY_BOARD_LCD7
+    // 7" kreslí vlastní stránku přes celý displej; kulatá by jen zabírala
+    // LVGL objekty. Prázdná stránka zůstává kvůli overlayPage().
+    controlsPage = lv_obj_create(dashboardScreen);
+    lv_obj_set_size(controlsPage, 1, 1);
+    lv_obj_set_style_bg_opa(controlsPage, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(controlsPage, 0, 0);
+    lv_obj_add_flag(controlsPage, LV_OBJ_FLAG_HIDDEN);
+#else
+    createControlsPage(dashboardScreen);
+#endif
+  }
+  if (controlsFeatureAvailable == available) return;
+  controlsFeatureAvailable = available;
+  if (!available && activeScreen == DASHBOARD_SCREEN_CONTROLS) {
+    activeScreen = DASHBOARD_SCREEN_CLOCK;
+    if (controlsPage != nullptr) lv_obj_add_flag(controlsPage, LV_OBJ_FLAG_HIDDEN);
+    if (!settingsVisible && !firmwareUpdateActive) {
+      lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(primaryClockPage());
+    }
+    if (controlsVisibilityCallback != nullptr) controlsVisibilityCallback(false);
+  }
+  updateScreenDots();
+}
+
+void clockDashboardMaintainControls() {
+  if (controlsSnapshot == nullptr || activeScreen != DASHBOARD_SCREEN_CONTROLS)
+    return;
+  // Noční režim a jazyk mění barvy a texty i bez nových dat.
+  static bool drawnNight = false;
+  static bool drawnEnglish = false;
+  const bool night = redNightVisualEnabled();
+  const bool english = englishLanguage();
+  const bool fresh =
+      homeControlServiceSnapshot(*controlsSnapshot, controlsSnapshot->generation);
+  if (!fresh && night == drawnNight && english == drawnEnglish) return;
+  drawnNight = night;
+  drawnEnglish = english;
+  ++controlsRevision;
+#if !HODINY_BOARD_LCD7
+  applyControlsRound();
+#endif
 }
 
 #if HODINY_BOARD_LCD7

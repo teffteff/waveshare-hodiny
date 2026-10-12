@@ -1840,6 +1840,14 @@ void handleGetConfig() {
   result += config.traffic.displaySeconds;
   result += F(",\"trafficAutomaticRotation\":");
   result += config.traffic.automaticRotation ? F("true") : F("false");
+  result += F(",\"controlsEnabled\":");
+  result += config.controls.enabled ? F("true") : F("false");
+  result += F(",\"controlsLabel\":\"");
+  result += jsonEscape(config.controls.label);
+  result += F("\",\"controlsDisplaySeconds\":");
+  result += config.controls.displaySeconds;
+  result += F(",\"controlsAutomaticRotation\":");
+  result += config.controls.automaticRotation ? F("true") : F("false");
   result += F(",\"agendaHiddenCalendars\":");
   result += config.agendaCalendars.hiddenMask;
   // Heslo samo se nevrací nikdy, stejně jako token Home Assistantu.
@@ -2775,6 +2783,41 @@ void handleSaveConfig() {
     config.traffic.displaySeconds = static_cast<uint16_t>(trafficDisplaySeconds);
     config.traffic.automaticRotation =
         server.arg("trafficAutomaticRotation") == "1";
+  }
+
+  if (server.hasArg("controlsEnabled")) {
+    String controlsLabel = server.arg("controlsLabel");
+    controlsLabel.trim();
+    if (controlsLabel.length() >= CLOCK_CONTROLS_LABEL_LENGTH) {
+      sendError(400, F("Štítek ovládání je příliš dlouhý."));
+      return;
+    }
+    // Štítek jde do šablony HA mezi uvozovky: jen id štítku (a-z, 0-9, _).
+    for (const char c : controlsLabel) {
+      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
+        sendError(400, F("Štítek ovládání smí obsahovat jen a-z, 0-9 a _."));
+        return;
+      }
+    }
+    const bool controlsEnabled = server.arg("controlsEnabled") == "1";
+    if (controlsEnabled && controlsLabel.isEmpty()) {
+      sendError(400, F("Pro zapnutou obrazovku Ovládání doplň štítek."));
+      return;
+    }
+    const int controlsDisplaySeconds =
+        server.arg("controlsDisplaySeconds").toInt();
+    if (controlsDisplaySeconds < 10 || controlsDisplaySeconds > 3600) {
+      sendError(400,
+                F("Doba zobrazení ovládání musí být od 10 do 3600 sekund."));
+      return;
+    }
+    config.controls.enabled = controlsEnabled;
+    clockConfigCopy(config.controls.label, sizeof(config.controls.label),
+                    controlsLabel);
+    config.controls.displaySeconds =
+        static_cast<uint16_t>(controlsDisplaySeconds);
+    config.controls.automaticRotation =
+        server.arg("controlsAutomaticRotation") == "1";
   }
 
   if (server.hasArg("skyEnabled")) {

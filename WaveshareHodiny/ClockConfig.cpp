@@ -439,6 +439,7 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.radarStatusTemperatureEntityId);
   terminateText(config.historyUrl);
   terminateText(config.traffic.url);
+  terminateText(config.controls.label);
   terminateText(config.planes.watchCallsign);
   terminateText(config.agenda.url);
   terminateText(config.planesFeedUrl);
@@ -567,6 +568,8 @@ void normalizeConfig(ClockConfig &config) {
       constrain(config.satellites.displaySeconds, 10, 3600);
   config.traffic.displaySeconds =
       constrain(config.traffic.displaySeconds, 10, 3600);
+  config.controls.displaySeconds =
+      constrain(config.controls.displaySeconds, 10, 3600);
   clockConfigNormalizeScreenSchedule(config.screenSchedule);
   // Bez adresy serveru se upozornění na déšť nedá zapnout: předpověď nemá
   // odkud vzít. Stejně jako u blesků.
@@ -771,6 +774,12 @@ bool clockConfigSatellitesAvailable(const ClockConfig &config) {
 
 bool clockConfigTrafficAvailable(const ClockConfig &config) {
   return config.traffic.enabled && config.traffic.url[0] != '\0';
+}
+
+bool clockConfigControlsAvailable(const ClockConfig &config) {
+  return config.controls.enabled && config.controls.label[0] != '\0' &&
+         config.homeAssistantUrl[0] != '\0' &&
+         config.homeAssistantToken[0] != '\0';
 }
 
 bool clockConfigNightSkyAvailable(const ClockConfig &config) {
@@ -1078,6 +1087,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV55 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_55_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV54 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1162,6 +1178,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV55) ||
          storedSize == sizeof(ConfigRecordV54) ||
          storedSize == sizeof(ConfigRecordV53) ||
          storedSize == sizeof(ConfigRecordV52) ||
@@ -1208,6 +1225,25 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 55 je přesnou předponou schématu 56; Ovládání si po zkopírování
+  // bajtů podrží výchozí hodnoty (vypnuté, štítek "hodiny") a normalizace ho
+  // pošle na konec pořadí obrazovek.
+  const ConfigRecordV55 &legacyV55 =
+      *reinterpret_cast<const ConfigRecordV55 *>(&record);
+  uint32_t embeddedSchemaV55 = 0;
+  if (readComplete && storedSize == sizeof(legacyV55))
+    memcpy(&embeddedSchemaV55, legacyV55.config, sizeof(embeddedSchemaV55));
+  if (readComplete && storedSize == sizeof(legacyV55) &&
+      legacyV55.magic == CONFIG_MAGIC && legacyV55.schemaVersion == 55 &&
+      embeddedSchemaV55 == 55 &&
+      legacyV55.checksum ==
+          bytesChecksum(legacyV55.config, sizeof(legacyV55.config))) {
+    memcpy(&config, legacyV55.config, sizeof(legacyV55.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 54 je přesnou předponou schématu 55; entity baterií zůstanou po

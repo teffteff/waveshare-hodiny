@@ -266,6 +266,16 @@ void clockDashboardSetTrafficSnapshot(const TrafficSnapshot &snapshot);
 bool clockDashboardSwipeTraffic(int8_t direction);
 bool clockDashboardTrafficMapPage();
 
+// --- Ovládání ----------------------------------------------------------------
+bool clockDashboardControlsVisible();
+void clockDashboardSetControlsVisible(bool visible);
+// Vypnutá obrazovka, prázdný štítek nebo chybějící připojení k HA se do rotace
+// ani pod gesto nepustí; stránka vzniká až při prvním zapnutí.
+void clockDashboardSetControlsAvailable(bool available);
+void clockDashboardSetControlsVisibilityCallback(RssVisibilityCallback visibility);
+// Volá smyčka: převezme nový stav z HomeControlService a překreslí dlaždice.
+void clockDashboardMaintainControls();
+
 bool clockDashboardAutomaticRotationAllowed();
 // Switch the bank inside the values clock without changing the screen/dot.
 bool clockDashboardSwipeValues();

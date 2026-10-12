@@ -207,11 +207,15 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // entity reports under CLOCK_LOW_BATTERY_PERCENT, the VALUES face draws an
 // empty battery next to the slot name. The schema 54 record stays an exact
 // prefix; the entities start empty, so nothing is fetched or drawn.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 55;
+// Schema 56 appends the controls screen (Ovládání: buttons for Home Assistant
+// switches and lights carrying one HA label) and its eleventh entry in the
+// screen order. The schema 55 record stays an exact prefix; the screen starts
+// disabled and goes to the end of the order.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 56;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
-constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 10;
+constexpr size_t CLOCK_SCREEN_ORDER_COUNT = 11;
 
 // Kolik bajtů pořadí zabírá v konfiguraci. Schválně víc, než kolik je dnes
 // obrazovek: pole leží na konci schématu 37, takže dokud se do rezervy vejde
@@ -241,6 +245,7 @@ enum ClockOrderedScreen : uint8_t {
   CLOCK_SCREEN_SCHOOL = 7,
   CLOCK_SCREEN_SATELLITES = 8,
   CLOCK_SCREEN_TRAFFIC = 9,
+  CLOCK_SCREEN_CONTROLS = 10,
 };
 
 enum ClockLanguage : uint8_t {
@@ -833,6 +838,24 @@ struct alignas(4) ClockTrafficConfig {
 static_assert(sizeof(ClockTrafficConfig) == 200,
               "The traffic block is part of the stored record.");
 
+// Obrazovka Ovládání: tlačítka pro vypínače a světla z Home Assistanta.
+// Které entity to jsou, neurčují hodiny, ale štítek v HA (label, výchozí
+// "hodiny"): hodiny si seznam stahují z /api/template, takže nové zařízení
+// stačí označit v HA. Adresa a token jsou ty z připojení k HA.
+constexpr size_t CLOCK_CONTROLS_LABEL_LENGTH = 32;
+
+struct alignas(4) ClockControlsConfig {
+  bool enabled = false;
+  bool automaticRotation = false;
+  uint16_t displaySeconds = 20;
+  char label[CLOCK_CONTROLS_LABEL_LENGTH] = "hodiny";
+  // Rezerva pro další volby bez nového schématu; zatím nuly.
+  uint8_t reserved[28] = {};
+};
+
+static_assert(sizeof(ClockControlsConfig) == 64,
+              "The controls block is part of the stored record.");
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -997,6 +1020,8 @@ struct ClockConfig {
   // baterii nehlídá. Leží mimo ClockValueSlotConfig, protože ten má pevných
   // 292 bajtů (schéma 29) a starší záznamy by se jinak nedaly jen zkopírovat.
   char slotBatteryEntityIds[CLOCK_VALUE_SLOT_COUNT][CLOCK_ENTITY_ID_LENGTH] = {};
+  // Pole schématu 56. Obrazovka Ovládání; vypnutá.
+  ClockControlsConfig controls;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1192,8 +1217,16 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_54_SIZE =
 static_assert(CLOCK_CONFIG_SCHEMA_54_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_54_SIZE +
                           CLOCK_VALUE_SLOT_COUNT * CLOCK_ENTITY_ID_LENGTH ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, controls),
               "Schema 55 must preserve the complete schema 54 prefix.");
+
+// Schéma 55 končilo entitami baterií, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_55_SIZE = offsetof(ClockConfig, controls);
+
+static_assert(CLOCK_CONFIG_SCHEMA_55_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_55_SIZE + sizeof(ClockControlsConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 56 must preserve the complete schema 55 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
@@ -1298,6 +1331,8 @@ bool clockConfigSatellitesAvailable(const ClockConfig &config);
 bool clockConfigNightSkyAvailable(const ClockConfig &config);
 // Doprava potřebuje zapnutou obrazovku i adresu serveru.
 bool clockConfigTrafficAvailable(const ClockConfig &config);
+// Ovládání potřebuje zapnutou obrazovku, štítek a připojení k Home Assistantu.
+bool clockConfigControlsAvailable(const ClockConfig &config);
 // Výstrahy potřebují zapnutí, adresu serveru a meteoradar, na kterém se ukážou.
 bool clockConfigWarningsAvailable(const ClockConfig &config);
 // Adresa nese jméno a heslo ("https://user:heslo@server/..."). Po http:// by

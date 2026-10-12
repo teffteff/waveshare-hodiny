@@ -971,19 +971,20 @@ void testScreenOrderRoundTripAndNormalization() {
   assert(clockConfigLoad(repaired));
   assert(repaired.screenOrder[0] == CLOCK_SCREEN_RSS);
   assert(repaired.screenOrder[1] == CLOCK_SCREEN_PLANES);
-  // Agenda, Slunce s Měsícem, škola, a ve druhém bloku družice a doprava
-  // přežily z výchozího pořadí, takže se doplňuje až za ně; teprve pak přijdou
-  // obrazovky, které v poli vůbec nebyly - i přes hranici obou bloků.
+  // Agenda, Slunce s Měsícem, škola, a ve druhém bloku družice, doprava
+  // a ovládání přežily z výchozího pořadí, takže se doplňuje až za ně; teprve
+  // pak přijdou obrazovky, které v poli vůbec nebyly - i přes hranici bloků.
   assert(repaired.screenOrder[2] == CLOCK_SCREEN_AGENDA);
   assert(repaired.screenOrder[3] == CLOCK_SCREEN_SKY);
   assert(repaired.screenOrder[4] == CLOCK_SCREEN_SCHOOL);
   assert(repaired.screenOrder[5] == CLOCK_SCREEN_SATELLITES);
   assert(repaired.screenOrder[6] == CLOCK_SCREEN_TRAFFIC);
-  assert(repaired.screenOrder[7] == CLOCK_SCREEN_CLOCK);
-  assert(repaired.screenOrderTail[0] == CLOCK_SCREEN_RADAR);
-  assert(repaired.screenOrderTail[1] == CLOCK_SCREEN_FORECAST);
-  assert(clockConfigScreenAt(repaired, 9) == CLOCK_SCREEN_FORECAST);
-  assert(clockConfigScreenPosition(repaired, CLOCK_SCREEN_FORECAST) == 9);
+  assert(repaired.screenOrder[7] == CLOCK_SCREEN_CONTROLS);
+  assert(repaired.screenOrderTail[0] == CLOCK_SCREEN_CLOCK);
+  assert(repaired.screenOrderTail[1] == CLOCK_SCREEN_RADAR);
+  assert(repaired.screenOrderTail[2] == CLOCK_SCREEN_FORECAST);
+  assert(clockConfigScreenAt(repaired, 10) == CLOCK_SCREEN_FORECAST);
+  assert(clockConfigScreenPosition(repaired, CLOCK_SCREEN_FORECAST) == 10);
   for (size_t index = CLOCK_SCREEN_ORDER_COUNT;
        index < CLOCK_SCREEN_ORDER_CAPACITY; ++index) {
     assert(clockConfigScreenOrderSlot(repaired, index) ==
@@ -991,13 +992,14 @@ void testScreenOrderRoundTripAndNormalization() {
   }
 
   // Výchozí konfigurace má družice hned za školou, na začátku druhého bloku,
-  // a za nimi dopravu.
+  // a za nimi dopravu a ovládání.
   ClockConfig defaults;
   clockConfigApplyDefaults(defaults);
   assert(defaults.screenOrder[7] == CLOCK_SCREEN_SCHOOL);
   assert(defaults.screenOrderTail[0] == CLOCK_SCREEN_SATELLITES);
   assert(defaults.screenOrderTail[1] == CLOCK_SCREEN_TRAFFIC);
-  assert(defaults.screenOrderTail[2] == CLOCK_SCREEN_ORDER_UNUSED);
+  assert(defaults.screenOrderTail[2] == CLOCK_SCREEN_CONTROLS);
+  assert(defaults.screenOrderTail[3] == CLOCK_SCREEN_ORDER_UNUSED);
 }
 
 void testSecondValuePagePersistenceAndMigration() {
@@ -1765,6 +1767,65 @@ void testSlotBatteryPersistenceAndMigration() {
          CLOCK_ENTITY_ID_LENGTH);
 }
 
+void testControlsPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.controls.enabled);
+  assert(!defaults.controls.automaticRotation);
+  assert(defaults.controls.displaySeconds == 20);
+  assert(strcmp(defaults.controls.label, "hodiny") == 0);
+  assert(!clockConfigControlsAvailable(defaults));
+
+  // Schéma 55 je předponou 56: entity baterií zůstanou, Ovládání je vypnuté
+  // se štítkem "hodiny" (ne smetí za koncem záznamu) a v pořadí obrazovek
+  // přibude na konci za pořadím, které si majitel poskládal sám.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  strcpy(clockConfigValueSlotBatteryEntityId(source, 2), "sensor.obyvak_baterie");
+  uint8_t order[CLOCK_SCREEN_ORDER_CAPACITY];
+  memset(order, CLOCK_SCREEN_ORDER_UNUSED, sizeof(order));
+  const uint8_t legacyOrder[] = {
+      CLOCK_SCREEN_TRAFFIC, CLOCK_SCREEN_CLOCK,    CLOCK_SCREEN_RADAR,
+      CLOCK_SCREEN_RSS,     CLOCK_SCREEN_FORECAST, CLOCK_SCREEN_PLANES,
+      CLOCK_SCREEN_AGENDA,  CLOCK_SCREEN_SKY,      CLOCK_SCREEN_SCHOOL,
+      CLOCK_SCREEN_SATELLITES};
+  memcpy(order, legacyOrder, sizeof(legacyOrder));
+  clockConfigWriteScreenOrder(source, order);
+  source.controls.enabled = true;
+  memset(source.controls.label, 'x', sizeof(source.controls.label));
+  seed(legacyRecord(source, 55, CLOCK_CONFIG_SCHEMA_55_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(strcmp(clockConfigValueSlotBatteryEntityId(migrated, 2),
+                "sensor.obyvak_baterie") == 0);
+  assert(!migrated.controls.enabled);
+  assert(strcmp(migrated.controls.label, "hodiny") == 0);
+  for (uint8_t position = 0; position < 10; ++position)
+    assert(clockConfigScreenAt(migrated, position) == legacyOrder[position]);
+  assert(clockConfigScreenAt(migrated, 10) == CLOCK_SCREEN_CONTROLS);
+
+  // Bez připojení k HA se obrazovka nepustí, i když je zapnutá.
+  migrated.controls.enabled = true;
+  migrated.controls.automaticRotation = true;
+  migrated.controls.displaySeconds = 5;
+  strcpy(migrated.controls.label, "hodiny_pracovna");
+  assert(!clockConfigControlsAvailable(migrated));
+  strcpy(migrated.homeAssistantUrl, "https://ha.example.net");
+  strcpy(migrated.homeAssistantToken, "token");
+  assert(clockConfigControlsAvailable(migrated));
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.controls.enabled && loaded.controls.automaticRotation);
+  // Normalizace drží dobu zobrazení v mezích.
+  assert(loaded.controls.displaySeconds == 10);
+  assert(strcmp(loaded.controls.label, "hodiny_pracovna") == 0);
+  loaded.controls.label[0] = '\0';
+  assert(!clockConfigControlsAvailable(loaded));
+}
+
 void testTrafficPersistenceAndMigration() {
   hostPreferencesReset();
   ClockConfig defaults;
@@ -1804,7 +1865,9 @@ void testTrafficPersistenceAndMigration() {
   for (uint8_t position = 0; position < 9; ++position)
     assert(clockConfigScreenAt(migrated, position) == legacyOrder[position]);
   assert(clockConfigScreenAt(migrated, 9) == CLOCK_SCREEN_TRAFFIC);
-  assert(clockConfigScreenOrderSlot(migrated, 10) == CLOCK_SCREEN_ORDER_UNUSED);
+  // Za dopravou přibude Ovládání (schéma 56), pak rezerva.
+  assert(clockConfigScreenAt(migrated, 10) == CLOCK_SCREEN_CONTROLS);
+  assert(clockConfigScreenOrderSlot(migrated, 11) == CLOCK_SCREEN_ORDER_UNUSED);
 
   migrated.traffic.enabled = true;
   migrated.traffic.automaticRotation = true;
@@ -1970,6 +2033,7 @@ int main() {
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();
   testTrafficPersistenceAndMigration();
+  testControlsPersistenceAndMigration();
   testSlotBatteryPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();
