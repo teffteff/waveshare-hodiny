@@ -11079,6 +11079,16 @@ void clockDashboardLcd7SetSky(const SkySnapshot &sky) {
   ++skyLcd7Revision;
 }
 
+bool clockDashboardLcd7PageDotTap(int16_t x, int16_t y, uint8_t &screen) {
+  screen = UINT8_MAX;
+  if (settingsVisible || firmwareUpdateActive) return false;
+  const int target = lcd7::pageDotScreenAt(static_cast<int16_t>(x + STAGE_X), y);
+  if (target < 0) return false;
+  // Klepnutí, které zavřelo nastavení, se spolkne celé, i nad tečkami.
+  if (!consumeSuppressedTap()) screen = static_cast<uint8_t>(target);
+  return true;
+}
+
 bool clockDashboardLcd7Swipe(int8_t direction) {
   if (settingsVisible || firmwareUpdateActive) return false;
   return lcd7::handleSwipe(direction);

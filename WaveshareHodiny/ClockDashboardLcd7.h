@@ -375,6 +375,28 @@ lv_coord_t pageDotsLeft(lv_coord_t parentWidth) {
   return parentWidth - 20 - (count > 1 ? (count - 1) * HOME_DOT_GAP : 0);
 }
 
+// Obrazovka pod klepnutím na tečky vpravo nahoře, jinak -1. Tečky leží na
+// všech obrazovkách na stejném místě (u hodin jsou jen o kus výš), takže
+// stačí jeden výpočet. Tečka je malá, a tak k ní patří celý rozestup kolem ní
+// a výška lišty; vpravo od poslední až k okraji displeje.
+int pageDotScreenAt(int16_t x, int16_t y) {
+  if (!created || y < 0 || y >= BAR_HEIGHT) return -1;
+  const int offset = x - pageDotsLeft(SCREEN_WIDTH) + HOME_DOT_GAP / 2;
+  if (offset < 0) return -1;
+  const int wanted = offset / HOME_DOT_GAP;
+  int count = 0;
+  int last = -1;
+  for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position) {
+    const uint8_t screen = clockConfigScreenAt(dashboardRuntimeConfig, position);
+    if (!screenAvailable(screen)) continue;
+    if (count == wanted) return screen;
+    last = screen;
+    ++count;
+  }
+  // Jediná tečka se neukazuje, takže na ni nejde ani klepnout.
+  return count > 1 ? last : -1;
+}
+
 // Výstraha ČHMÚ (název ve barvě stupně, za ním čas) a blížící se déšť. Stav
 // drží kulatý ciferník kvůli řádku na radaru.
 bool warningActive() { return radarWarningEvent[0] != '\0'; }
@@ -2102,22 +2124,24 @@ void syncAgenda(const Palette &p) {
 
 // --- Zprávy ---------------------------------------------------------------
 // Vlevo seznam titulků (čas a dva řádky titulku), vpravo vybraná zpráva celá:
-// čas, titulek a shrnutí. Výběr se sám posouvá po RSS_ADVANCE_MS, aby hodiny
-// bez obsluhy ukázaly všechny zprávy; klepnutí na titulek ho vybere a podrží.
+// čas, titulek a shrnutí. Výběr se sám neposouvá; mění ho jen klepnutí na
+// titulek.
 // Kulatý detail přes celou stránku tu není potřeba - texty bere z jeho
 // zásoby rssDetailTexts.
 
 constexpr int RSS_LIST_W = 340;
 // Seznam ukazuje šest zpráv; další jsou pod nimi (svislé tažení po seznamu).
 constexpr uint8_t RSS_VISIBLE_ROWS = 6;
+// Seznam listuje po celých stránkách: svislý tah vymění všech šest zpráv
+// (poslední stránka může být kratší). Tečky u levého okraje ukazují stránku.
+constexpr uint8_t RSS_PAGES = (RSS_MAX_ITEMS + RSS_VISIBLE_ROWS - 1) / RSS_VISIBLE_ROWS;
+constexpr int RSS_SCROLL_DOT_X = 8;
 constexpr int RSS_LIST_TOP = BAR_HEIGHT + 1;
 constexpr int RSS_ROW_PAD_X = 20;
 constexpr int RSS_DETAIL_X = RSS_LIST_W + 28;
 constexpr int RSS_DETAIL_W = SCREEN_WIDTH - RSS_DETAIL_X - 28;
 constexpr int RSS_DETAIL_TOP = BAR_HEIGHT + 22;
 constexpr int RSS_FOOTER_LINE_Y = SCREEN_HEIGHT - 42;
-constexpr uint32_t RSS_ADVANCE_MS = 12000;
-constexpr uint32_t RSS_HOLD_MS = 60000;
 const lv_color_t RSS_SELECTED = LV_COLOR_MAKE(14, 26, 31);
 const lv_color_t RSS_SELECTED_NIGHT = LV_COLOR_MAKE(28, 6, 5);
 const lv_color_t RSS_ROW_LINE = LV_COLOR_MAKE(26, 26, 26);
@@ -2134,7 +2158,8 @@ struct RssView {
   lv_obj_t *divider;
   lv_obj_t *status;
   RssRow rows[RSS_VISIBLE_ROWS];
-  uint8_t scrollTop;  // první zpráva v okně seznamu
+  uint8_t scrollTop;  // první zpráva stránky seznamu, násobek RSS_VISIBLE_ROWS
+  lv_obj_t *pageDots[RSS_PAGES];
   lv_obj_t *time;
   lv_obj_t *title;
   lv_obj_t *summary;
@@ -2142,8 +2167,6 @@ struct RssView {
   lv_obj_t *updated;
   lv_obj_t *position;
   uint8_t selected;
-  uint32_t selectedAt;
-  uint32_t holdUntil;
   uint32_t drawnRevision;
   uint8_t drawnSelected;
   uint8_t drawnScrollTop;
@@ -2161,15 +2184,6 @@ lv_coord_t rssRowHeight(uint8_t count) {
          std::max<uint8_t>(std::min<uint8_t>(count, RSS_VISIBLE_ROWS), 5);
 }
 
-// Okno seznamu tak, aby v něm byla vybraná zpráva a nepřesáhlo konec.
-void rssKeepVisible(uint8_t count) {
-  RssView &v = rss;
-  if (v.selected < v.scrollTop) v.scrollTop = v.selected;
-  if (v.selected >= v.scrollTop + RSS_VISIBLE_ROWS)
-    v.scrollTop = static_cast<uint8_t>(v.selected - RSS_VISIBLE_ROWS + 1);
-  const uint8_t maxTop = count > RSS_VISIBLE_ROWS ? count - RSS_VISIBLE_ROWS : 0;
-  if (v.scrollTop > maxTop) v.scrollTop = maxTop;
-}
 
 void createRss(lv_obj_t *screen) {
   RssView &v = rss;
@@ -2185,6 +2199,12 @@ void createRss(lv_obj_t *screen) {
     row.title = label(row.box, &lcd7_text18, RSS_ROW_PAD_X, 30);
     lv_obj_set_width(row.title, RSS_LIST_W - RSS_ROW_PAD_X - 16);
     lv_label_set_long_mode(row.title, LV_LABEL_LONG_DOT);
+  }
+  // Tečky až po řádcích, aby ležely nad jejich pozadím.
+  for (lv_obj_t *&dot : v.pageDots) {
+    dot = panel(v.root, 0, 0, 7, 7);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
   }
   v.divider = line(v.root, RSS_LIST_W, RSS_LIST_TOP, 1, SCREEN_HEIGHT - RSS_LIST_TOP);
   v.status = label(v.root, &lcd7_text22, 0, SCREEN_HEIGHT / 2 - 14, SCREEN_WIDTH);
@@ -2258,17 +2278,43 @@ void syncRssDetail(const Palette &p, uint8_t count) {
   setBackground(v.footerLine, p.line);
 }
 
+uint8_t rssPageCount(uint8_t count) {
+  return (count + RSS_VISIBLE_ROWS - 1) / RSS_VISIBLE_ROWS;
+}
+
+// Svislé tečky u levého okraje seznamu, jedna na stránku, uprostřed výšky
+// seznamu. Když se všechno vejde na jednu stránku, nejsou vidět.
+void syncRssPageDots(const Palette &p, uint8_t pages) {
+  RssView &v = rss;
+  const uint8_t shown = pages > 1 ? pages : 0;
+  const uint8_t active = v.scrollTop / RSS_VISIBLE_ROWS;
+  const lv_coord_t first = RSS_LIST_TOP + (SCREEN_HEIGHT - RSS_LIST_TOP) / 2 -
+                           (shown > 0 ? (shown - 1) * HOME_DOT_GAP / 2 : 0);
+  for (uint8_t index = 0; index < RSS_PAGES; ++index) {
+    lv_obj_t *dot = v.pageDots[index];
+    if (index >= shown) {
+      setVisible(dot, false);
+      continue;
+    }
+    const bool current = index == active;
+    const lv_coord_t size = current ? 10 : 7;
+    if (lv_obj_get_width(dot) != size) lv_obj_set_size(dot, size, size);
+    setBackground(dot, current ? p.text : p.dotOff);
+    setPosition(dot, RSS_SCROLL_DOT_X - size / 2, first + index * HOME_DOT_GAP - size / 2);
+    setVisible(dot, true);
+  }
+}
+
 void syncRss(const Palette &p) {
   RssView &v = rss;
   syncTopBar(v.bar, p);
   const uint8_t count = rssCount();
-  const uint32_t now = millis();
   if (v.selected >= count) v.selected = 0;
-  if (count > 1 && now >= v.holdUntil && now - v.selectedAt >= RSS_ADVANCE_MS) {
-    v.selected = static_cast<uint8_t>((v.selected + 1) % count);
-    v.selectedAt = now;
-    rssKeepVisible(count);
-  }
+  // Po obnovení kanálu může být zpráv méně; stránka nesmí přesáhnout konec.
+  const uint8_t pages = rssPageCount(count);
+  if (v.scrollTop / RSS_VISIBLE_ROWS >= pages)
+    v.scrollTop = pages > 0 ? (pages - 1) * RSS_VISIBLE_ROWS : 0;
+  syncRssPageDots(p, pages);
   // "aktualizováno" se skládá z času a o půlnoci se přepíše na VČERA.
   char updated[64];
   const bool haveUpdated =
@@ -2333,8 +2379,6 @@ void rssTap(int16_t x, int16_t y) {
   const int index = rss.scrollTop + (y - RSS_LIST_TOP) / rssRowHeight(count);
   if (index >= count) return;
   rss.selected = static_cast<uint8_t>(index);
-  rss.selectedAt = millis();
-  rss.holdUntil = rss.selectedAt + RSS_HOLD_MS;
   sync(true);
 }
 
@@ -3552,6 +3596,9 @@ struct SkySideView {
   lv_obj_t *eventsTitle;
   lv_obj_t *events[SKY_MAX_EVENTS];
   lv_obj_t *pageDots[2];
+  // Tečky pod kruhem: družice a noční obloha (tah po kruhu).
+  lv_obj_t *circleDots;
+  lv_obj_t *circleDot[2];
   uint8_t page;
   uint32_t drawnRevision;
 } skySide;
@@ -3621,6 +3668,14 @@ void createSkySide(lv_obj_t *screen) {
   for (int index = 0; index < 2; ++index) {
     v.pageDots[index] = panel(c, SKY_SIDE_W / 2 - 12 + index * 18, SCREEN_HEIGHT - BAR_HEIGHT - 16, 7, 7);
     lv_obj_set_style_radius(v.pageDots[index], LV_RADIUS_CIRCLE, 0);
+  }
+  // Pod kruhem ve stejné výšce jako tečky sloupce; průhledný rámeček, aby
+  // nepřekryl okraj kruhu.
+  v.circleDots = panel(screen, STAGE_SIZE / 2 - 12, SCREEN_HEIGHT - 15, 25, 7);
+  lv_obj_set_style_bg_opa(v.circleDots, LV_OPA_TRANSP, 0);
+  for (int index = 0; index < 2; ++index) {
+    v.circleDot[index] = panel(v.circleDots, index * 18, 0, 7, 7);
+    lv_obj_set_style_radius(v.circleDot[index], LV_RADIUS_CIRCLE, 0);
   }
   v.page = 0;
   v.drawnRevision = UINT32_MAX;
@@ -3702,17 +3757,13 @@ bool handleSwipe(int8_t direction) {
     sync(true);
     return true;
   }
-  // Svislý tah po seznamu zpráv posune okno o půl seznamu; výběr se na
-  // minutu zastaví, aby seznam neodjel zpátky k automaticky vybrané zprávě.
+  // Svislý tah po seznamu zpráv přejde na další či předchozí stránku.
   if (shownMode == HomeMode::Rss && vertical && startX < RSS_LIST_W) {
-    const uint8_t count = rssCount();
-    if (count <= RSS_VISIBLE_ROWS) return true;
-    const int step = RSS_VISIBLE_ROWS / 2;
-    const int maxTop = count - RSS_VISIBLE_ROWS;
-    int top = rss.scrollTop + (direction < 0 ? step : -step);
-    top = std::max(0, std::min(maxTop, top));
-    rss.scrollTop = static_cast<uint8_t>(top);
-    rss.holdUntil = millis() + RSS_HOLD_MS;
+    const int pages = rssPageCount(rssCount());
+    if (pages <= 1) return true;
+    int page = rss.scrollTop / RSS_VISIBLE_ROWS + (direction < 0 ? 1 : -1);
+    page = std::max(0, std::min(pages - 1, page));
+    rss.scrollTop = static_cast<uint8_t>(page * RSS_VISIBLE_ROWS);
     sync(true);
     return true;
   }
@@ -3764,6 +3815,12 @@ void syncSkySide(const Palette &p) {
   for (lv_obj_t *object : pageOne) setVisible(object, !first);
   for (int index = 0; index < 2; ++index) {
     setBackground(v.pageDots[index], index == v.page ? p.text : p.dotOff);
+  }
+  // Kruh má druhou stránku (noční oblohu) jen tehdy, když jsou data oblohy.
+  setVisible(v.circleDots, nightSkyAvailable);
+  for (int index = 0; index < 2; ++index) {
+    const bool current = index == (satellitesSkyPage ? 1 : 0);
+    setBackground(v.circleDot[index], current ? p.text : p.dotOff);
   }
   if (!first) {
     for (lv_obj_t *object : v.passes) setVisible(object, false);
@@ -4112,7 +4169,7 @@ void create() {
   createTraffic(screen);
   createControls(screen);
   createSkySide(screen);
-  for (lv_obj_t *root : {skySide.barRoot, skySide.column})
+  for (lv_obj_t *root : {skySide.barRoot, skySide.column, skySide.circleDots})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
                          radar.root, agenda.root, rss.root, school.root, planes.root,
@@ -4129,6 +4186,7 @@ void applyMode(HomeMode mode) {
   setVisible(analog.root, mode == HomeMode::Analog);
   setVisible(skySide.barRoot, mode == HomeMode::RoundLeft);
   setVisible(skySide.column, mode == HomeMode::RoundLeft);
+  if (mode != HomeMode::RoundLeft) setVisible(skySide.circleDots, false);
   if (mode == HomeMode::RoundLeft) skySide.drawnRevision = UINT32_MAX;
   setVisible(values.root, mode == HomeMode::Values);
   setVisible(forecast.root, mode == HomeMode::Forecast);
@@ -4141,8 +4199,6 @@ void applyMode(HomeMode mode) {
     // Obrazovka se vždycky otevírá na nejnovější zprávě.
     rss.selected = 0;
     rss.scrollTop = 0;
-    rss.selectedAt = millis();
-    rss.holdUntil = 0;
     rss.drawnRevision = UINT32_MAX;
   }
   setVisible(rss.root, mode == HomeMode::Rss);
