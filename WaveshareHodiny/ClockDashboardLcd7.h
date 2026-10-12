@@ -2763,7 +2763,10 @@ class SchoolSide {
     lv_coord_t lines = std::max<lv_coord_t>(1, std::min<lv_coord_t>(
         maxLines, (size.y + lineHeight() - 1) / lineHeight()));
     while (lines > 1 && y_ + lines * lineHeight() > bottom_) --lines;
-    if (y_ + lineHeight() > bottom_) return false;
+    // Řádek se známkou je vysoký aspoň jako její rámeček, ať se rámečky
+    // pod sebou nedotýkají a mezery mezi řádky jsou všude stejné.
+    const lv_coord_t box = mark != nullptr ? SCHOOL7_MARK_BOX : 0;
+    if (y_ + std::max(lineHeight(), box) > bottom_) return false;
     setWidth(row.text, width);
     if (lv_obj_get_height(row.text) != lines * lineHeight())
       lv_obj_set_height(row.text, lines * lineHeight());
@@ -2776,9 +2779,10 @@ class SchoolSide {
     if (mark != nullptr) {
       setText(row.mark, mark);
       setBackground(row.markBox, p_.night ? COLOR_ERROR : markColor(mark));
-      setPosition(row.markBox, x_, y_ - 2);
+      // Rámeček svisle na střed prvního řádku textu.
+      setPosition(row.markBox, x_, y_ - (SCHOOL7_MARK_BOX - lineHeight()) / 2);
     }
-    y_ += lines * lineHeight() + 5;
+    y_ += std::max<lv_coord_t>(lines * lineHeight(), box) + (mark != nullptr ? 8 : 5);
     ++row_;
     return true;
   }
@@ -2829,8 +2833,8 @@ void addSchoolTests(SchoolSide &side, const SchoolFeed &feed, bool english, char
 }
 
 // Rozvrh: vpravo nahoře děti (omluvenky, spaní ve školce, odchod ze školy),
-// pod nimi obědy jednoho dne jako na kulatém (celé, až tři řádky na jídlo)
-// a testy.
+// pod nimi obědy jednoho dne jako na kulatém (celé, až tři řádky na jídlo).
+// Testy jsou jen na druhé stránce.
 void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute) {
   SchoolSide side(p, school.columns[0], SCHOOL7_SIDE_X, SCHOOL7_SIDE_W, SCHOOL7_TOP + 2,
                   SCREEN_HEIGHT - 36);
@@ -2873,7 +2877,6 @@ void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute)
       }
     }
   }
-  if (feed != nullptr) addSchoolTests(side, *feed, english, text, sizeof(text));
   side.finish();
   setVisible(school.divider, !side.empty());
   setBackground(school.divider, p.line);
@@ -2896,12 +2899,10 @@ void syncSchoolNews(const Palette &p, const SchoolFeed *feed) {
     if (feed->markCount == 0) marks.addRow(english ? "No new marks" : "Žádné nové");
     for (size_t index = 0; index < feed->markCount; ++index) {
       const SchoolMark &mark = feed->marks[index];
-      char tag[AGENDA_COLOR_TAG_LENGTH + 1];
-      agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_MUTED);
-      char subject[SCHOOL_TITLE_LENGTH + 40];
-      composeSideRow(subject, sizeof(subject), "", COLOR_TEXT,
+      // Den napřed jako u testů a zpráv: stojí vždycky na stejném místě
+      // a dlouhé téma ho neodsune za tečky.
+      composeSideRow(text, sizeof(text), mark.when, COLOR_MUTED,
                      mark.abbrev[0] != '\0' ? mark.abbrev : mark.subject, mark.theme);
-      snprintf(text, sizeof(text), "%s  %s%s#", subject, tag, mark.when);
       if (!marks.addRow(text, mark.mark)) break;
     }
   }
