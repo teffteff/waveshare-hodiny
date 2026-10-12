@@ -1605,6 +1605,23 @@ void maintainAutomaticScreenRotation() {
   // Žádná další obrazovka není připravená; zkusíme to v dalším průchodu.
 }
 
+bool showScreenFromWeb(uint8_t screen);
+
+// Klepnutí v souřadnicích jeviště, od prstu i z USB příkazu TAP.
+void handleShortTap(int16_t x, int16_t y) {
+#if HODINY_BOARD_LCD7
+  // Tečka vpravo nahoře přepne rovnou na svou obrazovku; počítá se jako
+  // ruční přepnutí, stejně jako z webu.
+  uint8_t dotScreen = UINT8_MAX;
+  if (clockDashboardLcd7PageDotTap(x, y, dotScreen)) {
+    if (dotScreen != UINT8_MAX && dotScreen != activeRotationScreen())
+      showScreenFromWeb(dotScreen);
+    return;
+  }
+#endif
+  clockDashboardHandleSingleTap(x, y);
+}
+
 void maintainDisplayGestures() {
   const ClockConfig &config = loopConfigSnapshot();
   const bool radarAvailable = clockConfigRadarAvailable(config);
@@ -1660,8 +1677,7 @@ void maintainDisplayGestures() {
   // Jedno klepnutí vybírá letadlo na radaru nebo zavírá jeho detail a na
   // zprávách otevírá detail zprávy; jinde nedělá nic. Denní režim přepíná až dvojklepnutí, protože jedno klepnutí se
   // pletlo s podržením prstu a místo obrazovky přepínalo den a noc.
-  if (displayDriverTakeShortTap(tapX, tapY))
-    clockDashboardHandleSingleTap(tapX, tapY);
+  if (displayDriverTakeShortTap(tapX, tapY)) handleShortTap(tapX, tapY);
   if (displayDriverTakeDoubleTap()) clockDashboardHandleDoubleTap();
   clockDashboardMaintainRssDetail();
 }
@@ -2822,8 +2838,7 @@ void handleUsbCommands() {
         char *rest = nullptr;
         const long x = strtol(usbCommand.c_str() + 4, &rest, 10);
         const long y = strtol(rest, nullptr, 10);
-        clockDashboardHandleSingleTap(static_cast<int16_t>(x),
-                                      static_cast<int16_t>(y));
+        handleShortTap(static_cast<int16_t>(x), static_cast<int16_t>(y));
         Serial.println(clockDashboardRssDetailOpen() ? "TAP_DONE_RSS_DETAIL"
                                                      : "TAP_DONE");
       } else if (usbCommand == "RSSBACK" && !screenshotTransferActive) {

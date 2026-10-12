@@ -325,6 +325,9 @@ void clockDashboardLcd7SetSky(const SkySnapshot &sky);
 // Tah po obrazovce 7", který si obrazovka vyřídí sama (sloupec družic,
 // seznam zpráv); false, když ho má dostat kulatá logika.
 bool clockDashboardLcd7Swipe(int8_t direction);
+// Klepnutí na tečky obrazovek vpravo nahoře. True, když padlo na ně; screen
+// je pak obrazovka pod tečkou, nebo UINT8_MAX, když se klepnutí zahazuje.
+bool clockDashboardLcd7PageDotTap(int16_t x, int16_t y, uint8_t &screen);
 #endif
 
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
