@@ -2755,6 +2755,12 @@ void handleUsbCommands() {
         config.forecast.enabled = true;
         Serial.println(saveRuntimeConfig(config, true) ? "FORECAST_ON"
                                                        : "FORECAST_ON_FAILED");
+      } else if ((usbCommand == "CONTROLSON" || usbCommand == "CONTROLSOFF") &&
+                 !screenshotTransferActive) {
+        ClockConfig &config = loopConfigSnapshot();
+        config.controls.enabled = usbCommand == "CONTROLSON";
+        Serial.println(saveRuntimeConfig(config, true) ? "CONTROLS_SAVED"
+                                                       : "CONTROLS_SAVE_FAILED");
       } else if (usbCommand.startsWith("RADARSERVER")) {
         // "RADARSERVER http://pocitac:18096/rain.json": snímky radaru do
         // restartu z jiného serveru (zkouška nové verze infra/rain bez
