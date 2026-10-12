@@ -3647,6 +3647,11 @@ constexpr int SCHOOL_UPDATED_Y = AGENDA_LEGEND_Y;
 constexpr int SCHOOL_UPDATED_WIDTH = AGENDA_LEGEND_MAX_WIDTH;
 lv_obj_t *schoolNoticeWhenLabels[SCHOOL_MAX_NOTICES] = {};
 lv_obj_t *schoolNoticeTextLabels[SCHOOL_MAX_NOTICES] = {};
+// Děti (omluvenky, spaní ve školce, příchod a odchod ze školy): vlastní
+// stránka hned za rozvrhem, ať se nemíchají s nástěnkou školky.
+lv_obj_t *schoolFamilyHeading = nullptr;
+lv_obj_t *schoolFamilyWhenLabels[SCHOOL_MAX_FAMILY] = {};
+lv_obj_t *schoolFamilyTextLabels[SCHOOL_MAX_FAMILY] = {};
 bool schoolFeatureAvailable = false;
 RssVisibilityCallback schoolVisibilityCallback = nullptr;
 uint8_t schoolPageIndex = 0;
@@ -3685,6 +3690,9 @@ uint8_t schoolMarkTotal = 0;
 bool schoolHasNotices = false;
 uint8_t schoolNoticeCount = 0;
 uint8_t schoolNoticeTotal = 0;
+bool schoolHasFamily = false;
+uint8_t schoolFamilyCount = 0;
+uint8_t schoolFamilyTotal = 0;
 bool schoolHasTests = false;
 uint8_t schoolTestCount = 0;
 uint8_t schoolTestTotal = 0;
@@ -3694,22 +3702,27 @@ SchoolLayoutResult schoolVisible;
 int schoolHighlightedLesson[SCHOOL_ROUND_DAYS] = {-1, -1};
 char schoolMessage[SCHOOL_MESSAGE_LENGTH] = "";
 
-// Seznamy dalších stránek. Stránka 1 jsou testy nad známkami, stránka 2
-// zprávy nad nástěnkou; schoolListsLayout je čte v tomhle pořadí shora dolů.
+// Seznamy dalších stránek. Stránka 1 jsou děti, stránka 2 testy nad
+// známkami, stránka 3 zprávy nad nástěnkou školky; schoolListsLayout je čte
+// v tomhle pořadí shora dolů.
 enum SchoolNewsKind : uint8_t {
   SCHOOL_NEWS_TESTS = 0,
   SCHOOL_NEWS_MARKS,
   SCHOOL_NEWS_MESSAGES,
   SCHOOL_NEWS_NOTICES,
+  SCHOOL_NEWS_FAMILY,
   SCHOOL_NEWS_KINDS,
 };
-constexpr uint8_t SCHOOL_PAGES = 3;
+constexpr uint8_t SCHOOL_PAGES = 4;
 constexpr size_t SCHOOL_PAGE_SECTIONS = 2;
 constexpr SchoolNewsKind SCHOOL_PAGE_KINDS[SCHOOL_PAGES][SCHOOL_PAGE_SECTIONS] = {
     {SCHOOL_NEWS_KINDS, SCHOOL_NEWS_KINDS},
+    {SCHOOL_NEWS_FAMILY, SCHOOL_NEWS_KINDS},
     {SCHOOL_NEWS_TESTS, SCHOOL_NEWS_MARKS},
     {SCHOOL_NEWS_MESSAGES, SCHOOL_NEWS_NOTICES},
 };
+// Kolik seznamů která stránka nese (stránka dětí jen jeden).
+constexpr size_t SCHOOL_PAGE_SECTION_COUNT[SCHOOL_PAGES] = {0, 1, 2, 2};
 // Kolik řádků a jestli hlavičku má každý seznam na právě ukázané stránce;
 // seznamy jiných stránek mají prázdný výsledek, a tedy jsou skryté.
 SchoolListResult schoolNewsVisible[SCHOOL_NEWS_KINDS];
@@ -3726,6 +3739,7 @@ const SchoolNewsLabels *schoolNewsLabels() {
       {schoolMarkWhenLabels, schoolMarkTextLabels, SCHOOL_MAX_MARKS},
       {schoolMessageWhenLabels, schoolMessageTextLabels, SCHOOL_MAX_MESSAGES},
       {schoolNoticeWhenLabels, schoolNoticeTextLabels, SCHOOL_MAX_NOTICES},
+      {schoolFamilyWhenLabels, schoolFamilyTextLabels, SCHOOL_MAX_FAMILY},
   };
   return sections;
 }
@@ -3828,6 +3842,8 @@ void applySchoolColors() {
   setTextColor(schoolTestsHeading,
                schoolTestTotal > 0 && !redNight ? COLOR_ROOM : muted);
   setTextColor(schoolNoticesHeading, muted);
+  setTextColor(schoolFamilyHeading,
+               schoolFamilyTotal > 0 && !redNight ? COLOR_ROOM : muted);
   setTextColor(schoolUpdatedLabel, muted);
   const lv_color_t when = redNight ? COLOR_ERROR : COLOR_ROOM;
   const SchoolNewsLabels *sections = schoolNewsLabels();
@@ -3908,7 +3924,9 @@ void updateSchoolHeaderLabel() {
 bool schoolPageAvailable(uint8_t page) {
   if (page == 0) return true;
   if (!schoolReady || page >= SCHOOL_PAGES) return false;
-  return page == 1 ? schoolHasTests || schoolHasMarks
+  // Děti jen tehdy, když je co říct; prázdná stránka by se jen přeskakovala.
+  if (page == 1) return schoolHasFamily && schoolFamilyCount > 0;
+  return page == 2 ? schoolHasTests || schoolHasMarks
                    : schoolHasMessages || schoolHasNotices;
 }
 
@@ -3944,20 +3962,23 @@ void layoutSchoolNewsPage(uint8_t page, bool english) {
       {schoolHasMarks, schoolMarkCount, schoolMarkTotal},
       {schoolHasMessages, schoolMessageCount, schoolMessageTotal},
       {schoolHasNotices, schoolNoticeCount, schoolNoticeTotal},
+      {schoolHasFamily, schoolFamilyCount, schoolFamilyTotal},
   };
   const SchoolNewsKind *kinds =
       SCHOOL_PAGE_KINDS[page < SCHOOL_PAGES ? page : 0];
+  const size_t sectionCount =
+      SCHOOL_PAGE_SECTION_COUNT[page < SCHOOL_PAGES ? page : 0];
   if (page > 0 && page < SCHOOL_PAGES) {
     SchoolListInput pageInputs[SCHOOL_PAGE_SECTIONS];
-    for (size_t slot = 0; slot < SCHOOL_PAGE_SECTIONS; ++slot)
+    for (size_t slot = 0; slot < sectionCount; ++slot)
       pageInputs[slot] = inputs[kinds[slot]];
     const SchoolListsResult result = schoolListsLayout(
         pageInputs,
         SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
                             SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
                             SCHOOL_BLOCK_HEIGHT},
-        SCHOOL_PAGE_SECTIONS);
-    for (size_t slot = 0; slot < SCHOOL_PAGE_SECTIONS; ++slot)
+        sectionCount);
+    for (size_t slot = 0; slot < sectionCount; ++slot)
       schoolNewsVisible[kinds[slot]] = result.sections[slot];
   }
   char messagesText[48];
@@ -3995,9 +4016,11 @@ void layoutSchoolNewsPage(uint8_t page, bool english) {
       {schoolMessagesHeading, messagesText, schoolMessageCount},
       {schoolNoticesHeading,
        schoolNoticeTotal == 0
-           ? (english ? "NOTHING NEW ON THE BOARD" : "NIC NOVÉHO NA NÁSTĚNCE")
-           : (english ? "NOTICEBOARD" : "NÁSTĚNKA"),
+           ? (english ? "NOTHING NEW ON THE KINDERGARTEN BOARD"
+                      : "NIC NOVÉHO NA NÁSTĚNCE MŠ")
+           : (english ? "KINDERGARTEN BOARD" : "NÁSTĚNKA MŠ"),
        schoolNoticeCount},
+      {schoolFamilyHeading, english ? "KIDS" : "DĚTI", schoolFamilyCount},
   };
   const SchoolNewsLabels *sections = schoolNewsLabels();
   // Seznamy jiných stránek se jen skryjí.
@@ -4009,7 +4032,7 @@ void layoutSchoolNewsPage(uint8_t page, bool english) {
   if (page == 0 || page >= SCHOOL_PAGES) return;
   int cursorY = SCHOOL_BLOCK_TOP;
   bool anyHeading = false;
-  for (size_t slot = 0; slot < SCHOOL_PAGE_SECTIONS; ++slot) {
+  for (size_t slot = 0; slot < sectionCount; ++slot) {
     const size_t section = kinds[slot];
     const SchoolListResult &visible = schoolNewsVisible[section];
     setObjectVisible(headings[section].label, visible.heading);
@@ -4348,6 +4371,14 @@ void createSchoolPage(lv_obj_t *screen) {
     schoolNoticeWhenLabels[index] = makeSchoolLabel(
         &clock_czech_16, SCHOOL_DUE_WIDTH, LV_TEXT_ALIGN_LEFT);
     schoolNoticeTextLabels[index] =
+        makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
+  }
+  schoolFamilyHeading =
+      makeSchoolLabel(&clock_czech_14, fullWidth, LV_TEXT_ALIGN_LEFT);
+  for (size_t index = 0; index < SCHOOL_MAX_FAMILY; ++index) {
+    schoolFamilyWhenLabels[index] = makeSchoolLabel(
+        &clock_czech_16, SCHOOL_DUE_WIDTH, LV_TEXT_ALIGN_LEFT);
+    schoolFamilyTextLabels[index] =
         makeSchoolLabel(&clock_czech_16, taskWidth, LV_TEXT_ALIGN_LEFT);
   }
   schoolUpdatedLabel = makeLabel(schoolPage, &clock_czech_14, COLOR_MUTED);
@@ -9677,6 +9708,8 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
     schoolMessageCount = schoolMessageTotal = 0;
     schoolMarkCount = schoolMarkTotal = 0;
     schoolNoticeCount = schoolNoticeTotal = 0;
+    schoolHasFamily = false;
+    schoolFamilyCount = schoolFamilyTotal = 0;
     schoolNewsUpdated[0] = '\0';
     schoolTimetableUpdated[0] = '\0';
     layoutSchoolPage();
@@ -9846,6 +9879,21 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
       strlcpy(text, notice.title, sizeof(text));
     }
     lv_label_set_text(schoolNoticeTextLabels[index], text);
+  }
+  schoolHasFamily = feed->hasFamily;
+  schoolFamilyCount = clampCount(feed->familyCount);
+  schoolFamilyTotal = clampCount(feed->familyTotal);
+  for (size_t index = 0; index < schoolFamilyCount; ++index) {
+    const SchoolNotice &line = feed->family[index];
+    lv_label_set_text(schoolFamilyWhenLabels[index], line.when);
+    // "Adam vychází 13:35–13:48: ve škole od 7:33" jako u nástěnky.
+    char text[2 * SCHOOL_TITLE_LENGTH + 4];
+    if (line.text[0] != '\0') {
+      snprintf(text, sizeof(text), "%s: %s", line.title, line.text);
+    } else {
+      strlcpy(text, line.title, sizeof(text));
+    }
+    lv_label_set_text(schoolFamilyTextLabels[index], text);
   }
   layoutSchoolPage();
   return true;

@@ -44,6 +44,11 @@ const char *const RESPONSE =
     "{\"when\":\"VČERA\",\"title\":\"Střevní problémy\",\"cal\":\"review\","
     "\"text\":\"děti v budově mají střevní problémy…\"},"
     "{\"when\":\"DNES\",\"title\":\"\",\"text\":\"Bez titulku\"}"
+    "],\"familyCount\":3,\"family\":["
+    "{\"when\":\"DNES\",\"title\":\"Adam vychází 13:35–13:48\","
+    "\"text\":\"ve škole od 7:33\"},"
+    "{\"when\":\"PO 19.10.\",\"title\":\"Daniel spí ve školce\",\"text\":\"\"},"
+    "{\"when\":\"ZÍTRA\",\"text\":\"bez titulku\"}"
     "],\"newsUpdated\":\"VČERA 20:53\",\"timetableUpdated\":\"7:40\","
     "\"problem\":\"\"}";
 
@@ -109,6 +114,14 @@ void testResponse() {
   assert(feed.notices[0].calendar == SchoolCalendarMark::Review);
   assert(std::string(feed.notices[0].text) ==
          "děti v budově mají střevní problémy...");
+  // Děti zvlášť od nástěnky školky; řádek bez titulku se přeskočí.
+  assert(feed.hasFamily && feed.familyCount == 2 && feed.familyTotal == 3);
+  assert(std::string(feed.family[0].when) == "DNES");
+  // Pomlčku "–" písmo nemá, parser ji píše jako "-".
+  assert(std::string(feed.family[0].title) == "Adam vychází 13:35-13:48");
+  assert(std::string(feed.family[0].text) == "ve škole od 7:33");
+  assert(std::string(feed.family[1].title) == "Daniel spí ve školce");
+  assert(feed.family[1].text[0] == '\0');
 }
 
 // Testy ze známek (server od 1. 10. 2026): nadcházející se počítají,
@@ -167,6 +180,8 @@ void testReparseReplacesLists() {
   assert(schoolParseFeed(withoutNotices, strlen(withoutNotices), feed) ==
          SchoolParseStatus::Ok);
   assert(!feed.hasNotices && feed.noticeCount == 0 && feed.noticeTotal == 0);
+  // Starší server dětí neposílá: sekce se neukáže.
+  assert(!feed.hasFamily && feed.familyCount == 0 && feed.familyTotal == 0);
   assert(feed.newsUpdated[0] == '\0');
 }
 
