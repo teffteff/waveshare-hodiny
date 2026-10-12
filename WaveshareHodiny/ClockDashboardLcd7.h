@@ -2828,12 +2828,26 @@ void addSchoolTests(SchoolSide &side, const SchoolFeed &feed, bool english, char
   }
 }
 
-// Rozvrh: vpravo obědy celé (až tři řádky na jídlo), pod nimi testy.
+// Rozvrh: vpravo nahoře děti (omluvenky, spaní ve školce, odchod ze školy),
+// pod nimi obědy celé (až tři řádky na jídlo) a testy.
 void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute) {
   SchoolSide side(p, school.columns[0], SCHOOL7_SIDE_X, SCHOOL7_SIDE_W, SCHOOL7_TOP + 2,
                   SCREEN_HEIGHT - 36);
   const bool english = englishLanguage();
   char text[SCHOOL_TITLE_LENGTH * 2 + 48];
+  if (feed != nullptr && feed->hasFamily && feed->familyCount > 0 &&
+      side.beginSection(english ? "KIDS" : "DĚTI", COLOR_ROOM)) {
+    for (size_t index = 0; index < feed->familyCount; ++index) {
+      const SchoolNotice &line = feed->family[index];
+      char body[SCHOOL_TITLE_LENGTH * 2 + 8];
+      if (line.text[0] != '\0')
+        snprintf(body, sizeof(body), "%s: %s", line.title, line.text);
+      else
+        strlcpy(body, line.title, sizeof(body));
+      composeSideRow(text, sizeof(text), line.when, COLOR_ROOM, nullptr, body);
+      if (!side.addRow(text, nullptr, 2)) break;
+    }
+  }
   if (feed != nullptr && feed->hasMeals && feed->mealCount > 0) {
     bool today[SCHOOL_MAX_MEALS];
     for (size_t index = 0; index < feed->mealCount; ++index)
@@ -2915,7 +2929,7 @@ void syncSchoolNews(const Palette &p, const SchoolFeed *feed) {
     }
   }
   if (feed != nullptr && feed->hasNotices && feed->noticeCount > 0 &&
-      news.beginSection(english ? "NOTICE BOARD" : "NÁSTĚNKA", COLOR_MOON)) {
+      news.beginSection(english ? "KINDERGARTEN BOARD" : "NÁSTĚNKA MŠ", COLOR_MOON)) {
     for (size_t index = 0; index < feed->noticeCount; ++index) {
       const SchoolNotice &notice = feed->notices[index];
       char body[SCHOOL_TITLE_LENGTH * 2 + 8];

@@ -74,6 +74,9 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
   feed.hasNotices = false;
   feed.noticeCount = 0;
   feed.noticeTotal = 0;
+  feed.hasFamily = false;
+  feed.familyCount = 0;
+  feed.familyTotal = 0;
   feed.newsUpdated[0] = '\0';
   feed.timetableUpdated[0] = '\0';
   feed.hasMeals = false;
@@ -274,6 +277,26 @@ SchoolParseStatus schoolParseFeed(const char *payload, size_t length,
       ++feed.noticeCount;
     }
     feed.noticeTotal = readTotal("noticeCount", feed.noticeCount);
+  }
+
+  const JsonValue family = jsonFindMember(begin, end, "family");
+  if (family.isArray()) {
+    feed.hasFamily = true;
+    JsonArrayCursor items = jsonOpenArray(family);
+    while (feed.familyCount < SCHOOL_MAX_FAMILY && jsonNextItem(items)) {
+      SchoolNotice &line = feed.family[feed.familyCount];
+      line = SchoolNotice{};
+      if (copyMember(items.itemBegin, items.itemEnd, "title", line.title,
+                     sizeof(line.title)) == 0) {
+        continue;
+      }
+      copyMember(items.itemBegin, items.itemEnd, "when", line.when,
+                 sizeof(line.when));
+      copyMember(items.itemBegin, items.itemEnd, "text", line.text,
+                 sizeof(line.text));
+      ++feed.familyCount;
+    }
+    feed.familyTotal = readTotal("familyCount", feed.familyCount);
   }
 
   const JsonValue meals = jsonFindMember(begin, end, "meals");

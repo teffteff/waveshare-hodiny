@@ -31,6 +31,11 @@
 //    "noticeCount":1,
 //    "notices":[{"when":"VČERA","title":"Střevní problémy",
 //                "text":"děti v budově mají střevní problémy…"}],
+//    "familyCount":2,
+//    "family":[{"when":"DNES","title":"Adam vychází 13:35–13:48",
+//               "text":"ve škole od 7:33"},
+//              {"when":"PO 19.10.","title":"Daniel spí ve školce",
+//               "text":"vyzvednout po spaní"}],
 //    "meals":[{"when":"DNES","today":true,"who":"ZŠ",
 //              "text":"Kuře na paprice, těstoviny"}],
 //    "newsUpdated":"9:05",
@@ -90,6 +95,10 @@ constexpr size_t SCHOOL_MARK_LENGTH = 12;
 constexpr size_t SCHOOL_MAX_TESTS = 6;
 // Oznámení z nástěnky školky; server jich posílá nejvýš šest.
 constexpr size_t SCHOOL_MAX_NOTICES = 6;
+// Děti (sekce DĚTI): omluvenky a spaní ve školce v příštím týdnu a dnešní
+// příchod a odchod ze školy. Stejný tvar jako oznámení; server jich posílá
+// nejvýš šest.
+constexpr size_t SCHOOL_MAX_FAMILY = 6;
 // Obědy na dva dny pro školu a školku, tedy čtyři řádky; dva navíc pro
 // případ, že server přidá další jídelnu.
 constexpr size_t SCHOOL_MAX_MEALS = 6;
@@ -217,6 +226,11 @@ struct SchoolFeed {
   size_t noticeCount = 0;
   size_t noticeTotal = 0;
   SchoolNotice notices[SCHOOL_MAX_NOTICES];
+  // Děti: jen novější server; bez klíče se sekce neukáže.
+  bool hasFamily = false;
+  size_t familyCount = 0;
+  size_t familyTotal = 0;
+  SchoolNotice family[SCHOOL_MAX_FAMILY];
   // Kdy server naposled stáhl zprávy, známky (i testy) a nástěnku (nejstarší z nich).
   // Prázdné u staršího serveru.
   char newsUpdated[SCHOOL_UPDATED_LENGTH] = "";
