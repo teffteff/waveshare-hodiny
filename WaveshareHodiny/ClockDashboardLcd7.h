@@ -2829,7 +2829,8 @@ void addSchoolTests(SchoolSide &side, const SchoolFeed &feed, bool english, char
 }
 
 // Rozvrh: vpravo nahoře děti (omluvenky, spaní ve školce, odchod ze školy),
-// pod nimi obědy celé (až tři řádky na jídlo) a testy.
+// pod nimi obědy jednoho dne jako na kulatém (celé, až tři řádky na jídlo)
+// a testy.
 void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute) {
   SchoolSide side(p, school.columns[0], SCHOOL7_SIDE_X, SCHOOL7_SIDE_W, SCHOOL7_TOP + 2,
                   SCREEN_HEIGHT - 36);
@@ -2845,7 +2846,8 @@ void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute)
       else
         strlcpy(body, line.title, sizeof(body));
       composeSideRow(text, sizeof(text), line.when, COLOR_ROOM, nullptr, body);
-      if (!side.addRow(text, nullptr, 2)) break;
+      // Děti mají přednost před obědy: řádek až na tři řádky, celý.
+      if (!side.addRow(text, nullptr, 3)) break;
     }
   }
   if (feed != nullptr && feed->hasMeals && feed->mealCount > 0) {
@@ -2857,8 +2859,10 @@ void syncSchoolLunchColumn(const Palette &p, const SchoolFeed *feed, int minute)
     if (hidden < feed->mealCount && side.beginSection(english ? "LUNCH" : "OBĚDY", COLOR_AIR)) {
       for (size_t index = hidden; index < feed->mealCount; ++index) {
         const SchoolMeal &meal = feed->meals[index];
-        const bool newDay =
-            index == hidden || strcmp(meal.when, feed->meals[index - 1].when) != 0;
+        // Jen jeden den jako na kulatém: dnešní obědy, po hodině přepnutí
+        // (school.mealNextDayHour) zítřejší.
+        if (index > hidden && strcmp(meal.when, feed->meals[hidden].when) != 0) break;
+        const bool newDay = index == hidden;
         char what[SCHOOL_MEAL_WHO_LENGTH + SCHOOL_TITLE_LENGTH + 4];
         if (meal.who[0] != '\0')
           snprintf(what, sizeof(what), "%s: %s", meal.who, meal.text);

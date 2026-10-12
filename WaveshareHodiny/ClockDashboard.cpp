@@ -3652,6 +3652,9 @@ lv_obj_t *schoolNoticeTextLabels[SCHOOL_MAX_NOTICES] = {};
 lv_obj_t *schoolFamilyHeading = nullptr;
 lv_obj_t *schoolFamilyWhenLabels[SCHOOL_MAX_FAMILY] = {};
 lv_obj_t *schoolFamilyTextLabels[SCHOOL_MAX_FAMILY] = {};
+// Řádky dětí se smějí zalomit na dva (stránka je jejich): na kolik se který
+// láme, se měří při vložení textu jako u obědů.
+uint8_t schoolFamilyLines[SCHOOL_MAX_FAMILY] = {};
 bool schoolFeatureAvailable = false;
 RssVisibilityCallback schoolVisibilityCallback = nullptr;
 uint8_t schoolPageIndex = 0;
@@ -3935,8 +3938,7 @@ bool schoolPageAvailable(uint8_t page) {
 // řádek si bere tolik místa vlevo, kolik v jeho výšce kruh dovolí.
 int layoutSchoolNewsRows(lv_obj_t **whenLabels, lv_obj_t **textLabels,
                          size_t capacity, uint8_t visible, bool ellipsis,
-                         int cursorY) {
-  const int height = schoolLineHeight();
+                         int cursorY, const uint8_t *lines = nullptr) {
   for (size_t index = 0; index < capacity; ++index) {
     const bool shown = index < visible;
     const bool moreMark = shown && ellipsis && index + 1 == visible;
@@ -3944,11 +3946,21 @@ int layoutSchoolNewsRows(lv_obj_t **whenLabels, lv_obj_t **textLabels,
     setObjectVisible(textLabels[index], shown);
     if (!shown) continue;
     if (moreMark) lv_label_set_text(textLabels[index], SCHOOL_MORE_MARK);
+    // Zalomený řádek (děti) si bere místo podle obou řádků a zprava ho
+    // ořízne kruh, stejně jako dvouřádkový oběd.
+    const int rowLines = lines != nullptr && lines[index] > 1 && !moreMark ? lines[index] : 1;
+    const int height = rowLines * schoolLineHeight();
     const int left =
         schoolRowLeft(SCHOOL_RADIUS, SCHOOL_NEWS_LEFT, cursorY, height);
     const int textLeft = left + SCHOOL_DUE_WIDTH + SCHOOL_COLUMN_GAP;
+    int right = SCHOOL_RIGHT;
+    if (lines != nullptr) {
+      const int limit = -schoolRowLeft(SCHOOL_RADIUS, -SCHOOL_RADIUS, cursorY, height);
+      if (limit < right) right = limit;
+      lv_obj_set_height(textLabels[index], height);
+    }
     placeSchoolLabel(whenLabels[index], left, cursorY);
-    lv_obj_set_width(textLabels[index], SCHOOL_RIGHT - textLeft);
+    lv_obj_set_width(textLabels[index], right > textLeft ? right - textLeft : 1);
     placeSchoolLabel(textLabels[index], textLeft, cursorY);
     cursorY += height + SCHOOL_ROW_GAP;
   }
@@ -3980,6 +3992,12 @@ void layoutSchoolNewsPage(uint8_t page, bool english) {
         sectionCount);
     for (size_t slot = 0; slot < sectionCount; ++slot)
       schoolNewsVisible[kinds[slot]] = result.sections[slot];
+    if (kinds[0] == SCHOOL_NEWS_FAMILY)
+      schoolNewsVisible[SCHOOL_NEWS_FAMILY] = schoolWrappedListLayout(
+          inputs[SCHOOL_NEWS_FAMILY], schoolFamilyLines,
+          SchoolLayoutMetrics{schoolLineHeight(), schoolHeadingHeight(),
+                              SCHOOL_ROW_GAP, SCHOOL_SECTION_GAP,
+                              SCHOOL_BLOCK_HEIGHT});
   }
   char messagesText[48];
   if (schoolMessageTotal == 0) {
@@ -4050,7 +4068,8 @@ void layoutSchoolNewsPage(uint8_t page, bool english) {
     cursorY = layoutSchoolNewsRows(sections[section].when,
                                    sections[section].text,
                                    sections[section].capacity, visible.rows,
-                                   visible.ellipsis, cursorY);
+                                   visible.ellipsis, cursorY,
+                                   section == SCHOOL_NEWS_FAMILY ? schoolFamilyLines : nullptr);
   }
 }
 
@@ -9894,6 +9913,13 @@ bool clockDashboardSetSchool(const SchoolFeed *feed, const char *message) {
       strlcpy(text, line.title, sizeof(text));
     }
     lv_label_set_text(schoolFamilyTextLabels[index], text);
+    // Na dva řádky jen to, co se do jednoho nevejde (měřeno proti nejužšímu
+    // místu kruhu, kam řádek dětí padne); výška hned, jinak LONG_DOT zkrátí
+    // podle staré jednořádkové.
+    const int rowWidth = SCHOOL_RIGHT - SCHOOL_NEWS_LEFT - SCHOOL_DUE_WIDTH - SCHOOL_COLUMN_GAP;
+    schoolFamilyLines[index] = schoolRowTextWidth(text) > rowWidth ? 2 : 1;
+    lv_obj_set_height(schoolFamilyTextLabels[index],
+                      schoolFamilyLines[index] * schoolLineHeight());
   }
   layoutSchoolPage();
   return true;

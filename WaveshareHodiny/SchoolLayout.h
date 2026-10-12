@@ -202,3 +202,25 @@ inline SchoolListsResult schoolListsLayout(
   }
   return result;
 }
+
+// Jediná sekce stránky, jejíž řádky se smějí zalomit (děti): lines[i] je,
+// na kolik řádků se i-tá položka láme (1 nebo 2). Vejde se tolik položek,
+// kolik celých se vejde pod hlavičku; tečky jako u ostatních seznamů.
+inline SchoolListResult schoolWrappedListLayout(const SchoolListInput &section,
+                                                const uint8_t *lines,
+                                                const SchoolLayoutMetrics &metrics) {
+  SchoolListResult shown;
+  if (!section.enabled || metrics.headingHeight > metrics.blockHeight) return shown;
+  shown.heading = true;
+  int used = metrics.headingHeight + (section.count > 0 ? metrics.rowGap : 0);
+  while (shown.rows < section.count) {
+    const int count = lines != nullptr && lines[shown.rows] > 1 ? lines[shown.rows] : 1;
+    const int needed = count * metrics.lineHeight + metrics.rowGap;
+    if (used + needed > metrics.blockHeight) break;
+    used += needed;
+    ++shown.rows;
+  }
+  const uint8_t total = section.total > section.count ? section.total : section.count;
+  shown.ellipsis = shown.rows > 0 && shown.rows < total;
+  return shown;
+}
