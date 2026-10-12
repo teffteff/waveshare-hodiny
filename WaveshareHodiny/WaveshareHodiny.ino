@@ -23,6 +23,7 @@
 #include "WeatherWarningService.h"
 #include "SatelliteService.h"
 #include "TrafficService.h"
+#include "HomeControlService.h"
 #include "SharedFrames.h"
 #include "MemoryCensus.h"
 #include "HaHistoryBuckets.h"
@@ -597,6 +598,17 @@ void applyTrafficState(const ClockConfig &config) {
   applyTrafficState(config, clockDashboardTrafficVisible());
 }
 
+// Ovládání čte stav z HA jen tehdy, když je obrazovka vidět.
+void applyControlsState(const ClockConfig &config, bool visible) {
+  const bool available = clockConfigControlsAvailable(config);
+  homeControlServiceSetActive(available && visible, config.homeAssistantUrl,
+                              config.homeAssistantToken, config.controls.label);
+}
+
+void applyControlsState(const ClockConfig &config) {
+  applyControlsState(config, clockDashboardControlsVisible());
+}
+
 // Upozornění na telefon hlídá server podle nastavení domácnosti; hodiny si ho
 // jen čtou (nízký přelet na obrazovce letadel, přehled na stránce nastavení).
 // Nezáleží na obrazovkách ani na radaru.
@@ -674,6 +686,7 @@ void applyPendingRuntimeConfiguration() {
   applyPlaneRadarState(dashboardConfigBuffer);
   applySatellitesState(dashboardConfigBuffer);
   applyTrafficState(dashboardConfigBuffer);
+  applyControlsState(dashboardConfigBuffer);
   applyRainAlertState(dashboardConfigBuffer);
   applyWarningState(dashboardConfigBuffer);
   applyPushAlertsState(dashboardConfigBuffer);
@@ -1123,6 +1136,12 @@ void handleTrafficVisibility(bool visible) {
   applyTrafficState(loopConfigSnapshot(), visible);
 }
 
+void handleControlsVisibility(bool visible) {
+  displayModeStartedAt = millis();
+  automaticRotationPaused = false;
+  applyControlsState(loopConfigSnapshot(), visible);
+}
+
 void handleRadarRangeChange(int8_t direction) {
   // Řada rozsahů patří desce (Board.h); 7" vynechává 200 km.
   const uint16_t *RADAR_RADII = BOARD_PROFILE.radarRanges;
@@ -1227,6 +1246,7 @@ constexpr uint8_t ROTATION_SCREEN_SKY = CLOCK_SCREEN_SKY;
 constexpr uint8_t ROTATION_SCREEN_SCHOOL = CLOCK_SCREEN_SCHOOL;
 constexpr uint8_t ROTATION_SCREEN_SATELLITES = CLOCK_SCREEN_SATELLITES;
 constexpr uint8_t ROTATION_SCREEN_TRAFFIC = CLOCK_SCREEN_TRAFFIC;
+constexpr uint8_t ROTATION_SCREEN_CONTROLS = CLOCK_SCREEN_CONTROLS;
 constexpr uint8_t ROTATION_SCREEN_SETTINGS = CLOCK_SCREEN_ORDER_COUNT;
 constexpr uint8_t ROTATION_SCREEN_COUNT = CLOCK_SCREEN_ORDER_COUNT + 1;
 
@@ -1255,6 +1275,7 @@ uint8_t activeRotationScreen() {
   if (clockDashboardSchoolVisible()) return ROTATION_SCREEN_SCHOOL;
   if (clockDashboardSatellitesVisible()) return ROTATION_SCREEN_SATELLITES;
   if (clockDashboardTrafficVisible()) return ROTATION_SCREEN_TRAFFIC;
+  if (clockDashboardControlsVisible()) return ROTATION_SCREEN_CONTROLS;
   return ROTATION_SCREEN_CLOCK;
 }
 
@@ -1293,6 +1314,9 @@ void showRotationScreen(uint8_t screen) {
     case ROTATION_SCREEN_TRAFFIC:
       clockDashboardSetTrafficVisible(true);
       break;
+    case ROTATION_SCREEN_CONTROLS:
+      clockDashboardSetControlsVisible(true);
+      break;
     default:
       // Všechny překryvné stránky se skrývají stejnou cestou zpět na ciferník.
       clockDashboardSetRadarVisible(false);
@@ -1304,6 +1328,7 @@ void showRotationScreen(uint8_t screen) {
       clockDashboardSetSchoolVisible(false);
       clockDashboardSetSatellitesVisible(false);
       clockDashboardSetTrafficVisible(false);
+      clockDashboardSetControlsVisible(false);
       break;
   }
 }
@@ -1369,6 +1394,8 @@ bool rotationScreenAvailable(const ClockConfig &config, uint8_t screen) {
       return clockConfigSatellitesAvailable(config);
     case ROTATION_SCREEN_TRAFFIC:
       return clockConfigTrafficAvailable(config);
+    case ROTATION_SCREEN_CONTROLS:
+      return clockConfigControlsAvailable(config);
     default: return true;
   }
 }
@@ -1402,6 +1429,9 @@ bool rotationScreenEnabled(const ClockConfig &config, uint8_t screen) {
     case ROTATION_SCREEN_TRAFFIC:
       return clockConfigTrafficAvailable(config) &&
              config.traffic.automaticRotation;
+    case ROTATION_SCREEN_CONTROLS:
+      return clockConfigControlsAvailable(config) &&
+             config.controls.automaticRotation;
     case ROTATION_SCREEN_SETTINGS:
       return false;
     default: return true;
@@ -1496,6 +1526,8 @@ unsigned long rotationDurationMs(const ClockConfig &config, uint8_t screen) {
              1000UL;
     case ROTATION_SCREEN_TRAFFIC:
       return static_cast<unsigned long>(config.traffic.displaySeconds) * 1000UL;
+    case ROTATION_SCREEN_CONTROLS:
+      return static_cast<unsigned long>(config.controls.displaySeconds) * 1000UL;
     default:
       return static_cast<unsigned long>(config.clockDisplaySeconds) * 1000UL;
   }
@@ -1512,7 +1544,8 @@ void maintainAutomaticScreenRotation() {
       rotationScreenEnabled(config, ROTATION_SCREEN_SKY) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SCHOOL) ||
       rotationScreenEnabled(config, ROTATION_SCREEN_SATELLITES) ||
-      rotationScreenEnabled(config, ROTATION_SCREEN_TRAFFIC);
+      rotationScreenEnabled(config, ROTATION_SCREEN_TRAFFIC) ||
+      rotationScreenEnabled(config, ROTATION_SCREEN_CONTROLS);
   // Okno plánu i upozornění na déšť drží svou obrazovku; střídání se rozběhne
   // až po nich. Stejně tak rozečtený detail zprávy.
   const bool allowed = anyRotation && WiFi.status() == WL_CONNECTED &&
@@ -2829,6 +2862,17 @@ void handleUsbCommands() {
         clockDashboardSetTrafficVisible(true);
         applyTrafficState(runtimeConfig, true);
         Serial.println("TRAFFIC_SHOWN");
+      } else if (usbCommand == "CONTROLSSHOW" && !screenshotTransferActive) {
+        clockDashboardSetControlsVisible(true);
+        applyControlsState(runtimeConfig, true);
+        Serial.println("CONTROLS_SHOWN");
+      } else if (usbCommand.startsWith("CONTROLSPRESS") &&
+                 !screenshotTransferActive) {
+        // Stisk dlaždice podle pořadí (CONTROLSPRESS0), jako klepnutí prstem.
+        const int index = usbCommand.substring(13).toInt();
+        Serial.println(homeControlServicePress(static_cast<uint8_t>(index))
+                           ? "CONTROLS_PRESSED"
+                           : "CONTROLS_PRESS_REJECTED");
       } else if (usbCommand == "TRAFFICSWIPE" && !screenshotTransferActive) {
         // Další stránka dopravy pro screenshot, jako tažení prstem.
         clockDashboardSetTrafficVisible(true);
@@ -3019,6 +3063,7 @@ void maintainNetworkTime() {
     applyPlaneRadarState(config);
     applySatellitesState(config);
     applyTrafficState(config);
+    applyControlsState(config);
 #if !FIRMWARE_RELEASE
     Serial.println("NTP synchronizovano");
 #endif
@@ -3144,6 +3189,7 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     planeRadarServicePrepareForFirmwareUpdate();
     satelliteServicePrepareForFirmwareUpdate();
     trafficServicePrepareForFirmwareUpdate();
+    homeControlServicePrepareForFirmwareUpdate();
     lightningServicePrepareForFirmwareUpdate();
     rainAlertServicePrepareForFirmwareUpdate();
     weatherWarningServicePrepareForFirmwareUpdate();
@@ -3160,6 +3206,8 @@ void handleFirmwareUpdateLifecycle(bool updating) {
     applySatellitesState(loopConfigSnapshot());
     trafficServiceBegin();
     applyTrafficState(loopConfigSnapshot());
+    homeControlServiceBegin();
+    applyControlsState(loopConfigSnapshot());
     // Ze stejného důvodu jako u letadel a družic: příprava na aktualizaci
     // úlohu zastavila a po přerušené aktualizaci by mlčela až do restartu.
     rainAlertServiceBegin();
@@ -4729,6 +4777,7 @@ void setup() {
   clockDashboardSetSchoolVisibilityCallback(handleSchoolVisibility);
   clockDashboardSetSatellitesVisibilityCallback(handleSatellitesVisibility);
   clockDashboardSetTrafficVisibilityCallback(handleTrafficVisibility);
+  clockDashboardSetControlsVisibilityCallback(handleControlsVisibility);
   clockDashboardSetWebPasswordResetCallback(configurationWebClearPassword);
   clockDashboardApplyConfiguration(runtimeConfig);
   memoryCensusCheckpoint("dashboard");
@@ -4755,6 +4804,7 @@ void setup() {
   planeRadarServiceBegin();
   satelliteServiceBegin();
   trafficServiceBegin();
+  homeControlServiceBegin();
   lightningServiceBegin();
   rainAlertServiceBegin();
   applyRainAlertState(runtimeConfig);
@@ -4879,6 +4929,7 @@ void loop() {
   maintainPlanesDisplay();
   maintainSatellitesDisplay();
   maintainTrafficDisplay();
+  clockDashboardMaintainControls();
   maintainRssDisplay();
   maintainAgendaDisplay();
   maintainSchoolDisplay();

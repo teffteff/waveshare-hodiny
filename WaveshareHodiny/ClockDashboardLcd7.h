@@ -21,7 +21,7 @@ bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
                                Agenda, Rss, School, Planes,
-                               RoundLeft, Traffic };
+                               RoundLeft, Traffic, Controls };
 HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
@@ -3930,6 +3930,143 @@ class PsramAllocations {
 
 uint32_t lastSyncAt = 0;
 
+// --- Ovládání ----------------------------------------------------------------
+// Dlaždice 4 × 2 pod lištou: jméno, stav (jas, příkon) a kulatá "kontrolka"
+// vpravo nahoře. Zapnutá dlaždice svítí, čekající přepnutí má obrys. Dole
+// řádek stavu (načítání, chyba, "a 3 další").
+constexpr int CONTROLS7_COLUMNS = 4;
+constexpr int CONTROLS7_ROWS = 2;
+constexpr int CONTROLS7_TILES = CONTROLS7_COLUMNS * CONTROLS7_ROWS;
+constexpr int CONTROLS7_LEFT = 14;
+constexpr int CONTROLS7_TOP = 58;
+constexpr int CONTROLS7_GAP = 14;
+constexpr int CONTROLS7_BOTTOM = SCREEN_HEIGHT - 44;
+constexpr int CONTROLS7_TILE_W =
+    (SCREEN_WIDTH - 2 * CONTROLS7_LEFT - (CONTROLS7_COLUMNS - 1) * CONTROLS7_GAP) /
+    CONTROLS7_COLUMNS;
+constexpr int CONTROLS7_TILE_H =
+    (CONTROLS7_BOTTOM - CONTROLS7_TOP - (CONTROLS7_ROWS - 1) * CONTROLS7_GAP) /
+    CONTROLS7_ROWS;
+constexpr int CONTROLS7_PAD = 16;
+constexpr int CONTROLS7_LAMP = 22;
+
+struct ControlsTile7 {
+  lv_obj_t *box;
+  lv_obj_t *name;
+  lv_obj_t *state;
+  lv_obj_t *lamp;
+};
+
+struct ControlsView {
+  lv_obj_t *root;
+  TopBar bar;
+  ControlsTile7 tiles[CONTROLS7_TILES];
+  lv_obj_t *status;
+  uint32_t drawnRevision;
+} controls;
+
+int controlsTileX(int index) {
+  return CONTROLS7_LEFT + (index % CONTROLS7_COLUMNS) * (CONTROLS7_TILE_W + CONTROLS7_GAP);
+}
+
+int controlsTileY(int index) {
+  return CONTROLS7_TOP + (index / CONTROLS7_COLUMNS) * (CONTROLS7_TILE_H + CONTROLS7_GAP);
+}
+
+void createControls(lv_obj_t *screen) {
+  ControlsView &v = controls;
+  v.root = panel(screen, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  v.bar = makeTopBar(v.root);
+  for (int index = 0; index < CONTROLS7_TILES; ++index) {
+    ControlsTile7 &tile = v.tiles[index];
+    tile.box = panel(v.root, controlsTileX(index), controlsTileY(index),
+                     CONTROLS7_TILE_W, CONTROLS7_TILE_H);
+    lv_obj_set_style_radius(tile.box, 22, 0);
+    lv_obj_set_style_border_width(tile.box, 0, 0);
+    tile.name = label(tile.box, &lcd7_text22, CONTROLS7_PAD, CONTROLS7_PAD,
+                      CONTROLS7_TILE_W - 2 * CONTROLS7_PAD - CONTROLS7_LAMP - 8);
+    // Jméno smí na dva řádky, pak tři tečky.
+    lv_obj_set_height(tile.name, 2 * lv_font_get_line_height(&lcd7_text22));
+    tile.state = label(tile.box, &lcd7_text28, CONTROLS7_PAD,
+                       CONTROLS7_TILE_H - CONTROLS7_PAD - 34,
+                       CONTROLS7_TILE_W - 2 * CONTROLS7_PAD);
+    singleLine(tile.state);
+    tile.lamp = panel(tile.box, CONTROLS7_TILE_W - CONTROLS7_PAD - CONTROLS7_LAMP,
+                      CONTROLS7_PAD + 2, CONTROLS7_LAMP, CONTROLS7_LAMP);
+    lv_obj_set_style_radius(tile.lamp, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(tile.lamp, 2, 0);
+    lv_obj_add_flag(tile.box, LV_OBJ_FLAG_HIDDEN);
+  }
+  v.status = label(v.root, &lcd7_text18, 20, SCREEN_HEIGHT - 32, SCREEN_WIDTH - 40);
+  singleLine(v.status);
+  v.drawnRevision = UINT32_MAX;
+}
+
+void syncControls(const Palette &p) {
+  ControlsView &v = controls;
+  syncTopBar(v.bar, p);
+  if (v.drawnRevision == controlsRevision) return;
+  v.drawnRevision = controlsRevision;
+  if (controlsSnapshot == nullptr) return;
+  const HomeControlSnapshot &snapshot = *controlsSnapshot;
+  const bool english = englishLanguage();
+  const uint8_t shown =
+      snapshot.count < CONTROLS7_TILES ? snapshot.count : CONTROLS7_TILES;
+  char text[64];
+  for (int index = 0; index < CONTROLS7_TILES; ++index) {
+    ControlsTile7 &tile = v.tiles[index];
+    if (index >= shown) {
+      setVisible(tile.box, false);
+      continue;
+    }
+    const HomeControlTile &data = snapshot.tiles[index];
+    const bool on = data.item.state == HomeControlState::On;
+    const bool unavailable = data.item.state == HomeControlState::Unavailable;
+    setVisible(tile.box, true);
+    setBackground(tile.box, controlsTileColor(data));
+    const lv_coord_t border = data.pending ? 3 : 0;
+    if (lv_obj_get_style_border_width(tile.box, LV_PART_MAIN) != border)
+      lv_obj_set_style_border_width(tile.box, border, 0);
+    setBorder(tile.box, p.night ? COLOR_ERROR : COLOR_TEXT);
+    setText(tile.name, data.item.name);
+    controlsStateText(data, english, " · ", text, sizeof(text));
+    setText(tile.state, text);
+    const lv_color_t ink = controlsTextColor(data);
+    setColor(tile.name, ink);
+    setColor(tile.state, ink);
+    // Kontrolka: plná, když je zapnuto; jen obrys, když vypnuto; schovaná
+    // u nedostupných a u scén (ty stav nemají).
+    setVisible(tile.lamp, !unavailable && data.item.state != HomeControlState::Stateless);
+    setBackground(tile.lamp, on ? (p.night ? COLOR_ERROR : COLOR_BACKGROUND)
+                                : controlsTileColor(data));
+    setBorder(tile.lamp, p.night ? COLOR_ERROR : (on ? COLOR_BACKGROUND : p.muted));
+  }
+  controlsStatusText(snapshot, shown, english, text, sizeof(text));
+  setText(v.status, text);
+  setColor(v.status, p.night ? COLOR_ERROR
+                             : (snapshot.message[0] != '\0' ? COLOR_ERROR : p.muted));
+}
+
+void controlsTap(int16_t x, int16_t y) {
+  if (!created || shownMode != HomeMode::Controls || controlsSnapshot == nullptr)
+    return;
+  const uint8_t shown = controlsSnapshot->count < CONTROLS7_TILES
+                            ? controlsSnapshot->count
+                            : CONTROLS7_TILES;
+  for (uint8_t index = 0; index < shown; ++index) {
+    const int left = controlsTileX(index);
+    const int top = controlsTileY(index);
+    if (x < left || x >= left + CONTROLS7_TILE_W || y < top ||
+        y >= top + CONTROLS7_TILE_H)
+      continue;
+    if (homeControlServicePress(index)) {
+      clockDashboardMaintainControls();
+      sync(true);
+    }
+    return;
+  }
+}
+
 HomeMode desiredMode() {
   if (settingsVisible || firmwareUpdateActive) return HomeMode::None;
   if (activeScreen == DASHBOARD_SCREEN_FORECAST && forecastPage != nullptr)
@@ -3947,6 +4084,8 @@ HomeMode desiredMode() {
   if (activeScreen == DASHBOARD_SCREEN_PLANES) return HomeMode::Planes;
   if (activeScreen == DASHBOARD_SCREEN_TRAFFIC && trafficPage != nullptr)
     return HomeMode::Traffic;
+  if (activeScreen == DASHBOARD_SCREEN_CONTROLS && controlsPage != nullptr)
+    return HomeMode::Controls;
   // Družice (s noční oblohou) zůstávají kulaté: jeviště vlevo pod lištou,
   // vpravo Slunce a Měsíc. Samostatná obrazovka Slunce a Měsíc na 7" není.
   if (activeScreen == DASHBOARD_SCREEN_SATELLITES && satellitesPage != nullptr)
@@ -3971,12 +4110,13 @@ void create() {
   createSchool(screen);
   createPlanes(screen);
   createTraffic(screen);
+  createControls(screen);
   createSkySide(screen);
   for (lv_obj_t *root : {skySide.barRoot, skySide.column})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
                          radar.root, agenda.root, rss.root, school.root, planes.root,
-                         traffic.root})
+                         traffic.root, controls.root})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   created = true;
 }
@@ -4018,6 +4158,8 @@ void applyMode(HomeMode mode) {
     if (traffic.pixels != nullptr) lv_obj_invalidate(traffic.canvas);
   }
   setVisible(traffic.root, mode == HomeMode::Traffic);
+  if (mode == HomeMode::Controls) controls.drawnRevision = UINT32_MAX;
+  setVisible(controls.root, mode == HomeMode::Controls);
   const bool stageLeft = mode == HomeMode::Analog || mode == HomeMode::RoundLeft;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -4056,6 +4198,7 @@ void sync(bool force) {
     case HomeMode::School: syncSchool(p); break;
     case HomeMode::Planes: syncPlanes(p); break;
     case HomeMode::Traffic: syncTraffic(p); break;
+    case HomeMode::Controls: syncControls(p); break;
     case HomeMode::RoundLeft: syncSkySide(p); break;
     case HomeMode::None: break;
   }

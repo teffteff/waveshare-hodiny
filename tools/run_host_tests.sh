@@ -63,6 +63,7 @@ OTA_SOURCES=("$FIRMWARE_DIR/OtaMetadata.cpp" "$FIRMWARE_DIR/SemVer.cpp" "$FIRMWA
 run_test ota_metadata "${OTA_SOURCES[@]}" || failures=$((failures + 1))
 run_lcd7_test ota_metadata "${OTA_SOURCES[@]}" || failures=$((failures + 1))
 run_test ha_history "$FIRMWARE_DIR/HaHistoryBuckets.cpp" || failures=$((failures + 1))
+run_test home_control_feed "$FIRMWARE_DIR/HomeControlFeed.cpp" || failures=$((failures + 1))
 run_test home_assistant_template "$FIRMWARE_DIR/HomeAssistantTemplate.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test tmep_parser "$FIRMWARE_DIR/TmepParser.cpp" || failures=$((failures + 1))
 run_test home_assistant_connection_policy || failures=$((failures + 1))
