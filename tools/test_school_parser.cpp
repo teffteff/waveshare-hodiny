@@ -486,6 +486,21 @@ void testTwoSectionPage() {
   assert(!result.sections[2].heading);
 }
 
+// Děti: řádky se lámou na dva. Hlavička 19 + mezera 3, řádky po 19 + 3.
+void testWrappedListLayout() {
+  const SchoolLayoutMetrics metrics{19, 19, 3, 7, 22 + 2 * 22 + 1 * 22 + 2 * 22};
+  const uint8_t lines[4] = {2, 1, 2, 1};
+  const SchoolListResult all = schoolWrappedListLayout({true, 3, 3}, lines, metrics);
+  assert(all.heading && all.rows == 3 && !all.ellipsis);
+  // Čtvrtá položka se nevejde: tečky.
+  const SchoolListResult cut = schoolWrappedListLayout({true, 4, 4}, lines, metrics);
+  assert(cut.rows == 3 && cut.ellipsis);
+  // Bez rozpisu řádků jako obyčejný seznam.
+  const SchoolListResult plain = schoolWrappedListLayout({true, 4, 4}, nullptr, metrics);
+  assert(plain.rows == 4 && !plain.ellipsis);
+  assert(!schoolWrappedListLayout({false, 0, 0}, lines, metrics).heading);
+}
+
 // Pět dnů ze serveru s ?days=5: ve středu odpoledne čtvrtek, pátek
 // a příští pondělí až středa, weekday u každého dne. Šestý den se zahodí.
 std::string weekResponse(int days) {
@@ -621,6 +636,7 @@ int main() {
   testCurrentLesson();
   testLayout();
   testListsLayout();
+  testWrappedListLayout();
   testRowLeft();
   return 0;
 }
