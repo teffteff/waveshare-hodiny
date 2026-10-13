@@ -3324,8 +3324,16 @@ constexpr int TRAFFIC7_MAP_Y = SCREEN_HEIGHT - TRAFFIC_LCD7_MAP_HEIGHT;
 constexpr int TRAFFIC7_COLUMN_X = TRAFFIC_LCD7_MAP_WIDTH + 1;
 constexpr int TRAFFIC7_PAD = 20;
 constexpr int TRAFFIC7_CONTENT = SCREEN_WIDTH - TRAFFIC7_COLUMN_X - 2 * TRAFFIC7_PAD;
-constexpr int TRAFFIC7_CARDS_BOTTOM = SCREEN_HEIGHT - 56;
-constexpr int TRAFFIC7_CARD_H = (TRAFFIC7_CARDS_BOTTOM - TRAFFIC7_MAP_Y) / TRAFFIC_MAX_DRIVES;
+// Karty cest nižší, aby upozornění pod nimi měla čtyři řádky nad
+// "aktualizováno" (dřív jeden a zbytek se usekl).
+constexpr int TRAFFIC7_CARD_H = 80;
+constexpr int TRAFFIC7_CARDS_BOTTOM = TRAFFIC7_MAP_Y + TRAFFIC_MAX_DRIVES * TRAFFIC7_CARD_H;
+constexpr int TRAFFIC7_NOTES_LINES = 4;
+// Minuty písmem 38 (dřív 44); "min" a zdržení sedí na stejné účaří jako dřív.
+constexpr int TRAFFIC7_MINUTES_Y = 26;
+constexpr int TRAFFIC7_UNIT_Y = TRAFFIC7_MINUTES_Y + 16;
+constexpr int TRAFFIC7_DELAY_Y = TRAFFIC7_MINUTES_Y + 8;
+constexpr int TRAFFIC7_NO_DELAY_Y = TRAFFIC7_MINUTES_Y + 14;
 
 struct TrafficCard {
   lv_obj_t *name;
@@ -3344,6 +3352,7 @@ struct TrafficView {
   lv_obj_t *status;
   lv_obj_t *divider;
   TrafficCard cards[TRAFFIC_MAX_DRIVES];
+  lv_obj_t *warnings;
   lv_obj_t *notes;
   lv_obj_t *updated;
   const uint16_t *pixels;
@@ -3368,17 +3377,21 @@ void createTraffic(lv_obj_t *screen) {
   for (size_t index = 0; index < TRAFFIC_MAX_DRIVES; ++index) {
     TrafficCard &card = v.cards[index];
     const lv_coord_t top = TRAFFIC7_MAP_Y + index * TRAFFIC7_CARD_H;
-    card.name = label(v.root, &lcd7_text18, x, top + 6, TRAFFIC7_CONTENT / 2 + 30);
-    card.usual = label(v.root, &lcd7_text15, x, top + 9);
-    card.minutes = label(v.root, &lcd7_number44, x, top + 29);
-    card.unit = label(v.root, &lcd7_text18, x, top + 49);
-    card.delta = label(v.root, &lcd7_text22, x, top + 41, 150);
-    card.detail = label(v.root, &lcd7_text15, x, top + TRAFFIC7_CARD_H - 24,
+    card.name = label(v.root, &lcd7_text18, x, top + 5, TRAFFIC7_CONTENT / 2 + 30);
+    card.usual = label(v.root, &lcd7_text15, x, top + 8);
+    card.minutes = label(v.root, &lcd7_number38, x, top + TRAFFIC7_MINUTES_Y);
+    card.unit = label(v.root, &lcd7_text18, x, top + TRAFFIC7_UNIT_Y);
+    card.delta = label(v.root, &lcd7_text22, x, top + TRAFFIC7_DELAY_Y, 150);
+    card.detail = label(v.root, &lcd7_text15, x, top + TRAFFIC7_CARD_H - 21,
                         TRAFFIC7_CONTENT);
+    singleLine(card.detail);
     card.line = line(v.root, x, top + TRAFFIC7_CARD_H - 1, TRAFFIC7_CONTENT, 1);
   }
-  v.notes = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 8, TRAFFIC7_CONTENT);
-  lv_label_set_recolor(v.notes, true);
+  // Pod kartami upozornění (oranžově) a pod nimi stav D1, dohromady
+  // TRAFFIC7_NOTES_LINES řádků; co se nevejde, skončí třemi tečkami. Dva
+  // popisky, protože barevné značky LVGL nepřejdou přes zalomený řádek.
+  v.warnings = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 6, TRAFFIC7_CONTENT);
+  v.notes = label(v.root, &lcd7_text15, x, TRAFFIC7_CARDS_BOTTOM + 6, TRAFFIC7_CONTENT);
   v.updated = label(v.root, &lcd7_text15, x, UPDATED_Y);
   lv_label_set_recolor(v.updated, true);
   v.drawnRevision = UINT32_MAX;
@@ -3426,7 +3439,7 @@ void syncTrafficCard(const Palette &p, TrafficCard &card, const TrafficDrive *dr
   setText(card.usual, text);
   setColor(card.usual, p.muted);
   lv_obj_update_layout(card.usual);
-  setPosition(card.usual, x + TRAFFIC7_CONTENT - lv_obj_get_width(card.usual), top + 9);
+  setPosition(card.usual, x + TRAFFIC7_CONTENT - lv_obj_get_width(card.usual), top + 8);
 
   const bool known = drive->minutes >= 0;
   const int delay = known && drive->usualMinutes >= 0 ? drive->minutes - drive->usualMinutes : 0;
@@ -3441,7 +3454,7 @@ void syncTrafficCard(const Palette &p, TrafficCard &card, const TrafficDrive *dr
   lv_coord_t after = x + lv_obj_get_width(card.minutes) + 6;
   setText(card.unit, "min");
   setColor(card.unit, color);
-  setPosition(card.unit, after, top + 49);
+  setPosition(card.unit, after, top + TRAFFIC7_UNIT_Y);
   lv_obj_update_layout(card.unit);
   after += lv_obj_get_width(card.unit) + 14;
   if (!known)
@@ -3452,7 +3465,7 @@ void syncTrafficCard(const Palette &p, TrafficCard &card, const TrafficDrive *dr
     strlcpy(text, english ? "no delay" : "bez zdržení", sizeof(text));
   setText(card.delta, text);
   setColor(card.delta, color);
-  setPosition(card.delta, after, delay > 0 ? top + 44 : top + 47);
+  setPosition(card.delta, after, delay > 0 ? top + TRAFFIC7_DELAY_Y : top + TRAFFIC7_NO_DELAY_Y);
   setFont(card.delta, delay > 0 ? &lcd7_text22 : &lcd7_text18);
 
   // Server píše "přes Mirošovice (Strančice 28)": doporučená cesta a v závorce
@@ -3482,6 +3495,22 @@ void syncTrafficCard(const Palette &p, TrafficCard &card, const TrafficDrive *dr
   }
   setText(card.detail, detail);
   setColor(card.detail, p.night ? COLOR_ERROR : (drive->better ? COLOR_AIR : COLOR_TEXT));
+}
+
+// Popisek zalomený nejvýš do `most` pixelů: výška podle textu, a když je text
+// delší, utne se třemi tečkami. LV_LABEL_LONG_DOT s výškou podle obsahu by
+// měřil jen jeden řádek, proto se měří zalomený. Vrací výšku.
+lv_coord_t fitLines(lv_obj_t *object, lv_coord_t most, lv_coord_t lineHeight) {
+  lv_label_set_long_mode(object, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(object, LV_SIZE_CONTENT);
+  lv_obj_update_layout(object);
+  lv_coord_t height = lv_obj_get_height(object);
+  if (height > most) {
+    height = most / lineHeight * lineHeight;
+    lv_label_set_long_mode(object, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(object, height);
+  }
+  return height;
 }
 
 void syncTraffic(const Palette &p) {
@@ -3520,25 +3549,36 @@ void syncTraffic(const Palette &p) {
     syncTrafficCard(p, v.cards[index], drive, TRAFFIC7_MAP_Y + index * TRAFFIC7_CARD_H);
   }
 
-  // Upozornění (oranžově) a stav D1 v jednom řádku.
-  char notes[TRAFFIC_TEXT_LENGTH * 3];
+  // Upozornění (oranžově) a pod nimi stav D1.
+  char warnings[TRAFFIC_TEXT_LENGTH * TRAFFIC_MAX_WARNINGS + 16];
+  char notes[TRAFFIC_TEXT_LENGTH * TRAFFIC_MAX_TEXTS + 16];
+  warnings[0] = '\0';
   notes[0] = '\0';
   if (texts != nullptr) {
-    char tag[AGENDA_COLOR_TAG_LENGTH + 1];
     for (uint8_t index = 0; index < texts->warningCount; ++index) {
-      agendaBuildColorTag(tag, p.night ? COLOR_ERROR : COLOR_ROOM);
-      if (notes[0] != '\0') strlcat(notes, "  ·  ", sizeof(notes));
-      strlcat(notes, tag, sizeof(notes));
-      appendEscaped(notes, sizeof(notes), texts->warnings[index]);
-      strlcat(notes, "#", sizeof(notes));
+      if (warnings[0] != '\0') strlcat(warnings, "  ·  ", sizeof(warnings));
+      strlcat(warnings, texts->warnings[index], sizeof(warnings));
     }
     for (uint8_t index = 0; index < texts->textCount; ++index) {
       if (notes[0] != '\0') strlcat(notes, "  ·  ", sizeof(notes));
-      appendEscaped(notes, sizeof(notes), texts->texts[index]);
+      strlcat(notes, texts->texts[index], sizeof(notes));
     }
   }
+  const lv_coord_t lineHeight = lv_font_get_line_height(&lcd7_text15);
+  const lv_coord_t notesTop = TRAFFIC7_CARDS_BOTTOM + 6;
+  const lv_coord_t room = TRAFFIC7_NOTES_LINES * lineHeight;
+  setText(v.warnings, warnings);
+  setColor(v.warnings, p.night ? COLOR_ERROR : COLOR_ROOM);
+  // Upozornění mají přednost, stavu D1 nechají aspoň řádek, je-li co psát.
+  const lv_coord_t used = warnings[0] != '\0'
+      ? fitLines(v.warnings, notes[0] != '\0' ? room - lineHeight : room, lineHeight) : 0;
+  setVisible(v.warnings, warnings[0] != '\0');
+  const lv_coord_t left = room - used;
   setText(v.notes, notes);
   setColor(v.notes, p.muted);
+  setPosition(v.notes, TRAFFIC7_COLUMN_X + TRAFFIC7_PAD, notesTop + used);
+  if (left >= lineHeight) fitLines(v.notes, left, lineHeight);
+  setVisible(v.notes, notes[0] != '\0' && left >= lineHeight);
 
   char updated[64];
   updated[0] = '\0';
