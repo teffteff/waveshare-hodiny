@@ -551,7 +551,8 @@ void applyPlaneRadarState(const ClockConfig &config, bool visible) {
       planesAvailable && visible,
       planesAvailable && config.planes.automaticRotation,
       config.openMeteoLatitude, config.openMeteoLongitude, config.planes,
-      config.planesFeedUrl, config.planesMapLabel);
+      config.planesFeedUrl, config.planesMapLabel,
+      config.planesExtras.showSondes);
 }
 
 void applyPlaneRadarState(const ClockConfig &config) {
@@ -4855,7 +4856,8 @@ void setup() {
                              runtimeConfig.openMeteoLongitude,
                              runtimeConfig.planes,
                              runtimeConfig.planesFeedUrl,
-                             runtimeConfig.planesMapLabel);
+                             runtimeConfig.planesMapLabel,
+                             runtimeConfig.planesExtras.showSondes);
   // Stejně jako letadla: nastavení hned, stahovat se začne po synchronizaci času.
   satelliteServiceSetActive(false, false, runtimeConfig.openMeteoLatitude,
                             runtimeConfig.openMeteoLongitude,

@@ -211,7 +211,10 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // switches and lights carrying one HA label) and its eleventh entry in the
 // screen order. The schema 55 record stays an exact prefix; the screen starts
 // disabled and goes to the end of the order.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 56;
+// Schema 57 appends more aircraft radar options (weather balloons on the
+// radar, on by default) with spare bytes for later ones. The schema 56 record
+// stays an exact prefix.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 57;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -856,6 +859,20 @@ struct alignas(4) ClockControlsConfig {
 static_assert(sizeof(ClockControlsConfig) == 64,
               "The controls block is part of the stored record.");
 
+// Další volby radaru letadel. ClockPlanesConfig leží uprostřed záznamu a nedá
+// se zvětšit, takže nové volby přibývají sem; rezerva je na další bez nového
+// schématu.
+struct alignas(4) ClockPlanesExtrasConfig {
+  // Meteosondy z vlastního serveru (infra/planes s ?sondes=1). Bez vlastního
+  // zdroje letadel nejsou odkud, takže volba pak nic nemění.
+  bool showSondes = true;
+  // Rezerva pro další volby bez nového schématu; zatím nuly.
+  uint8_t reserved[15] = {};
+};
+
+static_assert(sizeof(ClockPlanesExtrasConfig) == 16,
+              "The aircraft extras block is part of the stored record.");
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -1022,6 +1039,9 @@ struct ClockConfig {
   char slotBatteryEntityIds[CLOCK_VALUE_SLOT_COUNT][CLOCK_ENTITY_ID_LENGTH] = {};
   // Pole schématu 56. Obrazovka Ovládání; vypnutá.
   ClockControlsConfig controls;
+  // Pole schématu 57. Další volby radaru letadel; Ovládání končí na násobku
+  // čtyř, takže začínají přesně na konci záznamu schématu 56.
+  ClockPlanesExtrasConfig planesExtras;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1225,8 +1245,16 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_55_SIZE = offsetof(ClockConfig, controls);
 
 static_assert(CLOCK_CONFIG_SCHEMA_55_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_55_SIZE + sizeof(ClockControlsConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, planesExtras),
               "Schema 56 must preserve the complete schema 55 prefix.");
+
+// Schéma 56 končilo Ovládáním, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_56_SIZE = offsetof(ClockConfig, planesExtras);
+
+static_assert(CLOCK_CONFIG_SCHEMA_56_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_56_SIZE + sizeof(ClockPlanesExtrasConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 57 must preserve the complete schema 56 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
