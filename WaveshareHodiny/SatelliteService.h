@@ -54,8 +54,9 @@ struct SatelliteSnapshot {
   // té družice vypnutá. Vybírá ho satellitePickPass().
   SatellitePass pass;
   // Všechny nadcházející přelety (probíhající první, pak podle začátku);
-  // 7" je ukazuje ve sloupci, aby byla vidět ISS i domácí družice.
-  static constexpr uint8_t MAX_LISTED_PASSES = 4;
+  // 7" je ukazuje ve sloupci, aby byla vidět ISS, Hubble, Tiangong i domácí
+  // družice.
+  static constexpr uint8_t MAX_LISTED_PASSES = SATELLITE_MAX_PASSES;
   SatellitePass passes[MAX_LISTED_PASSES];
   uint8_t passCount = 0;
   char message[64] = "";

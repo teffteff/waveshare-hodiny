@@ -204,6 +204,30 @@ void testPickPass() {
   assert(nameless.passCount == 0 && satellitePickPass(nameless, 1789508000LL) == nullptr);
 }
 
+// Server posílá SATGUS, ISS, Hubble a Tiangong; víc se nečte a pořadí zůstává.
+void testPassList() {
+  SatelliteTrack tracks[1];
+  SatelliteFeedInfo info;
+  std::string passes = ",\"passes\":[";
+  const char *names[] = {"SATGUS", "ISS", "Hubble", "Tiangong", "Navic"};
+  for (int index = 0; index < 5; ++index) {
+    char item[160];
+    snprintf(item, sizeof(item),
+             "%s{\"id\":%d,\"n\":\"%s\",\"rise\":%d,\"set\":%d,"
+             "\"maxTime\":%d,\"max\":%d,\"vis\":%d}",
+             index > 0 ? "," : "", 100 + index, names[index],
+             1789510000 + index * 1000, 1789510400 + index * 1000,
+             1789510200 + index * 1000, 20 + index, index % 2);
+    passes += item;
+  }
+  passes += "]";
+  assert(parse(feed("", passes), tracks, 1, info) == SatelliteParseStatus::Ok);
+  assert(info.passCount == SATELLITE_MAX_PASSES && SATELLITE_MAX_PASSES == 4);
+  for (int index = 0; index < 4; ++index)
+    assert(strcmp(info.passes[index].name, names[index]) == 0);
+  assert(info.passes[3].maxElevationDeg == 23 && info.passes[3].visible);
+}
+
 void testShortName() {
   char text[25];
   satelliteShortName("ISS (ZARYA)", text, sizeof(text));
@@ -226,6 +250,7 @@ int main() {
   testUrl();
   testProjectionAndInterpolation();
   testPickPass();
+  testPassList();
   testShortName();
   puts("satellite feed OK");
   return 0;
