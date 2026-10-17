@@ -4,7 +4,8 @@
 #include <string.h>
 
 bool planeFeedBuildUrl(const char *feedUrl, float latitude, float longitude,
-                       float distanceNm, char *output, size_t capacity) {
+                       float distanceNm, char *output, size_t capacity,
+                       bool sondes) {
   if (output == nullptr || capacity == 0) return false;
   output[0] = '\0';
   int written = 0;
@@ -14,10 +15,10 @@ bool planeFeedBuildUrl(const char *feedUrl, float latitude, float longitude,
     // sondes=1: infra/planes přidá meteosondy v dosahu. Cizí server parametr,
     // který nezná, přejde, a adsb.fi napřímo se tudy neptá.
     const char separator = strchr(feedUrl, '?') != nullptr ? '&' : '?';
-    written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&dist=%.1f&sondes=1",
+    written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&dist=%.1f%s",
                        feedUrl, separator, static_cast<double>(latitude),
                        static_cast<double>(longitude),
-                       static_cast<double>(distanceNm));
+                       static_cast<double>(distanceNm), sondes ? "&sondes=1" : "");
   } else {
     written = snprintf(output, capacity, "%s%.5f/lon/%.5f/dist/%.1f",
                        PLANE_FEED_ADSB_HOST, static_cast<double>(latitude),

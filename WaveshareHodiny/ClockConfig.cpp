@@ -1087,6 +1087,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV56 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_56_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV55 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1178,6 +1185,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV56) ||
          storedSize == sizeof(ConfigRecordV55) ||
          storedSize == sizeof(ConfigRecordV54) ||
          storedSize == sizeof(ConfigRecordV53) ||
@@ -1225,6 +1233,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 56 je přesnou předponou schématu 57; další volby letadel si po
+  // zkopírování podrží výchozí hodnoty (meteosondy zapnuté).
+  const ConfigRecordV56 &legacyV56 =
+      *reinterpret_cast<const ConfigRecordV56 *>(&record);
+  uint32_t embeddedSchemaV56 = 0;
+  if (readComplete && storedSize == sizeof(legacyV56))
+    memcpy(&embeddedSchemaV56, legacyV56.config, sizeof(embeddedSchemaV56));
+  if (readComplete && storedSize == sizeof(legacyV56) &&
+      legacyV56.magic == CONFIG_MAGIC && legacyV56.schemaVersion == 56 &&
+      embeddedSchemaV56 == 56 &&
+      legacyV56.checksum ==
+          bytesChecksum(legacyV56.config, sizeof(legacyV56.config))) {
+    memcpy(&config, legacyV56.config, sizeof(legacyV56.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 55 je přesnou předponou schématu 56; Ovládání si po zkopírování

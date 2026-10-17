@@ -2028,12 +2028,41 @@ void testPushAlertsPersistenceAndMigration() {
   assert(clamped.pushAlerts.quietFromHour == 23);
 }
 
+void testPlanesExtrasPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(defaults.planesExtras.showSondes);
+
+  // Schéma 56 je předponou 57: Ovládání zůstane, meteosondy jsou zapnuté
+  // (ne smetí za koncem záznamu).
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.controls.enabled = true;
+  strcpy(source.controls.label, "hodiny_pracovna");
+  memset(&source.planesExtras, 0, sizeof(source.planesExtras));
+  seed(legacyRecord(source, 56, CLOCK_CONFIG_SCHEMA_56_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.controls.enabled);
+  assert(strcmp(migrated.controls.label, "hodiny_pracovna") == 0);
+  assert(migrated.planesExtras.showSondes);
+
+  migrated.planesExtras.showSondes = false;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(!loaded.planesExtras.showSondes);
+}
+
 int main() {
   testPushAlertsPersistenceAndMigration();
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();
   testTrafficPersistenceAndMigration();
   testControlsPersistenceAndMigration();
+  testPlanesExtrasPersistenceAndMigration();
   testSlotBatteryPersistenceAndMigration();
   testWarningsAndNightSkyPersistenceAndMigration();
   testRainAlertPersistenceAndMigration();

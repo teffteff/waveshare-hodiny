@@ -149,6 +149,7 @@ char requestFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
 // Co se píše pod ikonu letadla (ClockPlaneMapLabel). Na stahování nemá vliv,
 // jeho změna jen překreslí snímek.
 uint8_t requestMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
+bool requestShowSondes = true;
 // Dosah naposledy přijatý z konfigurace. Přetažení prstem mění jen běžící
 // dosah, ne uložený - a bez téhle pamatováky by ho každé předání konfigurace
 // (návrat na obrazovku, synchronizace času, uložení čehokoli na webu) srazilo
@@ -1175,9 +1176,12 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
                    float latitude, float longitude) {
   const float rangeKm = rangeKmForIndex(planes.rangeIndex);
   const float distanceNm = rangeKm / KM_PER_NAUTICAL_MILE;
+  portENTER_CRITICAL(&stateMux);
+  const bool sondes = requestShowSondes;
+  portEXIT_CRITICAL(&stateMux);
   char url[PLANE_FEED_URL_CAPACITY];
   if (!planeFeedBuildUrl(feedUrl, latitude, longitude, distanceNm, url,
-                         sizeof(url))) {
+                         sizeof(url), sondes)) {
     setStatusMessage("Adresa zdroje letadel je příliš dlouhá");
     return false;
   }
@@ -1594,7 +1598,8 @@ void planeRadarServicePrepareForFirmwareUpdate() {
 void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
                                 float latitude, float longitude,
                                 const ClockPlanesConfig &planes,
-                                const char *feedUrl, uint8_t mapLabel) {
+                                const char *feedUrl, uint8_t mapLabel,
+                                bool showSondes) {
   const char *wantedFeedUrl = feedUrl != nullptr ? feedUrl : "";
   bool notify = false;
   portENTER_CRITICAL(&stateMux);
@@ -1620,8 +1625,10 @@ void planeRadarServiceSetActive(bool nowVisible, bool backgroundRefresh,
       requestPlanes.squawkAlert != planes.squawkAlert ||
       strcmp(requestPlanes.watchCallsign, planes.watchCallsign) != 0 ||
       strcmp(requestFeedUrl, wantedFeedUrl) != 0 ||
+      requestShowSondes != showSondes ||
       requestLatitude != latitude || requestLongitude != longitude;
   strlcpy(requestFeedUrl, wantedFeedUrl, sizeof(requestFeedUrl));
+  requestShowSondes = showSondes;
   requestPlanes = planes;
   if (!configuredRangeChanged) requestPlanes.rangeIndex = runningRangeIndex;
   requestLatitude = latitude;

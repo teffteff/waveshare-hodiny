@@ -1887,6 +1887,8 @@ void handleGetConfig() {
   result += config.planes.onlyWithCallsign ? F("true") : F("false");
   result += F(",\"planesSquawkAlert\":");
   result += config.planes.squawkAlert ? F("true") : F("false");
+  result += F(",\"planesShowSondes\":");
+  result += config.planesExtras.showSondes ? F("true") : F("false");
   result += F(",\"planesMetricUnits\":");
   result += config.planes.metricUnits ? F("true") : F("false");
   result += F(",\"planesMapLabel\":\"");
@@ -2943,6 +2945,9 @@ void handleSaveConfig() {
     config.planes.onlyWithCallsign =
         server.arg("planesOnlyWithCallsign") == "1";
     config.planes.squawkAlert = server.arg("planesSquawkAlert") == "1";
+    // Stránka ze starší verze pole neposílá; uložená volba pak zůstane.
+    if (server.hasArg("planesShowSondes"))
+      config.planesExtras.showSondes = server.arg("planesShowSondes") == "1";
     config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
     // Stránka uložená ze starší verze pole neposílá; uložený popisek zůstane.
     const String planesMapLabel = server.arg("planesMapLabel");

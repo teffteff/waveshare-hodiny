@@ -35,6 +35,19 @@ void testOwnFeedGetsQueryParameters() {
          "&sondes=1");
 }
 
+void testSondesCanBeLeftOut() {
+  // Vypnuté meteosondy: vlastní server dostane jen polohu a dosah.
+  char url[PLANE_FEED_URL_CAPACITY] = "";
+  assert(planeFeedBuildUrl("https://server.test/planes.json", LATITUDE,
+                           LONGITUDE, DISTANCE_NM, url, sizeof(url), false));
+  assert(std::string(url) ==
+         "https://server.test/planes.json?lat=49.19510&lon=16.60680&dist=53.9");
+  // adsb.fi napřímo sondes nedostane nikdy.
+  assert(planeFeedBuildUrl("", LATITUDE, LONGITUDE, DISTANCE_NM, url,
+                           sizeof(url), true));
+  assert(std::string(url).find("sondes") == std::string::npos);
+}
+
 void testExistingQueryIsKept() {
   // Adresa už dotaz nese; parametry se musí připojit za něj, ne ho nahradit.
   char url[PLANE_FEED_URL_CAPACITY] = "";
@@ -105,6 +118,7 @@ void testRouteWithoutCallsignIsRefused() {
 }  // namespace
 
 int main() {
+  testSondesCanBeLeftOut();
   testRouteWithoutOwnFeedGoesToAdsbLol();
   testRouteThroughOwnFeedUsesTheSameAddress();
   testRouteWithoutCallsignIsRefused();

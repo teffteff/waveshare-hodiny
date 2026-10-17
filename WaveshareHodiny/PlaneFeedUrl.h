@@ -23,10 +23,12 @@ inline constexpr char PLANE_FEED_ROUTE_HOST[] =
 constexpr size_t PLANE_FEED_URL_CAPACITY = 256;
 
 // Složí adresu do output. Prázdné feedUrl (nebo nullptr) znamená ptát se
-// adsb.fi přímo; vlastní server dostane i sondes=1 (meteosondy). Vrací false, když se adresa do output nevejde - volající pak
-// nemá o co opřít dotaz.
+// adsb.fi přímo; vlastní server dostane se sondes i sondes=1 (meteosondy).
+// Vrací false, když se adresa do output nevejde - volající pak nemá o co
+// opřít dotaz.
 bool planeFeedBuildUrl(const char *feedUrl, float latitude, float longitude,
-                       float distanceNm, char *output, size_t capacity);
+                       float distanceNm, char *output, size_t capacity,
+                       bool sondes = true);
 
 // Totéž pro trasu jednoho letu. Poloha letadla jde do dotazu spolu se značkou,
 // protože podle ní server posoudí, jestli trasa k letadlu vůbec sedí. Vlastní

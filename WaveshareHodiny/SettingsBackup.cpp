@@ -257,6 +257,8 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     CONFIG_FIELD(slotBatteryEntityIds, PART_VALUES),
     // Ovládání je obrazovka; štítek HA nenese nic tajného.
     CONFIG_FIELD(controls, PART_SCREENS),
+    // Další volby radaru letadel patří k obrazovkám stejně jako ostatní.
+    CONFIG_FIELD(planesExtras, PART_SCREENS),
 };
 #undef CONFIG_FIELD
 
@@ -273,8 +275,8 @@ constexpr bool configFieldsInOrder() {
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
 // Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
-static_assert((offsetof(ClockConfig, controls) +
-               sizeof(ClockConfig::controls) +
+static_assert((offsetof(ClockConfig, planesExtras) +
+               sizeof(ClockConfig::planesExtras) +
                alignof(ClockConfig) - 1) /
                       alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),
