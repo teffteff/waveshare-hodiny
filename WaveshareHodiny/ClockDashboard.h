@@ -330,6 +330,12 @@ bool clockDashboardLcd7Swipe(int8_t direction);
 bool clockDashboardLcd7PageDotTap(int16_t x, int16_t y, uint8_t &screen);
 #endif
 
+#if !HODINY_BOARD_LCD7
+// Klepnutí na tečky obrazovek nahoře na kruhu. True, když padlo na ně; screen
+// je pak obrazovka pod tečkou, nebo UINT8_MAX, když se klepnutí zahazuje.
+bool clockDashboardPageDotTap(int16_t x, int16_t y, uint8_t &screen);
+#endif
+
 #if HODINY_BOARD_LCD7 && !FIRMWARE_RELEASE
 // Vyplní průběh hodnot ukázkou, aby šel screenshot dlaždic bez čekání 24 h.
 void clockDashboardLcd7HistoryDemo();
