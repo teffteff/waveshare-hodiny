@@ -3627,7 +3627,6 @@ struct SkySideView {
   lv_obj_t *phase;
   lv_obj_t *illumination;
   lv_obj_t *nextPhases;
-  lv_obj_t *satTitle;
   lv_obj_t *passes[SatelliteSnapshot::MAX_LISTED_PASSES];
   // Druhá stránka sloupce (tažení po sloupci): obloha a její úkazy.
   lv_obj_t *skyTitle;
@@ -3653,7 +3652,8 @@ lv_obj_t *centeredLabel(lv_obj_t *parent, const lv_font_t *font, lv_coord_t x,
 
 // Rozložení jako na kulaté stránce Slunce a Měsíc: nadpis na střed, dvě
 // poloviny s východem a západem, Měsíc uprostřed s východem vlevo
-// a západem vpravo. Pod Měsícem na stránce družic jejich počet a přelety.
+// a západem vpravo. Pod Měsícem na stránce družic přelety, bez nadpisu, aby
+// se vešly čtyři řádky.
 void createSkySide(lv_obj_t *screen) {
   SkySideView &v = skySide;
   v.barRoot = panel(screen, 0, 0, SCREEN_WIDTH, BAR_HEIGHT + 1);
@@ -3684,12 +3684,16 @@ void createSkySide(lv_obj_t *screen) {
   v.phase = centeredLabel(c, &lcd7_text22, 0, 262, SKY_SIDE_W);
   v.illumination = centeredLabel(c, &lcd7_text15, 0, 290, SKY_SIDE_W);
   v.nextPhases = centeredLabel(c, &lcd7_text15, 0, 310, SKY_SIDE_W);
-  v.lines[1] = line(c, SKY_SIDE_PAD, 338, SKY_SIDE_CONTENT, 1);
-  v.satTitle = centeredLabel(c, &lcd7_text15, 0, 348, SKY_SIDE_W);
-  lv_obj_set_style_text_letter_space(v.satTitle, 2, 0);
+  v.lines[1] = line(c, SKY_SIDE_PAD, 336, SKY_SIDE_CONTENT, 1);
+  // Menší písmo než dřív: "Tiangong ZÍTRA 21:45 max 54° VIDITELNÁ" by se
+  // osmnáctkou zalomil do dalšího řádku. Řádek je vysoký jen na jeden řádek
+  // textu a přesah se zkrátí třemi tečkami, takže se řádky nikdy nepřekryjí
+  // ani nesáhnou na tečky stránek.
   for (int index = 0; index < SatelliteSnapshot::MAX_LISTED_PASSES; ++index) {
-    v.passes[index] = centeredLabel(c, &lcd7_text18, SKY_SIDE_PAD, 370 + index * 22,
+    v.passes[index] = centeredLabel(c, &lcd7_text15, SKY_SIDE_PAD, 343 + index * 19,
                                     SKY_SIDE_CONTENT);
+    lv_obj_set_height(v.passes[index], 19);
+    lv_label_set_long_mode(v.passes[index], LV_LABEL_LONG_DOT);
     lv_label_set_recolor(v.passes[index], true);
   }
   v.skyTitle = centeredLabel(c, &lcd7_text15, 0, 10, SKY_SIDE_W);
@@ -3849,7 +3853,7 @@ void syncSkySide(const Palette &p) {
                           v.sunTimes[1], v.twilight[0], v.twilight[1], v.dayLength,
                           v.lines[0], v.moonTitle, v.moonCaptions[0], v.moonCaptions[1],
                           v.moonTimes[0], v.moonTimes[1], v.phase, v.illumination,
-                          v.nextPhases, v.lines[1], v.satTitle};
+                          v.nextPhases, v.lines[1]};
   for (lv_obj_t *object : pageZero) setVisible(object, first);
   lv_obj_t *pageOne[] = {v.skyTitle, v.dark, v.kp, v.eventsTitle};
   for (lv_obj_t *object : pageOne) setVisible(object, !first);
@@ -3870,10 +3874,8 @@ void syncSkySide(const Palette &p) {
   }
   for (lv_obj_t *object : v.events) setVisible(object, false);
 
-  // Přelety ISS a domácích družic: vždycky vidět, nezávisle na tom, který
-  // z nich kulatá stránka zrovna vybrala na řádek pod oblohou.
-  setText(v.satTitle, english ? "PASSES" : "PŘELETY");
-  setColor(v.satTitle, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
+  // Přelety ISS, Hubbla, Tiangongu a domácí družice: vždycky vidět, nezávisle
+  // na tom, který z nich kulatá stránka zrovna vybrala na řádek pod oblohou.
   for (int index = 0; index < SatelliteSnapshot::MAX_LISTED_PASSES; ++index) {
     char text[128];
     const bool shown = index < satellitesLcd7PassCount &&

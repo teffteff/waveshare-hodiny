@@ -56,10 +56,11 @@ struct SatelliteTrack {
   int16_t elevationTenths[SATELLITE_MAX_SAMPLES] = {};
 };
 
-// Delší jméno server u přeletu neposílá; "SATGUS" je zatím nejdelší.
+// Delší jméno server u přeletu neposílá; "Tiangong" je zatím nejdelší.
 constexpr size_t SATELLITE_PASS_NAME_LENGTH = 13;
-// Kolik přeletů najednou (ISS a SATGUS); víc by se na jeden řádek nevešlo.
-constexpr size_t SATELLITE_MAX_PASSES = 2;
+// Kolik přeletů najednou: SATGUS, ISS, Hubble a Tiangong. Kulaté hodiny z nich
+// píšou jeden řádek, 7" všechny ve sloupci oblohy.
+constexpr size_t SATELLITE_MAX_PASSES = 4;
 
 // Nejbližší přelet jedné družice. Časy jsou unixové sekundy.
 struct SatellitePass {
