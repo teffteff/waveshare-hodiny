@@ -6353,6 +6353,7 @@ void updateScreenDots() {
   // nevypovídala. Nastavení ani aktualizace firmwaru do rotace nepatří.
   const bool visible = count > 1 && !settingsVisible && !firmwareUpdateActive &&
                        ROUND_DIAL_INFO_SHOWN;
+  // Stejná mezera jako v clockDashboardPageDotTap.
   const int gap = 20;
   const int firstX = -((count - 1) * gap) / 2;
   const lv_color_t accent =
@@ -8359,6 +8360,34 @@ void clockDashboardSetPlanesAvailable(bool available) {
   // tečku, jinak by sliboval obrazovku, na kterou se nedá přepnout.
   updateScreenDots();
 }
+
+#if !HODINY_BOARD_LCD7
+// Tečky obrazovek nahoře na kruhu (updateScreenDots): stejné rozložení,
+// pruh na výšku třikrát vyšší než tečka, na šířku každé tečce celá mezera,
+// aby se do nich dalo trefit prstem.
+bool clockDashboardPageDotTap(int16_t x, int16_t y, uint8_t &screen) {
+  screen = UINT8_MAX;
+  if (settingsVisible || firmwareUpdateActive || !ROUND_DIAL_INFO_SHOWN) return false;
+  constexpr int DOT_GAP = 20;
+  constexpr int HIT_HALF_HEIGHT = 18;
+  const int dotsY = STAGE_SIZE / 2 + SCREEN_DOT_OFFSET_Y;
+  if (y < dotsY - HIT_HALF_HEIGHT || y > dotsY + HIT_HALF_HEIGHT) return false;
+  uint8_t screens[SCREEN_DOT_COUNT];
+  uint8_t count = 0;
+  for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position) {
+    const uint8_t candidate = clockConfigScreenAt(dashboardRuntimeConfig, position);
+    if (screenAvailable(candidate)) screens[count++] = candidate;
+  }
+  // Jediná tečka se neukazuje, takže na ni nejde ani klepnout.
+  if (count < 2) return false;
+  const int firstX = STAGE_SIZE / 2 - ((count - 1) * DOT_GAP) / 2;
+  const int offset = x - firstX + DOT_GAP / 2;
+  if (offset < 0 || offset >= count * DOT_GAP) return false;
+  // Klepnutí, které zavřelo nastavení, se spolkne celé, i nad tečkami.
+  if (!consumeSuppressedTap()) screen = screens[offset / DOT_GAP];
+  return true;
+}
+#endif
 
 void clockDashboardHandleSingleTap(int16_t x, int16_t y) {
   // Nad otevřeným nastavením a během aktualizace firmwaru zůstává activeScreen

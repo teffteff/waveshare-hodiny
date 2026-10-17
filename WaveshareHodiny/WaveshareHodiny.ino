@@ -1618,6 +1618,14 @@ void handleShortTap(int16_t x, int16_t y) {
       showScreenFromWeb(dotScreen);
     return;
   }
+#else
+  // Na kulatém totéž s tečkami nahoře na kruhu.
+  uint8_t dotScreen = UINT8_MAX;
+  if (clockDashboardPageDotTap(x, y, dotScreen)) {
+    if (dotScreen != UINT8_MAX && dotScreen != activeRotationScreen())
+      showScreenFromWeb(dotScreen);
+    return;
+  }
 #endif
   clockDashboardHandleSingleTap(x, y);
 }
