@@ -102,6 +102,9 @@ constexpr uint16_t COLOR_WATCHED = 0x6628;
 // (červená, oranžová, žlutá, modrá) i od nouze a hlídaného letu.
 constexpr uint16_t COLOR_MILITARY = 0xf81f;  // purpurová
 constexpr uint16_t COLOR_LOW_PASS = 0x07ff;  // azurová
+// Meteosonda: bílý balon. Výšková stupnice by ji ve 30 km barvila jako dopravní
+// letadlo v hladině a bílou ikonu nemá nic jiného.
+constexpr uint16_t COLOR_SONDE = 0xffff;
 // Jak daleko dopředu se nízký přelet předpovídá; stejně jako v infra/alerts.
 constexpr float LOW_PASS_LOOKAHEAD_SECONDS = 180.0f;
 
@@ -673,6 +676,15 @@ void drawAircraftIcon(int x, int y, float trackDeg, bool hasTrack,
   }
 }
 
+// Meteosonda: balon s lankem a krabičkou pod ním. Bod (x, y) je krabička
+// s balonem dohromady uprostřed, aby kroužek výběru seděl jako u letadla.
+void drawSondeIcon(int x, int y, uint16_t color) {
+  const uint16_t drawColor = paletteColor(color);
+  fillMapCircle(pixels, x, y - 5, 6, drawColor, 100);
+  drawMapLine(pixels, x, y + 1, x, y + 7, drawColor, 100);
+  fillMapRect(pixels, x - 2, y + 7, 5, 4, drawColor, 100);
+}
+
 // Filtr rozhoduje o tom, co je na mapě - a tím i o čísle na řádku s počtem
 // letadel, protože to má říkat, kolik jich je vidět, ne kolik jich server
 // poslal. Nedotčené zůstává hledání nouzového kódu a hlídaného letu: ta se
@@ -899,6 +911,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     bool watched;
     bool military;
     bool lowPass;
+    bool sonde;
   };
   PlannedAircraft plan[ADSB_MAX_AIRCRAFT];
   uint8_t planCount = 0;
@@ -926,7 +939,9 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     const bool military = (aircraft.dbFlags & ADSB_DB_FLAG_MILITARY) != 0;
     bool lowPass = false;
     AdsbPassPrediction pass;
-    if (lowPassCriteria.valid &&
+    // Sonda letí skoro svisle a padá na padáku; "nízký přelet" pro ni nic
+    // neznamená a výškový filtr letadel (strop 60 000 ft) by ji schoval.
+    if (!aircraft.sonde && lowPassCriteria.valid &&
         adsbPredictPass(aircraft, context.centerLatitude,
                         context.centerLongitude,
                         lowPassCriteria.groundElevationM,
@@ -935,7 +950,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
                 pass.heightM <= lowPassCriteria.heightM;
     // Označená letadla filtr výšky neschová, stejně jako nouzi.
     if (emergency == nullptr && !watched && !military && !lowPass &&
-        !passesFilter(aircraft, planes))
+        !aircraft.sonde && !passesFilter(aircraft, planes))
       continue;
 
     int x = 0;
@@ -954,6 +969,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     entry.watched = watched;
     entry.military = military;
     entry.lowPass = lowPass;
+    entry.sonde = aircraft.sonde;
   }
 
   // 2. průchod: popisky letadel. Místo si berou dřív než města - na radaru
@@ -970,7 +986,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
       PlannedAircraft &entry = plan[planIndex];
       const bool priority = entry.emergency || entry.watched ||
-                            entry.lowPass || entry.military ||
+                            entry.lowPass || entry.military || entry.sonde ||
                             static_cast<int>(entry.index) == selectedIndex;
       if (priority != priorityRound) continue;
       const AdsbAircraft &aircraft = liveList[entry.index];
@@ -1038,8 +1054,11 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
         fmodf(aircraft.trackDeg - static_cast<float>(rotationDegrees), 360.0f);
     if (screenTrack < 0.0f) screenTrack += 360.0f;
     if (!isfinite(screenTrack)) screenTrack = 0.0f;
-    drawAircraftIcon(x, y, screenTrack, aircraft.hasTrack,
-                     altitudeColor(aircraft.altitudeFt, altitudeKnown));
+    if (entry.sonde)
+      drawSondeIcon(x, y, COLOR_SONDE);
+    else
+      drawAircraftIcon(x, y, screenTrack, aircraft.hasTrack,
+                       altitudeColor(aircraft.altitudeFt, altitudeKnown));
 
     if (entry.labelKind != 0) {
       if (entry.labelKind == 1)
@@ -1052,7 +1071,10 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
                      paletteColor(labelColor));
     }
   }
-  const uint8_t drawn = planCount;
+  // Počet na řádku "LETADLA" sondy nezahrnuje; balon je vidět na mapě.
+  uint8_t drawn = 0;
+  for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex)
+    if (!plan[planIndex].sonde) ++drawn;
 
   drawAltitudeLegend();
   if (!RECTANGULAR_VIEW) drawRangeDots(planes.rangeIndex);
@@ -1212,6 +1234,17 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
                          ? "Neočekávaná odpověď serveru letadel"
                          : "Server letadel neposlal letadla");
     return false;
+  }
+
+  // Přistání sondy přijde jako "za kolik sekund"; čas se dopočítá teď, ne až
+  // při zobrazení, kdy by se počítal od jiného okamžiku.
+  const time_t parsedAt = time(nullptr);
+  for (size_t index = 0; index < outcome.count; ++index) {
+    AdsbAircraft &item = scratchList[index];
+    if (item.hasLanding && item.landInSeconds >= 0.0f &&
+        parsedAt >= VALID_TIME_THRESHOLD)
+      item.landEpoch = static_cast<int64_t>(parsedAt) +
+                       static_cast<int64_t>(item.landInSeconds);
   }
 
   // Hotový rozbor se překlopí do živého seznamu naráz, takže useknutá nebo
@@ -1685,6 +1718,19 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
     detail.verticalRateFtMin = aircraft.verticalRateFtMin;
     detail.routeState = routeState;
     detail.route = routeInfo;
+    detail.sonde = aircraft.sonde;
+    if (aircraft.sonde && aircraft.hasLanding) {
+      detail.hasLanding = true;
+      detail.landingEpoch = aircraft.landEpoch;
+      // Na desítky kilometrů stačí rovinná aproximace, stejně jako u průletu.
+      const float eastKm = (aircraft.landLongitude - requestLongitude) * 111.32f *
+                           cosf(requestLatitude * DEGREES_TO_RADIANS);
+      const float northKm = (aircraft.landLatitude - requestLatitude) * 110.574f;
+      detail.landingDistanceKm = hypotf(eastKm, northKm);
+      float bearing = atan2f(eastKm, northKm) / DEGREES_TO_RADIANS;
+      if (bearing < 0.0f) bearing += 360.0f;
+      detail.landingBearingDeg = bearing;
+    }
   } else {
     detail.open = false;
   }

@@ -124,6 +124,18 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
     jsonCopyTextMember(objectBegin, objectEnd, "desc", target.description,
                        sizeof(target.description));
     copySquawk(objectBegin, objectEnd, target.squawk, sizeof(target.squawk));
+    if (jsonReadNumberMember(objectBegin, objectEnd, "sonde", value))
+      target.sonde = value >= 1.0f;
+    if (target.sonde &&
+        jsonReadNumberMember(objectBegin, objectEnd, "land_lat",
+                             target.landLatitude) &&
+        jsonReadNumberMember(objectBegin, objectEnd, "land_lon",
+                             target.landLongitude)) {
+      target.hasLanding = true;
+      if (jsonReadNumberMember(objectBegin, objectEnd, "land_in", value) &&
+          value >= 0.0f)
+        target.landInSeconds = value;
+    }
     ++outcome.count;
   }
   return outcome;
@@ -168,10 +180,35 @@ bool adsbPredictPass(const AdsbAircraft &aircraft, float homeLatitude,
   return true;
 }
 
+namespace {
+
+// Výška sondy na popisek: celé kilometry, pod kilometr metry.
+void sondeAltitudeText(const AdsbAircraft &aircraft, char *output,
+                       size_t capacity) {
+  const float meters = aircraft.altitudeFt * 0.3048f;
+  if (!aircraft.hasAltitude)
+    output[0] = '\0';
+  else if (meters >= 1000.0f)
+    snprintf(output, capacity, "%d km", static_cast<int>(lroundf(meters / 1000.0f)));
+  else
+    snprintf(output, capacity, "%d m",
+             static_cast<int>(lroundf(meters > 0.0f ? meters : 0.0f)));
+}
+
+}  // namespace
+
 void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,
                   size_t capacity) {
   if (output == nullptr || capacity == 0) return;
   output[0] = '\0';
+  if (aircraft.sonde) {
+    char altitude[12];
+    sondeAltitudeText(aircraft, altitude, sizeof(altitude));
+    const char *name = aircraft.type[0] != '\0' ? aircraft.type : aircraft.registration;
+    snprintf(output, capacity, "%s%s%s", name,
+             name[0] != '\0' && altitude[0] != '\0' ? " " : "", altitude);
+    return;
+  }
   const char *source = nullptr;
   if (typeName) {
     if (aircraft.description[0] != '\0')
@@ -203,6 +240,10 @@ void adsbMapShortLabel(const AdsbAircraft &aircraft, bool typeName,
                        char *output, size_t capacity) {
   if (output == nullptr || capacity == 0) return;
   output[0] = '\0';
+  if (aircraft.sonde) {
+    sondeAltitudeText(aircraft, output, capacity);
+    return;
+  }
   if (!typeName || aircraft.description[0] == '\0' || aircraft.type[0] == '\0')
     return;
   strncpy(output, aircraft.type, capacity - 1);

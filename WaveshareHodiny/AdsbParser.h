@@ -69,6 +69,16 @@ struct AdsbAircraft {
   // true = slyšel ho vlastní přijímač (planes-web posílá "rx":1), jinak
   // letadlo zná jen internet (adsb.fi).
   bool ownReceiver = false;
+  // Meteosonda, ne letadlo ("sonde":1 od planes-web s ?sondes=1). Sériové
+  // číslo nese v registration, typ ("RS41") v type, volací znak nemá.
+  bool sonde = false;
+  // Předpověď přistání sondy (SondeHub): místo a za kolik sekund od stažení.
+  // landEpoch dopočítá služba radaru, rozbor hodiny nezná.
+  bool hasLanding = false;
+  float landLatitude = 0.0f;
+  float landLongitude = 0.0f;
+  float landInSeconds = -1.0f;
+  int64_t landEpoch = 0;
 };
 
 constexpr uint8_t ADSB_DB_FLAG_MILITARY = 0x01;
@@ -108,9 +118,12 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
 void adsbMapLabel(const AdsbAircraft &aircraft, bool typeName, char *output,
                   size_t capacity);
 
+// U sondy typ a výška ("RS41 12 km", pod kilometr "RS41 850 m"), bez typu
+// sériové číslo - výška je u sondy to hlavní a slova by se musela překládat.
+//
 // Kratší náhrada popisku, když se ten z adsbMapLabel() na mapu nevejde: zkratka
 // typu ("B738") místo jména slovy. Prázdná, když žádná kratší náhrada není -
-// popisek už zkratkou je, nebo se píše volací značka.
+// popisek už zkratkou je, nebo se píše volací značka. U sondy jen výška.
 void adsbMapShortLabel(const AdsbAircraft &aircraft, bool typeName,
                        char *output, size_t capacity);
 

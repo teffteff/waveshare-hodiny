@@ -31,7 +31,8 @@ void testOwnFeedGetsQueryParameters() {
   assert(planeFeedBuildUrl("https://server.test/planes.json", LATITUDE,
                            LONGITUDE, DISTANCE_NM, url, sizeof(url)));
   assert(std::string(url) ==
-         "https://server.test/planes.json?lat=49.19510&lon=16.60680&dist=53.9");
+         "https://server.test/planes.json?lat=49.19510&lon=16.60680&dist=53.9"
+         "&sondes=1");
 }
 
 void testExistingQueryIsKept() {
@@ -41,7 +42,7 @@ void testExistingQueryIsKept() {
                            LONGITUDE, DISTANCE_NM, url, sizeof(url)));
   assert(std::string(url) ==
          "https://server.test/api?zdroj=letadla&lat=49.19510&lon=16.60680"
-         "&dist=53.9");
+         "&dist=53.9&sondes=1");
 }
 
 void testCredentialsInAddressSurvive() {
@@ -51,7 +52,7 @@ void testCredentialsInAddressSurvive() {
                            LATITUDE, LONGITUDE, DISTANCE_NM, url, sizeof(url)));
   assert(std::string(url) ==
          "https://hodiny:tajne@server.test/planes.json?lat=49.19510"
-         "&lon=16.60680&dist=53.9");
+         "&lon=16.60680&dist=53.9&sondes=1");
 }
 
 void testTooLongAddressIsRefusedWhole() {
