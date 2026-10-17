@@ -161,19 +161,34 @@ void rgbPanelCreate(const esp_lcd_rgb_panel_config_t &config) {
   esp_lcd_panel_init(panel_handle);
 }
 
-void LCD_Resync() {
+namespace {
+// Restart proběhne až na konci právě vysílaného snímku; dva snímky po něm
+// ještě můžou patřit starému stavu, takže je hlídání vynechá.
+//
+// Správná fáze se restartem nemění - je daná taktem a časováním panelu -,
+// takže výchozí fáze zůstává a oprava v přerušení hlídá dál. Dřív se
+// zahazovala při každém restartu: hlídání pak deset snímků spalo, a když se
+// během nich obraz posunul (třeba pod provozem vzdáleného nastavení), posun
+// zůstal, nebo se z něj dokonce stala nová "správná" fáze. Zapomenout ji je
+// potřeba jen po změně taktu.
+void restartPanel(bool forgetBaseline) {
   if (panel_handle != nullptr) {
     esp_lcd_rgb_panel_restart(panel_handle);
   }
-  // Restart proběhne až na konci právě vysílaného snímku. Fázi pak změříme
-  // znovu a vynecháme dva snímky, které mohou ještě patřit starému stavu.
   portENTER_CRITICAL(&frameFinishedMux);
   phaseCheckedCount = phaseSampleCount + 2;
+  isrStrikes = 0;
+  isrSettleFrames = ISR_RESTART_SETTLE_FRAMES;
   portEXIT_CRITICAL(&frameFinishedMux);
-  phaseBaselineValid = false;
-  isrPhaseBaselineUs = PHASE_INVALID;
+  if (forgetBaseline) {
+    phaseBaselineValid = false;
+    isrPhaseBaselineUs = PHASE_INVALID;
+  }
   phaseStrikes = 0;
 }
+}  // namespace
+
+void LCD_Resync() { restartPanel(false); }
 
 bool LCD_MaintainSync() {
   if (panel_handle == nullptr) return false;
@@ -248,7 +263,7 @@ bool LCD_SetPixelClock(uint32_t frequencyHz) {
   currentPixelClockFrequencyHz = frequencyHz;
   updateIsrPhaseLimits();
   // Jiný takt posune i správnou fázi; změřit znovu.
-  LCD_Resync();
+  restartPanel(true);
   return true;
 }
 

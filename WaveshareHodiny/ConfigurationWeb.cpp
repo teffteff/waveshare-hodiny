@@ -4402,9 +4402,28 @@ void handleDiagnostics() {
   result += F(",\"uptimeMs\":");
   result += millis();
   result += F(",\"currentMemory\":");
-  appendMemoryJson(result, networkDiagnosticsCurrentMemory(true));
+  // Největší volný blok PSRAM se hledá průchodem haldou se zakázanými
+  // přerušeními (kolem 2 ms), a to 7" posune obraz. Stránka diagnostiky se
+  // ptá každých 5 s a stránka nastavení při každém otevření, takže se hodnota
+  // drží minutu a přes vzdálené nastavení se nehledá vůbec: tam teče stránka
+  // smyčkou přes PSRAM a posun by se přidal k jejímu provozu.
+  static size_t psramLargest = 0;
+  static uint32_t psramLargestAt = 0;
+  static bool psramLargestKnown = false;
+  constexpr uint32_t PSRAM_LARGEST_MAX_AGE_MS = 60000;
+  bool walkedPsram = false;
+  if (!relayedRequest() &&
+      (!psramLargestKnown || millis() - psramLargestAt >= PSRAM_LARGEST_MAX_AGE_MS)) {
+    psramLargest = networkDiagnosticsCurrentMemory(true).psramLargest;
+    psramLargestAt = millis();
+    psramLargestKnown = true;
+    walkedPsram = true;
+  }
+  NetworkMemorySnapshot memory = networkDiagnosticsCurrentMemory(false);
+  memory.psramLargest = psramLargest;
+  appendMemoryJson(result, memory);
   // Průchod haldou PSRAM mohl posunout obraz; srovnáme panel hned.
-  LCD_Resync();
+  if (walkedPsram) LCD_Resync();
   result += F(",\"taskStacks\":{\"loop\":");
   result += static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
   result += F(",\"homeAssistant\":");
