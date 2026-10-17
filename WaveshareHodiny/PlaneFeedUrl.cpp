@@ -11,8 +11,10 @@ bool planeFeedBuildUrl(const char *feedUrl, float latitude, float longitude,
   if (feedUrl != nullptr && feedUrl[0] != '\0') {
     // Vlastní zdroj může mít v adrese vlastní dotaz (a s ním třeba klíč nebo
     // jméno souboru), takže se parametry připojí za něj, ne místo něj.
+    // sondes=1: infra/planes přidá meteosondy v dosahu. Cizí server parametr,
+    // který nezná, přejde, a adsb.fi napřímo se tudy neptá.
     const char separator = strchr(feedUrl, '?') != nullptr ? '&' : '?';
-    written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&dist=%.1f",
+    written = snprintf(output, capacity, "%s%clat=%.5f&lon=%.5f&dist=%.1f&sondes=1",
                        feedUrl, separator, static_cast<double>(latitude),
                        static_cast<double>(longitude),
                        static_cast<double>(distanceNm));

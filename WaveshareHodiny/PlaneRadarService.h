@@ -49,6 +49,13 @@ struct PlaneRadarDetail {
   float altitudeFt = 0.0f;
   float groundSpeedKt = 0.0f;
   float verticalRateFtMin = 0.0f;
+  // Meteosonda místo letadla: místo trasy předpověď přistání (SondeHub),
+  // vzdálenost a směr od domova, čas jako unixové sekundy (0 = neznámý).
+  bool sonde = false;
+  bool hasLanding = false;
+  int64_t landingEpoch = 0;
+  float landingDistanceKm = 0.0f;
+  float landingBearingDeg = 0.0f;
   // Trasa. Vyplněná je jen ve stavu Known; jinak se místo ní píše, že se hledá
   // nebo že žádná není.
   PlaneRouteState routeState = PlaneRouteState::Pending;

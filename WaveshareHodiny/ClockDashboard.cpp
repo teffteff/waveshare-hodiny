@@ -8528,6 +8528,38 @@ void composePlaneDetailModel(const PlaneRadarDetail &detail) {
       break;
   }
 
+  // Meteosonda: nadpis místo volacího znaku (žádný nemá), typ ("RS41"),
+  // sériové číslo na místě registrace a místo trasy předpověď přistání.
+  if (detail.sonde) {
+    strlcpy(model.title, english ? "RADIOSONDE" : "METEOSONDA", sizeof(model.title));
+    for (char *caption : model.routeCaption) caption[0] = '\0';
+    model.route[1][0] = '\0';
+    const time_t landing = static_cast<time_t>(detail.landingEpoch);
+    if (detail.hasLanding && detail.landingEpoch > 0) {
+      struct tm local;
+      localtime_r(&landing, &local);
+      strlcpy(model.routeCaption[0], english ? "Landing" : "Přistání",
+              sizeof(model.routeCaption[0]));
+      snprintf(model.route[0], sizeof(model.route[0]), "~%02d:%02d", local.tm_hour,
+               local.tm_min);
+    } else if (detail.hasLanding) {
+      strlcpy(model.route[0], english ? "Landing forecast" : "Předpověď přistání",
+              sizeof(model.route[0]));
+    } else {
+      strlcpy(model.route[0], english ? "No landing forecast" : "Bez předpovědi přistání",
+              sizeof(model.route[0]));
+    }
+    if (detail.hasLanding) {
+      static const char *const czech[] = {"S", "SV", "V", "JV", "J", "JZ", "Z", "SZ"};
+      static const char *const englishDirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+      const int sector = static_cast<int>(std::lround(detail.landingBearingDeg / 45.0f)) % 8;
+      snprintf(model.route[1], sizeof(model.route[1]), english ? "%d km %s of home"
+                                                               : "%d km %s od domova",
+               static_cast<int>(std::lround(detail.landingDistanceKm)),
+               english ? englishDirs[sector] : czech[sector]);
+    }
+  }
+
   // Dokud letadlo v datech chybí, čísla nejsou živá; přiznat to je poctivější
   // než nechat zmrzlé hodnoty vypadat jako aktuální.
   model.signalLost = detail.signalLost;

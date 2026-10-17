@@ -528,6 +528,39 @@ void testPredictPass() {
 
 }  // namespace
 
+// Meteosonda od planes-web (?sondes=1): příznak, sériové číslo v "r",
+// předpověď přistání a popisek typ + výška; letadlo bez "sonde" je dál letadlo.
+void testSonde() {
+  const char *payload =
+      "{\"ac\":[{\"hex\":\"~1a2b3c\",\"r\":\"S1234567\",\"t\":\"RS41\","
+      "\"lat\":49.96,\"lon\":14.71,\"alt_baro\":40026,\"baro_rate\":1024,"
+      "\"gs\":21.5,\"track\":37,\"sonde\":1,\"land_lat\":49.8,"
+      "\"land_lon\":15.3,\"land_in\":5400},"
+      "{\"hex\":\"~000001\",\"r\":\"M10-0-1\",\"lat\":49.9,\"lon\":14.8,"
+      "\"alt_baro\":2000,\"sonde\":1},"
+      "{\"hex\":\"abc123\",\"t\":\"A320\",\"lat\":50,\"lon\":14,"
+      "\"alt_baro\":35000,\"land_lat\":1,\"land_lon\":2}]}";
+  AdsbAircraft aircraft[3];
+  const AdsbParseOutcome outcome = adsbParseAircraft(payload, aircraft, 3);
+  assert(outcome.status == AdsbParseStatus::Ok && outcome.count == 3);
+  const AdsbAircraft &sonde = aircraft[0];
+  assert(sonde.sonde && sonde.hasLanding && sonde.callsign[0] == '\0');
+  assert(strcmp(sonde.registration, "S1234567") == 0 && strcmp(sonde.hex, "~1a2b3c") == 0);
+  assert(sonde.landLatitude > 49.79f && sonde.landLatitude < 49.81f);
+  assert(sonde.landInSeconds == 5400.0f && sonde.landEpoch == 0);
+  char label[19];
+  adsbMapLabel(sonde, true, label, sizeof(label));
+  assert(strcmp(label, "RS41 12 km") == 0);
+  adsbMapShortLabel(sonde, true, label, sizeof(label));
+  assert(strcmp(label, "12 km") == 0);
+  // Bez typu sériové číslo, pod kilometr metry, bez předpovědi bez přistání.
+  assert(aircraft[1].sonde && !aircraft[1].hasLanding && aircraft[1].landInSeconds < 0.0f);
+  adsbMapLabel(aircraft[1], false, label, sizeof(label));
+  assert(strcmp(label, "M10-0-1 610 m") == 0);
+  // Letadlo přistání nemá, ani když by ho server omylem poslal.
+  assert(!aircraft[2].sonde && !aircraft[2].hasLanding);
+}
+
 int main() {
   testDbFlagsAndGeometricAltitude();
   testPredictPass();
@@ -553,6 +586,7 @@ int main() {
   testUnclosedArrayDoesNotHang();
   testNegativeAltitudeCountsAsReported();
   testFindByHex();
+  testSonde();
   testEmergencyCodes();
   testEmergencySeverityOrdering();
   testLongFieldsAreTruncatedNotOverflowed();

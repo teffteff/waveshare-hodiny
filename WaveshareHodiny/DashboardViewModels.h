@@ -99,8 +99,9 @@ struct PlaneDetailViewModel {
   // "7700  NOUZE"; prázdné bez nouze.
   char emergency[32] = "";
   // Trasa na dvou řádcích: předložka ("Z", "Do") a místo, nebo bez předložky
-  // stav hledání ("Zjišťuji trasu...", "Trasa neznámá").
-  char routeCaption[2][8] = {};
+  // stav hledání ("Zjišťuji trasu...", "Trasa neznámá"). U meteosondy
+  // "Přistání" s časem a pod tím vzdálenost a směr od domova.
+  char routeCaption[2][12] = {};
   char route[2][32] = {};
   uint32_t revision = 0;
 };
