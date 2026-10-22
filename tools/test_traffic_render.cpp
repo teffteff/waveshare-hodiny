@@ -8,6 +8,7 @@
 //                                                PNG z něj udělá
 //                                                tools/rgb565_to_png.py
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
