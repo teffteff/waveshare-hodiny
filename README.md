@@ -1139,6 +1139,16 @@ přidělí domácí hlavní síti pevnou adresu místo DHCP; záložní a pracov
 zůstávají na DHCP. Hodí se, když v síti odpovídá cizí DHCP server a přebije
 router. Po připojení vypíše sériová linka síť, BSSID, adresu, bránu a DNS.
 
+**Vývoj na Beelinku, hodiny u Macu.** Dlouhé sezení s Claude Code běží na
+Beelinku (`~/waveshare-hodiny`, tmux), kde se upravuje kód a pouštějí
+`tools/run_host_tests.sh` (Linux: `apt install zlib1g-dev libmbedtls-dev`,
+LVGL 8.3.10 v `~/Documents/Arduino/libraries/lvgl`). Hodiny visí na USB u Macu
+a překládá Mac: `tools/flash-from-beelink.sh` stáhne pracovní strom z Beelinku
+i s necommitnutými změnami, sestaví ho v `~/waveshare/hodiny-beelink` a nahraje
+(`lcd21`, `lcd7`, bez argumentu obě; `--no-upload` jen sestaví). Porty desek
+jsou v ignorovaném `WaveshareHodiny/local/devices.env` (`LCD21_PORT`,
+`LCD7_PORT`). Beelink nemá `.env` ani `local/`, takže sám sestavit neumí.
+
 **Hodiny mají podivnou adresu a nejdou na internet.** Když hodiny ukazují
 adresu mimo domácí rozsah (v nastavení, strana 4) a nesynchronizují čas, bývá
 v síti druhý DHCP server, který odpovídá rychleji než router; ESP32 vezme první
