@@ -298,9 +298,7 @@ void showStatusIcons(const StatusIcons &icons, const Palette &p, lv_coord_t x,
   setColor(icons.wifi, p.night ? COLOR_ERROR
                                : (wifiConnected ? COLOR_AIR : COLOR_ERROR));
   setColor(icons.homeAssistant,
-           p.night ? COLOR_ERROR
-                   : (currentValues.homeAssistantOnline ? COLOR_AIR
-                                                        : COLOR_ERROR));
+           p.night ? COLOR_ERROR : homeAssistantStatusColor(COLOR_AIR));
   setColor(icons.web, p.night ? COLOR_ERROR : COLOR_OUTSIDE);
   constexpr lv_coord_t GAP = 14;
   lv_coord_t widths[4] = {};
@@ -1103,8 +1101,9 @@ void syncTopBar(TopBar &v, const Palette &p) {
   // Tečky vpravo; jejich šířka určuje, kde končí výstraha.
   const lv_coord_t dotsLeft = pageDotsLeft(SCREEN_WIDTH);
   showPageDots(v.dots, p, -dotsLeft, BAR_HEIGHT / 2);
-  // Ikony stavu jen při potížích: bez Wi-Fi, Home Assistant nedostupný,
-  // blesky poblíž. Když je všechno v pořádku, lišta nic neukazuje.
+  // Ikony stavu jen při potížích: bez Wi-Fi, Home Assistant nedostupný nebo
+  // s nedostupnými entitami (oranžově), blesky poblíž. Když je všechno
+  // v pořádku, lišta nic neukazuje.
   char problems[96] = "";
   char tag[AGENDA_COLOR_TAG_LENGTH + 1];
   agendaBuildColorTag(tag, COLOR_ERROR);
@@ -1115,9 +1114,15 @@ void syncTopBar(TopBar &v, const Palette &p) {
     strlcat(problems, "#", sizeof(problems));
   };
   if (lightningAlertActive) add(viewModels().lightning.text);
-  if (!wifiConnected) add(LV_SYMBOL_WIFI);
-  else if (homeAssistantStatusRelevant && !currentValues.homeAssistantOnline)
+  if (!wifiConnected) {
+    add(LV_SYMBOL_WIFI);
+  } else if (homeAssistantStatusRelevant &&
+             (!currentValues.homeAssistantOnline ||
+              currentValues.homeAssistantDegraded)) {
+    agendaBuildColorTag(
+        tag, p.night ? COLOR_ERROR : homeAssistantStatusColor(COLOR_AIR));
     add(LV_SYMBOL_HOME);
+  }
   setText(v.problems, problems);
   setVisible(v.problems, problems[0] != '\0');
   lv_obj_update_layout(v.problems);

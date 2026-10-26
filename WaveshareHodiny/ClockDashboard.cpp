@@ -640,6 +640,13 @@ bool redNightVisualEnabled() {
   return nightModeEnabled && nightVisualMode == CLOCK_NIGHT_VISUAL_RED;
 }
 
+// Ikona HA: červená bez odpovědi, oranžová, když HA odpovídá, ale velká část
+// entit hodin je nedostupná (vypadlá integrace), jinak barva spojení.
+lv_color_t homeAssistantStatusColor(lv_color_t connected) {
+  if (!currentValues.homeAssistantOnline) return COLOR_ERROR;
+  return currentValues.homeAssistantDegraded ? COLOR_ROOM : connected;
+}
+
 // Rozvržení 7": datum, hodnoty, ikonu počasí, stavové ikony a tečky obrazovek
 // ukazuje pravý sloupec (ClockDashboardLcd7.h), takže v kulatém ciferníku
 // zůstanou jen ručičky a značky. Řádek s časem a počet družic s přelety nad
@@ -2244,9 +2251,7 @@ void applyConnectionStatusColors() {
         analogLayoutEnabled() ? analogTone() : COLOR_OUTSIDE;
     setTextColor(wifiStatusLabel,
                  wifiConnected ? connectedColor : COLOR_ERROR);
-    setTextColor(statusLabel,
-                 currentValues.homeAssistantOnline ? connectedColor
-                                                   : COLOR_ERROR);
+    setTextColor(statusLabel, homeAssistantStatusColor(connectedColor));
     setTextColor(webStatusLabel, settingsColor);
   }
   alignConnectionStatusIcons();
@@ -8081,9 +8086,8 @@ void clockDashboardUpdate(const ClockValues &values) {
   lv_obj_set_style_text_color(humidityValueLabel, metricBValueColor, 0);
   lv_obj_set_style_text_color(humidityUnitLabel, metricBValueColor, 0);
 
-  const lv_color_t statusColor =
-      values.homeAssistantOnline ? COLOR_AIR : COLOR_ERROR;
-  lv_obj_set_style_text_color(statusLabel, statusColor, 0);
+  lv_obj_set_style_text_color(statusLabel, homeAssistantStatusColor(COLOR_AIR),
+                              0);
   if (automaticDayNightEnabled && currentValues.sunStateAvailable) {
     const bool lightForcesDay = currentValues.dayNightLightStateAvailable &&
                                 currentValues.dayNightLightOn;
