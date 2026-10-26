@@ -38,6 +38,9 @@ struct ClockValues {
       NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN,
       NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN};
   bool homeAssistantOnline = false;
+  // HA odpovídá, ale aspoň čtvrtina entit hodin je "unavailable" nebo
+  // "unknown" (typicky vypadlá integrace). Ikona HA pak svítí oranžově.
+  bool homeAssistantDegraded = false;
 };
 
 using BrightnessPreviewCallback = void (*)(uint8_t brightness);

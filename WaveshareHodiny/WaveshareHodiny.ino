@@ -3486,6 +3486,33 @@ bool fetchTmepValues(const ClockConfig &config, ClockValues &values) {
   return context.complete;
 }
 
+// "unavailable"/"unknown" z HA: hodnoty z této entity se vymažou (ukáže se
+// "--"), jinak by na hodinách nehybně visela poslední platná. 25. 10. 2026 tak
+// po výpadku Netatmo ukazovaly den staré teploty. Slunce a světlo noci se
+// nemažou: mají vlastní záložní výpočet a stav.
+bool clearUnavailableHomeAssistantState(const ClockConfig &config,
+                                        const String &entityId,
+                                        const String &state,
+                                        ClockValues &values) {
+  if (state != "unavailable" && state != "unknown") return false;
+  for (size_t index = 0; index < CLOCK_VALUE_SLOT_COUNT; ++index) {
+    const ClockValueSlotConfig &slot = clockConfigValueSlot(config, index);
+    if (entityId == slot.entityId) values.slotValues[index] = NAN;
+    if (entityId == clockConfigValueSlotBatteryEntityId(config, index))
+      values.slotBatteryPercent[index] = NAN;
+  }
+  if (entityId == config.radarStatusTemperatureEntityId)
+    values.outsideTemperatureC = NAN;
+  if (entityId == config.weatherEntityId) values.weatherCode = -1;
+  if (entityId == config.leftSide.temperatureEntityId)
+    values.leftTemperatureC = NAN;
+  if (entityId == config.rightSide.temperatureEntityId)
+    values.rightTemperatureC = NAN;
+  if (entityId == config.metricA.entityId) values.metricAValue = NAN;
+  if (entityId == config.metricB.entityId) values.metricBValue = NAN;
+  return true;
+}
+
 bool applyHomeAssistantState(const ClockConfig &config, const String &entityId,
                              const String &state, ClockValues &values) {
   float number;
@@ -3904,6 +3931,7 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
     values.outsideTemperatureC = NAN;
   uint8_t configuredCount = 0;
   uint8_t successfulCount = 0;
+  uint8_t unavailableCount = 0;
   int lastStatus = 0;
 
   // Nejdřív všechny entity jedním dotazem na šablonu.
@@ -3935,6 +3963,9 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
         applied = applySunStateFields(config, String(state), String(sunrise),
                                       String(sunset), String(lastChanged),
                                       values);
+      } else if (clearUnavailableHomeAssistantState(config, entityIds[index],
+                                                    String(state), values)) {
+        ++unavailableCount;
       } else {
         applied = applyHomeAssistantState(config, entityIds[index],
                                           String(state), values);
@@ -3963,6 +3994,9 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
       bool applied = false;
       if (index == 5) {
         applied = applySunState(config, payload, state, values);
+      } else if (clearUnavailableHomeAssistantState(config, entityIds[index],
+                                                    state, values)) {
+        ++unavailableCount;
       } else {
         applied =
             applyHomeAssistantState(config, entityIds[index], state, values);
@@ -3974,9 +4008,17 @@ bool fetchHomeAssistantStates(NetworkClient &client, const ClockConfig &config,
       if (entityIds[index][0] != '\0') ++configuredCount;
     }
   }
-  const bool apiResponded = successfulCount > 0;
+  // Nedostupné entity jsou také odpověď HA: když vypadne integrace se všemi
+  // entitami hodin, HA běží dál a ikona má být oranžová, ne červená.
+  const bool apiResponded = successfulCount > 0 || unavailableCount > 0;
+  values.homeAssistantDegraded =
+      apiResponded && unavailableCount * 4 >= configuredCount;
   String detail = String(successfulCount) + '/' + configuredCount;
   detail += viaTemplate ? F(" entit načteno šablonou") : F(" entit načteno");
+  if (unavailableCount > 0) {
+    detail += F(", nedostupných ");
+    detail += unavailableCount;
+  }
   if (!apiResponded && lastStatus != 0) {
     detail += F(", poslední výsledek ");
     detail += lastStatus;
