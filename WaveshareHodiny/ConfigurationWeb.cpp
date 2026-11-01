@@ -4385,7 +4385,15 @@ void handleDiagnostics() {
   result += WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
   result += F(",\"ipAddress\":\"");
   result += WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : F("");
-  result += F("\",\"firmwareState\":\"");
+  // Síť a přístupový bod: slabý signál jedněch hodin bývá tím, že se chytily
+  // vzdálenějšího bodu, a to jinde než tady vidět není.
+  result += F("\",\"wifiSsid\":\"");
+  if (WiFi.status() == WL_CONNECTED) result += jsonEscape(WiFi.SSID().c_str());
+  result += F("\",\"wifiBssid\":\"");
+  if (WiFi.status() == WL_CONNECTED) result += WiFi.BSSIDstr();
+  result += F("\",\"wifiChannel\":");
+  result += WiFi.status() == WL_CONNECTED ? WiFi.channel() : 0;
+  result += F(",\"firmwareState\":\"");
   result += firmwareUpdateStateName(firmware.state);
   result += F("\",\"firmwareMessage\":\"");
   result += jsonEscape(firmware.message);
