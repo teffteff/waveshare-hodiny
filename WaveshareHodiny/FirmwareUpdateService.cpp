@@ -198,10 +198,12 @@ bool installFirmware(const String &url, uint32_t expectedSize,
   requiredSha256.toLowerCase();
   if (!writeOk || received != expectedSize || actualSha256 != requiredSha256) {
     Update.abort();
+    // Useknuté stahování má vždy jiný hash; nesouhlas SHA-256 je chyba jen
+    // u celého obrazu, jinak to vypadá jako poškozený release.
+    const bool complete = writeOk && received == expectedSize;
     setMessage(FirmwareUpdateState::Failed,
-               actualSha256 == requiredSha256
-                   ? "Stažení OTA obrazu nebylo dokončeno."
-                   : "Kontrolní SHA-256 OTA obrazu nesouhlasí.",
+               complete ? "Kontrolní SHA-256 OTA obrazu nesouhlasí."
+                        : "Stažení OTA obrazu nebylo dokončeno.",
                false);
     if (lifecycleCallback != nullptr) lifecycleCallback(false);
     return false;
