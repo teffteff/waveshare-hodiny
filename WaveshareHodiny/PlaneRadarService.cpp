@@ -16,6 +16,7 @@
 #include "HttpDownload.h"
 #include "JsonScan.h"
 #include "MapCanvas.h"
+#include "PlaneIcon.h"
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
 #include "PlaneFeedUrl.h"
@@ -646,37 +647,6 @@ uint16_t markerColor(bool emergency, bool watched, bool lowPass,
   return COLOR_WHITE;
 }
 
-void drawAircraftIcon(int x, int y, float trackDeg, bool hasTrack,
-                      uint16_t color) {
-  const uint16_t drawColor = paletteColor(color);
-  if (!hasTrack) {
-    drawMapCircle(pixels, x, y, 7, drawColor, 100);
-    fillMapCircle(pixels, x, y, 2, drawColor, 100);
-    return;
-  }
-  const float radians = trackDeg * DEGREES_TO_RADIANS;
-  const float cosine = cosf(radians);
-  const float sine = sinf(radians);
-  // Místní souřadnice: right doprava od nosu, forward dopředu. Traťový úhel 0
-  // míří nahoru, 90 doprava.
-  const float shape[10][2] = {
-      {0, 12}, {3, 1}, {13, -8}, {3, -5}, {3, -7},
-      {0, -12}, {-3, -7}, {-3, -5}, {-13, -8}, {-3, 1}};
-  int pointX[10];
-  int pointY[10];
-  for (int index = 0; index < 10; ++index) {
-    const float right = shape[index][0];
-    const float forward = shape[index][1];
-    pointX[index] = x + static_cast<int>(right * cosine + forward * sine);
-    pointY[index] = y + static_cast<int>(right * sine - forward * cosine);
-  }
-  for (int index = 0; index < 10; ++index) {
-    const int next = (index + 1) % 10;
-    fillMapTriangle(pixels, x, y, pointX[index], pointY[index], pointX[next],
-                    pointY[next], drawColor, 100);
-  }
-}
-
 // Meteosonda: balon s lankem a krabičkou pod ním. Bod (x, y) je krabička
 // s balonem dohromady uprostřed, aby kroužek výběru seděl jako u letadla.
 void drawSondeIcon(int x, int y, uint16_t color) {
@@ -1058,8 +1028,10 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     if (entry.sonde)
       drawSondeIcon(x, y, COLOR_SONDE);
     else
-      drawAircraftIcon(x, y, screenTrack, aircraft.hasTrack,
-                       altitudeColor(aircraft.altitudeFt, altitudeKnown));
+      PlaneIcon_Draw(pixels, x, y, screenTrack, aircraft.hasTrack,
+                     aircraft.iconKind,
+                     paletteColor(altitudeColor(aircraft.altitudeFt,
+                                                altitudeKnown)));
 
     if (entry.labelKind != 0) {
       if (entry.labelKind == 1)

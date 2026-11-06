@@ -58,6 +58,11 @@ struct AdsbAircraft {
   // pokryje i "BOMBARDIER BD-700 Global 7000/7500", delší jména se useknou.
   char description[40] = "";
   char squawk[6] = "";
+  // ADS-B kategorie ("A3" dopravní, "A7" vrtulník, "B1" kluzák) a z ní spolu
+  // s typem určený druh ikony (PlaneIcon.h). Určí se jednou při čtení, ne při
+  // každém kreslení.
+  char category[3] = "";
+  uint8_t iconKind = 0;
   bool hasTrack = false;
   // Geometrická (GNSS) výška nad elipsoidem WGS84 ve stopách. Na rozdíl od
   // barometrické nezávisí na tlaku, takže z ní jde výška nad zemí.

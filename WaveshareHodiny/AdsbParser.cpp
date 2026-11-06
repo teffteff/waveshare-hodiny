@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "JsonScan.h"
+#include "PlaneIcon.h"
 
 namespace {
 
@@ -124,6 +125,9 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
     jsonCopyTextMember(objectBegin, objectEnd, "desc", target.description,
                        sizeof(target.description));
     copySquawk(objectBegin, objectEnd, target.squawk, sizeof(target.squawk));
+    jsonCopyTextMember(objectBegin, objectEnd, "category", target.category,
+                       sizeof(target.category));
+    target.iconKind = PlaneIcon_Classify(target.type, target.category);
     if (jsonReadNumberMember(objectBegin, objectEnd, "sonde", value))
       target.sonde = value >= 1.0f;
     if (target.sonde &&
