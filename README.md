@@ -90,7 +90,9 @@ a pod nimi mřížka až osmi nezávislých hodnot s devátou na středu pod nim
   srážkami a větrem, tažením týden dopředu s kvalitou ovzduší a pylem a na
   druhou stranu naměřených posledních 24 hodin z vlastního serveru,
 - radar letadel z veřejného API adsb.fi: mapa okolí s letadly obarvenými podle
-  výšky, dosahy 10 až 100 km, filtr výšky, upozornění na nouzový squawk,
+  výšky a s ikonou podle typu (dopravní, širokotrupé, čtyřmotorové, regionální,
+  business jet, turbovrtulové, malá, vrtulník, kluzák, balon, dron; podle
+  MeteoPlaneRadar a schématu ADS-B Radar), dosahy 10 až 100 km, filtr výšky, upozornění na nouzový squawk,
   hlídaný let a detail letadla i s trasou letu z adsb.lol,
 - realtime blesky ze sítě Blitzortung (LightningMaps.org) přes vlastní server:
   údery na meteoradaru obarvené podle stáří a výstraha na ciferníku, když

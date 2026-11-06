@@ -4,6 +4,7 @@
 #include <string>
 
 #include "AdsbParser.h"
+#include "PlaneIcon.h"
 
 namespace {
 
@@ -104,6 +105,26 @@ void testGroundTrafficIsDropped() {
   assert(outcome.count == 1);
   assert(std::string(aircraft[0].hex) == "bbbbbb");
   assert(aircraft[0].altitudeFt == 3000.0f);
+}
+
+void testIconKindFromTypeAndCategory() {
+  // Druh ikony se určí při čtení: typ draku má přednost, bez známého typu
+  // rozhodne ADS-B kategorie, bez obojího zůstane šipka.
+  const char *const payload =
+      "{\"ac\":["
+      "{\"hex\":\"aaaaaa\",\"t\":\"B738\",\"category\":\"A3\",\"alt_baro\":30000,\"lat\":50.1,\"lon\":14.2},"
+      "{\"hex\":\"bbbbbb\",\"category\":\"A7\",\"alt_baro\":1500,\"lat\":50.2,\"lon\":14.3},"
+      "{\"hex\":\"cccccc\",\"alt_baro\":3000,\"lat\":50.3,\"lon\":14.4}"
+      "],\"msg\":\"No error\"}";
+  AdsbAircraft aircraft[ADSB_MAX_AIRCRAFT];
+  const AdsbParseOutcome outcome =
+      adsbParseAircraft(payload, aircraft, ADSB_MAX_AIRCRAFT);
+  assert(outcome.status == AdsbParseStatus::Ok);
+  assert(outcome.count == 3);
+  assert(aircraft[0].iconKind == PI_NARROW);
+  assert(std::string(aircraft[1].category) == "A7");
+  assert(aircraft[1].iconKind == PI_HELI);
+  assert(aircraft[2].iconKind == PI_GENERIC);
 }
 
 void testAircraftWithoutPositionIsDropped() {
@@ -570,6 +591,7 @@ int main() {
   testRealResponse();
   testTrimmedFeedParsesLikeAdsb();
   testGroundTrafficIsDropped();
+  testIconKindFromTypeAndCategory();
   testAircraftWithoutPositionIsDropped();
   testMissingTrackIsMarked();
   testNumbersSentAsStrings();

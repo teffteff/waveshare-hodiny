@@ -55,6 +55,14 @@ z `MeteoPlaneRadar/WxIcon.cpp` a `WxIcon.h`, revize
 WMO kódů zůstávají zachované; kreslení je převedené z Arduino_GFX do LVGL
 s podporou červeného nočního režimu.
 
+Ikony letadel podle typu v `WaveshareHodiny/PlaneIcon.cpp` (seznamy typů draků,
+pořadí rozhodování podle typu a ADS-B kategorie a tvary ikon) jsou převzaté beze
+změny z `MeteoPlaneRadar/PlaneIcon.cpp` verze 0.8.5; kreslení je přepsané na
+`MapCanvas`. Rozdělení typů do ikon vychází ze schématu ADS-B Radar
+(https://adsb-radar.com/help/icons.html), jehož soubory se nepoužívají. Opravu
+stupnice ČHMÚ (44/36/24/12 dBZ místo 46/40/32/20) přinesl také MeteoPlaneRadar
+0.8.5.
+
 ## Data o letadlech adsb.fi a adsb.lol
 
 Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:
