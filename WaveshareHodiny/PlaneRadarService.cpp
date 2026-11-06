@@ -182,6 +182,23 @@ bool staleFrameDisplayed = false;
 bool loading = false;
 uint32_t generation = 0;
 unsigned long lastSuccessAt = 0;
+// Kdy byla letadla v živém seznamu doopravdy čerstvá: čas úspěšného stažení
+// minus stáří, které ohlásil server ("age"). Po minutě bez čerstvých dat se
+// letadla kreslí šedě a bez značek, po deseti se nekreslí vůbec, aby stará
+// poloha nevypadala jako živá (podle MeteoPlaneRadar 0.8.4).
+unsigned long aircraftDataAt = 0;
+constexpr uint32_t STALE_GREY_MS = 60000;
+constexpr uint32_t STALE_HIDE_MS = 600000;
+uint32_t fetchPeriodMs(const ClockPlanesConfig &planes, bool screenVisible);
+// Při dlouhém intervalu stahování (až 120 s) by minuta zašedila i zdravá data.
+uint32_t staleGreyMs(const ClockPlanesConfig &planes) {
+  const uint32_t period = fetchPeriodMs(planes, true) * 5 / 2;
+  return period > STALE_GREY_MS ? period : STALE_GREY_MS;
+}
+
+uint32_t aircraftDataAgeMs(unsigned long now) {
+  return haveAircraftData ? static_cast<uint32_t>(now - aircraftDataAt) : 0;
+}
 unsigned long nextFetchAt = 0;
 // "Stáhni hned" se drží příznakem, ne nulou v nextFetchAt. Nula porovnaná přes
 // static_cast<long>(millis() - 0) přestane platit, jakmile millis() přeteče přes
@@ -858,7 +875,10 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   char selection[8];
   portENTER_CRITICAL(&stateMux);
   strlcpy(selection, selectedHex, sizeof(selection));
-  const uint8_t count = aircraftStale ? 0 : aircraftCount;
+  const uint32_t dataAgeMs = aircraftDataAgeMs(millis());
+  const bool greyed = dataAgeMs >= staleGreyMs(planes);
+  const uint8_t count =
+      aircraftStale || dataAgeMs >= STALE_HIDE_MS ? 0 : aircraftCount;
   const bool typeNameLabels = requestMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   portEXIT_CRITICAL(&stateMux);
 
@@ -896,9 +916,11 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     const AdsbAircraft &aircraft = liveList[index];
     // Nouzový stav a hlídaný let se hledají PŘED filtrem, aby je nastavená
     // výška nemohla schovat.
-    const char *emergency =
-        planes.squawkAlert ? adsbEmergencyCode(aircraft) : nullptr;
-    const bool watched = isWatched(aircraft, planes);
+    // Ze starých dat se nic nehlásí: nouze, hlídaný let ani nízký přelet.
+    const char *emergency = planes.squawkAlert && !greyed
+                                ? adsbEmergencyCode(aircraft)
+                                : nullptr;
+    const bool watched = !greyed && isWatched(aircraft, planes);
     // Na hlášku je jediný řádek, takže na něm musí skončit ten nejhorší stav,
     // ne ten, který se v seznamu náhodou objevil první.
     const uint8_t severity = adsbEmergencySeverity(emergency);
@@ -907,12 +929,13 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
       worstEmergency = emergency;
     }
     if (watched) watchedSeen = true;
-    const bool military = (aircraft.dbFlags & ADSB_DB_FLAG_MILITARY) != 0;
+    const bool military =
+        !greyed && (aircraft.dbFlags & ADSB_DB_FLAG_MILITARY) != 0;
     bool lowPass = false;
     AdsbPassPrediction pass;
     // Sonda letí skoro svisle a padá na padáku; "nízký přelet" pro ni nic
     // neznamená a výškový filtr letadel (strop 60 000 ft) by ji schoval.
-    if (!aircraft.sonde && lowPassCriteria.valid &&
+    if (!aircraft.sonde && !greyed && lowPassCriteria.valid &&
         adsbPredictPass(aircraft, context.centerLatitude,
                         context.centerLongitude,
                         lowPassCriteria.groundElevationM,
@@ -1026,12 +1049,13 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     if (screenTrack < 0.0f) screenTrack += 360.0f;
     if (!isfinite(screenTrack)) screenTrack = 0.0f;
     if (entry.sonde)
-      drawSondeIcon(x, y, COLOR_SONDE);
+      drawSondeIcon(x, y, greyed ? COLOR_GRAY : COLOR_SONDE);
     else
       PlaneIcon_Draw(pixels, x, y, screenTrack, aircraft.hasTrack,
                      aircraft.iconKind,
-                     paletteColor(altitudeColor(aircraft.altitudeFt,
-                                                altitudeKnown)));
+                     paletteColor(greyed ? COLOR_GRAY
+                                         : altitudeColor(aircraft.altitudeFt,
+                                                         altitudeKnown)));
 
     if (entry.labelKind != 0) {
       if (entry.labelKind == 1)
@@ -1236,6 +1260,8 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
   aircraftStale = false;
   strlcpy(serverMessage, outcome.message, sizeof(serverMessage));
   lastSuccessAt = millis();
+  aircraftDataAt =
+      lastSuccessAt - static_cast<unsigned long>(outcome.ageSeconds * 1000.0f);
   portEXIT_CRITICAL(&stateMux);
   setStatusMessage("");
   return true;
@@ -1671,6 +1697,10 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
                                 ? requestPlanes.rangeIndex
                                 : 1];
   strlcpy(snapshot.message, statusMessage, sizeof(snapshot.message));
+  // Stáří dat se tu jen přečte; text se skládá až za zámkem.
+  const uint32_t dataAgeMs = aircraftDataAgeMs(millis());
+  const bool staleData =
+      haveAircraftData && !aircraftStale && dataAgeMs >= staleGreyMs(requestPlanes);
 
   PlaneRadarDetail &detail = snapshot.detail;
   detail = PlaneRadarDetail{};
@@ -1714,6 +1744,14 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
     detail.open = false;
   }
   portEXIT_CRITICAL(&stateMux);
+  // Stará data přebijí hlášku o chybě: řeknou i to, jak stará letadla jsou.
+  if (staleData) {
+    if (dataAgeMs >= STALE_HIDE_MS)
+      strlcpy(snapshot.message, "Bez dat o letadlech", sizeof(snapshot.message));
+    else
+      snprintf(snapshot.message, sizeof(snapshot.message), "Stará data: %u min",
+               static_cast<unsigned>(dataAgeMs / 60000));
+  }
 }
 
 void planeRadarServiceDiagnostics(PlaneRadarDiagnostics &diagnostics) {
