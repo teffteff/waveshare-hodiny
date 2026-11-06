@@ -53,6 +53,9 @@ AdsbParseOutcome adsbParseAircraft(const char *payload, AdsbAircraft *aircraft,
 
   jsonCopyTextMember(begin, end, "msg", outcome.message,
                      sizeof(outcome.message));
+  float age = 0.0f;
+  if (jsonReadNumberMember(begin, end, "age", age) && isfinite(age) && age > 0.0f)
+    outcome.ageSeconds = age;
 
   const JsonValue array = findAircraftArray(begin, end);
   if (!array.valid()) {

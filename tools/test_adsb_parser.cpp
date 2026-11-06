@@ -127,6 +127,20 @@ void testIconKindFromTypeAndCategory() {
   assert(aircraft[2].iconKind == PI_GENERIC);
 }
 
+void testServerAgeIsRead() {
+  // Vlastní server u odpovědi z paměti pošle její stáří ("age"); bez něj 0.
+  AdsbAircraft aircraft[ADSB_MAX_AIRCRAFT];
+  AdsbParseOutcome outcome = adsbParseAircraft(
+      "{\"ac\":[{\"hex\":\"aaaaaa\",\"alt_baro\":3000,\"lat\":50.1,\"lon\":14.2}],\"age\":42}",
+      aircraft, ADSB_MAX_AIRCRAFT);
+  assert(outcome.status == AdsbParseStatus::Ok);
+  assert(outcome.ageSeconds == 42.0f);
+  outcome = adsbParseAircraft(
+      "{\"ac\":[{\"hex\":\"aaaaaa\",\"alt_baro\":3000,\"lat\":50.1,\"lon\":14.2}]}",
+      aircraft, ADSB_MAX_AIRCRAFT);
+  assert(outcome.ageSeconds == 0.0f);
+}
+
 void testAircraftWithoutPositionIsDropped() {
   // Bez polohy není co kreslit; takový záznam nesmí projít ani s nulou.
   const char *const payload =
@@ -592,6 +606,7 @@ int main() {
   testTrimmedFeedParsesLikeAdsb();
   testGroundTrafficIsDropped();
   testIconKindFromTypeAndCategory();
+  testServerAgeIsRead();
   testAircraftWithoutPositionIsDropped();
   testMissingTrackIsMarked();
   testNumbersSentAsStrings();

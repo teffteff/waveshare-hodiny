@@ -151,6 +151,9 @@ char requestFeedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
 // jeho změna jen překreslí snímek.
 uint8_t requestMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
 bool requestShowSondes = true;
+// Letadlo poblíž a výhled z okna. Kopie z hlavní smyčky, stejně jako ostatní
+// požadavky.
+PlaneNearbySettings requestNearby;
 // Dosah naposledy přijatý z konfigurace. Přetažení prstem mění jen běžící
 // dosah, ne uložený - a bez téhle pamatováky by ho každé předání konfigurace
 // (návrat na obrazovku, synchronizace času, uložení čehokoli na webu) srazilo
@@ -182,6 +185,45 @@ bool staleFrameDisplayed = false;
 bool loading = false;
 uint32_t generation = 0;
 unsigned long lastSuccessAt = 0;
+// Kdy byla letadla v živém seznamu doopravdy čerstvá: čas úspěšného stažení
+// minus stáří, které ohlásil server ("age"). Po minutě bez čerstvých dat se
+// letadla kreslí šedě a bez značek, po deseti se nekreslí vůbec, aby stará
+// poloha nevypadala jako živá (podle MeteoPlaneRadar 0.8.4).
+unsigned long aircraftDataAt = 0;
+constexpr uint32_t STALE_GREY_MS = 60000;
+constexpr uint32_t STALE_HIDE_MS = 600000;
+uint32_t fetchPeriodMs(const ClockPlanesConfig &planes, bool screenVisible);
+// Při dlouhém intervalu stahování (až 120 s) by minuta zašedila i zdravá data.
+uint32_t staleGreyMs(const ClockPlanesConfig &planes) {
+  const uint32_t period = fetchPeriodMs(planes, true) * 5 / 2;
+  return period > STALE_GREY_MS ? period : STALE_GREY_MS;
+}
+
+uint32_t aircraftDataAgeMs(unsigned long now) {
+  return haveAircraftData ? static_cast<uint32_t>(now - aircraftDataAt) : 0;
+}
+// Živý seznam je jen malý okruh kolem domova, stažený pro letadlo poblíž se
+// schovanou obrazovkou. Jako celý seznam se ukázat nesmí: otevřená obrazovka
+// ho nekreslí, dokud nedorazí stažení v plném dosahu.
+bool liveListPartial = false;
+// Se schovanou obrazovkou a zapnutým letadlem poblíž se ptá po deseti
+// vteřinách, ale jen na pár kilometrů kolem domova. Odpověď vlastního serveru
+// má pak stovky bajtů a server ji drží čtyři vteřiny pro všechny hodiny
+// v domě, takže to adsb.fi nezatíží.
+constexpr uint32_t NEARBY_WATCH_PERIOD_MS = 10000;
+// Letadlo poblíž se vyhlásí jen z dat mladších než půl minuty: letadlo
+// v hladině uletí za minutu patnáct kilometrů a starší poloha by ukázala na
+// prázdné nebe. Přísnější než šedivění starých dat na mapě (staleGreyMs).
+constexpr uint32_t NEARBY_MAX_DATA_AGE_MS = 30000;
+// Vybrané letadlo počká na hlavní smyčku nanejvýš takhle dlouho.
+constexpr uint32_t NEARBY_CANDIDATE_MAX_AGE_MS = 15000;
+// Ukázaná letadla. Zapisuje do ní jen hlavní smyčka (planeRadarServiceTake-
+// Nearby), úloha si ji pod zámkem jen zkopíruje.
+PlaneNearbyMemory nearbyMemory;
+// Letadlo vybrané po posledním stažení, které čeká na hlavní smyčku.
+PlaneRadarNearbyCandidate nearbyCandidate;
+bool nearbyCandidateValid = false;
+unsigned long nearbyCandidateAt = 0;
 unsigned long nextFetchAt = 0;
 // "Stáhni hned" se drží příznakem, ne nulou v nextFetchAt. Nula porovnaná přes
 // static_cast<long>(millis() - 0) přestane platit, jakmile millis() přeteče přes
@@ -661,16 +703,22 @@ void drawSondeIcon(int x, int y, uint16_t color) {
 // poslal. Nedotčené zůstává hledání nouzového kódu a hlídaného letu: ta se
 // dělají PŘED filtrem, takže nastavená výška je schovat nemůže. Kolik letadel
 // přišlo celkem, ukazuje diagnostika.
+// Samotná podmínka je v PlaneNearby, aby letadlo poblíž filtrovalo stejně
+// jako mapa.
+PlaneFilter planeFilterFor(const ClockPlanesConfig &planes) {
+  PlaneFilter filter;
+  filter.onlyWithCallsign = planes.onlyWithCallsign;
+  filter.altitudeLimited =
+      planes.altitudeMinFt != 0 ||
+      planes.altitudeMaxFt < CLOCK_PLANE_ALTITUDE_CEILING_FT;
+  filter.altitudeMinFt = planes.altitudeMinFt;
+  filter.altitudeMaxFt = planes.altitudeMaxFt;
+  return filter;
+}
+
 bool passesFilter(const AdsbAircraft &aircraft,
                   const ClockPlanesConfig &planes) {
-  if (planes.onlyWithCallsign && aircraft.callsign[0] == '\0') return false;
-  if (planes.altitudeMinFt == 0 &&
-      planes.altitudeMaxFt >= CLOCK_PLANE_ALTITUDE_CEILING_FT)
-    return true;
-  // Neznámou výšku filtr nezahazuje - není podle čeho ji zařadit.
-  if (!aircraft.hasAltitude) return true;
-  return aircraft.altitudeFt >= static_cast<float>(planes.altitudeMinFt) &&
-         aircraft.altitudeFt <= static_cast<float>(planes.altitudeMaxFt);
+  return planeFilterPasses(aircraft, planeFilterFor(planes));
 }
 
 // Hlídaný let. Porovnává se s callsignem i s ICAO adresou, protože lidé citují
@@ -786,6 +834,40 @@ void reserveChromeBands(MapLabelPlacer &placer) {
   for (const MapLabelBox &band : bands) placer.claim(band);
 }
 
+// Výhled z okna: okraje výseku dvěma tenkými čarami a slabý oblouk v dohledu
+// okna, otočené s mapou. Kreslí se pod letadla.
+constexpr uint16_t COLOR_WINDOW = 0x5acb;
+
+void drawWindowSector(const PlaneNearbySettings &window, float rangeKm,
+                      float viewFactor) {
+  if (!window.windowEnabled || rangeKm <= 0.0f) return;
+  const float maxRadius = RADAR_RADIUS * viewFactor;
+  float radius = static_cast<float>(window.windowRangeKm) / rangeKm *
+                 static_cast<float>(RADAR_RADIUS);
+  const bool arcVisible = radius < maxRadius;
+  if (!arcVisible) radius = maxRadius;
+  const uint16_t color = paletteColor(COLOR_WINDOW);
+  const float center = planeNearbyWindowAzimuth(window.windowDirection) -
+                       static_cast<float>(rotationDegrees);
+  const float half = static_cast<float>(window.windowWidthDeg) * 0.5f;
+  for (const float edge : {center - half, center + half}) {
+    const float angle = edge * DEGREES_TO_RADIANS;
+    drawMapLine(pixels, RADAR_CENTER_X, RADAR_CENTER_Y,
+                RADAR_CENTER_X + static_cast<int>(radius * sinf(angle)),
+                RADAR_CENTER_Y - static_cast<int>(radius * cosf(angle)), color,
+                70);
+  }
+  if (!arcVisible) return;
+  // Oblouk po bodech; krok podle poloměru, aby byl souvislý i daleko.
+  const float step = radius > 60.0f ? 57.3f / radius : 1.0f;
+  for (float offset = -half; offset <= half; offset += step) {
+    const float angle = (center + offset) * DEGREES_TO_RADIANS;
+    setMapPixel(pixels, RADAR_CENTER_X + static_cast<int>(radius * sinf(angle)),
+                RADAR_CENTER_Y - static_cast<int>(radius * cosf(angle)), color,
+                45);
+  }
+}
+
 // --- Vykreslení snímku ------------------------------------------------------
 // Kreslí se z úlohy radaru do bufferu v PSRAM; obrazovka si ho pak jen podloží
 // pod canvas. Volá se se zkopírovaným požadavkem, ne pod zámkem.
@@ -858,8 +940,17 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   char selection[8];
   portENTER_CRITICAL(&stateMux);
   strlcpy(selection, selectedHex, sizeof(selection));
-  const uint8_t count = aircraftStale ? 0 : aircraftCount;
+  const uint32_t dataAgeMs = aircraftDataAgeMs(millis());
+  const bool greyed = dataAgeMs >= staleGreyMs(planes);
+  // Malý okruh pro letadlo poblíž se na otevřené obrazovce nekreslí: vypadal
+  // by jako celá obloha. Schovaná obrazovka ho kreslit smí, snímek se po
+  // otevření stejně zadrží (staleFrameDisplayed).
+  const uint8_t count = aircraftStale || dataAgeMs >= STALE_HIDE_MS ||
+                                (liveListPartial && visible)
+                            ? 0
+                            : aircraftCount;
   const bool typeNameLabels = requestMapLabel == CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
+  const PlaneNearbySettings window = requestNearby;
   portEXIT_CRITICAL(&stateMux);
 
   const int selectedIndex = adsbFindByHex(liveList, count, selection);
@@ -896,9 +987,11 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     const AdsbAircraft &aircraft = liveList[index];
     // Nouzový stav a hlídaný let se hledají PŘED filtrem, aby je nastavená
     // výška nemohla schovat.
-    const char *emergency =
-        planes.squawkAlert ? adsbEmergencyCode(aircraft) : nullptr;
-    const bool watched = isWatched(aircraft, planes);
+    // Ze starých dat se nic nehlásí: nouze, hlídaný let ani nízký přelet.
+    const char *emergency = planes.squawkAlert && !greyed
+                                ? adsbEmergencyCode(aircraft)
+                                : nullptr;
+    const bool watched = !greyed && isWatched(aircraft, planes);
     // Na hlášku je jediný řádek, takže na něm musí skončit ten nejhorší stav,
     // ne ten, který se v seznamu náhodou objevil první.
     const uint8_t severity = adsbEmergencySeverity(emergency);
@@ -907,12 +1000,13 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
       worstEmergency = emergency;
     }
     if (watched) watchedSeen = true;
-    const bool military = (aircraft.dbFlags & ADSB_DB_FLAG_MILITARY) != 0;
+    const bool military =
+        !greyed && (aircraft.dbFlags & ADSB_DB_FLAG_MILITARY) != 0;
     bool lowPass = false;
     AdsbPassPrediction pass;
     // Sonda letí skoro svisle a padá na padáku; "nízký přelet" pro ni nic
     // neznamená a výškový filtr letadel (strop 60 000 ft) by ji schoval.
-    if (!aircraft.sonde && lowPassCriteria.valid &&
+    if (!aircraft.sonde && !greyed && lowPassCriteria.valid &&
         adsbPredictPass(aircraft, context.centerLatitude,
                         context.centerLongitude,
                         lowPassCriteria.groundElevationM,
@@ -986,6 +1080,7 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   drawCities(context, placer);
   drawRangeRingsAndCenter();
   drawCompassMarks();
+  drawWindowSector(window, context.rangeKm, viewFactor);
 
   // 3. průchod: kreslení letadel nad mapou.
   for (uint8_t planIndex = 0; planIndex < planCount; ++planIndex) {
@@ -1026,12 +1121,13 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     if (screenTrack < 0.0f) screenTrack += 360.0f;
     if (!isfinite(screenTrack)) screenTrack = 0.0f;
     if (entry.sonde)
-      drawSondeIcon(x, y, COLOR_SONDE);
+      drawSondeIcon(x, y, greyed ? COLOR_GRAY : COLOR_SONDE);
     else
       PlaneIcon_Draw(pixels, x, y, screenTrack, aircraft.hasTrack,
                      aircraft.iconKind,
-                     paletteColor(altitudeColor(aircraft.altitudeFt,
-                                                altitudeKnown)));
+                     paletteColor(greyed ? COLOR_GRAY
+                                         : altitudeColor(aircraft.altitudeFt,
+                                                         altitudeKnown)));
 
     if (entry.labelKind != 0) {
       if (entry.labelKind == 1)
@@ -1144,10 +1240,18 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
   return result;
 }
 
+// watchRadiusKm > 0: jen malý okruh pro letadlo poblíž (schovaná obrazovka).
+// Míle se zaokrouhlí nahoru na celé, aby hodiny se stejným nastavením
+// posílaly stejnou adresu a sdílely mezipaměť serveru.
+// revision je revize požadavku, ze které je planes: změnil-li se požadavek
+// během stahování, odpověď patří k tomu starému a letadla zůstanou "stará".
 bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
-                   float latitude, float longitude) {
-  const float rangeKm = rangeKmForIndex(planes.rangeIndex);
-  const float distanceNm = rangeKm / KM_PER_NAUTICAL_MILE;
+                   float latitude, float longitude, float watchRadiusKm,
+                   uint32_t revision) {
+  const bool partial = watchRadiusKm > 0.0f;
+  const float distanceNm =
+      partial ? ceilf(watchRadiusKm / KM_PER_NAUTICAL_MILE)
+              : rangeKmForIndex(planes.rangeIndex) / KM_PER_NAUTICAL_MILE;
   portENTER_CRITICAL(&stateMux);
   const bool sondes = requestShowSondes;
   portEXIT_CRITICAL(&stateMux);
@@ -1233,9 +1337,15 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
   liveList = parsed;
   aircraftCount = static_cast<uint8_t>(outcome.count);
   haveAircraftData = true;
-  aircraftStale = false;
+  liveListPartial = partial;
+  // Obrazovka se mezitím otevřela, nebo se změnil dosah: odpověď patří ke
+  // starému požadavku (třeba malý okruh poblíž) a do stažení podle nového
+  // se nekreslí. Nový požadavek si stažení vynutil sám.
+  if (requestRevision == revision) aircraftStale = false;
   strlcpy(serverMessage, outcome.message, sizeof(serverMessage));
   lastSuccessAt = millis();
+  aircraftDataAt =
+      lastSuccessAt - static_cast<unsigned long>(outcome.ageSeconds * 1000.0f);
   portEXIT_CRITICAL(&stateMux);
   setStatusMessage("");
   return true;
@@ -1325,9 +1435,12 @@ void fetchRouteIfPending(const char *feedUrl, float aircraftLatitude,
 // --- Úloha ------------------------------------------------------------------
 bool currentRequest(ClockPlanesConfig &planes, char *feedUrl,
                     size_t feedUrlCapacity, float &latitude, float &longitude,
-                    bool &night, bool &wantVisible, bool &wantActive) {
+                    bool &night, bool &wantVisible, bool &wantActive,
+                    PlaneNearbySettings &nearby, uint32_t &revision) {
   portENTER_CRITICAL(&stateMux);
   planes = requestPlanes;
+  nearby = requestNearby;
+  revision = requestRevision;
   strlcpy(feedUrl, requestFeedUrl, feedUrlCapacity);
   latitude = requestLatitude;
   longitude = requestLongitude;
@@ -1385,8 +1498,39 @@ void reconcileSelection() {
   portEXIT_CRITICAL(&stateMux);
 }
 
+// Po stažení vybere letadlo poblíž. Seznam mění jen tahle úloha, takže se
+// prochází bez zámku; pod zámkem se jen kopíruje paměť a výsledek.
+void detectNearby(const PlaneNearbySettings &nearby,
+                  const ClockPlanesConfig &planes, float latitude,
+                  float longitude) {
+  PlaneNearbyMemory memory;
+  portENTER_CRITICAL(&stateMux);
+  memory = nearbyMemory;
+  const bool fresh = haveAircraftData && !aircraftStale &&
+                     aircraftDataAgeMs(millis()) < NEARBY_MAX_DATA_AGE_MS;
+  const uint8_t count = aircraftCount;
+  portEXIT_CRITICAL(&stateMux);
+  PlaneNearbyPick pick;
+  const bool found =
+      nearby.enabled && fresh && liveList != nullptr &&
+      planeNearbyPick(liveList, count, latitude, longitude, nearby,
+                      planeFilterFor(planes), memory,
+                      static_cast<uint32_t>(millis()), pick);
+  portENTER_CRITICAL(&stateMux);
+  nearbyCandidateValid = found;
+  if (found) {
+    nearbyCandidate.aircraft = liveList[pick.index];
+    nearbyCandidate.distanceKm = pick.distanceKm;
+    nearbyCandidate.inWindow = pick.inWindow;
+    nearbyCandidateAt = millis();
+  }
+  portEXIT_CRITICAL(&stateMux);
+}
+
 void planeRadarTask(void *) {
   ClockPlanesConfig planes;
+  PlaneNearbySettings nearby;
+  uint32_t requestCopyRevision = 0;
   char feedUrl[CLOCK_PLANES_FEED_URL_LENGTH] = "";
   float latitude = 0.0f;
   float longitude = 0.0f;
@@ -1399,7 +1543,8 @@ void planeRadarTask(void *) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
     if (!currentRequest(planes, feedUrl, sizeof(feedUrl), latitude, longitude,
-                        night, wantVisible, wantActive)) {
+                        night, wantVisible, wantActive, nearby,
+                        requestCopyRevision)) {
       continue;
     }
     if (!ensureStorage()) {
@@ -1460,7 +1605,8 @@ void planeRadarTask(void *) {
       // mohlo přijít až po kopii na začátku průchodu.
       if (wantVisible &&
           currentRequest(planes, feedUrl, sizeof(feedUrl), latitude, longitude,
-                         night, wantVisible, wantActive))
+                         night, wantVisible, wantActive, nearby,
+                         requestCopyRevision))
         renderFrame(planes, latitude, longitude, night);
     }
 
@@ -1472,14 +1618,23 @@ void planeRadarTask(void *) {
       portENTER_CRITICAL(&stateMux);
       loading = true;
       portEXIT_CRITICAL(&stateMux);
-      const bool ok = fetchAircraft(planes, feedUrl, latitude, longitude);
-      const uint32_t period = fetchPeriodMs(planes, wantVisible);
+      // Schovaná obrazovka s letadlem poblíž: jen malý okruh, ale často.
+      const bool watchOnly = !wantVisible && nearby.enabled;
+      const bool ok = fetchAircraft(
+          planes, feedUrl, latitude, longitude,
+          watchOnly ? planeNearbyWatchRadiusKm(nearby) : 0.0f,
+          requestCopyRevision);
+      const uint32_t period =
+          watchOnly ? NEARBY_WATCH_PERIOD_MS : fetchPeriodMs(planes, wantVisible);
       portENTER_CRITICAL(&stateMux);
       loading = false;
       // Po neúspěchu se čeká dvojnásobek, ať se API nemlátí v normálním tempu.
       nextFetchAt = millis() + (ok ? period : period * 2);
       portEXIT_CRITICAL(&stateMux);
-      if (ok) reconcileSelection();
+      if (ok) {
+        reconcileSelection();
+        detectNearby(nearby, planes, latitude, longitude);
+      }
       fetched = true;
     }
 
@@ -1662,7 +1817,8 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
   snapshot.generation = generation;
   snapshot.loading = loading || fetchNowRequested;
   snapshot.ready = dataFrameReady;
-  snapshot.haveAircraftData = haveAircraftData && !aircraftStale;
+  snapshot.haveAircraftData =
+      haveAircraftData && !aircraftStale && !(liveListPartial && visible);
   snapshot.shownCount = shownCount;
   snapshot.watchedVisible = watchedVisible;
   strlcpy(snapshot.emergency, frameEmergency, sizeof(snapshot.emergency));
@@ -1671,6 +1827,10 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
                                 ? requestPlanes.rangeIndex
                                 : 1];
   strlcpy(snapshot.message, statusMessage, sizeof(snapshot.message));
+  // Stáří dat se tu jen přečte; text se skládá až za zámkem.
+  const uint32_t dataAgeMs = aircraftDataAgeMs(millis());
+  const bool staleData =
+      haveAircraftData && !aircraftStale && dataAgeMs >= staleGreyMs(requestPlanes);
 
   PlaneRadarDetail &detail = snapshot.detail;
   detail = PlaneRadarDetail{};
@@ -1714,6 +1874,14 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
     detail.open = false;
   }
   portEXIT_CRITICAL(&stateMux);
+  // Stará data přebijí hlášku o chybě: řeknou i to, jak stará letadla jsou.
+  if (staleData) {
+    if (dataAgeMs >= STALE_HIDE_MS)
+      strlcpy(snapshot.message, "Bez dat o letadlech", sizeof(snapshot.message));
+    else
+      snprintf(snapshot.message, sizeof(snapshot.message), "Stará data: %u min",
+               static_cast<unsigned>(dataAgeMs / 60000));
+  }
 }
 
 void planeRadarServiceDiagnostics(PlaneRadarDiagnostics &diagnostics) {
@@ -1883,6 +2051,116 @@ void planeRadarServiceCloseDetail() {
     routeState = PlaneRouteState::Pending;
     routeInfo = RouteInfo{};
     redrawRequested = true;
+    notify = true;
+  }
+  portEXIT_CRITICAL(&stateMux);
+  if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+}
+
+void planeRadarServiceSetNearby(const PlaneNearbySettings &settings) {
+  bool notify = false;
+  portENTER_CRITICAL(&stateMux);
+  const PlaneNearbySettings &old = requestNearby;
+  const bool watchChanged =
+      old.enabled != settings.enabled || old.radiusKm != settings.radiusKm ||
+      old.windowEnabled != settings.windowEnabled ||
+      old.windowRangeKm != settings.windowRangeKm;
+  const bool windowChanged = old.windowEnabled != settings.windowEnabled ||
+                             old.windowDirection != settings.windowDirection ||
+                             old.windowWidthDeg != settings.windowWidthDeg ||
+                             old.windowRangeKm != settings.windowRangeKm;
+  requestNearby = settings;
+  if (!settings.enabled) nearbyCandidateValid = false;
+  // Schovaná obrazovka se hned zeptá na nový okruh; jinak by po zapnutí
+  // čekala na pětiminutový interval pozadí.
+  if (watchChanged && !visible && settings.enabled) {
+    fetchNowRequested = true;
+    notify = true;
+  }
+  if (windowChanged && visible) {
+    redrawRequested = true;
+    notify = true;
+  }
+  portEXIT_CRITICAL(&stateMux);
+  if (notify && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+}
+
+bool planeRadarServiceTakeNearby(PlaneRadarNearbyCandidate &candidate) {
+  const unsigned long now = millis();
+  PlaneNearbyMemory memory;
+  portENTER_CRITICAL(&stateMux);
+  const bool take = nearbyCandidateValid && requestNearby.enabled &&
+                    now - nearbyCandidateAt < NEARBY_CANDIDATE_MAX_AGE_MS &&
+                    haveAircraftData && !aircraftStale &&
+                    aircraftDataAgeMs(now) < NEARBY_MAX_DATA_AGE_MS;
+  if (take) {
+    candidate = nearbyCandidate;
+    memory = nearbyMemory;
+  }
+  nearbyCandidateValid = false;
+  portEXIT_CRITICAL(&stateMux);
+  if (!take) return false;
+  // Úloha mohla totéž letadlo vybrat znovu dřív, než se zapamatovalo.
+  const uint32_t stamp = static_cast<uint32_t>(now);
+  if (planeNearbySeenRecently(memory, candidate.aircraft.hex, stamp))
+    return false;
+  planeNearbyRemember(memory, candidate.aircraft.hex, stamp);
+  portENTER_CRITICAL(&stateMux);
+  nearbyMemory = memory;
+  portEXIT_CRITICAL(&stateMux);
+  return true;
+}
+
+uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate) {
+  const AdsbAircraft &aircraft = candidate.aircraft;
+  const uint8_t wanted = planeNearbyRangeIndex(
+      candidate.distanceKm, CLOCK_PLANE_RANGES_KM, CLOCK_PLANE_RANGE_COUNT);
+  portENTER_CRITICAL(&stateMux);
+  const uint8_t previous = requestPlanes.rangeIndex;
+  if (wanted != previous) {
+    requestPlanes.rangeIndex = wanted;
+    ++requestRevision;
+    fetchNowRequested = true;
+    aircraftStale = true;
+  }
+  // Výběr jako po klepnutí, jen z kopie letadla místo bodu na mapě.
+  memcpy(selectedHex, aircraft.hex, sizeof(selectedHex));
+  selectedHex[sizeof(selectedHex) - 1] = '\0';
+  selectionMissCount = 0;
+  selectionRangeChanged = false;
+  selectionCache = aircraft;
+  selectionCacheValid = true;
+  routeInfo = RouteInfo{};
+  routeFetchQueued = false;
+  routeFetchFailures = 0;
+  if (aircraft.callsign[0] != '\0') {
+    static_assert(sizeof(routeCallsign) == sizeof(aircraft.callsign),
+                  "Volací značka se kopíruje celá");
+    memcpy(routeCallsign, aircraft.callsign, sizeof(routeCallsign));
+    routeCallsign[sizeof(routeCallsign) - 1] = '\0';
+    routeFetchQueued = true;
+    routeState = PlaneRouteState::Pending;
+  } else {
+    routeCallsign[0] = '\0';
+    routeState = PlaneRouteState::Unknown;
+  }
+  redrawRequested = true;
+  portEXIT_CRITICAL(&stateMux);
+  if (taskHandle != nullptr) xTaskNotifyGive(taskHandle);
+  return previous;
+}
+
+void planeRadarServiceRestoreRange(uint8_t rangeIndex) {
+  if (rangeIndex >= CLOCK_PLANE_RANGE_COUNT) return;
+  bool notify = false;
+  portENTER_CRITICAL(&stateMux);
+  if (requestPlanes.rangeIndex != rangeIndex) {
+    requestPlanes.rangeIndex = rangeIndex;
+    ++requestRevision;
+    fetchNowRequested = true;
+    redrawRequested = true;
+    aircraftStale = true;
+    if (selectedHex[0] != '\0') selectionRangeChanged = true;
     notify = true;
   }
   portEXIT_CRITICAL(&stateMux);

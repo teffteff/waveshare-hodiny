@@ -104,6 +104,9 @@ struct AdsbParseOutcome {
   size_t count = 0;
   // Text z pole "msg", když ho server poslal. Slouží diagnostice, ne obrazovce.
   char message[48] = "";
+  // Stáří odpovědi v sekundách, když ji vlastní server poslal z paměti
+  // (chyba nebo pauza adsb.fi, infra/planes "age"); jinak 0.
+  float ageSeconds = 0.0f;
 };
 
 // Rozebere odpověď do pole, které dodá volající - kde ta paměť leží, je věc

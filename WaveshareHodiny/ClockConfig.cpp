@@ -663,6 +663,24 @@ void normalizeConfig(ClockConfig &config) {
   config.planes.displaySeconds =
       constrain(config.planes.displaySeconds, 10, 3600);
   if (config.planes.topBearingDeg >= 360) config.planes.topBearingDeg = 0;
+  // Letadlo poblíž a výhled z okna leží v rezervě, kde starší záznamy mají
+  // nuly: nula i cokoli mimo meze znamená výchozí hodnotu. Přepínače zůstávají,
+  // jak jsou, takže je aktualizace sama nezapne.
+  ClockPlanesExtrasConfig &extras = config.planesExtras;
+  if (extras.nearbyRadiusKm < CLOCK_PLANE_NEARBY_MIN_RADIUS_KM ||
+      extras.nearbyRadiusKm > CLOCK_PLANE_NEARBY_MAX_RADIUS_KM)
+    extras.nearbyRadiusKm = CLOCK_PLANE_NEARBY_DEFAULT_RADIUS_KM;
+  if (extras.nearbyHoldSeconds < CLOCK_PLANE_NEARBY_MIN_HOLD_SECONDS ||
+      extras.nearbyHoldSeconds > CLOCK_PLANE_NEARBY_MAX_HOLD_SECONDS)
+    extras.nearbyHoldSeconds = CLOCK_PLANE_NEARBY_DEFAULT_HOLD_SECONDS;
+  if (extras.windowDirection >= CLOCK_PLANE_WINDOW_DIRECTION_COUNT)
+    extras.windowDirection = 0;
+  if (extras.windowWidthDeg < CLOCK_PLANE_WINDOW_MIN_WIDTH_DEG ||
+      extras.windowWidthDeg > CLOCK_PLANE_WINDOW_MAX_WIDTH_DEG)
+    extras.windowWidthDeg = CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG;
+  if (extras.windowRangeKm < CLOCK_PLANE_WINDOW_MIN_RANGE_KM ||
+      extras.windowRangeKm > CLOCK_PLANE_WINDOW_MAX_RANGE_KM)
+    extras.windowRangeKm = CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM;
   if (config.planesMapLabel > CLOCK_PLANE_MAP_LABEL_CALLSIGN)
     config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   config.planes.altitudeMaxFt =

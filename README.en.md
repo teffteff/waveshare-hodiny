@@ -779,6 +779,24 @@ aircraft. When an aircraft drops out of the data for a moment the panel stays
 open with the last known values and admits it with a *signal lost* note; it
 closes only after three fetches without it.
 
+**Aircraft nearby** (an option on the Aircraft tab, off by default): when an
+aircraft comes within the set radius of home (5 km by default), the clock
+switches to the aircraft screen by itself, temporarily picks the smallest range
+that holds the aircraft, opens its detail and after the hold time (15 s by
+default) returns to the previous screen with the original range. A tap during
+the hold cancels the return. Each aircraft is shown at most once per 15
+minutes, the altitude and callsign filters apply, balloons and aircraft without
+an altitude are ignored, and stale data (older than half a minute) never
+triggers it. It works without the automatic rotation too; it waits while the
+on-screen settings, a notification, a firmware update, a switched-off display
+or another alert hold the screen — rain, warnings and lightning take priority.
+By default it stays quiet in night mode. While the screen is hidden the clock
+asks every 10 seconds for a small circle around home only; opening the screen
+loads the full range again. **Window view** adds a sector (direction in eighths,
+width 20 to 180°, visibility in km): an aircraft inside it wins over a closer
+one and only has to be within the window distance. The map marks it with two
+thin lines and a faint arc. Both follow MeteoPlaneRadar 0.8.0.
+
 The route is looked up for one selected aircraft only, never for the whole
 list, and the answer is cached. The aircraft's position is sent along with the
 callsign so the server can judge whether the route fits where the aircraft

@@ -63,6 +63,12 @@ změny z `MeteoPlaneRadar/PlaneIcon.cpp` verze 0.8.5; kreslení je přepsané na
 stupnice ČHMÚ (44/36/24/12 dBZ místo 46/40/32/20) přinesl také MeteoPlaneRadar
 0.8.5.
 
+Letadlo poblíž a výhled z okna v `WaveshareHodiny/PlaneNearby.cpp` (pořadí
+výběru letadla — výhled z okna před nejbližším v okruhu, přeskočení už
+ukázaných, sdílený filtr výšky a volací značky) jsou převzaté z
+`MeteoPlaneRadar/PlaneWatch.cpp` verze 0.8.0 a přepsané na samostatný modul
+bez Arduina; přepínání obrazovek a stahování jsou vlastní.
+
 ## Data o letadlech adsb.fi a adsb.lol
 
 Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:

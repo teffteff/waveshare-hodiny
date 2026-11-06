@@ -786,6 +786,23 @@ letadlo. Když letadlo z dat na chvíli zmizí, panel zůstane otevřený s
 posledními známými hodnotami a přizná to poznámkou *signál ztracen*; zavře se
 až po třech stahováních bez něj.
 
+**Letadlo poblíž** (volba na záložce Letadla, ve výchozím stavu vypnutá): když
+se letadlo přiblíží k domovu na nastavený okruh (výchozí 5 km), hodiny samy
+přepnou na letadla, dočasně zvolí nejmenší dosah, do kterého se letadlo vejde,
+otevřou jeho detail a po nastavené době (výchozí 15 s) se vrátí na předchozí
+obrazovku i s původním dosahem. Klepnutí během ukázání návrat zruší. Každé
+letadlo se ukáže nejvýš jednou za 15 minut, filtr výšky a volací značky platí,
+sondy a letadla bez výšky se nepočítají a ze starých dat (přes půl minuty) se
+nepřepíná. Funguje i bez automatického střídání; čeká, když je otevřené
+nastavení, notifikace, aktualizace, vypnutý displej nebo jiné upozornění —
+déšť, výstraha a blesky mají přednost. V nočním režimu ve výchozím stavu
+nepřepíná. Se schovanou obrazovkou se hodiny ptají každých 10 sekund jen na
+malý okruh kolem domova; po otevření obrazovky se letadla načtou znovu v plném
+dosahu. **Výhled z okna** k tomu přidá výsek (směr po osminách, šířka 20 až
+180°, dohled v km): letadlo v něm vyhraje i nad bližším a stačí mu být do
+dohledu okna. Na mapě ho vyznačí dvě tenké čáry a slabý oblouk. Obojí podle
+MeteoPlaneRadar 0.8.0.
+
 Trasa se hledá jen pro jedno vybrané letadlo, nikdy pro celý seznam, a odpověď
 se drží. Spolu s volací značkou se posílá i poloha letadla a server podle ní
 posoudí, jestli trasa k poloze sedí — bez toho se letadlu nad Prahou ukazovala

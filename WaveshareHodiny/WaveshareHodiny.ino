@@ -222,6 +222,17 @@ bool rainAlertEverRaised = false;
 // radar pustí, hodiny se na ni vrátí (nebo na obrazovku plánu, má-li okno).
 uint8_t alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
 bool alertReturnPending = false;
+// Obrazovka, kterou upozornění drží a ze které se vrací: radar (déšť,
+// výstraha, blesky), nebo letadla (letadlo poblíž).
+uint8_t alertReturnFrom = CLOCK_SCREEN_RADAR;
+// Letadlo poblíž: do kdy drží obrazovku letadel, nebo 0 mimo držení. Je to
+// upozornění jako déšť, jen krátké, a stejnou cestou se z něj vrací.
+unsigned long planeNearbyHeldUntil = 0;
+unsigned long planeNearbyCheckedAt = 0;
+// Dosah radaru letadel před dočasným přiblížením na letadlo poblíž a dosah
+// z nastavení v té chvíli. Vrátí se při odchodu z obrazovky; UINT8_MAX = nic.
+uint8_t planeNearbySavedRange = UINT8_MAX;
+uint8_t planeNearbySavedConfiguredRange = UINT8_MAX;
 // Přepnutí na radar kvůli bleskům v okruhu výstrahy.
 unsigned long lightningHeldUntil = 0;
 unsigned long lightningRaisedAt = 0;
@@ -549,11 +560,27 @@ void applyPendingClockAppearance() {
 // Zapnuté střídání navíc drží stahování i se schovanou obrazovkou, jinak by
 // rotace obrazovku přeskakovala pořád dokola: čeká na první snímek, který by
 // se bez stahování nikdy nevykreslil.
+// Letadlo poblíž potřebuje stahování i se schovanou obrazovkou, ať je
+// střídání zapnuté, nebo ne; služba se pak ptá jen na malý okruh kolem domova.
+PlaneNearbySettings planeNearbySettings(const ClockConfig &config) {
+  const ClockPlanesExtrasConfig &extras = config.planesExtras;
+  PlaneNearbySettings settings;
+  settings.enabled = extras.nearbyEnabled;
+  settings.radiusKm = extras.nearbyRadiusKm;
+  settings.windowEnabled = extras.windowEnabled;
+  settings.windowDirection = extras.windowDirection;
+  settings.windowWidthDeg = extras.windowWidthDeg;
+  settings.windowRangeKm = extras.windowRangeKm;
+  return settings;
+}
+
 void applyPlaneRadarState(const ClockConfig &config, bool visible) {
   const bool planesAvailable = clockConfigPlanesAvailable(config);
+  planeRadarServiceSetNearby(planeNearbySettings(config));
   planeRadarServiceSetActive(
       planesAvailable && visible,
-      planesAvailable && config.planes.automaticRotation,
+      planesAvailable && (config.planes.automaticRotation ||
+                          config.planesExtras.nearbyEnabled),
       config.openMeteoLatitude, config.openMeteoLongitude, config.planes,
       config.planesFeedUrl, config.planesMapLabel,
       config.planesExtras.showSondes);
@@ -1118,6 +1145,14 @@ void handlePlanesVisibility(bool visible) {
     // v paměti. Vynulovaná generace vynutí jedno předání hned.
     displayedPlanesGeneration = UINT32_MAX;
   }
+  // Odchod z obrazovky vrátí dosah z doby před letadlem poblíž. Když ho
+  // mezitím změnil web, platí ten z webu.
+  if (!visible && planeNearbySavedRange != UINT8_MAX) {
+    if (loopConfigSnapshot().planes.rangeIndex ==
+        planeNearbySavedConfiguredRange)
+      planeRadarServiceRestoreRange(planeNearbySavedRange);
+    planeNearbySavedRange = UINT8_MAX;
+  }
   // Bere se předaná hodnota, ne to, co zrovna ukazuje activeScreen: při
   // aktualizaci firmwaru přijde false ještě dřív, než se obrazovka přepne, a
   // odvozením by radar dál stahoval přes celé odpočítávání OTA.
@@ -1366,15 +1401,34 @@ bool auroraHolding() {
          static_cast<long>(millis() - auroraHeldUntil) < 0;
 }
 
-// Drží teď obrazovku některé upozornění (déšť, výstraha, blesky, polární záře)?
+bool planeNearbyHolding() {
+  return planeNearbyHeldUntil != 0 &&
+         static_cast<long>(millis() - planeNearbyHeldUntil) < 0;
+}
+
+// Prst během držení letadla poblíž: kdo sáhne na displej, chce zůstat. Návrat
+// se zruší a počítá se to jako ruční přepnutí, takže ani plán hodiny hned
+// nestrhne jinam.
+void cancelPlaneNearbyHold() {
+  if (!planeNearbyHolding()) return;
+  planeNearbyHeldUntil = 0;
+  alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+  alertReturnFrom = ROTATION_SCREEN_RADAR;
+  displayModeStartedAt = millis();
+  lastManualScreenChangeAt = millis();
+}
+
+// Drží teď obrazovku některé upozornění (déšť, výstraha, blesky, polární záře,
+// letadlo poblíž)?
 bool alertHolding() {
-  return radarAlertHolding() || auroraHolding();
+  return radarAlertHolding() || auroraHolding() || planeNearbyHolding();
 }
 
 // Obrazovka, kterou něco drží, nebo CLOCK_SCREEN_ORDER_UNUSED. Upozornění na
 // déšť přebíjí okno plánu: trvá jen pár minut a pak obrazovku zase pustí.
 uint8_t heldScreen() {
   if (radarAlertHolding()) return static_cast<uint8_t>(CLOCK_SCREEN_RADAR);
+  if (planeNearbyHolding()) return static_cast<uint8_t>(CLOCK_SCREEN_PLANES);
   if (auroraHolding()) return static_cast<uint8_t>(CLOCK_SCREEN_SATELLITES);
   return scheduleHeldScreen;
 }
@@ -1696,7 +1750,10 @@ void maintainDisplayGestures() {
     touched = displayDriverTakeRangeSwipe() != 0 || touched;
     touched = displayDriverTakeShortTap(tapX, tapY) || touched;
     touched = displayDriverTakeDoubleTap() || touched;
-    if (touched) clockDashboardHideNotification();
+    if (touched) {
+      clockDashboardHideNotification();
+      cancelPlaneNearbyHold();
+    }
     return;
   }
   const ClockConfig &config = loopConfigSnapshot();
@@ -1704,6 +1761,7 @@ void maintainDisplayGestures() {
   // Podržení prstu prochází cyklus obrazovek. Vlevo od svislé osy zpět,
   // vpravo vpřed; nastavení je v cyklu poslední a odchází se z něj stejně.
   const int8_t holdDirection = displayDriverTakeScreenHold();
+  if (holdDirection != 0) cancelPlaneNearbyHold();
   if (holdDirection != 0 && clockDashboardManualScreenChangeAllowed()) {
     const uint8_t current =
         rotationScreenPosition(config, activeRotationScreen());
@@ -1721,6 +1779,7 @@ void maintainDisplayGestures() {
     }
   }
   const int8_t rangeSwipeDirection = displayDriverTakeRangeSwipe();
+  if (rangeSwipeDirection != 0) cancelPlaneNearbyHold();
   if (rangeSwipeDirection != 0 && clockDashboardAutomaticRotationAllowed()) {
 #if HODINY_BOARD_LCD7
     const bool lcd7Swipe = clockDashboardLcd7Swipe(rangeSwipeDirection);
@@ -1745,6 +1804,8 @@ void maintainDisplayGestures() {
       handleRadarRangeChange(rangeSwipeDirection);
     } else if (clockDashboardPlanesVisible()) {
       planeRadarServiceChangeRange(rangeSwipeDirection);
+      // Dosah si zvolil prst; po odchodu se nevrací ten před letadlem poblíž.
+      planeNearbySavedRange = UINT8_MAX;
       displayModeStartedAt = millis();
     }
   }
@@ -1753,8 +1814,14 @@ void maintainDisplayGestures() {
   // Jedno klepnutí vybírá letadlo na radaru nebo zavírá jeho detail a na
   // zprávách otevírá detail zprávy; jinde nedělá nic. Denní režim přepíná až dvojklepnutí, protože jedno klepnutí se
   // pletlo s podržením prstu a místo obrazovky přepínalo den a noc.
-  if (displayDriverTakeShortTap(tapX, tapY)) handleShortTap(tapX, tapY);
-  if (displayDriverTakeDoubleTap()) clockDashboardHandleDoubleTap();
+  if (displayDriverTakeShortTap(tapX, tapY)) {
+    cancelPlaneNearbyHold();
+    handleShortTap(tapX, tapY);
+  }
+  if (displayDriverTakeDoubleTap()) {
+    cancelPlaneNearbyHold();
+    clockDashboardHandleDoubleTap();
+  }
   clockDashboardMaintainRssDetail();
 }
 
@@ -1847,7 +1914,15 @@ constexpr unsigned long RAIN_ALERT_CHECK_MS = 10UL * 1000UL;
 // Zapamatuje si, odkud upozornění přepíná na radar. Když už radar drží jiné
 // upozornění, platí obrazovka z prvního; z radaru samotného se nevrací nikam.
 void rememberAlertReturnScreen() {
+  // Radar má před letadlem poblíž přednost: držení letadla končí bez návratu
+  // a radar se pak vrátí tam, odkud letadlo přišlo, ne na letadla.
+  if (planeNearbyHolding()) {
+    planeNearbyHeldUntil = 0;
+    alertReturnFrom = ROTATION_SCREEN_RADAR;
+    return;
+  }
   if (radarAlertHolding()) return;
+  alertReturnFrom = ROTATION_SCREEN_RADAR;
   const uint8_t current = activeRotationScreen();
   alertReturnScreen =
       current == ROTATION_SCREEN_RADAR || current == ROTATION_SCREEN_SETTINGS
@@ -1888,8 +1963,12 @@ void endAlertHold(const ClockConfig &config, unsigned long &heldUntil,
 void maintainAlertReturn() {
   if (!alertReturnPending || alertHolding()) return;
   alertReturnPending = false;
+  const uint8_t from = alertReturnFrom;
+  alertReturnFrom = ROTATION_SCREEN_RADAR;
   // Vypnutý návrat: radar zůstane, dokud ho nevystřídá střídání nebo plán.
-  if (!loopConfigSnapshot().radarAlerts.returnToPrevious) {
+  // Letadlo poblíž se vrací vždycky - drží jen pár vteřin.
+  if (from == ROTATION_SCREEN_RADAR &&
+      !loopConfigSnapshot().radarAlerts.returnToPrevious) {
     alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
     return;
   }
@@ -1897,8 +1976,8 @@ void maintainAlertReturn() {
                              ? scheduleHeldScreen
                              : alertReturnScreen;
   alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
-  if (target == CLOCK_SCREEN_ORDER_UNUSED || clockDashboardSettingsVisible() ||
-      activeRotationScreen() != ROTATION_SCREEN_RADAR)
+  if (target == CLOCK_SCREEN_ORDER_UNUSED || target == from ||
+      clockDashboardSettingsVisible() || activeRotationScreen() != from)
     return;
   switchToScreen(loopConfigSnapshot(), target);
 }
@@ -2107,7 +2186,8 @@ void maintainAuroraAlert() {
           static_cast<unsigned long>(config.nightSky.cooldownMinutes) * 60000UL)
     return;
   // Déšť, výstraha a blesky mají přednost; obloha počká, až radar pustí.
-  if (radarAlertHolding()) return;
+  // Stejně tak počká na konec krátkého držení letadla poblíž.
+  if (radarAlertHolding() || planeNearbyHolding()) return;
   if (clockDashboardSettingsVisible()) return;
   if (!switchToScreen(config, CLOCK_SCREEN_SATELLITES)) return;
   clockDashboardSetSatellitesSkyPage(true);
@@ -2442,6 +2522,74 @@ void maintainLightningAlert() {
                 60000UL;
   lightningRaisedAt = now;
   lightningEverRaised = true;
+}
+
+constexpr unsigned long PLANE_NEARBY_CHECK_MS = 1000;
+
+// Letadlo poblíž (podle MeteoPlaneRadar 0.8.0): přiblíží-li se letadlo
+// k domovu nebo vletí do výhledu z okna, hodiny přepnou na radar letadel,
+// otevřou jeho detail a po nastavené době se vrátí tam, odkud přišly. Které
+// letadlo to je, vybírá služba po každém stažení (PlaneNearby.h); tady se jen
+// rozhoduje, jestli se smí přepnout. Funguje i bez automatického střídání.
+void maintainPlaneNearby() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  const bool enabled = config.planesExtras.nearbyEnabled &&
+                       rotationScreenAvailable(config, ROTATION_SCREEN_PLANES);
+  if (planeNearbyHeldUntil != 0) {
+    if (!enabled || activeRotationScreen() != ROTATION_SCREEN_PLANES) {
+      // Letadla mezitím vystřídalo něco jiného - gesto, web, aktualizace -,
+      // nebo se funkce vypnula: držení končí a nikam se nevrací.
+      planeNearbyHeldUntil = 0;
+      alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
+      alertReturnFrom = ROTATION_SCREEN_RADAR;
+      displayModeStartedAt = now;
+      scheduleCheckPending = true;
+    } else if (static_cast<long>(now - planeNearbyHeldUntil) >= 0) {
+      planeNearbyHeldUntil = 0;
+      displayModeStartedAt = now;
+      scheduleCheckPending = true;
+      alertReturnPending = true;
+    }
+    return;
+  }
+  if (!enabled) return;
+  if (now - planeNearbyCheckedAt < PLANE_NEARBY_CHECK_MS) return;
+  planeNearbyCheckedAt = now;
+  PlaneRadarNearbyCandidate candidate;
+  // Na obrazovce letadel se nepřepíná nic. Letadlo poblíž tam ale člověk
+  // vidí, takže se bere jako ukázané - jinak by hodiny hned po odchodu
+  // z obrazovky skočily zpátky kvůli letadlu, na které se právě díval.
+  if (clockDashboardPlanesVisible()) {
+    planeRadarServiceTakeNearby(candidate);
+    return;
+  }
+  // Jinak čeká, dokud displej patří někomu jinému: nastavení, notifikaci,
+  // aktualizaci, jinému upozornění (radar má přednost) nebo vypnutému displeji.
+  if (!timeWasSynchronized || displayForcedOff ||
+      firmwareUpdateDisplayRequested ||
+      !clockDashboardManualScreenChangeAllowed() ||
+      clockDashboardSettingsVisible() || clockDashboardNotificationVisible() ||
+      alertHolding() || alertReturnPending)
+    return;
+  if (!config.planesExtras.nearbyAtNight && clockDashboardNightModeEnabled())
+    return;
+  if (!planeRadarServiceTakeNearby(candidate)) return;
+  const uint8_t current = activeRotationScreen();
+  if (!switchToScreen(config, ROTATION_SCREEN_PLANES)) return;
+  alertReturnScreen = current == ROTATION_SCREEN_SETTINGS
+                          ? CLOCK_SCREEN_ORDER_UNUSED
+                          : current;
+  alertReturnFrom = ROTATION_SCREEN_PLANES;
+  const uint8_t previousRange = planeRadarServiceShowNearby(candidate);
+  if (planeNearbySavedRange == UINT8_MAX) {
+    planeNearbySavedRange = previousRange;
+    planeNearbySavedConfiguredRange = config.planes.rangeIndex;
+  }
+  const unsigned long holdMs =
+      static_cast<unsigned long>(config.planesExtras.nearbyHoldSeconds) * 1000UL;
+  planeNearbyHeldUntil = now + (holdMs > 0 ? holdMs : 1000UL);
+  if (planeNearbyHeldUntil == 0) planeNearbyHeldUntil = 1;
 }
 
 // Dnešní místní půlnoc a délka dne v sekundách; při změně času má den 23 nebo
@@ -5082,6 +5230,7 @@ void loop() {
   maintainRainAlert();
   maintainWeatherWarnings();
   maintainLightningAlert();
+  maintainPlaneNearby();
   maintainAlertReturn();
   maintainAuroraAlert();
   maintainAutomaticScreenRotation();
