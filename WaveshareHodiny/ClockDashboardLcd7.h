@@ -1647,14 +1647,17 @@ struct RadarLegendRow {
   const char *czech;
   const char *english;
   const char *rate;
+  const char *rateRainViewer;
 };
 const RadarLegendRow RADAR_LEGEND[RADAR_LEGEND_ROWS] = {
-    {0xA00000, 0xFFA8F8, "krupobití", "hail", "> 100"},
-    {0xF80000, 0xC00000, "přívalový", "torrential", "65"},
-    {0xF88400, 0xF84400, "velmi silný", "very heavy", "27"},
-    {0xE0DC00, 0xF8A800, "silný", "heavy", "12"},
-    {0x00BC00, 0x005488, "mírný", "moderate", "3,6"},
-    {0x0000F8, 0x00A0E0, "slabý", "light", "< 1"},
+    {0xA00000, 0xFFA8F8, "krupobití", "hail", "> 100", "> 100"},
+    {0xF80000, 0xC00000, "přívalový", "torrential", "65", "49"},
+    // mm/h pro ČHMÚ: oranžová 44, žlutá 36, zelená 24, modrá 12 dBZ (viz
+    // drawIntensityLegend v ChmiRadarService.cpp).
+    {0xF88400, 0xF84400, "velmi silný", "very heavy", "20", "24"},
+    {0xE0DC00, 0xF8A800, "silný", "heavy", "6,5", "12"},
+    {0x00BC00, 0x005488, "mírný", "moderate", "1,2", "2,7"},
+    {0x0000F8, 0x00A0E0, "slabý", "light", "0,2", "0,7"},
 };
 constexpr int RADAR_COLUMN_W = SCREEN_WIDTH - RADAR_COLUMN_X;
 constexpr int RADAR_PAD = 14;
@@ -1837,7 +1840,7 @@ void syncRadar(const Palette &p) {
     setText(v.legendWords[index], english ? row.english : row.czech);
     setColor(v.legendWords[index], p.night ? COLOR_ERROR : COLOR_TEXT);
     setPosition(v.legendWords[index], RADAR_PAD + 22, rowY);
-    setText(v.legendValues[index], row.rate);
+    setText(v.legendValues[index], rainViewer ? row.rateRainViewer : row.rate);
     setColor(v.legendValues[index], p.muted);
     lv_obj_update_layout(v.legendValues[index]);
     setPosition(v.legendValues[index],
