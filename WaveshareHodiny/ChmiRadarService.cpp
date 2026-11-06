@@ -2331,6 +2331,14 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
   // druhou TLS relaci - a otevřená relace drží pořádný kus interní paměti,
   // které je tu málo. Takhle je otevřená vždycky jen jedna a snímky za ní
   // chodí bez dalšího handshaku, přesně jako dlaždice RainVieweru.
+  //
+  // Celé načtení po nedostatku paměti (loadAnimation) si bere zámek sítě
+  // samo, takže se volá až za tímhle blokem. Dřív se volalo zevnitř: zámek
+  // není rekurzivní, úloha radaru čekala 15 s sama na sebe a FreeRTOS pak
+  // spadl na assertu ve vTaskPriorityDisinheritAfterTimeout (pracovna,
+  // úloha chmi-radar, 66 pádů do 6. 11. 2026).
+  bool fullReload = false;
+  {
   NetworkOperationGuard networkGuard(15000);
   if (!networkGuard) {
     setStatus(false, "Sit je zaneprazdnena");
@@ -2369,16 +2377,24 @@ bool refreshLatestFrame(float latitude, float longitude, uint16_t radiusKm,
     if (!prepared || !requestMatches(revision)) {
       setStatus(false, "Nove snimky CHMU se nepodarilo pripravit");
       pendingRefreshCount = 0;
-      if (outOfMemory && requestMatches(revision))
-        return loadAnimation(latitude, longitude, radiusKm, wantedFrameCount,
-                             mapOpacityValue, revision);
-      return false;
+      if (!outOfMemory || !requestMatches(revision)) return false;
+      fullReload = true;
+      break;
     }
     strlcpy(pendingFrameNames[slot], fileName,
             sizeof(pendingFrameNames[slot]));
     frameTimeFromName(fileName, pendingFrameTimes[slot]);
     pendingFrameRevisions[slot] = revision;
   }
+  if (fullReload) {
+    // Spojení se zavře ještě pod zámkem; loadAnimation si otevře vlastní.
+    http.end();
+    frameClient.stop();
+  }
+  }  // zámek sítě uvolněn
+  if (fullReload)
+    return loadAnimation(latitude, longitude, radiusKm, wantedFrameCount,
+                         mapOpacityValue, revision);
   pendingRefreshCount = shift;
   setStatus(false, "");
   return schedulePendingRefresh();
