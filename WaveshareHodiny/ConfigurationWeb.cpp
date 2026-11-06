@@ -1613,7 +1613,9 @@ void handleGetConfig() {
   result += F(",\"radarSource\":\"");
   result += config.radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER
                 ? F("rainviewer")
-                : F("chmi");
+                : config.radarSource == CLOCK_RADAR_SOURCE_CHMI_MASKED
+                      ? F("chmi-masked")
+                      : F("chmi");
   result += F("\"");
   result += F(",\"radarStatusLine\":");
   result += config.radarStatusLine ? F("true") : F("false");
@@ -2258,6 +2260,8 @@ void handleSaveConfig() {
   const String radarSource = server.arg("radarSource");
   if (radarSource == "rainviewer") {
     config.radarSource = CLOCK_RADAR_SOURCE_RAINVIEWER;
+  } else if (radarSource == "chmi-masked") {
+    config.radarSource = CLOCK_RADAR_SOURCE_CHMI_MASKED;
   } else if (radarSource == "chmi" || radarSource.isEmpty()) {
     config.radarSource = CLOCK_RADAR_SOURCE_CHMI;
   } else {

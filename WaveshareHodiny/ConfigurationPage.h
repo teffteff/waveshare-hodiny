@@ -205,7 +205,7 @@ const char CONFIGURATION_PAGE[] PROGMEM = R"HTML(
     <section>
       <h2>Meteoradar</h2>
       <div class="grid">
-        <div class="span-6"><label for="radarSource">Zdroj srážek</label><select id="radarSource" name="radarSource"><option value="chmi">ČHMÚ (jen Česko)</option><option value="rainviewer">RainViewer (Evropa)</option></select><span class="hint">ČHMÚ je nad Českem ostřejší, ale za hranicemi nemá data. RainViewer pokrývá Evropu a je zdarma, jen hrubší; jeho přiblížení jde po mocninách dvou, takže popisek ukáže poloměr, který opravdu vyšel.</span></div>
+        <div class="span-6"><label for="radarSource">Zdroj srážek</label><select id="radarSource" name="radarSource"><option value="chmi">ČHMÚ (jen Česko)</option><option value="chmi-masked">ČHMÚ bez srážek nad zemí (jen Česko)</option><option value="rainviewer">RainViewer (Evropa)</option></select><span class="hint">ČHMÚ je nad Českem ostřejší, ale za hranicemi nemá data. RainViewer pokrývá Evropu a je zdarma, jen hrubší; jeho přiblížení jde po mocninách dvou, takže popisek ukáže poloměr, který opravdu vyšel. Varianta bez srážek nad zemí vynechá to, co podle masky ČHMÚ pravděpodobně nedopadne na zem (virga); je to odhad, ne měření u země.</span></div>
         <p class="span-12 feedback error hidden" id="radarUnavailable">Meteoradar ČHMÚ je dostupný pouze pro lokality v České republice. Mimo Česko zvol zdroj srážek RainViewer.</p>
         <div class="span-12 grid" id="radarSettingsContent">
           <div class="span-12">
@@ -830,7 +830,7 @@ function locationLabel(location){return[location.name,location.admin2,location.a
 // a řekne o tom; ruční volba zdroje tohle automatické přepínání vypne, aby
 // vědomě zvolený zdroj nikdy nikdo nepřepsal za zády.
 let radarSourceSwitchedAutomatically=false;
-function autoSwitchRadarSource(czech){const source=$("radarSource");if(!czech&&source.value==="chmi"){source.value="rainviewer";radarSourceSwitchedAutomatically=true;return "Zdroj srážek přepnut na RainViewer, ČHMÚ za hranicemi data nemá."}if(czech&&radarSourceSwitchedAutomatically&&source.value==="rainviewer"){source.value="chmi";radarSourceSwitchedAutomatically=false;return "Zdroj srážek vrácen na ČHMÚ, který je nad Českem ostřejší."}return ""}
+function autoSwitchRadarSource(czech){const source=$("radarSource");if(!czech&&source.value.startsWith("chmi")){source.value="rainviewer";radarSourceSwitchedAutomatically=true;return "Zdroj srážek přepnut na RainViewer, ČHMÚ za hranicemi data nemá."}if(czech&&radarSourceSwitchedAutomatically&&source.value==="rainviewer"){source.value="chmi";radarSourceSwitchedAutomatically=false;return "Zdroj srážek vrácen na ČHMÚ, který je nad Českem ostřejší."}return ""}
 // Souřadnice z libovolného běžného zápisu: desetinné stupně (i s desetinnou
 // čárkou), stupně-minuty-vteřiny s N/S/E/W v libovolném pořadí, odkaz z Map
 // Google (!3d/!4d špendlíku, @střed mapy, q=) nebo Mapy.cz (x= je délka, y= šířka).

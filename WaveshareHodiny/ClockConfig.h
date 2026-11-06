@@ -291,6 +291,12 @@ enum ClockRadarSource : uint8_t {
   // služba, která pokrývá i zbytek Evropy.
   CLOCK_RADAR_SOURCE_CHMI = 0,
   CLOCK_RADAR_SOURCE_RAINVIEWER = 1,
+  // Kompozice ČHMÚ s maskou (maxz/png_masked): srážky, které podle ČHMÚ
+  // pravděpodobně nedopadají na zem, mají v paletě vlastní bledé barvy mimo
+  // stupnici, takže se nekreslí. Jinak je to stejný ČHMÚ - všude, kde se ptá
+  // jen na RainViewer, se chová jako CLOCK_RADAR_SOURCE_CHMI. Starší firmware
+  // hodnotu 2 při normalizaci vrátí na 0, schéma se proto nemění.
+  CLOCK_RADAR_SOURCE_CHMI_MASKED = 2,
 };
 
 enum ClockNightVisualMode : uint8_t {
