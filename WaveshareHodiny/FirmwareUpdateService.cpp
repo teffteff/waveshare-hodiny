@@ -21,6 +21,12 @@
 namespace {
 constexpr time_t VALID_TIME_THRESHOLD = 1700000000;
 constexpr uint32_t NETWORK_TIMEOUT_MS = 15000;
+// Na síťový zámek se čeká déle než na samotný přenos. Zámek drží i stahování
+// radaru, zpráv nebo agendy a OTA spuštěné v tu chvíli (třeba z clock-sync.py)
+// dřív po 15 s skončilo hláškou "Síť je právě vytížená jinou operací."
+// Kontrola i instalace běží ve vlastní úloze, hlavní smyčku čekání neblokuje.
+constexpr uint32_t NETWORK_LOCK_WAIT_MS = 300000;
+constexpr char WAITING_FOR_NETWORK[] = "Čekám na dokončení jiné síťové operace…";
 constexpr size_t DOWNLOAD_BUFFER_SIZE = 4096;
 
 SemaphoreHandle_t statusMutex = nullptr;
@@ -88,10 +94,13 @@ String sha256Hex(const uint8_t digest[32]) {
 
 bool installFirmware(const String &url, uint32_t expectedSize,
                      const String &expectedSha256) {
-  NetworkOperationGuard networkGuard(NETWORK_TIMEOUT_MS);
+  setMessage(FirmwareUpdateState::Checking, WAITING_FOR_NETWORK, true);
+  NetworkOperationGuard networkGuard(NETWORK_LOCK_WAIT_MS);
   if (!networkGuard) {
     setMessage(FirmwareUpdateState::Failed,
-               "Síť je právě vytížená jinou operací.", false);
+               "Aktualizaci se nepodařilo spustit, síť byla příliš dlouho "
+               "vytížená. Zkus to prosím znovu.",
+               false);
     return false;
   }
   setMessage(FirmwareUpdateState::Downloading,
@@ -253,12 +262,16 @@ bool checkFirmware(bool installWhenAvailable) {
     return false;
   }
 
-  NetworkOperationGuard networkGuard(NETWORK_TIMEOUT_MS);
+  setMessage(FirmwareUpdateState::Checking, WAITING_FOR_NETWORK, true);
+  NetworkOperationGuard networkGuard(NETWORK_LOCK_WAIT_MS);
   if (!networkGuard) {
     setMessage(FirmwareUpdateState::Failed,
-               "Síť je právě vytížená jinou operací.", false);
+               "Kontrolu se nepodařilo spustit, síť byla příliš dlouho "
+               "vytížená. Zkus to prosím znovu.",
+               false);
     return false;
   }
+  setMessage(FirmwareUpdateState::Checking, "Kontroluji novou verzi…", true);
 
   String payload;
   {
