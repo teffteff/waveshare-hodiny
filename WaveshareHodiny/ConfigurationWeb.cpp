@@ -1909,6 +1909,23 @@ void handleGetConfig() {
   result += config.planes.squawkAlert ? F("true") : F("false");
   result += F(",\"planesShowSondes\":");
   result += config.planesExtras.showSondes ? F("true") : F("false");
+  result += F(",\"planesNearbyEnabled\":");
+  result += config.planesExtras.nearbyEnabled ? F("true") : F("false");
+  result += F(",\"planesNearbyRadiusKm\":");
+  result += config.planesExtras.nearbyRadiusKm;
+  result += F(",\"planesNearbyHoldSeconds\":");
+  result += config.planesExtras.nearbyHoldSeconds;
+  // Uložené obráceně (nearbyAtNight), na stránce jako "v noci nepřepínat".
+  result += F(",\"planesNearbyQuietAtNight\":");
+  result += config.planesExtras.nearbyAtNight ? F("false") : F("true");
+  result += F(",\"planesWindowEnabled\":");
+  result += config.planesExtras.windowEnabled ? F("true") : F("false");
+  result += F(",\"planesWindowDirection\":");
+  result += config.planesExtras.windowDirection;
+  result += F(",\"planesWindowWidth\":");
+  result += config.planesExtras.windowWidthDeg;
+  result += F(",\"planesWindowRangeKm\":");
+  result += config.planesExtras.windowRangeKm;
   result += F(",\"planesMetricUnits\":");
   result += config.planes.metricUnits ? F("true") : F("false");
   result += F(",\"planesMapLabel\":\"");
@@ -2940,6 +2957,41 @@ void handleSaveConfig() {
       sendError(400, F("Doba zobrazení letadel musí být 10 až 3600 sekund."));
       return;
     }
+    // Letadlo poblíž a výhled z okna. Stránka ze starší verze pole neposílá;
+    // uložené volby pak zůstanou.
+    const bool nearbyFields = server.hasArg("planesNearbyRadiusKm");
+    const int nearbyRadiusKm = server.arg("planesNearbyRadiusKm").toInt();
+    if (nearbyFields && (nearbyRadiusKm < CLOCK_PLANE_NEARBY_MIN_RADIUS_KM ||
+                         nearbyRadiusKm > CLOCK_PLANE_NEARBY_MAX_RADIUS_KM)) {
+      sendError(400, F("Okruh letadla poblíž musí být 1 až 50 km."));
+      return;
+    }
+    const int nearbyHoldSeconds = server.arg("planesNearbyHoldSeconds").toInt();
+    if (nearbyFields &&
+        (nearbyHoldSeconds < CLOCK_PLANE_NEARBY_MIN_HOLD_SECONDS ||
+         nearbyHoldSeconds > CLOCK_PLANE_NEARBY_MAX_HOLD_SECONDS)) {
+      sendError(400, F("Doba ukázání letadla poblíž musí být 5 až 120 sekund."));
+      return;
+    }
+    const int windowDirection = server.arg("planesWindowDirection").toInt();
+    if (nearbyFields &&
+        (windowDirection < 0 ||
+         windowDirection >= CLOCK_PLANE_WINDOW_DIRECTION_COUNT)) {
+      sendError(400, F("Směr výhledu z okna není v nabídce."));
+      return;
+    }
+    const int windowWidth = server.arg("planesWindowWidth").toInt();
+    if (nearbyFields && (windowWidth < CLOCK_PLANE_WINDOW_MIN_WIDTH_DEG ||
+                         windowWidth > CLOCK_PLANE_WINDOW_MAX_WIDTH_DEG)) {
+      sendError(400, F("Šířka výhledu z okna musí být 20 až 180 stupňů."));
+      return;
+    }
+    const int windowRangeKm = server.arg("planesWindowRangeKm").toInt();
+    if (nearbyFields && (windowRangeKm < CLOCK_PLANE_WINDOW_MIN_RANGE_KM ||
+                         windowRangeKm > CLOCK_PLANE_WINDOW_MAX_RANGE_KM)) {
+      sendError(400, F("Dohled z okna musí být 1 až 50 km."));
+      return;
+    }
     String planesFeedUrl = server.arg("planesFeedUrl");
     planesFeedUrl.trim();
     if (planesFeedUrl.length() >= CLOCK_PLANES_FEED_URL_LENGTH) {
@@ -2970,6 +3022,17 @@ void handleSaveConfig() {
     // Stránka ze starší verze pole neposílá; uložená volba pak zůstane.
     if (server.hasArg("planesShowSondes"))
       config.planesExtras.showSondes = server.arg("planesShowSondes") == "1";
+    if (nearbyFields) {
+      ClockPlanesExtrasConfig &extras = config.planesExtras;
+      extras.nearbyEnabled = server.arg("planesNearbyEnabled") == "1";
+      extras.nearbyRadiusKm = static_cast<uint8_t>(nearbyRadiusKm);
+      extras.nearbyHoldSeconds = static_cast<uint8_t>(nearbyHoldSeconds);
+      extras.nearbyAtNight = server.arg("planesNearbyQuietAtNight") != "1";
+      extras.windowEnabled = server.arg("planesWindowEnabled") == "1";
+      extras.windowDirection = static_cast<uint8_t>(windowDirection);
+      extras.windowWidthDeg = static_cast<uint8_t>(windowWidth);
+      extras.windowRangeKm = static_cast<uint8_t>(windowRangeKm);
+    }
     config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
     // Stránka uložená ze starší verze pole neposílá; uložený popisek zůstane.
     const String planesMapLabel = server.arg("planesMapLabel");

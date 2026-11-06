@@ -872,12 +872,43 @@ struct alignas(4) ClockPlanesExtrasConfig {
   // Meteosondy z vlastního serveru (infra/planes s ?sondes=1). Bez vlastního
   // zdroje letadel nejsou odkud, takže volba pak nic nemění.
   bool showSondes = true;
+  // Letadlo poblíž: přiblíží-li se letadlo k domovu, hodiny samy přepnou na
+  // radar, otevřou jeho detail a po chvíli se vrátí (PlaneNearby.h). Uložené
+  // záznamy tu mají nuly, takže je po aktualizaci vypnuté; nulové a jinak
+  // neplatné hodnoty ostatních voleb srovná normalizeConfig na výchozí.
+  bool nearbyEnabled = false;
+  uint8_t nearbyRadiusKm = 5;
+  uint8_t nearbyHoldSeconds = 15;
+  // Přepínat i v nočním režimu. Uložené obráceně (false = v noci ticho), aby
+  // nula ze staršího záznamu znamenala výchozí "v noci nepřepínat".
+  bool nearbyAtNight = false;
+  // Výhled z okna: výsek, ve kterém letadlo vyhraje i nad bližším a stačí mu
+  // být do dohledu okna. Směr 0..7 po 45 stupních, 0 = sever.
+  bool windowEnabled = false;
+  uint8_t windowDirection = 0;
+  uint8_t windowWidthDeg = 90;
+  uint8_t windowRangeKm = 15;
   // Rezerva pro další volby bez nového schématu; zatím nuly.
-  uint8_t reserved[15] = {};
+  uint8_t reserved[7] = {};
 };
 
 static_assert(sizeof(ClockPlanesExtrasConfig) == 16,
               "The aircraft extras block is part of the stored record.");
+
+// Letadlo poblíž a výhled z okna (ClockPlanesExtrasConfig).
+constexpr uint8_t CLOCK_PLANE_NEARBY_DEFAULT_RADIUS_KM = 5;
+constexpr uint8_t CLOCK_PLANE_NEARBY_MIN_RADIUS_KM = 1;
+constexpr uint8_t CLOCK_PLANE_NEARBY_MAX_RADIUS_KM = 50;
+constexpr uint8_t CLOCK_PLANE_NEARBY_DEFAULT_HOLD_SECONDS = 15;
+constexpr uint8_t CLOCK_PLANE_NEARBY_MIN_HOLD_SECONDS = 5;
+constexpr uint8_t CLOCK_PLANE_NEARBY_MAX_HOLD_SECONDS = 120;
+constexpr uint8_t CLOCK_PLANE_WINDOW_DIRECTION_COUNT = 8;
+constexpr uint8_t CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG = 90;
+constexpr uint8_t CLOCK_PLANE_WINDOW_MIN_WIDTH_DEG = 20;
+constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_WIDTH_DEG = 180;
+constexpr uint8_t CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM = 15;
+constexpr uint8_t CLOCK_PLANE_WINDOW_MIN_RANGE_KM = 1;
+constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_RANGE_KM = 50;
 
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;

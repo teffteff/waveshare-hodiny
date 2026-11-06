@@ -2054,6 +2054,47 @@ void testPlanesExtrasPersistenceAndMigration() {
   ClockConfig loaded;
   assert(clockConfigLoad(loaded));
   assert(!loaded.planesExtras.showSondes);
+
+  // Letadlo poblíž a výhled z okna leží v dřívější rezervě: záznam téhož
+  // schématu s nulami tam dá vypnuté přepínače a výchozí hodnoty.
+  ClockConfig zeroed;
+  clockConfigApplyDefaults(zeroed);
+  memset(&zeroed.planesExtras, 0, sizeof(zeroed.planesExtras));
+  zeroed.planesExtras.showSondes = true;
+  seed(legacyRecord(zeroed, CLOCK_CONFIG_SCHEMA_VERSION, sizeof(ClockConfig)));
+  ClockConfig normalized;
+  assert(clockConfigLoad(normalized));
+  const ClockPlanesExtrasConfig &extras = normalized.planesExtras;
+  assert(extras.showSondes);
+  assert(!extras.nearbyEnabled);
+  assert(!extras.nearbyAtNight);
+  assert(!extras.windowEnabled);
+  assert(extras.nearbyRadiusKm == CLOCK_PLANE_NEARBY_DEFAULT_RADIUS_KM);
+  assert(extras.nearbyHoldSeconds == CLOCK_PLANE_NEARBY_DEFAULT_HOLD_SECONDS);
+  assert(extras.windowDirection == 0);
+  assert(extras.windowWidthDeg == CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG);
+  assert(extras.windowRangeKm == CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
+
+  // Uložené hodnoty přežijí, neplatné se srovnají na výchozí.
+  normalized.planesExtras.nearbyEnabled = true;
+  normalized.planesExtras.nearbyRadiusKm = 8;
+  normalized.planesExtras.nearbyHoldSeconds = 30;
+  normalized.planesExtras.windowEnabled = true;
+  normalized.planesExtras.windowDirection = 5;
+  normalized.planesExtras.windowWidthDeg = 10;
+  normalized.planesExtras.windowRangeKm = 200;
+  assert(clockConfigSave(normalized));
+  ClockConfig reloaded;
+  assert(clockConfigLoad(reloaded));
+  assert(reloaded.planesExtras.nearbyEnabled);
+  assert(reloaded.planesExtras.nearbyRadiusKm == 8);
+  assert(reloaded.planesExtras.nearbyHoldSeconds == 30);
+  assert(reloaded.planesExtras.windowEnabled);
+  assert(reloaded.planesExtras.windowDirection == 5);
+  assert(reloaded.planesExtras.windowWidthDeg ==
+         CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG);
+  assert(reloaded.planesExtras.windowRangeKm ==
+         CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
 }
 
 int main() {

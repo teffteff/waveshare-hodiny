@@ -6,6 +6,7 @@
 
 #include "AdsbParser.h"
 #include "ClockConfig.h"
+#include "PlaneNearby.h"
 #include "RouteParser.h"
 
 // Radar letadel. Data vozí adsb.fi, trasu vybraného letu adsb.lol; obojí je
@@ -129,6 +130,35 @@ void planeRadarServiceSetActive(bool visible, bool backgroundRefresh,
                                 const char *feedUrl, uint8_t mapLabel,
                                 bool showSondes);
 void planeRadarServiceSetRedNightMode(bool enabled);
+
+// Letadlo poblíž a výhled z okna (PlaneNearby.h). Se zapnutou funkcí a
+// schovanou obrazovkou se služba ptá každých deset vteřin jen na malý okruh
+// kolem domova (radius okruhu nebo dohled okna) a po každém stažení vybere
+// letadlo, které stojí za přepnutí. Výhled z okna se navíc kreslí na mapu.
+// Aby se stahovalo i bez střídání, musí hlavní smyčka předat
+// backgroundRefresh v planeRadarServiceSetActive.
+void planeRadarServiceSetNearby(const PlaneNearbySettings &settings);
+
+// Letadlo, na které se má přepnout. Kopie z posledního čerstvého stažení,
+// takže hlavní smyčka nesahá do seznamu, který mezitím úloha přepisuje.
+struct PlaneRadarNearbyCandidate {
+  AdsbAircraft aircraft;
+  float distanceKm = 0.0f;
+  bool inWindow = false;
+};
+
+// Vydá letadlo k ukázání a zapamatuje si ho, aby se stejné neukázalo dřív než
+// za patnáct minut. false = nic nového, nebo data nejsou čerstvá (stará poloha
+// by ukázala na prázdné nebe).
+bool planeRadarServiceTakeNearby(PlaneRadarNearbyCandidate &candidate);
+
+// Otevře detail letadla z planeRadarServiceTakeNearby a dočasně přepne na
+// nejmenší dosah, do kterého se vejde. Volá se po přepnutí na obrazovku
+// letadel. Vrací dosah, který platil předtím, aby ho šlo po návratu vrátit.
+uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate);
+
+// Vrátí běžící dosah (index do CLOCK_PLANE_RANGES_KM) po dočasném přepnutí.
+void planeRadarServiceRestoreRange(uint8_t rangeIndex);
 void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot);
 void planeRadarServiceDiagnostics(PlaneRadarDiagnostics &diagnostics);
 
