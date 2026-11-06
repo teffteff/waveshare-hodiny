@@ -2924,8 +2924,8 @@ void handleUsbCommands() {
                  !screenshotTransferActive) {
         // Přepnutí zdroje srážek bez webu, aby šly obě varianty porovnat.
         const long source = strtol(usbCommand.substring(11).c_str(), nullptr, 10);
-        if (source != CLOCK_RADAR_SOURCE_CHMI &&
-            source != CLOCK_RADAR_SOURCE_RAINVIEWER) {
+        if (source < CLOCK_RADAR_SOURCE_CHMI ||
+            source > CLOCK_RADAR_SOURCE_CHMI_MASKED) {
           Serial.println("RADAR_SOURCE_ERROR");
         } else {
           ClockConfig &config = loopConfigSnapshot();

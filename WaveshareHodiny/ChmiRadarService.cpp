@@ -37,6 +37,12 @@
 namespace {
 constexpr char FRAME_BASE_URL[] =
     "https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/png/";
+// Stejná kompozice s maskou: srážky, které pravděpodobně nedopadají na zem,
+// mají vlastní bledé indexy palety (o 60 níž), které chmiLevel() ani server
+// nepřevedou na stupeň, takže zůstanou nenakreslené. Názvy souborů, rozměr
+// i paleta jsou stejné jako u FRAME_BASE_URL.
+constexpr char MASKED_FRAME_BASE_URL[] =
+    "https://opendata.chmi.cz/meteorology/weather/radar/composite/maxz/png_masked/";
 constexpr char FILE_PREFIX[] = "pacz2gmaps3.z_max3d.";
 // Kolik slotů zpět se smí hledat ten nejnovější publikovaný.
 constexpr uint8_t NEWEST_SLOT_PROBES = 4;
@@ -159,6 +165,12 @@ bool legendEnabled = true;
 // Bez srážek radar nestahuje a do bufferu kreslí jen podkladovou mapu.
 bool precipitationEnabled = true;
 uint8_t radarSource = CLOCK_RADAR_SOURCE_CHMI;
+// Změna zdroje (SetActive) zahodí stažená PNG, takže se snímky obou
+// kompozic nikdy nepomíchají.
+const char *frameBaseUrl() {
+  return radarSource == CLOCK_RADAR_SOURCE_CHMI_MASKED ? MASKED_FRAME_BASE_URL
+                                                       : FRAME_BASE_URL;
+}
 bool nightVisualRedrawRequested = false;
 // Blesky přes radar. Údery kreslí úloha radaru do každého snímku znovu podle
 // skutečného času, ne podle času snímku: animace ukazuje minulé srážky, ale
@@ -441,7 +453,7 @@ bool frameExists(const char *fileName, uint32_t revision) {
   http.useHTTP10(true);
   http.setConnectTimeout(6000);
   http.setTimeout(15000);
-  const String url = String(FRAME_BASE_URL) + fileName;
+  const String url = String(frameBaseUrl()) + fileName;
   if (!http.begin(client, url)) return false;
   const int status = http.sendRequest("HEAD");
   http.end();
@@ -504,7 +516,7 @@ bool latestFileNames(char output[][FILE_NAME_CAPACITY], size_t &count,
 bool downloadPng(HTTPClient &http, const char *fileName, size_t &outputSize,
                  uint32_t revision) {
   outputSize = 0;
-  const String url = String(FRAME_BASE_URL) + fileName;
+  const String url = String(frameBaseUrl()) + fileName;
   portENTER_CRITICAL(&stateMux);
   strlcpy(currentFile, fileName, sizeof(currentFile));
   lastDownloadedBytes = 0;
@@ -2750,13 +2762,14 @@ bool loadServerAnimation(float latitude, float longitude, uint16_t radiusKm,
   const uint16_t viewRadiusKm = radiusKm == 0 ? WHOLE_COUNTRY_RADIUS_KM : radiusKm;
   char url[CLOCK_RAIN_URL_LENGTH + 160];
   snprintf(url, sizeof(url),
-           "%s?lat=%.4f&lon=%.4f&r=%u&w=%u&h=%u&shape=%s&n=%u&max=%u", base,
+           "%s?lat=%.4f&lon=%.4f&r=%u&w=%u&h=%u&shape=%s&n=%u&max=%u%s", base,
            latitude, longitude, static_cast<unsigned>(viewRadiusKm),
            static_cast<unsigned>(CHMI_RADAR_WIDTH),
            static_cast<unsigned>(CHMI_RADAR_HEIGHT),
            SCREEN_ROUND ? "round" : "rect",
            static_cast<unsigned>(wantedFrameCount),
-           static_cast<unsigned>(SERVER_BUNDLE_CAPACITY));
+           static_cast<unsigned>(SERVER_BUNDLE_CAPACITY),
+           radarSource == CLOCK_RADAR_SOURCE_CHMI_MASKED ? "&src=masked" : "");
 
   setStatus(true, "Obnovuji radar...");
   const uint8_t target = 1 - activeServerBundle;

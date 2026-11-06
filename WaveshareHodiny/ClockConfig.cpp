@@ -517,7 +517,7 @@ void normalizeConfig(ClockConfig &config) {
       constrain(config.radarDisplaySeconds, 10, 3600);
   config.radarMapOpacity = constrain(config.radarMapOpacity, 0, 100);
   config.radarPauseSeconds = constrain(config.radarPauseSeconds, 0, 30);
-  if (config.radarSource > CLOCK_RADAR_SOURCE_RAINVIEWER)
+  if (config.radarSource > CLOCK_RADAR_SOURCE_CHMI_MASKED)
     config.radarSource = CLOCK_RADAR_SOURCE_CHMI;
   // Automatické střídání smí běžet jen tam, kde je radar vůbec dostupný.
   // Ptá se proto na zdroj srážek, ne jen na zemi: RainViewer kreslí i za
