@@ -830,8 +830,12 @@ void drawIntensityLegend(uint16_t *buffer, bool rainViewerSource) {
   // Marshallův-Palmerův převod (Z = 200 R^1.6), takže se obě čtou stejně.
   static const uint16_t chmiColors[6] = {0xa000, 0xf800, 0xfc20,
                                          0xe6e0, 0x05e0, 0x001f};
-  static const char *chmiLabels[6] = {">56 / >100", "52 / 65", "46 / 27",
-                                      "40 / 12",    "32 / 3.6", "20 / <1"};
+  // dBZ podle indexu palety ČHMÚ (182 = 56 dBZ, po 4 dolů, jako server
+  // infra/rain): oranžová je 44, žlutá 36, zelená 24 a modrá 12 dBZ. Stupnice
+  // dřív uváděla 46/40/32/20 a podle toho i mm/h; chybu našel MeteoPlaneRadar
+  // (0.8.5) na skutečných snímcích.
+  static const char *chmiLabels[6] = {">56 / >100", "52 / 65", "44 / 20",
+                                      "36 / 6.5",   "24 / 1.2", "12 / 0.2"};
   static const uint16_t rainViewerColors[6] = {0xfd5f, 0xc000, 0xfa20,
                                                0xfd40, 0x02b1, 0x051c};
   static const char *rainViewerLabels[6] = {">55 / >100", "50 / 49", "45 / 24",
