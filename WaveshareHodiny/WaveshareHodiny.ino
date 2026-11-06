@@ -12,6 +12,10 @@
 #include <new>
 
 #include "ClockDashboard.h"
+#include "DisplayNotification.h"
+#if HODINY_BOARD_LCD21
+#include "TCA9554PWR.h"
+#endif
 #include "ClockConfig.h"
 #include "CrashLog.h"
 #include "ClockNamedays.h"
@@ -1608,6 +1612,57 @@ void maintainAutomaticScreenRotation() {
 
 bool showScreenFromWeb(uint8_t screen);
 
+// --- Notifikace z ovládacího API ---------------------------------------------
+// Pípnutí: kulatý 2,1" má bzučák na EXIO8 expandéru TCA9554 (stejně jako
+// v upstreamu). I2C sběrnici používá jinak jen dotyk z lv_timer_handler, tedy
+// taky z hlavní smyčky, takže se sběrnice nemusí zamykat. 7" bzučák nemá.
+#if HODINY_BOARD_LCD21
+bool buzzerOn = false;
+unsigned long buzzerOffAt = 0;
+
+void setBuzzer(bool on) {
+  Set_EXIO(EXIO_PIN8, on ? High : Low);
+  buzzerOn = on;
+}
+
+// 0 zastaví případné předchozí pípnutí.
+void startBeep(uint16_t milliseconds) {
+  if (milliseconds == 0) {
+    if (buzzerOn) setBuzzer(false);
+    return;
+  }
+  setBuzzer(true);
+  buzzerOffAt = millis() + milliseconds;
+}
+
+void maintainBuzzer() {
+  if (buzzerOn && static_cast<long>(millis() - buzzerOffAt) >= 0)
+    setBuzzer(false);
+}
+#else
+void maintainBuzzer() {}
+#endif
+
+// Nová notifikace nahradí předchozí i její pípnutí. Pípá jednou při přijetí,
+// nezávisle na době zobrazení a na zavření klepnutím.
+bool showNotificationFromWeb(const DisplayNotification &notification,
+                             bool &beeped) {
+  beeped = false;
+  if (!clockDashboardShowNotification(notification)) return false;
+#if HODINY_BOARD_LCD21
+  startBeep(notification.beepMs);
+  beeped = notification.beepMs > 0;
+#endif
+  return true;
+}
+
+bool dismissNotificationFromWeb() {
+#if HODINY_BOARD_LCD21
+  startBeep(0);
+#endif
+  return clockDashboardHideNotification();
+}
+
 // Klepnutí v souřadnicích jeviště, od prstu i z USB příkazu TAP.
 void handleShortTap(int16_t x, int16_t y) {
 #if HODINY_BOARD_LCD7
@@ -1632,6 +1687,18 @@ void handleShortTap(int16_t x, int16_t y) {
 }
 
 void maintainDisplayGestures() {
+  // Notifikace bere všechna gesta: jakékoli klepnutí, podržení nebo tažení ji
+  // zavře a pod ní se nic nepřepne.
+  if (clockDashboardNotificationVisible()) {
+    int16_t tapX = 0;
+    int16_t tapY = 0;
+    bool touched = displayDriverTakeScreenHold() != 0;
+    touched = displayDriverTakeRangeSwipe() != 0 || touched;
+    touched = displayDriverTakeShortTap(tapX, tapY) || touched;
+    touched = displayDriverTakeDoubleTap() || touched;
+    if (touched) clockDashboardHideNotification();
+    return;
+  }
   const ClockConfig &config = loopConfigSnapshot();
   const bool radarAvailable = clockConfigRadarAvailable(config);
   // Podržení prstu prochází cyklus obrazovek. Vlevo od svislé osy zpět,
@@ -4933,6 +5000,8 @@ void setup() {
   configurationWebSetBackgroundWork(runBackgroundWorkFromWeb);
   configurationWebSetDeviceNameChanged(handleDeviceNameChanged);
   configurationWebSetScreenControl(showScreenFromWeb, currentScreenForWeb);
+  configurationWebSetNotificationControl(showNotificationFromWeb,
+                                         dismissNotificationFromWeb);
   firmwareUpdateServiceBegin(handleFirmwareUpdateLifecycle);
   maintainFirmwareDisplayStatus();
   configurationWebBegin(loadRuntimeConfigForWeb, saveRuntimeConfig,
@@ -4962,6 +5031,7 @@ void loop() {
   if (millis() > 600000) memoryCensusCheckpoint("after-10min");
   firmwareUpdateServiceParkLoopBeforeRestart();
   firmwareUpdateServiceConfirmHealthyBoot();
+  maintainBuzzer();
 #if FIRMWARE_RELEASE
   improvSerialServiceLoop();
 #else

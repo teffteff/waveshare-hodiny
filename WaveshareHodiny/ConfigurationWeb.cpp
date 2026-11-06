@@ -32,6 +32,7 @@
 #include "LightningService.h"
 #include "TlsMemory.h"
 #include "ClockDashboard.h"
+#include "DisplayNotification.h"
 #include "CrashLog.h"
 #include "BoardDisplay.h"
 #include "FirmwareBuild.h"
@@ -97,8 +98,13 @@ class BoundedWebServer : public WebServer {
     }
   }
 
-  void captureRawPost(HTTPRaw &raw) {
+  // allowJson: tělo s Content-Type application/json se nerozkládá na pole
+  // formuláře a handler si ho přečte celé (rawPostBody). Jen ovládací API
+  // (notifikace); ostatní POSTy dál přijímají jen formulář.
+  void captureRawPost(HTTPRaw &raw, bool allowJson = false) {
     if (raw.status == RAW_START) {
+      postBodyJson_ =
+          allowJson && header("Content-Type").startsWith("application/json");
       // WebServer čte každý raw blok do celé velikosti HTTP_RAW_BUFLEN a u
       // posledního kratšího bloku by jinak čekal výchozích pět sekund.
       // Lokální prohlížeč už v této fázi tělo odesílá, krátký timeout proto
@@ -126,6 +132,12 @@ class BoundedWebServer : public WebServer {
     if (raw.status == RAW_END) {
       if (!postBodyTooLarge_ && postBody_ != nullptr) {
         postBody_[postBodyLength_] = '\0';
+        if (postBodyJson_) {
+          postFieldCount_ = 0;
+          postBodyMalformed_ = false;
+          postBodyReady_ = true;
+          return;
+        }
         postBodyMalformed_ = !validRawBodyShape() || !indexRawFields();
         postBodyReady_ = !postBodyMalformed_;
       }
@@ -139,6 +151,9 @@ class BoundedWebServer : public WebServer {
   }
 
   bool postBodyTooLarge() const { return postBodyTooLarge_; }
+  bool postBodyIsJson() const { return rawPostActive_ && postBodyJson_; }
+  const char *rawPostBody() const { return postBody_; }
+  size_t rawPostLength() const { return postBodyLength_; }
   bool postBodyMalformed() const { return postBodyMalformed_; }
 
   String arg(const String &name) {
@@ -304,6 +319,7 @@ class BoundedWebServer : public WebServer {
   bool postBodyReady_ = false;
   bool postBodyTooLarge_ = false;
   bool postBodyMalformed_ = false;
+  bool postBodyJson_ = false;
 };
 
 BoundedWebServer server(80);
@@ -329,6 +345,8 @@ AgendaProbeCallback agendaProbeCallback = nullptr;
 TaskHandle_t schoolTaskForDiagnostics = nullptr;
 SchoolProbeCallback schoolProbeCallback = nullptr;
 ScreenShowCallback screenShowCallback = nullptr;
+NotificationShowCallback notificationShowCallback = nullptr;
+NotificationDismissCallback notificationDismissCallback = nullptr;
 CurrentScreenCallback currentScreenCallback = nullptr;
 SatellitesProbeCallback satellitesProbeCallback = nullptr;
 SettingsShareCallback settingsShareCallback = nullptr;
@@ -4773,6 +4791,69 @@ void handleDayNightRefresh() {
            F("{\"ok\":true,\"message\":\"Okamžitý refresh byl spuštěn.\"}"));
 }
 
+// POST .../notification: JSON (application/json) nebo formulář se stejnými
+// poli, viz DisplayNotification.h. POST .../notification/clear ji zavře.
+void handleNotificationRequest() {
+  if (notificationShowCallback == nullptr) {
+    sendError(503, F("Notifikace teď zobrazit nejde."));
+    return;
+  }
+  // Notifikace a pracovní buffery mají 2,6 kB; interní RAM patří TLS, takže
+  // leží v PSRAM, alokované při první notifikaci.
+  struct NotificationWork {
+    DisplayNotification notification;
+    NotificationScratch scratch;
+  };
+  static NotificationWork *work = nullptr;
+  if (work == nullptr) {
+    void *memory = heap_caps_malloc(sizeof(NotificationWork),
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory == nullptr) {
+      sendError(503, F("Pro notifikaci není dost paměti."));
+      return;
+    }
+    work = new (memory) NotificationWork();
+  }
+  DisplayNotification &notification = work->notification;
+  const char *error = nullptr;
+  if (server.postBodyIsJson()) {
+    error = notificationFromJson(server.rawPostBody(), server.rawPostLength(),
+                                 notification, work->scratch);
+  } else {
+    // Formulář: arg() vrací String, buffery drží text po dobu čtení.
+    const String title = server.arg("title");
+    const String message = server.arg("message");
+    const String duration = server.arg("durationSeconds");
+    const String beep = server.arg("beep");
+    const String textColor = server.arg("textColor");
+    const String backgroundColor = server.arg("backgroundColor");
+    NotificationFields fields;
+    if (server.hasArg("title")) fields.title = title.c_str();
+    if (server.hasArg("message")) fields.message = message.c_str();
+    if (server.hasArg("durationSeconds")) fields.durationSeconds = duration.c_str();
+    if (server.hasArg("beep")) fields.beep = beep.c_str();
+    if (server.hasArg("textColor")) fields.textColor = textColor.c_str();
+    if (server.hasArg("backgroundColor"))
+      fields.backgroundColor = backgroundColor.c_str();
+    error = notificationFromFields(fields, notification);
+  }
+  if (error != nullptr) {
+    sendError(400, error);
+    return;
+  }
+  bool beeped = false;
+  if (!notificationShowCallback(notification, beeped)) {
+    sendError(409, F("Notifikace teď zobrazit nejde (probíhá aktualizace firmwaru)."));
+    return;
+  }
+  String result = F("{\"ok\":true,\"durationSeconds\":");
+  result += notification.durationSeconds;
+  result += F(",\"beep\":");
+  result += beeped ? F("true") : F("false");
+  result += '}';
+  sendJson(200, result);
+}
+
 void handleControlRequest() {
   const String uri = server.uri();
   constexpr char PREFIX[] = "/api/control/";
@@ -4806,6 +4887,17 @@ void handleControlRequest() {
   }
   if (command == "/day-night/refresh") {
     handleDayNightRefresh();
+    return;
+  }
+  if (command == "/notification") {
+    handleNotificationRequest();
+    return;
+  }
+  if (command == "/notification/clear") {
+    const bool closed =
+        notificationDismissCallback != nullptr && notificationDismissCallback();
+    sendJson(200, closed ? F("{\"ok\":true,\"closed\":true}")
+                         : F("{\"ok\":true,\"closed\":false}"));
     return;
   }
   constexpr char SCREEN_COMMAND[] = "/screen/";
@@ -5682,7 +5774,7 @@ class ControlRequestHandler final : public RequestHandler {
   }
 
   void raw(WebServer &, const String &, HTTPRaw &raw) override {
-    server.captureRawPost(raw);
+    server.captureRawPost(raw, true);
   }
 };
 }  // namespace
@@ -5900,6 +5992,12 @@ void configurationWebSetScreenControl(ScreenShowCallback show,
                                       CurrentScreenCallback current) {
   screenShowCallback = show;
   currentScreenCallback = current;
+}
+
+void configurationWebSetNotificationControl(NotificationShowCallback show,
+                                            NotificationDismissCallback dismiss) {
+  notificationShowCallback = show;
+  notificationDismissCallback = dismiss;
 }
 
 void configurationWebSetBackgroundWork(BackgroundWorkCallback callback) {

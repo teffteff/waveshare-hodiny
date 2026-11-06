@@ -96,6 +96,15 @@ using ScreenShowCallback = bool (*)(uint8_t screen);
 using CurrentScreenCallback = uint8_t (*)();
 void configurationWebSetScreenControl(ScreenShowCallback show,
                                       CurrentScreenCallback current);
+// Notifikace z ovládacího API (DisplayNotification.h). show vrací false, když
+// ji teď zobrazit nejde (aktualizace firmwaru), a do beeped zapíše, jestli
+// hodiny pípnou (7" bzučák nemá); dismiss vrací, jestli nějakou zavřel.
+struct DisplayNotification;
+using NotificationShowCallback = bool (*)(const DisplayNotification &notification,
+                                          bool &beeped);
+using NotificationDismissCallback = bool (*)();
+void configurationWebSetNotificationControl(NotificationShowCallback show,
+                                            NotificationDismissCallback dismiss);
 void configurationWebLoop();
 void configurationWebEnsureActive();
 void configurationWebExtendAvailability();
