@@ -285,6 +285,13 @@ bool clockDashboardSwipeValues();
 void clockDashboardSetWifiAddress(const char *ipAddress);
 void clockDashboardSetFirmwareVersion(const char *version,
                                       bool updateAvailable);
+// Notifikace z ovládacího API přes celou obrazovku (DisplayNotification.h).
+// Show vrací false během aktualizace firmwaru; nová nahradí předchozí.
+struct DisplayNotification;
+bool clockDashboardShowNotification(const DisplayNotification &notification);
+// Vrací true, když nějakou zavřela.
+bool clockDashboardHideNotification();
+bool clockDashboardNotificationVisible();
 void clockDashboardSetFirmwareUpdateActive(bool active);
 void clockDashboardSetFirmwareUpdateBlack(bool black);
 void clockDashboardSetFirmwareUpdateCountdown(uint8_t seconds);

@@ -1042,6 +1042,16 @@ is `clock`, `radar`, `rss`, `forecast`, `planes`, `agenda`, `sky`, `school`,
 `satellites` or `traffic`; a disabled screen answers 409. Useful in automations, for example
 the radar when it rains.
 
+`POST …/api/control/<secret>/notification` shows a full-screen notification. Send JSON
+(`Content-Type: application/json`) or a form with the same fields: `title` (required,
+1–96 bytes of UTF-8), `message` (required, 1–768 bytes, `\n` breaks the line),
+`durationSeconds` (0–86400, 0 or omitted keeps it until tapped), `beep` (0–5000 ms; only
+the round 2.1" has a buzzer, the 7" answers `"beep":false`), `textColor` and
+`backgroundColor` (`#RRGGBB`, default white on black; red on black in red night mode).
+A tap closes it, a new one replaces it, `POST …/notification/clear` closes it from an
+automation, and it answers 409 during a firmware update. The settings page has a tester
+under System → Control API.
+
 ## Building from source
 
 ### Dependencies

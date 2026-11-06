@@ -1094,6 +1094,30 @@ Obrazovku přepne `POST …/api/control/<secret>/screen/<jméno>`, kde jméno je
 `satellites` nebo `traffic`; vypnutá obrazovka vrátí 409. Hodí se do automatizací, třeba
 radar při dešti.
 
+Notifikaci přes celou obrazovku zobrazí `POST …/api/control/<secret>/notification`
+s JSONem (`Content-Type: application/json`) nebo formulářem se stejnými poli:
+
+| Pole | Význam |
+| --- | --- |
+| `title` | Povinný nadpis, 1–96 bajtů UTF-8, jeden řádek (nejvýš dva zalomené). |
+| `message` | Povinná zpráva, 1–768 bajtů UTF-8, `\n` zalomí řádek; co se nevejde, skončí třemi tečkami. |
+| `durationSeconds` | 0–86400. Vynechané nebo 0 = zůstane, dokud ji nezavře klepnutí nebo další požadavek. |
+| `beep` | Délka pípnutí v ms, 0–5000. Pípá jen kulatý 2,1"; 7" bzučák nemá a odpověď vrátí `"beep":false`. |
+| `textColor`, `backgroundColor` | `#RRGGBB`, výchozí bílý text na černé. V červeném nočním režimu je text červený na černé. |
+
+```bash
+curl -X POST 'http://IP_HODIN/api/control/SECRET/notification' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Pračka doprala","message":"Prádlo už můžeš pověsit.","durationSeconds":15,"beep":150,"backgroundColor":"#124734"}'
+```
+
+Notifikace leží nad každou obrazovkou; klepnutí (i podržení nebo tažení) ji
+zavře a pod ní nic nepřepne. Nová nahradí předchozí, fronta ani uložení přes
+restart nejsou. `POST …/notification/clear` ji zavře z automatizace. Během
+aktualizace firmwaru vrátí 409. Delší českou zprávu posílej jako JSON:
+formulář má na jedno pole limit 1 kB včetně kódování (`č` = `%C4%8D`).
+Vyzkoušet jde v nastavení Systém → Ovládací API.
+
 Secret je uložený v zařízení, ověřuje se konstantním časem a není součástí
 zálohy – každé hodiny mají vlastní. Přesný tvar endpointů a příklady požadavků jsou zobrazené
 přímo v aktuálním webovém rozhraní firmware.

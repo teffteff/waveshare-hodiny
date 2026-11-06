@@ -32,6 +32,8 @@
 #include "ChmiRadarService.h"
 #include "DisplayDriver.h"
 #include "FirmwareUpdateService.h"
+#include "DisplayNotification.h"
+#include "Lcd7Fonts.h"
 
 
 #if HODINY_BOARD_LCD7
@@ -8118,7 +8120,12 @@ void clockDashboardSetWeatherAnimation(const uint8_t *gifData, size_t size,
   clockDashboardUpdate(currentValues);
 }
 
+namespace {
+void maintainNotification();
+}  // namespace
+
 void clockDashboardLoop() {
+  maintainNotification();
 #if HODINY_BOARD_LCD7
   // I při aktualizaci firmwaru: domovská obrazovka se musí schovat za overlay.
   lcd7::sync(false);
@@ -10205,6 +10212,7 @@ void clockDashboardSetFirmwareUpdateActive(bool active) {
   if (firmwareUpdateOverlay == nullptr || firmwareUpdateActive == active) return;
   firmwareUpdateActive = active;
   if (active) {
+    clockDashboardHideNotification();
     clockDashboardSetFirmwareUpdateBlack(false);
     lv_obj_add_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     if (radarPage != nullptr) lv_obj_add_flag(radarPage, LV_OBJ_FLAG_HIDDEN);
@@ -11128,6 +11136,129 @@ void clockDashboardMaintainControls() {
   applyControlsRound();
 #endif
 }
+
+// --- Notifikace z ovládacího API -------------------------------------------
+// Neprůhledná vrstva na lv_layer_top(): leží nad každou obrazovkou i nad
+// nastavením, takže se o ni stránky při přepínání nemusí starat, a LVGL pod ní
+// nic nepřekresluje. Písma Barlow (lcd7_text28/22) mají češtinu na obou
+// deskách; kulatý je jinak nepoužívá. Na kulatém leží text v užším sloupci,
+// aby se vešel do kruhu.
+namespace {
+#if HODINY_BOARD_LCD7
+constexpr lv_coord_t NOTIFICATION_TITLE_WIDTH = 720;
+constexpr lv_coord_t NOTIFICATION_MESSAGE_WIDTH = 720;
+constexpr lv_coord_t NOTIFICATION_MESSAGE_MAX_HEIGHT = 330;
+#else
+constexpr lv_coord_t NOTIFICATION_TITLE_WIDTH = 330;
+constexpr lv_coord_t NOTIFICATION_MESSAGE_WIDTH = 350;
+constexpr lv_coord_t NOTIFICATION_MESSAGE_MAX_HEIGHT = 210;
+#endif
+constexpr lv_coord_t NOTIFICATION_TITLE_MAX_LINES = 2;
+
+lv_obj_t *notificationLayer = nullptr;
+lv_obj_t *notificationTitle = nullptr;
+lv_obj_t *notificationMessage = nullptr;
+bool notificationShown = false;
+bool notificationDrawnRed = false;
+unsigned long notificationShownAt = 0;
+uint32_t notificationDurationMs = 0;
+uint32_t notificationTextColor = 0xFFFFFF;
+uint32_t notificationBackgroundColor = 0x000000;
+
+void createNotificationLayer() {
+  if (notificationLayer != nullptr) return;
+  notificationLayer = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(notificationLayer);
+  lv_obj_set_size(notificationLayer, SCREEN_WIDTH, SCREEN_HEIGHT);
+  lv_obj_set_pos(notificationLayer, 0, 0);
+  lv_obj_set_style_bg_opa(notificationLayer, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(notificationLayer, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(notificationLayer, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_flex_flow(notificationLayer, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(notificationLayer, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(notificationLayer, 18, 0);
+  lv_obj_add_flag(notificationLayer, LV_OBJ_FLAG_HIDDEN);
+  notificationTitle = lv_label_create(notificationLayer);
+  lv_obj_set_style_text_font(notificationTitle, &lcd7_text28, 0);
+  lv_obj_set_style_text_align(notificationTitle, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(notificationTitle, NOTIFICATION_TITLE_WIDTH);
+  notificationMessage = lv_label_create(notificationLayer);
+  lv_obj_set_style_text_font(notificationMessage, &lcd7_text22, 0);
+  lv_obj_set_style_text_align(notificationMessage, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_line_space(notificationMessage, 4, 0);
+  lv_obj_set_width(notificationMessage, NOTIFICATION_MESSAGE_WIDTH);
+}
+
+// Text se zalomí; co se nevejde, skončí třemi tečkami.
+void fitNotificationLabel(lv_obj_t *label, const char *text,
+                          lv_coord_t maxHeight) {
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(label, LV_SIZE_CONTENT);
+  lv_label_set_text(label, text);
+  lv_obj_update_layout(label);
+  if (lv_obj_get_height(label) > maxHeight) {
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(label, maxHeight);
+  }
+}
+
+// V červeném nočním režimu červený text na černé, jako zbytek hodin; po
+// návratu do dne se vrátí barvy z požadavku.
+void applyNotificationColors() {
+  if (notificationLayer == nullptr) return;
+  notificationDrawnRed = redNightVisualEnabled();
+  const lv_color_t text =
+      notificationDrawnRed ? COLOR_ERROR : lv_color_hex(notificationTextColor);
+  lv_obj_set_style_bg_color(
+      notificationLayer,
+      notificationDrawnRed ? COLOR_BACKGROUND
+                           : lv_color_hex(notificationBackgroundColor),
+      0);
+  lv_obj_set_style_text_color(notificationTitle, text, 0);
+  lv_obj_set_style_text_color(notificationMessage, text, 0);
+}
+
+void maintainNotification() {
+  if (!notificationShown) return;
+  if (notificationDurationMs != 0 &&
+      millis() - notificationShownAt >= notificationDurationMs) {
+    clockDashboardHideNotification();
+    return;
+  }
+  if (notificationDrawnRed != redNightVisualEnabled()) applyNotificationColors();
+}
+}  // namespace
+
+bool clockDashboardShowNotification(const DisplayNotification &notification) {
+  if (firmwareUpdateActive) return false;
+  createNotificationLayer();
+  notificationTextColor = notification.textColor;
+  notificationBackgroundColor = notification.backgroundColor;
+  applyNotificationColors();
+  fitNotificationLabel(notificationTitle, notification.title,
+                       lv_font_get_line_height(&lcd7_text28) *
+                           NOTIFICATION_TITLE_MAX_LINES);
+  fitNotificationLabel(notificationMessage, notification.message,
+                       NOTIFICATION_MESSAGE_MAX_HEIGHT);
+  lv_obj_clear_flag(notificationLayer, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_invalidate(notificationLayer);
+  notificationShown = true;
+  notificationShownAt = millis();
+  notificationDurationMs = notification.durationSeconds * 1000UL;
+  return true;
+}
+
+bool clockDashboardHideNotification() {
+  if (!notificationShown) return false;
+  notificationShown = false;
+  lv_obj_add_flag(notificationLayer, LV_OBJ_FLAG_HIDDEN);
+  // Obrazovka pod vrstvou se mezitím nekreslila; po zavření celá znovu.
+  lv_obj_invalidate(lv_scr_act());
+  return true;
+}
+
+bool clockDashboardNotificationVisible() { return notificationShown; }
 
 #if HODINY_BOARD_LCD7
 #include "ClockDashboardLcd7.h"
