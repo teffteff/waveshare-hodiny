@@ -2118,8 +2118,19 @@ ClockConfigRecordStatus clockConfigDecodeRecord(const uint8_t *bytes,
   return ClockConfigRecordStatus::Ok;
 }
 
+// Záznam pro uložení žije jen po dobu zápisu. Jako statický by po prvním
+// uložení (třeba po převodu schématu při startu) držel 13 kB PSRAM napořád.
+struct TemporaryConfigRecord {
+  ConfigRecord &record = allocateConfigRecord();
+  ~TemporaryConfigRecord() {
+    record.~ConfigRecord();
+    heap_caps_free(&record);
+  }
+};
+
 bool clockConfigSave(const ClockConfig &config) {
-  static ConfigRecord &record = allocateConfigRecord();
+  TemporaryConfigRecord temporary;
+  ConfigRecord &record = temporary.record;
   record = ConfigRecord{};
   record.magic = CONFIG_MAGIC;
   record.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;

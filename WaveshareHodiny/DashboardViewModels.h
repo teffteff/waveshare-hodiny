@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "AgendaParser.h"
+#include "Board.h"
 
 // Data obrazovek bez LVGL. Setry ciferníku (ClockDashboard.cpp) tu skládají
 // texty na stejném místě, kde je dřív psaly rovnou do popisků; kulatá stránka
@@ -103,12 +104,15 @@ struct PlaneDetailViewModel {
   // "Přistání" s časem a pod tím vzdálenost a směr od domova.
   char routeCaption[2][12] = {};
   char route[2][32] = {};
+#if !HODINY_BOARD_LCD7
   // Velká ikona letadla vedle údajů (PlaneRadarDetail::icon*): druh, natočení
-  // jako na mapě a barva RGB565 v paletě mapy.
+  // jako na mapě a barva RGB565 v paletě mapy. Jen kulatý; 7" ikonu v detailu
+  // nemá.
   uint8_t iconKind = 0;
   bool iconHasTrack = false;
   float iconTrackDeg = 0.0f;
   uint16_t iconColor = 0xffff;
+#endif
   uint32_t revision = 0;
 };
 

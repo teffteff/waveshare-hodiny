@@ -3235,14 +3235,6 @@ constexpr int PLANES_CONTENT = PLANES_COLUMN_W - 2 * PLANES_PAD;
 constexpr int PLANES_DETAIL_Y = 118;
 constexpr int PLANES_OPEN_Y = 78;
 constexpr int PLANES_DETAIL_LINES = PLANES_DETAIL_ROW_COUNT + 4;
-// Velká ikona vybraného letadla. Sloupec 160 px je s detailem plný od shora
-// dolů a vedle čísel velkým písmem nezbývá místo, takže ikona stojí na
-// kartičce v pravém horním rohu mapy, hned u sloupce. Roh leží vně kružnice
-// dosahu (230 px kolem středu), takže nezakryje nic z okruhu.
-constexpr int PLANES_ICON_SIZE = 96;
-constexpr int PLANES_ICON_PAD = 4;
-constexpr int PLANES_ICON_CARD = PLANES_ICON_SIZE + 2 * PLANES_ICON_PAD;
-constexpr int PLANES_ICON_MARGIN = 8;
 
 struct PlanesView {
   lv_obj_t *root;
@@ -3258,8 +3250,6 @@ struct PlanesView {
   lv_obj_t *values[PLANES_DETAIL_LINES];
   lv_obj_t *hint;
   lv_obj_t *selection;
-  lv_obj_t *iconCard;
-  PlaneDetailIcon icon;
   const uint16_t *pixels;
 } planes;
 
@@ -3280,18 +3270,6 @@ void createPlanes(lv_obj_t *screen) {
   lv_obj_set_style_border_color(v.selection, COLOR_TEXT, 0);
   lv_obj_clear_flag(v.selection, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(v.selection, LV_OBJ_FLAG_HIDDEN);
-  // Kartička s velkou ikonou vybraného letadla v rohu mapy u sloupce.
-  v.iconCard = panel(v.root, PLANES_COLUMN_X - PLANES_ICON_MARGIN - PLANES_ICON_CARD,
-                     MAP_TOP + PLANES_ICON_MARGIN, PLANES_ICON_CARD,
-                     PLANES_ICON_CARD);
-  lv_obj_set_style_radius(v.iconCard, 10, 0);
-  lv_obj_set_style_border_width(v.iconCard, 1, 0);
-  lv_obj_set_style_border_color(v.iconCard, LINE, 0);
-  lv_obj_clear_flag(v.iconCard, LV_OBJ_FLAG_CLICKABLE);
-  createPlaneDetailIcon(v.icon, v.iconCard, PLANES_ICON_SIZE);
-  if (v.icon.canvas != nullptr)
-    lv_obj_set_pos(v.icon.canvas, PLANES_ICON_PAD - 1, PLANES_ICON_PAD - 1);
-  lv_obj_add_flag(v.iconCard, LV_OBJ_FLAG_HIDDEN);
   // Sloupec pod lištou: čas, datum a tečky obrazovek jsou v liště.
   v.column = panel(v.root, PLANES_COLUMN_X, MAP_TOP + 1, PLANES_COLUMN_W,
                    SCREEN_HEIGHT - MAP_TOP - 1);
@@ -3499,16 +3477,6 @@ void syncPlanes(const Palette &p) {
   }
   if (open) syncPlanesDetail(p, top);
   for (lv_obj_t *divider : v.lines) setBackground(divider, p.line);
-
-  // Velká ikona: jen s otevřeným detailem nad hotovou mapou.
-  const bool iconShown =
-      open && v.pixels != nullptr &&
-      renderPlaneDetailIcon(v.icon, viewModels().planeDetail, PLANES_ICON_SIZE);
-  if (iconShown) {
-    lv_obj_clear_flag(v.icon.canvas, LV_OBJ_FLAG_HIDDEN);
-    setBorder(v.iconCard, p.line);
-  }
-  setVisible(v.iconCard, iconShown);
 
 }
 
@@ -4426,6 +4394,9 @@ void create() {
 void applyMode(HomeMode mode) {
   lv_obj_t *stage = displayDriverStage();
   setVisible(digital.root, mode == HomeMode::Digital);
+  // Pás předpovědi drží pixely jen na digitálních hodinách; po návratu se
+  // z předpovědi znovu postaví (syncForecastStrip).
+  if (mode != HomeMode::Digital && strip.pixels != nullptr) releaseForecastStrip();
   setVisible(analog.root, mode == HomeMode::Analog);
   setVisible(skySide.barRoot, mode == HomeMode::RoundLeft);
   setVisible(skySide.column, mode == HomeMode::RoundLeft);

@@ -5830,6 +5830,8 @@ int planesDetailRowY(uint8_t row) {
   return PLANES_DETAIL_ROWS_TOP + row * PLANES_DETAIL_ROW_STEP + shift;
 }
 
+#if !HODINY_BOARD_LCD7
+// Jen kulatý: 7" ukazuje detail letadla bez velké ikony, stejně jako dřív.
 // Velká ikona letadla v detailu (podle MeteoPlaneRadar 0.9.9): typová ikona
 // z mapy (PlaneIcon.h) zvětšená až třikrát, natočená stejně jako na mapě a ve
 // stejné barvě. Detail je z popisků LVGL, takže se ikona kreslí do malého
@@ -5902,6 +5904,7 @@ bool renderPlaneDetailIcon(PlaneDetailIcon &icon,
 }
 
 PlaneDetailIcon planesDetailIcon;
+#endif
 
 // Objekty obrazovky se zakládají do PSRAM, ze stejného důvodu jako u
 // předpovědi: v interní RAM by ubraly kilobajty, o které pak přijde TLS
@@ -5979,6 +5982,7 @@ void createPlanesPage(lv_obj_t *screen) {
   lv_label_set_text(planesDetailClose, "X");
   lv_obj_align(planesDetailClose, LV_ALIGN_TOP_RIGHT, -18, 14);
 
+#if !HODINY_BOARD_LCD7
   // Velká ikona letadla. Založí se před řádky, aby text ležel nad ní: černý
   // podklad canvasu tak nikdy nepřekryje písmo, i kdyby řádek byl dlouhý.
   createPlaneDetailIcon(planesDetailIcon, planesDetailPanel,
@@ -5988,6 +5992,7 @@ void createPlanesPage(lv_obj_t *screen) {
                  -PLANES_DETAIL_ICON_RIGHT,
                  planesDetailRowY(0) +
                      (4 * PLANES_DETAIL_ROW_STEP - PLANES_DETAIL_ICON_SIZE) / 2);
+#endif
 
   for (uint8_t row = 0; row < PLANES_DETAIL_ROW_COUNT; ++row) {
     lv_obj_t *label = makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
@@ -7601,10 +7606,18 @@ void placeForecastFanRing() {
 void maintainForecastFan() {
   lv_obj_t *ring = forecastFanRingObject();
   if (ring == nullptr) return;
-  if (!forecastFanConfigured()) {
+  static time_t keyMinute = 0;
+  static uint32_t keyRevision = UINT32_MAX;
+  static uint8_t keySectors = 0;
+  static bool keyValid = false;
+  // Vypnutý prstenec, nebo ciferník, který ho nemá (7" digitální má místo
+  // něj pás, hodnoty a retro LCD nic): mezikruží se nedrží ani nedopočítává.
+  if (!forecastFanConfigured() || !forecastFanFaceSupported()) {
     if (!lv_obj_has_flag(ring, LV_OBJ_FLAG_HIDDEN))
       lv_obj_add_flag(ring, LV_OBJ_FLAG_HIDDEN);
     forecastFanRingRelease();
+    // Po návratu se klíč nastaví hned, ne až v další minutě.
+    keyRevision = UINT32_MAX;
     return;
   }
   static uint8_t placedStyle = 0xFF;
@@ -7612,13 +7625,8 @@ void maintainForecastFan() {
     placedStyle = activeClockStyle;
     placeForecastFanRing();
   }
-  const bool shown = forecastFanFaceSupported() &&
-                     activeScreen == DASHBOARD_SCREEN_CLOCK && !settingsVisible &&
+  const bool shown = activeScreen == DASHBOARD_SCREEN_CLOCK && !settingsVisible &&
                      !redNightVisualEnabled();
-  static time_t keyMinute = 0;
-  static uint32_t keyRevision = UINT32_MAX;
-  static uint8_t keySectors = 0;
-  static bool keyValid = false;
   const time_t now = time(nullptr);
   const uint8_t sectors = dashboardRuntimeConfig.faces.forecastFanHours;
   if (now / 60 != keyMinute || keyRevision != forecastFanDataRevision ||
@@ -8960,10 +8968,12 @@ void composePlaneDetailModel(const PlaneRadarDetail &detail) {
   // než nechat zmrzlé hodnoty vypadat jako aktuální.
   model.signalLost = detail.signalLost;
 
+#if !HODINY_BOARD_LCD7
   model.iconKind = detail.iconKind;
   model.iconHasTrack = detail.iconHasTrack;
   model.iconTrackDeg = detail.iconTrackDeg;
   model.iconColor = detail.iconColor;
+#endif
 }
 
 
@@ -8985,6 +8995,7 @@ void updatePlanesDetail() {
     lv_label_set_text(planesDetailRows[row++], line);
   }
 
+#if !HODINY_BOARD_LCD7
   // Ikona bere jen místo, které řádky s čísly nechaly volné (podle písma
   // a jednotek jich je různě); když by vyšla moc malá, nekreslí se vůbec.
   if (planesDetailIcon.canvas != nullptr) {
@@ -9005,6 +9016,7 @@ void updatePlanesDetail() {
     else
       lv_obj_add_flag(planesDetailIcon.canvas, LV_OBJ_FLAG_HIDDEN);
   }
+#endif
 
   if (model.type[0] != '\0')
     snprintf(line, sizeof(line), "%s: %s", english ? "TYPE" : "TYP", model.type);

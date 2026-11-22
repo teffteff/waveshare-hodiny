@@ -370,8 +370,9 @@ void setStatus(bool isLoading, const char *message) {
 // nepotřebují.
 void releaseInflatedLevels() { radarBundleRowsRelease(); }
 
-bool ensureBuffers() {
-  // Na 7" se obraz skládá do sdílených snímků (composeView).
+// Obrazové buffery kulatého; na 7" se obraz skládá do sdílených snímků
+// (composeView), takže tam není co alokovat.
+bool ensureDisplayBuffers() {
   for (uint16_t *&buffer : displayBuffers) {
     if (LAYERED_VIEW) break;
     if (buffer == nullptr) {
@@ -381,6 +382,12 @@ bool ensureBuffers() {
     }
     if (buffer == nullptr) return false;
   }
+  return true;
+}
+
+// Buffery pro snímky z ČHMÚ PNG a RainVieweru.
+bool ensureBuffers() {
+  if (!ensureDisplayBuffers()) return false;
   // Bez vyhrazeného bufferu radar funguje dál, jen obnova pak volí celé
   // načtení (viz refreshAnimation).
   if (pendingPreparedFrames[0] == nullptr) {
@@ -1545,7 +1552,10 @@ bool composeRoundFrame(uint16_t *target, RadarBundleRows &levels, bool nightVisu
 
 bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
                  uint8_t mapOpacityValue, uint32_t revision) {
-  if (!ensureBuffers()) return false;
+  // Jen obraz: PNG buffer a rezervní snímek (na 7" 200 kB) potřebuje až
+  // stahování z ČHMÚ, a se serverem radaru vůbec. Dřív se alokovaly už tady,
+  // při každém otevření radaru, a krátce ležely vedle balíků ze serveru.
+  if (!ensureDisplayBuffers()) return false;
   imageWidth = RADAR_SOURCE_WIDTH;
   imageHeight = RADAR_SOURCE_HEIGHT;
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;

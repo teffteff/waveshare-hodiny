@@ -808,10 +808,9 @@ trasa se zjišťuje už během mapy) a *jen mapou*. Letadlo z upozornění obtá
 na mapě tyrkysový dvojitý kroužek, dokud je vidět mapa upozornění nebo jím
 otevřený detail (podle MeteoPlaneRadar 0.9.8 a 0.9.9).
 
-Detail ukazuje vedle údajů velkou ikonu letadla podle typu, natočenou stejně
-jako na mapě a v barvě výšky, šedou se ztraceným signálem nebo starými daty.
-Na 7" stojí na kartičce v pravém horním rohu mapy, protože sloupec detailu je
-plný (podle MeteoPlaneRadar 0.9.9).
+Na kulatém displeji ukazuje detail vedle údajů velkou ikonu letadla podle typu,
+natočenou stejně jako na mapě a v barvě výšky, šedou se ztraceným signálem nebo
+starými daty (podle MeteoPlaneRadar 0.9.9). Detail na 7" ji nemá.
 
 Trasa se hledá jen pro jedno vybrané letadlo, nikdy pro celý seznam, a odpověď
 se drží. Spolu s volací značkou se posílá i poloha letadla a server podle ní

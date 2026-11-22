@@ -803,11 +803,10 @@ The *How to show the aircraft* option picks between the detail at once
 the alert map or the detail it opened is shown (after MeteoPlaneRadar 0.9.8 and
 0.9.9).
 
-The detail shows a large type icon of the aircraft beside the values, turned
-the same way as on the map and in its altitude colour, grey when the signal is
-lost or the data are stale. On the 7" it sits on a small card in the top right
-corner of the map, because the detail column is full (after MeteoPlaneRadar
-0.9.9).
+On the round display the detail shows a large type icon of the aircraft beside
+the values, turned the same way as on the map and in its altitude colour, grey
+when the signal is lost or the data are stale (after MeteoPlaneRadar 0.9.9).
+The 7" detail does not have it.
 
 The route is looked up for one selected aircraft only, never for the whole
 list, and the answer is cached. The aircraft's position is sent along with the
