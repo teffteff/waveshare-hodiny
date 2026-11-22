@@ -103,6 +103,7 @@ run_test weather_history "$FIRMWARE_DIR/WeatherHistory.cpp" "$FIRMWARE_DIR/JsonS
 run_lcd7_test weather_history "$FIRMWARE_DIR/WeatherHistory.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test chmi_frame_names "$FIRMWARE_DIR/ChmiFrameNames.cpp" || failures=$((failures + 1))
 run_test map_canvas "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
+run_test radar_rgb332 "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))
 run_test plane_feed_url "$FIRMWARE_DIR/PlaneFeedUrl.cpp" || failures=$((failures + 1))
 run_test rss_feed_url "$FIRMWARE_DIR/RssFeedUrl.cpp" || failures=$((failures + 1))
 run_test adsb_parser "$FIRMWARE_DIR/AdsbParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" "$FIRMWARE_DIR/PlaneIcon.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" || failures=$((failures + 1))

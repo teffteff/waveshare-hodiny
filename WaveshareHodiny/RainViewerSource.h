@@ -38,10 +38,11 @@ void rainViewerWindow(float &southLatitude, float &northLatitude,
 bool rainViewerFetchIndex(size_t wantedFrameCount, RainViewerIndex &index,
                           uint32_t revision);
 
-// Poskládá jeden snímek do cílového bufferu 480x480 RGB565. Vrací false jen
-// tehdy, když nedorazila ani jedna dlaždice; chybějící jednotlivé dlaždice
-// zůstanou černé, protože částečný snímek je pořád lepší než žádný.
-bool rainViewerBuildFrame(const RainViewerFrame &frame, uint16_t *target,
+// Poskládá jeden snímek rovnou do snímku animace CHMI_RADAR_WIDTH x
+// CHMI_RADAR_HEIGHT v RGB332 (bajt na pixel). Vrací false jen tehdy, když
+// nedorazila ani jedna dlaždice; chybějící jednotlivé dlaždice zůstanou
+// černé, protože částečný snímek je pořád lepší než žádný.
+bool rainViewerBuildFrame(const RainViewerFrame &frame, uint8_t *target,
                           uint32_t revision);
 
 // Uvolní stahovací buffery. Volá se, když se radar přepne zpět na ČHMÚ nebo
