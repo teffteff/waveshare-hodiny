@@ -155,6 +155,169 @@ void testUrlFromRainUrl() {
   assert(!radarBundleUrlFromRainUrl("https://example.net/rain.json", url, 20));
 }
 
+// --- Rozbalování po řádcích (RadarBundleRows) --------------------------------
+// Hodiny rozbalují snímek po řádcích přes okno 32 kB místo celého bufferu.
+// Výsledek musí být bajt po bajtu stejný jako radarBundleInflate.
+
+std::vector<uint8_t> inflateWhole(const uint8_t *data, size_t size,
+                                  uint16_t width, uint16_t height) {
+  std::vector<uint8_t> out(static_cast<size_t>(width) * height);
+  assert(radarBundleInflate(data, size, out.data(), out.size()));
+  return out;
+}
+
+// Čtení jako kulatý: řádek po řádku.
+bool streamSequential(const uint8_t *data, size_t size, uint16_t width,
+                      uint16_t height, const std::vector<uint8_t> &expected) {
+  RadarBundleRows rows;
+  if (!rows.begin(data, size, width, height)) return false;
+  for (int y = 0; y < height; ++y) {
+    const uint8_t *row = rows.row(y);
+    if (row == nullptr) return false;
+    assert(memcmp(row, expected.data() + static_cast<size_t>(y) * width,
+                  width) == 0);
+  }
+  return rows.finish();
+}
+
+// Čtení jako 7" (composeLevels): pro každý řádek obrazu dvojnásobné výšky
+// řádek snímku a jeho soused nad nebo pod, nejvyšší se žádá první.
+bool streamLikeLcd7(const uint8_t *data, size_t size, uint16_t width,
+                    uint16_t height, const std::vector<uint8_t> &expected) {
+  RadarBundleRows rows;
+  if (!rows.begin(data, size, width, height)) return false;
+  for (int y = 0; y < height * 2; ++y) {
+    const int nearY = y >> 1;
+    int farY = (y & 1) ? nearY + 1 : nearY - 1;
+    if (farY < 0) farY = 0;
+    if (farY > height - 1) farY = height - 1;
+    if (rows.row(nearY > farY ? nearY : farY) == nullptr) return false;
+    const uint8_t *nearRow = rows.row(nearY);
+    const uint8_t *farRow = rows.row(farY);
+    if (nearRow == nullptr || farRow == nullptr) return false;
+    assert(memcmp(nearRow, expected.data() + static_cast<size_t>(nearY) * width,
+                  width) == 0);
+    assert(memcmp(farRow, expected.data() + static_cast<size_t>(farY) * width,
+                  width) == 0);
+  }
+  return rows.finish();
+}
+
+std::vector<uint8_t> compressedFrame(const std::vector<uint8_t> &raw) {
+  return compress(raw);
+}
+
+void checkStreaming(const std::vector<uint8_t> &raw, uint16_t width,
+                    uint16_t height) {
+  const std::vector<uint8_t> packed = compressedFrame(raw);
+  const std::vector<uint8_t> whole =
+      inflateWhole(packed.data(), packed.size(), width, height);
+  assert(whole == raw);
+  assert(streamSequential(packed.data(), packed.size(), width, height, whole));
+  assert(streamLikeLcd7(packed.data(), packed.size(), width, height, whole));
+}
+
+void testStreamingServerFixture() {
+  std::ifstream file(RADAR_BUNDLE_FIXTURE, std::ios::binary);
+  const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)),
+                                  std::istreambuf_iterator<char>());
+  RadarBundle parsed;
+  assert(radarBundleParse(data.data(), data.size(), WIDTH, HEIGHT, parsed));
+  for (uint8_t index = 0; index < parsed.count; ++index) {
+    const uint8_t *frame = data.data() + parsed.frames[index].offset;
+    const size_t size = parsed.frames[index].size;
+    const std::vector<uint8_t> whole = inflateWhole(frame, size, WIDTH, HEIGHT);
+    assert(streamSequential(frame, size, WIDTH, HEIGHT, whole));
+    assert(streamLikeLcd7(frame, size, WIDTH, HEIGHT, whole));
+  }
+}
+
+void testStreamingRoundFrames() {
+  // Kulatý: 480 x 480 (230 kB, sedm oken). 32 768 není násobek 480 ani 320,
+  // takže řádky padají i přes konec okna.
+  uint32_t seed = 12345;
+  const auto next = [&seed] {
+    seed = seed * 1103515245u + 12345u;
+    return static_cast<uint8_t>(seed >> 16);
+  };
+  for (uint16_t width : {480, 320}) {
+    const uint16_t height = width == 480 ? 480 : 220;
+    const size_t pixels = static_cast<size_t>(width) * height;
+    // Bez srážek, se šumem (zlib nic nezabalí, každé volání plní okno do
+    // konce) a s ostrůvky deště a oblastí bez dat jako skutečný snímek.
+    checkStreaming(std::vector<uint8_t>(pixels, 0), width, height);
+    std::vector<uint8_t> noise(pixels);
+    for (uint8_t &value : noise) value = next();
+    checkStreaming(noise, width, height);
+    std::vector<uint8_t> rain(pixels, 0);
+    for (int y = 0; y < height; ++y)
+      for (int x = 0; x < width; ++x) {
+        const int dx = x - width / 3;
+        const int dy = y - height / 2;
+        uint8_t &value = rain[static_cast<size_t>(y) * width + x];
+        if (dx * dx + dy * dy < 90 * 90)
+          value = static_cast<uint8_t>(((dx * dx + dy * dy) / 600 % 15 + 1) * 16 +
+                                       (next() & 7));
+        if (x > width - 40) value = 255;
+      }
+    checkStreaming(rain, width, height);
+  }
+}
+
+void testStreamingRejectsBrokenFrames() {
+  std::vector<uint8_t> raw(static_cast<size_t>(WIDTH) * HEIGHT, 0);
+  for (size_t index = 0; index < raw.size(); index += 7) raw[index] = 16 * (index % 15);
+  const std::vector<uint8_t> packed = compress(raw);
+  std::vector<uint8_t> expected = raw;
+  // Poškozený kontrolní součet: řádky projdou, finish() ne.
+  std::vector<uint8_t> badSum = packed;
+  badSum.back() ^= 0xff;
+  {
+    RadarBundleRows rows;
+    assert(rows.begin(badSum.data(), badSum.size(), WIDTH, HEIGHT));
+    bool all = true;
+    for (int y = 0; y < HEIGHT && all; ++y) all = rows.row(y) != nullptr;
+    assert(!all || !rows.finish());
+  }
+  // Useknutý proud.
+  assert(!streamSequential(packed.data(), packed.size() / 2, WIDTH, HEIGHT,
+                           expected));
+  // Snímek vyšší, než se čeká (proud skončí dřív), i nižší (data zbudou).
+  {
+    RadarBundleRows rows;
+    assert(rows.begin(packed.data(), packed.size(), WIDTH, HEIGHT + 1));
+    bool all = true;
+    for (int y = 0; y <= HEIGHT && all; ++y) all = rows.row(y) != nullptr;
+    assert(!all || !rows.finish());
+  }
+  {
+    RadarBundleRows rows;
+    assert(rows.begin(packed.data(), packed.size(), WIDTH, HEIGHT - 1));
+    for (int y = 0; y < HEIGHT - 1; ++y) assert(rows.row(y) != nullptr);
+    assert(!rows.finish());
+  }
+  // Řádky starší než dva předchozí už nejsou.
+  {
+    RadarBundleRows rows;
+    assert(rows.begin(packed.data(), packed.size(), WIDTH, HEIGHT));
+    for (int y = 0; y <= 10; ++y) assert(rows.row(y) != nullptr);
+    assert(rows.row(8) != nullptr);
+    assert(rows.row(7) == nullptr);
+  }
+  // Jeden objekt znovu pro další snímek.
+  {
+    RadarBundleRows rows;
+    for (int pass = 0; pass < 3; ++pass) {
+      assert(rows.begin(packed.data(), packed.size(), WIDTH, HEIGHT));
+      for (int y = 0; y < HEIGHT; ++y)
+        assert(memcmp(rows.row(y), raw.data() + static_cast<size_t>(y) * WIDTH,
+                      WIDTH) == 0);
+      assert(rows.finish());
+    }
+  }
+  radarBundleRowsRelease();
+}
+
 }  // namespace
 
 int main() {
@@ -162,5 +325,8 @@ int main() {
   testRejectsBrokenBundles();
   testServerFixture();
   testUrlFromRainUrl();
+  testStreamingServerFixture();
+  testStreamingRoundFrames();
+  testStreamingRejectsBrokenFrames();
   return 0;
 }
