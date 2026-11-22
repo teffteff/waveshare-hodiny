@@ -787,7 +787,72 @@ String htmlColor(uint32_t value) {
 const char *clockStyleSlug(uint8_t style) {
   if (style == CLOCK_STYLE_ANALOG) return "analog";
   if (style == CLOCK_STYLE_VALUES) return "values";
+  if (style == CLOCK_STYLE_RETRO_LCD) return "retro";
   return "digital";
+}
+
+// Zdroj hodnoty retro LCD na stránce: číslo slotu, "weather" nebo "off".
+String retroSourceName(uint8_t source) {
+  if (source == CLOCK_RETRO_SOURCE_WEATHER) return F("weather");
+  if (source >= CLOCK_VALUE_SLOT_COUNT) return F("off");
+  return String(source);
+}
+
+bool parseRetroSource(const String &value, bool allowWeather, bool allowOff,
+                      uint8_t &source) {
+  if (value == "weather" && allowWeather) {
+    source = CLOCK_RETRO_SOURCE_WEATHER;
+    return true;
+  }
+  if (value == "off" && allowOff) {
+    source = CLOCK_RETRO_SOURCE_NONE;
+    return true;
+  }
+  if (value.isEmpty()) return false;
+  for (size_t i = 0; i < value.length(); ++i)
+    if (!isDigit(value[i])) return false;
+  const long slot = value.toInt();
+  if (slot < 0 || slot >= static_cast<long>(CLOCK_VALUE_SLOT_COUNT)) return false;
+  source = static_cast<uint8_t>(slot);
+  return true;
+}
+
+// Ciferníky (schéma 58) jako vnořený objekt "faces".
+String facesJson(const ClockFacesConfig &faces) {
+  String result = F(",\"faces\":{\"retroBackgroundColor\":\"");
+  result += htmlColor(faces.retroBackgroundColor);
+  result += F("\",\"retroForegroundColor\":\"");
+  result += htmlColor(faces.retroForegroundColor);
+  result += F("\",\"retroGhostPercent\":");
+  result += faces.retroGhostPercent;
+  result += F(",\"retroLeftSource\":\"");
+  result += retroSourceName(faces.retroLeftSource);
+  result += F("\",\"retroRightSource\":\"");
+  result += retroSourceName(faces.retroRightSource);
+  result += F("\",\"retroBarSource\":\"");
+  result += retroSourceName(faces.retroBarSource);
+  result += F("\",\"retroLeftDigits\":");
+  result += faces.retroLeftDigits;
+  result += F(",\"retroRightDigits\":");
+  result += faces.retroRightDigits;
+  result += F(",\"retroBarSegments\":");
+  result += faces.retroBarSegments;
+  result += F(",\"retroBarMin\":");
+  result += String(faces.retroBarMin, 1);
+  result += F(",\"retroBarMax\":");
+  result += String(faces.retroBarMax, 1);
+  result += F(",\"retroDateFormat\":");
+  result += faces.retroDateFormat;
+  result += F(",\"retroFixedWeekday\":");
+  result += faces.retroFixedWeekday ? F("true") : F("false");
+  result += F(",\"retroSeconds\":");
+  result += faces.retroSeconds ? F("true") : F("false");
+  result += F(",\"forecastFanEnabled\":");
+  result += faces.forecastFanEnabled ? F("true") : F("false");
+  result += F(",\"forecastFanHours\":");
+  result += faces.forecastFanHours;
+  result += '}';
+  return result;
 }
 
 String sideJson(const ClockSideConfig &side,
@@ -1121,6 +1186,8 @@ bool readAppearanceFromRequest(ClockAppearanceConfig &appearance) {
     appearance.style = CLOCK_STYLE_ANALOG;
   else if (style == "values")
     appearance.style = CLOCK_STYLE_VALUES;
+  else if (style == "retro")
+    appearance.style = CLOCK_STYLE_RETRO_LCD;
   else
     return false;
   if (!parseHtmlColor(server.arg("analogToneColor"),
@@ -1162,6 +1229,27 @@ bool readAppearanceFromRequest(ClockAppearanceConfig &appearance) {
     currentAppearanceStateCallback(saved, active);
     appearance.analogOutlineHandsEnabled =
         active.analogOutlineHandsEnabled;
+  }
+  // Barevná výplň ciferníku a ručiček; starší stránka pole neposílá.
+  struct TintedField {
+    const char *name;
+    bool ClockAppearanceConfig::*field;
+  };
+  static const TintedField TINTED_FIELDS[] = {
+      {"analogTintedDialEnabled", &ClockAppearanceConfig::analogTintedDialEnabled},
+      {"analogTintedHandsEnabled", &ClockAppearanceConfig::analogTintedHandsEnabled},
+  };
+  for (const TintedField &tinted : TINTED_FIELDS) {
+    if (server.hasArg(tinted.name)) {
+      const String value = server.arg(tinted.name);
+      if (value != "0" && value != "1") return false;
+      appearance.*tinted.field = value == "1";
+    } else if (currentAppearanceStateCallback != nullptr) {
+      ClockAppearanceConfig saved;
+      ClockAppearanceConfig active;
+      currentAppearanceStateCallback(saved, active);
+      appearance.*tinted.field = active.*tinted.field;
+    }
   }
   if (server.hasArg("analogMonochromeValuesEnabled")) {
     const String monochromeValues =
@@ -2019,6 +2107,14 @@ void handleGetConfig() {
   result += F(",\"activeAnalogOutlineHandsEnabled\":");
   result += activeAppearance.analogOutlineHandsEnabled ? F("true")
                                                         : F("false");
+  result += F(",\"analogTintedDialEnabled\":");
+  result += savedAppearance.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedDialEnabled\":");
+  result += activeAppearance.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"analogTintedHandsEnabled\":");
+  result += savedAppearance.analogTintedHandsEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedHandsEnabled\":");
+  result += activeAppearance.analogTintedHandsEnabled ? F("true") : F("false");
   result += F(",\"analogMonochromeValuesEnabled\":");
   result += savedAppearance.analogMonochromeValuesEnabled ? F("true")
                                                            : F("false");
@@ -2147,7 +2243,9 @@ void handleGetConfig() {
     result += F("doto");
   else
     result += F("barlow");
-  result += F("\",\"dateFormat\":\"");
+  result += '"';
+  result += facesJson(config.faces);
+  result += F(",\"dateFormat\":\"");
   if (config.dateFormat == CLOCK_DATE_FORMAT_NUMERIC)
     result += F("numeric");
   else if (config.dateFormat == CLOCK_DATE_FORMAT_DAY_MONTH_YEAR)
@@ -3268,6 +3366,72 @@ void handleSaveConfig() {
     sendError(400, F("Efekt dvojtečky hodin není platný."));
     return;
   }
+  // Ciferníky (schéma 58). Stránka ze starší verze pole neposílá; uložené
+  // volby pak zůstanou.
+  if (server.hasArg("retroGhostPercent")) {
+    ClockFacesConfig faces = config.faces;
+    if (!parseHtmlColor(server.arg("retroBackgroundColor"),
+                        faces.retroBackgroundColor) ||
+        !parseHtmlColor(server.arg("retroForegroundColor"),
+                        faces.retroForegroundColor)) {
+      sendError(400, F("Barva retro LCD není platná."));
+      return;
+    }
+    const int ghost = server.arg("retroGhostPercent").toInt();
+    if (ghost < 0 || ghost > CLOCK_RETRO_MAX_GHOST_PERCENT) {
+      sendError(400, F("Neaktivní segmenty retro LCD musí být 0 až 50 %."));
+      return;
+    }
+    faces.retroGhostPercent = static_cast<uint8_t>(ghost);
+    if (!parseRetroSource(server.arg("retroLeftSource"), true, false,
+                          faces.retroLeftSource) ||
+        !parseRetroSource(server.arg("retroRightSource"), true, false,
+                          faces.retroRightSource) ||
+        !parseRetroSource(server.arg("retroBarSource"), false, true,
+                          faces.retroBarSource)) {
+      sendError(400, F("Hodnota retro LCD není v nabídce."));
+      return;
+    }
+    const int leftDigits = server.arg("retroLeftDigits").toInt();
+    const int rightDigits = server.arg("retroRightDigits").toInt();
+    if (leftDigits < CLOCK_RETRO_MIN_DIGITS || leftDigits > CLOCK_RETRO_MAX_DIGITS ||
+        rightDigits < CLOCK_RETRO_MIN_DIGITS || rightDigits > CLOCK_RETRO_MAX_DIGITS) {
+      sendError(400, F("Počet číslic retro LCD musí být 1 až 4."));
+      return;
+    }
+    faces.retroLeftDigits = static_cast<uint8_t>(leftDigits);
+    faces.retroRightDigits = static_cast<uint8_t>(rightDigits);
+    const int segments = server.arg("retroBarSegments").toInt();
+    if (segments < CLOCK_RETRO_MIN_SEGMENTS || segments > CLOCK_RETRO_MAX_SEGMENTS) {
+      sendError(400, F("Ukazatel retro LCD musí mít 5 až 50 segmentů."));
+      return;
+    }
+    faces.retroBarSegments = static_cast<uint8_t>(segments);
+    const float barMin = server.arg("retroBarMin").toFloat();
+    const float barMax = server.arg("retroBarMax").toFloat();
+    if (!std::isfinite(barMin) || !std::isfinite(barMax) || barMin >= barMax) {
+      sendError(400, F("Začátek ukazatele retro LCD musí být menší než konec."));
+      return;
+    }
+    faces.retroBarMin = barMin;
+    faces.retroBarMax = barMax;
+    const int retroDate = server.arg("retroDateFormat").toInt();
+    if (retroDate < 0 || retroDate >= CLOCK_RETRO_DATE_FORMAT_COUNT) {
+      sendError(400, F("Formát data retro LCD není v nabídce."));
+      return;
+    }
+    faces.retroDateFormat = static_cast<uint8_t>(retroDate);
+    faces.retroFixedWeekday = server.arg("retroFixedWeekday") == "1";
+    faces.retroSeconds = server.arg("retroSeconds") == "1";
+    faces.forecastFanEnabled = server.arg("forecastFanEnabled") == "1";
+    const int fanHours = server.arg("forecastFanHours").toInt();
+    if (fanHours != 12 && fanHours != 24) {
+      sendError(400, F("Prstenec předpovědi umí 12 nebo 24 hodin."));
+      return;
+    }
+    faces.forecastFanHours = static_cast<uint8_t>(fanHours);
+    config.faces = faces;
+  }
   config.showLeadingHourZero = server.arg("showLeadingHourZero") == "1";
   const String timeFont = server.arg("timeFont");
   if (timeFont == "barlow")
@@ -4084,6 +4248,14 @@ void handleClockAppearancePreview() {
   result += saved.analogOutlineHandsEnabled ? F("true") : F("false");
   result += F(",\"activeAnalogOutlineHandsEnabled\":");
   result += active.analogOutlineHandsEnabled ? F("true") : F("false");
+  result += F(",\"analogTintedDialEnabled\":");
+  result += saved.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedDialEnabled\":");
+  result += active.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"analogTintedHandsEnabled\":");
+  result += saved.analogTintedHandsEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedHandsEnabled\":");
+  result += active.analogTintedHandsEnabled ? F("true") : F("false");
   result += F(",\"analogMonochromeValuesEnabled\":");
   result += saved.analogMonochromeValuesEnabled ? F("true") : F("false");
   result += F(",\"activeAnalogMonochromeValuesEnabled\":");

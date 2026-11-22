@@ -428,6 +428,9 @@ void copyRuntimeRssConfig(ClockRssConfig *destination, RssLocation &location) {
 // ležela vedle TLS relace.
 struct ForecastTaskConfig {
   ClockForecastConfig forecast;
+  // Prstenec předpovědi kolem ciferníku stojí na stejných datech, takže se
+  // stahují i s vypnutou obrazovkou předpovědi.
+  bool forecastFan = false;
   float latitude = 0.0f;
   float longitude = 0.0f;
   // Naměřená historie se stahuje ve stejné úloze. Entita venkovní teploty
@@ -441,6 +444,7 @@ void copyRuntimeForecastConfig(ForecastTaskConfig &destination) {
   if (runtimeConfigMutex != nullptr)
     xSemaphoreTake(runtimeConfigMutex, portMAX_DELAY);
   destination.forecast = runtimeConfig.forecast;
+  destination.forecastFan = runtimeConfig.faces.forecastFanEnabled;
   destination.latitude = runtimeConfig.openMeteoLatitude;
   destination.longitude = runtimeConfig.openMeteoLongitude;
   memcpy(destination.historyUrl, runtimeConfig.historyUrl,
@@ -512,7 +516,7 @@ bool previewClockAppearanceFromWeb(const ClockAppearanceConfig &appearance) {
   activeAppearance = appearance;
   activeAppearance.style = constrain(
       activeAppearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
+      static_cast<uint8_t>(CLOCK_STYLE_LAST));
   activeAppearance.analogToneColor &= 0xFFFFFF;
   activeAppearance.analogHandToneColor &= 0xFFFFFF;
   activeAppearance.analogCardinalAccentColor &= 0xFFFFFF;
@@ -531,7 +535,7 @@ bool saveClockAppearanceFromWeb(const ClockAppearanceConfig &appearance) {
   ClockAppearanceConfig normalized = appearance;
   normalized.style = constrain(
       normalized.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
+      static_cast<uint8_t>(CLOCK_STYLE_LAST));
   normalized.analogToneColor &= 0xFFFFFF;
   normalized.analogHandToneColor &= 0xFFFFFF;
   normalized.analogCardinalAccentColor &= 0xFFFFFF;
@@ -2826,7 +2830,7 @@ void handleSettingsSave(uint8_t clockStyle, uint8_t dayBrightness,
     ClockAppearanceConfig appearance = persistedAppearance;
     appearance.style = constrain(
         clockStyle, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-        static_cast<uint8_t>(CLOCK_STYLE_VALUES));
+        static_cast<uint8_t>(CLOCK_STYLE_LAST));
     if (appearance.style != persistedAppearance.style)
       saveClockAppearanceFromWeb(appearance);
     configurationWebSetMode(static_cast<ConfigurationWebMode>(webMode));
@@ -4715,7 +4719,7 @@ uint32_t rssStep(bool woken) {
 unsigned long maintainForecastFetch(const ForecastTaskConfig &config,
                                     unsigned long &nextRefreshAt,
                                     bool &cacheHolds) {
-  if (!config.forecast.enabled) {
+  if (!config.forecast.enabled && !config.forecastFan) {
     if (cacheHolds) {
       // Obrazovka se vypnula; stará předpověď nesmí zůstat v paměti.
       weatherForecastServiceClear();

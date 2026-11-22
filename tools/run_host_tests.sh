@@ -111,6 +111,8 @@ run_test plane_icon "$FIRMWARE_DIR/PlaneIcon.cpp" "$FIRMWARE_DIR/MapCanvas.cpp" 
 run_test route_parser "$FIRMWARE_DIR/RouteParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test agenda_parser "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 run_test agenda_layout || failures=$((failures + 1))
+run_test retro_lcd || failures=$((failures + 1))
+run_test forecast_fan || failures=$((failures + 1))
 run_test school_parser "$FIRMWARE_DIR/SchoolParser.cpp" "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" || failures=$((failures + 1))
 # Totéž s limity 7" (pět dnů, týdenní mřížka).
 run_test school_parser_lcd7 "$FIRMWARE_DIR/SchoolParser.cpp" "$FIRMWARE_DIR/AgendaParser.cpp" "$FIRMWARE_DIR/JsonScan.cpp" -DHODINY_BOARD_LCD7=1 || failures=$((failures + 1))

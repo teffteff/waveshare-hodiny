@@ -48,6 +48,14 @@ void fillEverything(ClockConfig &config) {
   config.dayBrightness = 77;
   config.language = CLOCK_LANGUAGE_ENGLISH;
   config.timeFont = CLOCK_TIME_FONT_DOTO;
+  // Schéma 58: ciferníky.
+  config.faces.retroBackgroundColor = 0x102030;
+  config.faces.retroGhostPercent = 33;
+  config.faces.retroLeftSource = CLOCK_RETRO_SOURCE_WEATHER;
+  config.faces.retroBarSource = 12;
+  config.faces.retroBarMax = 2000.0f;
+  config.faces.forecastFanEnabled = true;
+  config.faces.forecastFanHours = 24;
   config.rss.enabled = true;
   clockConfigCopy(config.rss.url, sizeof(config.rss.url),
                   "https://example.test/top.xml");
@@ -85,6 +93,8 @@ SettingsBackupContent fullContent() {
   content.appearance.analogCardinalAccentColor = 0x334455;
   content.appearance.analogCardinalAccentsEnabled = false;
   content.appearance.analogOutlineHandsEnabled = true;
+  content.appearance.analogTintedDialEnabled = true;
+  content.appearance.analogTintedHandsEnabled = false;
   content.appearance.analogMonochromeValuesEnabled = true;
   content.appearance.analogValuesAboveHandsEnabled = true;
   content.appearance.analogDateFormat = CLOCK_DATE_FORMAT_NUMERIC;
@@ -155,6 +165,15 @@ void testFullBackupCarriesEverything() {
   assert(look.analogDateFormat == CLOCK_DATE_FORMAT_NUMERIC);
   assert(look.analogDateColor == 0x445566);
   assert(look.monochromeWeatherIconColor == 0x556677);
+  assert(look.analogTintedDialEnabled);
+  assert(!look.analogTintedHandsEnabled);
+  assert(restored.faces.retroBackgroundColor == 0x102030);
+  assert(restored.faces.retroGhostPercent == 33);
+  assert(restored.faces.retroLeftSource == CLOCK_RETRO_SOURCE_WEATHER);
+  assert(restored.faces.retroBarSource == 12);
+  assert(restored.faces.retroBarMax == 2000.0f);
+  assert(restored.faces.forecastFanEnabled);
+  assert(restored.faces.forecastFanHours == 24);
 }
 
 // Bez hesla se tajemství do zálohy nedostanou - ani v konfiguraci, ani
@@ -463,10 +482,11 @@ void testLongerAppearanceSectionIsRead() {
   std::vector<uint8_t> backup = encode(source, fullContent());
   const size_t sectionHeader = RECORD_OFFSET + clockConfigRecordSize();
   assert(backup[sectionHeader] == 2 && backup[sectionHeader + 1] == 0);
-  assert(backup[sectionHeader + 2] == 26 && backup[sectionHeader + 3] == 0);
-  backup[sectionHeader + 2] = 30;
+  // Od schématu 58 nese oddíl i barevnou výplň (28 bajtů).
+  assert(backup[sectionHeader + 2] == 28 && backup[sectionHeader + 3] == 0);
+  backup[sectionHeader + 2] = 32;
   const uint8_t extra[] = {1, 2, 3, 4};
-  backup.insert(backup.begin() + sectionHeader + 4 + 26, extra, extra + 4);
+  backup.insert(backup.begin() + sectionHeader + 4 + 28, extra, extra + 4);
   resealBackup(backup);
 
   ClockConfig restored;
@@ -475,7 +495,29 @@ void testLongerAppearanceSectionIsRead() {
                               content) == SettingsBackupStatus::Ok);
   assert(content.appearance.style == CLOCK_STYLE_VALUES);
   assert(content.appearance.monochromeWeatherIconColor == 0x556677);
+  assert(content.appearance.analogTintedDialEnabled);
   assert(content.webMode == 2);
+}
+
+// Záloha ze starší verze má oddíl vzhledu jen 26 bajtů: barevná výplň zůstane
+// vypnutá.
+void testShortAppearanceSectionKeepsTintOff() {
+  ClockConfig source;
+  fillEverything(source);
+  std::vector<uint8_t> backup = encode(source, fullContent());
+  const size_t sectionHeader = RECORD_OFFSET + clockConfigRecordSize();
+  backup[sectionHeader + 2] = 26;
+  backup.erase(backup.begin() + sectionHeader + 4 + 26,
+               backup.begin() + sectionHeader + 4 + 28);
+  resealBackup(backup);
+  ClockConfig restored;
+  SettingsBackupContent content;
+  assert(settingsBackupDecode(backup.data(), backup.size(), restored,
+                              content) == SettingsBackupStatus::Ok);
+  assert(content.appearance.style == CLOCK_STYLE_VALUES);
+  assert(content.appearance.monochromeWeatherIconColor == 0x556677);
+  assert(!content.appearance.analogTintedDialEnabled);
+  assert(!content.appearance.analogTintedHandsEnabled);
 }
 
 // Neznámý oddíl z novějšího firmwaru se přeskočí.
@@ -500,6 +542,7 @@ int main() {
   testEveryConfigByteHasOnePart();
   testPartNames();
   testLongerAppearanceSectionIsRead();
+  testShortAppearanceSectionKeepsTintOff();
   testUnknownSectionIsSkipped();
   testFullBackupCarriesEverything();
   testBackupWithoutSecretsLeavesThemOut();

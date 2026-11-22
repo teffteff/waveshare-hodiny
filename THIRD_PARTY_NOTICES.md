@@ -199,3 +199,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Retro LCD a prstenec předpovědi z CooLajz/waveshare-hodiny
+
+Tenhle firmware je fork projektu waveshare-hodiny od CooLajze. Tři pozdější
+nápady z původního projektu jsou do forku přenesené a upravené pro zdejší
+sloty hodnot, předpověď a obě desky:
+
+- autor: CooLajz,
+- zdroj: https://github.com/CooLajz/waveshare-hodiny,
+- licence: MIT, Copyright (c) 2026 CooLajz.
+
+- Retro LCD ciferník (revize `a2f2104`, `66214d5`, `07d1509`, `052c345`,
+  `460236b`, `63939ac`, `49b09de`, `51e68d7`): geometrie segmentů
+  v `WaveshareHodiny/RetroLcdGeometry.h` je převzatá beze změny tvaru,
+  formátování hodnot, dne v týdnu a data v `RetroLcdFormat.h` beze změny
+  chování; kreslení v `RetroLcd.cpp` (masky znaků, nerozsvícené segmenty,
+  rastr ikony počasí, segmentový ukazatel) vychází z upstreamového
+  `RetroLcd.cpp`, píše ale přímo do kreslicího bufferu a řídí se
+  rozvržením desky v `RetroLcdLayout.h` (kulaté podle upstreamu, 7" nové).
+- Barevná výplň značek a ručiček analogového ciferníku (revize `0a1109d`).
+- Prstenec předpovědi kolem ciferníku (revize `e81c2e7`, `cf90317`,
+  `861f00a`, `a283205`, `e7c8870`): teplotní stupnice, plynulý přechod
+  mezi hodinami se švem v právě probíhající hodině, rozptýlení 4 x 4 do
+  RGB565 a překreslování jen změněných výseků v `ForecastFan.h`
+  a `ForecastFanRing.cpp`. Místo celého obrázku 480 x 480 se ukládá jen
+  mezikruží a na 7" vedle digitálních hodin je stejná logika jako pás.
+
+Na převzaté a odvozené části se vztahují podmínky MIT licence; její úplné
+znění je v souboru `LICENSE` v kořeni repozitáře.
