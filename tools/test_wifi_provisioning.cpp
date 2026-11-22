@@ -32,9 +32,18 @@ int main() {
   assert(WiFi.password == "test-saved-password");
 #endif
   assert(WiFi.attempts == 1);
+  // Příznak persistent musí být nastavený před inicializací ovladače, jinak
+  // ovladač ukládá konfiguraci stanice do flash při každém pokusu.
+  assert(WiFi.driverInitialized);
+  assert(!WiFi.driverFlashStorage);
+  assert(WiFi.configWrites == 1);
   delay(15000);
   wifiProvisioningLoop();
   assert(WiFi.attempts == 2);
+#ifndef WIFI_FALLBACK_SSID
+  // Další pokus na stejnou síť konfiguraci nepřepisuje.
+  assert(WiFi.configWrites == 1);
+#endif
 #ifdef WIFI_FALLBACK_SSID
   // A profile with a fallback network alternates between both until one works.
   assert(WiFi.ssid == WIFI_FALLBACK_SSID);
@@ -48,6 +57,19 @@ int main() {
   assert(WiFi.ssid == WIFI_FALLBACK_SSID);
 #endif
   assert(hostshim::store() == before);
+  // Po připojení a výpadku dostane automatické znovupřipojení ovladače
+  // minutu, než přijde vlastní pokus.
+  WiFi.connectedStatus = WL_CONNECTED;
+  wifiProvisioningLoop();
+  assert(wifiProvisioningReadyForNormalStart());
+  WiFi.connectedStatus = 0;
+  const int attemptsAtDrop = WiFi.attempts;
+  delay(15000);
+  wifiProvisioningLoop();
+  assert(WiFi.attempts == attemptsAtDrop);
+  delay(45000);
+  wifiProvisioningLoop();
+  assert(WiFi.attempts == attemptsAtDrop + 1);
   // Open networks have an empty password and must still reconnect.
   preferences.begin("clock-wifi", false);
   preferences.putString("password", "");
