@@ -46,6 +46,7 @@
 #include "NetworkDiagnostics.h"
 #include "DeviceName.h"
 #include "SettingsBackup.h"
+#include "SourceHealth.h"
 #include "SettingsBackupCrypto.h"
 #include "TmepService.h"
 #include "WeatherWarningService.h"
@@ -2105,6 +2106,10 @@ void handleGetConfig() {
   result += config.nightBrightness;
   result += F(",\"automaticDayNight\":");
   result += config.automaticDayNight ? F("true") : F("false");
+  result += F(",\"nightDisplayOff\":");
+  result += config.displayExtras.nightDisplayOff ? F("true") : F("false");
+  result += F(",\"nightWakeSeconds\":");
+  result += config.displayExtras.nightWakeSeconds;
   result += F(",\"nightVisualMode\":\"");
   result += config.nightVisualMode == CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY
                 ? F("brightness")
@@ -3246,6 +3251,19 @@ void handleSaveConfig() {
   config.nightBrightness =
       constrain(server.arg("nightBrightness").toInt(), 1, 100);
   config.automaticDayNight = automaticDayNight;
+  // Zhasnutí v noci (schéma 58). Stránka ze starší verze pole neposílá;
+  // uložené volby pak zůstanou.
+  if (server.hasArg("nightDisplayOff"))
+    config.displayExtras.nightDisplayOff = server.arg("nightDisplayOff") == "1";
+  if (server.hasArg("nightWakeSeconds")) {
+    const long wakeSeconds = server.arg("nightWakeSeconds").toInt();
+    if (wakeSeconds < CLOCK_NIGHT_WAKE_MIN_SECONDS ||
+        wakeSeconds > CLOCK_NIGHT_WAKE_MAX_SECONDS) {
+      sendError(400, F("Doba rozsvícení po dotyku musí být 10 až 120 s."));
+      return;
+    }
+    config.displayExtras.nightWakeSeconds = static_cast<uint8_t>(wakeSeconds);
+  }
   const String nightVisualMode = server.arg("nightVisualMode");
   if (nightVisualMode == "red") {
     config.nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
@@ -4556,6 +4574,35 @@ void handleDiagnostics() {
   }
   result += F("},");
   netPollAppendDiagnosticsJson(result);
+  // Stav zdrojů dat (SourceHealth.h): totéž, podle čeho obrazovky píšou
+  // "Zdroj nedostupný". Zdroje, na které se hodiny ještě neptaly, chybí.
+  result += F(",\"sources\":[");
+  {
+    const uint32_t now = millis();
+    bool first = true;
+    for (size_t index = 0; index < CLOCK_SOURCE_COUNT; ++index) {
+      const ClockSource source = static_cast<ClockSource>(index);
+      const SourceHealth health = sourceHealthGet(source);
+      if (!health.tried) continue;
+      if (!first) result += ',';
+      first = false;
+      result += F("{\"name\":\"");
+      result += sourceHealthName(source);
+      result += F("\",\"down\":");
+      result += health.down() ? F("true") : F("false");
+      result += F(",\"failures\":");
+      result += health.failures;
+      result += F(",\"okAgeMs\":");
+      if (health.everOk)
+        result += health.ageMs(now);
+      else
+        result += F("null");
+      result += F(",\"nextInMs\":");
+      result += health.nextInMs(now);
+      result += '}';
+    }
+  }
+  result += ']';
   result += F(",\"memoryCensus\":{\"lvglPsram\":");
   {
     uint32_t lvglPsram = 0;

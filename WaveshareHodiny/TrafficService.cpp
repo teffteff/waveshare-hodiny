@@ -15,6 +15,7 @@
 #include "MapLabelFont.h"
 #include "NetworkCoordinator.h"
 #include "SharedFrames.h"
+#include "SourceHealth.h"
 #include "TrafficRender.h"
 #include "TlsBundle.h"
 
@@ -420,6 +421,7 @@ void trafficTask(void *) {
                             : visible        ? VISIBLE_PERIOD_MS
                                              : HIDDEN_PERIOD_MS;
     nextFetchAt = millis() + period;
+    sourceHealthRecord(ClockSource::Traffic, ok, period);
     // Hláška chyby se zobrazí i beze změny dat.
     if (!ok) ++generation;
     const bool drawNow = visible || !frameReady;

@@ -12,6 +12,7 @@
 #include "HttpDownload.h"
 #include "NetPoll.h"
 #include "NetworkCoordinator.h"
+#include "SourceHealth.h"
 #include "TlsBundle.h"
 
 
@@ -271,6 +272,8 @@ uint32_t weatherWarningStep(bool) {
     wait = period << (failures < 4 ? failures : 4);
     if (wait > MAX_BACKOFF_MS) wait = MAX_BACKOFF_MS;
   }
+  // Obsazená síť o serveru nic neříká.
+  if (ok || !networkBusy) sourceHealthRecord(ClockSource::Warnings, ok, wait);
   portENTER_CRITICAL(&stateMux);
   nextFetchAt = millis() + wait;
   portEXIT_CRITICAL(&stateMux);

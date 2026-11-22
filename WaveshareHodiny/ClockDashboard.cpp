@@ -11260,6 +11260,78 @@ bool clockDashboardHideNotification() {
 
 bool clockDashboardNotificationVisible() { return notificationShown; }
 
+// --- Řádek o nedostupném zdroji dat ------------------------------------------
+// Na lv_layer_top() jako notifikace, aby ležel nad každou stránkou a stránky se
+// o něj při přepínání nemusely starat. Podklad je neprůhledný, takže se dá
+// přečíst i nad radarem nebo mapou. Písmo Barlow (lcd7_text15) má na rozdíl
+// od kulatého písma tečku "·" a češtinu na obou deskách.
+namespace {
+#if HODINY_BOARD_LCD7
+// Jeden řádek vlevo dole; vpravo dole je "aktualizováno ...".
+constexpr lv_coord_t SOURCE_STATUS_MAX_WIDTH = 500;
+#else
+// Dva řádky dole uprostřed, tak aby se rohy podkladu vešly do kruhu.
+constexpr lv_coord_t SOURCE_STATUS_MAX_WIDTH = 236;
+constexpr lv_coord_t SOURCE_STATUS_OFFSET_Y = 172;
+#endif
+const lv_color_t COLOR_SOURCE_STATUS = LV_COLOR_MAKE(255, 184, 67);
+
+lv_obj_t *sourceStatusPill = nullptr;
+lv_obj_t *sourceStatusLabel = nullptr;
+char sourceStatusText[96] = "";
+bool sourceStatusRed = false;
+
+void createSourceStatus() {
+  if (sourceStatusPill != nullptr) return;
+  sourceStatusPill = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(sourceStatusPill);
+  lv_obj_set_size(sourceStatusPill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_color(sourceStatusPill, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(sourceStatusPill, LV_OPA_90, 0);
+  lv_obj_set_style_radius(sourceStatusPill, 10, 0);
+  lv_obj_set_style_border_width(sourceStatusPill, 1, 0);
+  lv_obj_set_style_pad_hor(sourceStatusPill, 10, 0);
+  lv_obj_set_style_pad_ver(sourceStatusPill, 4, 0);
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_CLICKABLE);
+  sourceStatusLabel = lv_label_create(sourceStatusPill);
+  lv_obj_set_style_text_font(sourceStatusLabel, &lcd7_text15, 0);
+  lv_obj_set_style_text_align(sourceStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(sourceStatusLabel, "");
+}
+}  // namespace
+
+void clockDashboardSetSourceStatus(const char *text) {
+  if (text == nullptr) text = "";
+  const bool red = redNightVisualEnabled();
+  if (strcmp(text, sourceStatusText) == 0 && red == sourceStatusRed) return;
+  strlcpy(sourceStatusText, text, sizeof(sourceStatusText));
+  sourceStatusRed = red;
+  if (sourceStatusText[0] == '\0') {
+    if (sourceStatusPill != nullptr)
+      lv_obj_add_flag(sourceStatusPill, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  createSourceStatus();
+  const lv_color_t color = red ? COLOR_ERROR : COLOR_SOURCE_STATUS;
+  lv_obj_set_style_text_color(sourceStatusLabel, color, 0);
+  lv_obj_set_style_border_color(sourceStatusPill, color, 0);
+  lv_obj_set_style_border_opa(sourceStatusPill, LV_OPA_40, 0);
+  // Krátký text dostane podklad na míru, dlouhý se zalomí do nejvyšší šířky.
+  lv_label_set_long_mode(sourceStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(sourceStatusLabel, LV_SIZE_CONTENT);
+  lv_label_set_text(sourceStatusLabel, sourceStatusText);
+  lv_obj_update_layout(sourceStatusLabel);
+  if (lv_obj_get_width(sourceStatusLabel) > SOURCE_STATUS_MAX_WIDTH)
+    lv_obj_set_width(sourceStatusLabel, SOURCE_STATUS_MAX_WIDTH);
+#if HODINY_BOARD_LCD7
+  lv_obj_align(sourceStatusPill, LV_ALIGN_BOTTOM_LEFT, 14, -6);
+#else
+  lv_obj_align(sourceStatusPill, LV_ALIGN_CENTER, 0, SOURCE_STATUS_OFFSET_Y);
+#endif
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_HIDDEN);
+}
+
 #if HODINY_BOARD_LCD7
 #include "ClockDashboardLcd7.h"
 #endif

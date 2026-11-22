@@ -69,6 +69,13 @@ ukázaných, sdílený filtr výšky a volací značky) jsou převzaté z
 `MeteoPlaneRadar/PlaneWatch.cpp` verze 0.8.0 a přepsané na samostatný modul
 bez Arduina; přepínání obrazovek a stahování jsou vlastní.
 
+Stav zdrojů dat v `WaveshareHodiny/SourceHealth.cpp` (poslední úspěch,
+neúspěchy za sebou, další pokus a řádek "Zdroj nedostupný · další pokus za
+N min") vychází z návrhu `MeteoPlaneRadar/SrcHealth.h` verze 0.9.7; čas se
+předává zvenku, aby šel stav otestovat na počítači, a sdílený stav se zamyká.
+Zhasnutý displej v noci (`WaveshareHodiny/NightDisplay.cpp`) je nápad
+z `MeteoPlaneRadar/NightMode.cpp`; pravidla probuzení jsou vlastní.
+
 ## Data o letadlech adsb.fi a adsb.lol
 
 Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:
