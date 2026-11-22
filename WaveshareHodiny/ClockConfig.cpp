@@ -683,6 +683,12 @@ void normalizeConfig(ClockConfig &config) {
     extras.windowRangeKm = CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM;
   if (extras.nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)
     extras.nearbyAlertMode = 0;
+  // Doba rozsvícení po dotyku leží v bloku schématu 58: nula ze staršího
+  // záznamu i cokoli mimo meze znamená výchozích 30 s.
+  ClockDisplayExtrasConfig &display = config.displayExtras;
+  if (display.nightWakeSeconds < CLOCK_NIGHT_WAKE_MIN_SECONDS ||
+      display.nightWakeSeconds > CLOCK_NIGHT_WAKE_MAX_SECONDS)
+    display.nightWakeSeconds = CLOCK_NIGHT_WAKE_DEFAULT_SECONDS;
   if (config.planesMapLabel > CLOCK_PLANE_MAP_LABEL_CALLSIGN)
     config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   config.planes.altitudeMaxFt =
@@ -1112,6 +1118,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV57 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_57_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV56 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1210,6 +1223,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV57) ||
          storedSize == sizeof(ConfigRecordV56) ||
          storedSize == sizeof(ConfigRecordV55) ||
          storedSize == sizeof(ConfigRecordV54) ||
@@ -1258,6 +1272,24 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 57 je přesnou předponou schématu 58; další volby displeje si po
+  // zkopírování podrží výchozí hodnoty (zhasnutí v noci vypnuté, 30 s).
+  const ConfigRecordV57 &legacyV57 =
+      *reinterpret_cast<const ConfigRecordV57 *>(&record);
+  uint32_t embeddedSchemaV57 = 0;
+  if (readComplete && storedSize == sizeof(legacyV57))
+    memcpy(&embeddedSchemaV57, legacyV57.config, sizeof(embeddedSchemaV57));
+  if (readComplete && storedSize == sizeof(legacyV57) &&
+      legacyV57.magic == CONFIG_MAGIC && legacyV57.schemaVersion == 57 &&
+      embeddedSchemaV57 == 57 &&
+      legacyV57.checksum ==
+          bytesChecksum(legacyV57.config, sizeof(legacyV57.config))) {
+    memcpy(&config, legacyV57.config, sizeof(legacyV57.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 56 je přesnou předponou schématu 57; další volby letadel si po

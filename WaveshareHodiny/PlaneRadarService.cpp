@@ -23,6 +23,7 @@
 #include "PushAlertsService.h"
 #include "PsramGrowBuffer.h"
 #include "SharedFrames.h"
+#include "SourceHealth.h"
 #include "TlsBundle.h"
 #if HODINY_BOARD_LCD7
 #include "Lcd7Fonts.h"
@@ -1780,6 +1781,9 @@ void planeRadarTask(void *) {
       // Po neúspěchu se čeká dvojnásobek, ať se API nemlátí v normálním tempu.
       nextFetchAt = millis() + (ok ? period : period * 2);
       portEXIT_CRITICAL(&stateMux);
+      // Stáří letadel hlídá tahle služba sama (šedá letadla, "Stará data");
+      // společný stav zdroje nese jen výsledek a další pokus.
+      sourceHealthRecord(ClockSource::Planes, ok, ok ? period : period * 2);
       if (ok) {
         reconcileSelection();
         detectNearby(nearby, planes, latitude, longitude);

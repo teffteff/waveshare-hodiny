@@ -2145,8 +2145,65 @@ void testOpenMeteoSlotDecimalsSurviveReload() {
   }
 }
 
+void testDisplayExtrasPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.displayExtras.nightDisplayOff);
+  assert(defaults.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
+
+  // Schéma 57 je předponou 58: všechno uložené zůstane (tady jas, noc
+  // a letadlo poblíž z bloku schématu 57) a zhasnutí v noci je vypnuté,
+  // ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dayBrightness = 77;
+  source.nightBrightness = 4;
+  source.automaticDayNight = false;
+  source.nightVisualMode = CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY;
+  source.planesExtras.nearbyEnabled = true;
+  source.planesExtras.nearbyHoldSeconds = 42;
+  source.controls.enabled = true;
+  strcpy(source.homeAssistantUrl, "http://ha.local:8123");
+  memset(&source.displayExtras, 0xA5, sizeof(source.displayExtras));
+  seed(legacyRecord(source, 57, CLOCK_CONFIG_SCHEMA_57_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.dayBrightness == 77);
+  assert(migrated.nightBrightness == 4);
+  assert(!migrated.automaticDayNight);
+  assert(migrated.nightVisualMode == CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY);
+  assert(migrated.planesExtras.nearbyEnabled);
+  assert(migrated.planesExtras.nearbyHoldSeconds == 42);
+  assert(migrated.controls.enabled);
+  assert(strcmp(migrated.homeAssistantUrl, "http://ha.local:8123") == 0);
+  assert(!migrated.displayExtras.nightDisplayOff);
+  assert(migrated.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
+
+  migrated.displayExtras.nightDisplayOff = true;
+  migrated.displayExtras.nightWakeSeconds = 90;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.displayExtras.nightDisplayOff);
+  assert(loaded.displayExtras.nightWakeSeconds == 90);
+
+  // Doba mimo meze se srovná na výchozí.
+  loaded.displayExtras.nightWakeSeconds = 5;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(clamped.displayExtras.nightDisplayOff);
+  assert(clamped.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
+}
+
 int main() {
   testOpenMeteoSlotDecimalsSurviveReload();
+  testDisplayExtrasPersistenceAndMigration();
   testPushAlertsPersistenceAndMigration();
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();

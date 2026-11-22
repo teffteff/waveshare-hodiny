@@ -32,6 +32,7 @@
 #include "NetworkCoordinator.h"
 #include "RadarBundle.h"
 #include "SharedFrames.h"
+#include "SourceHealth.h"
 #include "TlsBundle.h"
 
 namespace {
@@ -3119,6 +3120,11 @@ void radarTask(void *) {
                           : millis() + (success ? millisecondsUntilNextRefreshSlot()
                                                 : retryMs);
       if (success && !requestChanged) lastSuccessfulRefreshAt = millis();
+      // Změněný pohled se stáhne hned znovu; jeho výsledek o zdroji nic neříká.
+      if (!requestChanged)
+        sourceHealthRecord(ClockSource::Radar, success,
+                           success ? millisecondsUntilNextRefreshSlot()
+                                   : retryMs);
       continue;
     }
     advanceAnimation(now);

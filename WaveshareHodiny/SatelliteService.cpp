@@ -20,6 +20,7 @@
 #include "SkyCanvas.h"
 #include "PsramGrowBuffer.h"
 #include "SharedFrames.h"
+#include "SourceHealth.h"
 #include "SkyRender.h"
 #include "TlsBundle.h"
 
@@ -1085,6 +1086,7 @@ void satelliteTask(void *) {
         loading = false;
         nextFetchAt = millis() + period;
         portEXIT_CRITICAL(&stateMux);
+        sourceHealthRecord(ClockSource::Satellites, ok, period);
         redraw = true;
       }
     }

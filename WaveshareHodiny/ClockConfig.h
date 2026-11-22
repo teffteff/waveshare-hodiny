@@ -214,7 +214,10 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // Schema 57 appends more aircraft radar options (weather balloons on the
 // radar, on by default) with spare bytes for later ones. The schema 56 record
 // stays an exact prefix.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 57;
+// Schema 58 appends more display options (backlight off at night, woken by
+// a touch or an alert) with spare bytes for later ones. The schema 57 record
+// stays an exact prefix; the option starts off.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 58;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -916,6 +919,29 @@ constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_RANGE_KM = 50;
 // Počet režimů ClockPlanesExtrasConfig::nearbyAlertMode (PlaneNearbyAlertMode).
 constexpr uint8_t CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT = 3;
 
+// --- Schéma 58: další volby displeje ---------------------------------------
+// Displej v noci úplně zhasne (ClockDisplayExtrasConfig). Blok leží na konci
+// záznamu; rezerva je na další volby displeje bez nového schématu.
+constexpr uint8_t CLOCK_NIGHT_WAKE_DEFAULT_SECONDS = 30;
+constexpr uint8_t CLOCK_NIGHT_WAKE_MIN_SECONDS = 10;
+constexpr uint8_t CLOCK_NIGHT_WAKE_MAX_SECONDS = 120;
+
+struct alignas(4) ClockDisplayExtrasConfig {
+  // V nočním režimu (automatickém i ručním) podsvícení úplně zhasne. Dotyk
+  // ho rozsvítí na nightWakeSeconds a nic jiného neudělá; upozornění, které
+  // přepíná obrazovky, ho rozsvítí na dobu svého držení. Vypnuté.
+  bool nightDisplayOff = false;
+  // Jak dlouho svítí po dotyku. Nula ze staršího záznamu i hodnota mimo meze
+  // znamená výchozích 30 s (normalizeConfig).
+  uint8_t nightWakeSeconds = CLOCK_NIGHT_WAKE_DEFAULT_SECONDS;
+  // Rezerva pro další volby displeje bez nového schématu; zatím nuly.
+  uint8_t reserved[14] = {};
+};
+
+static_assert(sizeof(ClockDisplayExtrasConfig) == 16,
+              "The display extras block is part of the stored record.");
+// --- konec schématu 58 ------------------------------------------------------
+
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   char homeAssistantUrl[CLOCK_HA_URL_LENGTH] = "";
@@ -1085,6 +1111,10 @@ struct ClockConfig {
   // Pole schématu 57. Další volby radaru letadel; Ovládání končí na násobku
   // čtyř, takže začínají přesně na konci záznamu schématu 56.
   ClockPlanesExtrasConfig planesExtras;
+  // Pole schématu 58. Další volby displeje (zhasnutí v noci); další volby
+  // letadel končí na násobku čtyř, takže začínají přesně na konci záznamu
+  // schématu 57.
+  ClockDisplayExtrasConfig displayExtras;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1296,8 +1326,18 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_56_SIZE = offsetof(ClockConfig, planesExtra
 
 static_assert(CLOCK_CONFIG_SCHEMA_56_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_56_SIZE + sizeof(ClockPlanesExtrasConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, displayExtras),
               "Schema 57 must preserve the complete schema 56 prefix.");
+
+// Schéma 57 končilo dalšími volbami letadel, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_57_SIZE =
+    offsetof(ClockConfig, displayExtras);
+
+static_assert(CLOCK_CONFIG_SCHEMA_57_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_57_SIZE +
+                          sizeof(ClockDisplayExtrasConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 58 must preserve the complete schema 57 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.
