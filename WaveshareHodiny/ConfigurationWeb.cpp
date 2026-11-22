@@ -4639,6 +4639,8 @@ void handleDiagnostics() {
   result += LCD_SyncRepairCount();
   result += F(",\"displayPhaseGlitches\":");
   result += LCD_PhaseGlitchCount();
+  result += F(",\"displayLateVsyncs\":");
+  result += LCD_LateVsyncCount();
   {
     uint32_t times[16];
     const size_t repairs = LCD_RecentRepairTimes(times, 16);
