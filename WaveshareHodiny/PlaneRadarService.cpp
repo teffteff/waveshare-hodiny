@@ -103,6 +103,11 @@ constexpr uint16_t COLOR_WATCHED = 0x6628;
 // (červená, oranžová, žlutá, modrá) i od nouze a hlídaného letu.
 constexpr uint16_t COLOR_MILITARY = 0xf81f;  // purpurová
 constexpr uint16_t COLOR_LOW_PASS = 0x07ff;  // azurová
+// Letadlo poblíž: tyrkysová, aby se nepletla s azurovým nízkým přeletem.
+constexpr uint16_t COLOR_NEARBY_ALERT = 0x471a;
+static_assert(CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT ==
+                  PLANE_NEARBY_ALERT_MODE_COUNT,
+              "Režimy upozornění v nastavení a v PlaneNearby se musí shodovat.");
 // Meteosonda: bílý balon. Výšková stupnice by ji ve 30 km barvila jako dopravní
 // letadlo v hladině a bílou ikonu nemá nic jiného.
 constexpr uint16_t COLOR_SONDE = 0xffff;
@@ -278,6 +283,107 @@ PlaneRouteState routeState = PlaneRouteState::Pending;
 // s jinou volací značkou, ne s dalším pokusem - jinak by strop nikdy nedošel.
 uint8_t routeFetchFailures = 0;
 int lastRouteHttpStatus = 0;
+// Kde letadlo bylo, když se na trasu ptáme; server podle polohy vybírá úsek
+// a odmítá trasy, které k ní nesedí. Bere se z výběru, nebo z letadla poblíž,
+// na jehož trasu se ptá už mapa před otevřením detailu.
+float routeLatitude = 0.0f;
+float routeLongitude = 0.0f;
+// Kdy se smí zeptat znovu po nepovedeném pokusu nebo obsazené síti; 0 = hned.
+unsigned long routeRetryAt = 0;
+// Posledních osm tras podle volací značky (RouteParser.h), v PSRAM.
+RouteCache *routeCache = nullptr;
+// Síť drží jiná služba: na trasu se nečeká deset vteřin jako na letadla, úloha
+// to za chvilku zkusí znovu a mezitím kreslí. Nepočítá se to jako chyba.
+constexpr uint32_t ROUTE_GUARD_MS = 1000;
+constexpr uint32_t ROUTE_BUSY_RETRY_MS = 300;
+
+// Letadlo, které ukázalo upozornění "letadlo poblíž". Na mapě ho obtáhne
+// tyrkysový dvojitý kroužek: v kroku s mapou (režim "nejdřív mapa" a "jen
+// mapa") a pak dokud je otevřený jeho detail. Podle MeteoPlaneRadar 0.9.8/0.9.9.
+char alertHex[8] = "";
+// Upozornění právě ukazuje mapu (detail ještě není, nebo nebude).
+bool alertMapStep = false;
+// Kdy se po mapě otevře detail; 0 = nic nečeká.
+unsigned long alertDetailAt = 0;
+
+// Zapomene trasu vybraného letadla. Odpovědi zůstávají v paměti tras. Volá se
+// pod zámkem.
+void clearRouteLocked() {
+  routeCallsign[0] = '\0';
+  routeFetchQueued = false;
+  routeFetchFailures = 0;
+  routeRetryAt = 0;
+  routeState = PlaneRouteState::Pending;
+  routeInfo = RouteInfo{};
+}
+
+// Začne zjišťovat trasu letadla, nebo ji vezme z paměti. Rozběhnutý dotaz na
+// tutéž značku (třeba z mapy před detailem) se nechá doběhnout. Volá se pod
+// zámkem.
+void beginRouteLocked(const AdsbAircraft &aircraft) {
+  routeLatitude = aircraft.latitude;
+  routeLongitude = aircraft.longitude;
+  // Na trasu se ptá jen letadlo, které volací značku opravdu vysílá:
+  // hexadecimální adresa se v tom API čte jako číslo letu. Bez značky se
+  // rovnou přizná, že trasa nebude - čekat na ni by bylo čekání nadarmo.
+  if (aircraft.callsign[0] == '\0') {
+    clearRouteLocked();
+    routeState = PlaneRouteState::Unknown;
+    return;
+  }
+  static_assert(sizeof(routeCallsign) == sizeof(aircraft.callsign),
+                "Volací značka se kopíruje celá");
+  if (strncmp(routeCallsign, aircraft.callsign, sizeof(routeCallsign)) == 0 &&
+      (routeFetchQueued || routeState != PlaneRouteState::Pending))
+    return;
+  clearRouteLocked();
+  memcpy(routeCallsign, aircraft.callsign, sizeof(routeCallsign));
+  routeCallsign[sizeof(routeCallsign) - 1] = '\0';
+  PlaneRouteState cachedState = PlaneRouteState::Pending;
+  RouteInfo cachedInfo;
+  if (routeCache != nullptr &&
+      routeCacheLookup(*routeCache, routeCallsign,
+                       static_cast<uint32_t>(millis()), cachedState,
+                       cachedInfo)) {
+    routeState = cachedState;
+    routeInfo = cachedInfo;
+    return;
+  }
+  routeFetchQueued = true;
+  routeState = PlaneRouteState::Pending;
+}
+
+// Vybere letadlo a otevře jeho detail. Volá se pod zámkem.
+void selectAircraftLocked(const AdsbAircraft &aircraft) {
+  memcpy(selectedHex, aircraft.hex, sizeof(selectedHex));
+  selectedHex[sizeof(selectedHex) - 1] = '\0';
+  selectionMissCount = 0;
+  selectionRangeChanged = false;
+  selectionCache = aircraft;
+  selectionCacheValid = true;
+  beginRouteLocked(aircraft);
+  redrawRequested = true;
+}
+
+// Zavře detail. Kroužek upozornění s ním končí. Volá se pod zámkem.
+void closeSelectionLocked() {
+  selectedHex[0] = '\0';
+  selectionMissCount = 0;
+  selectionCacheValid = false;
+  clearRouteLocked();
+  alertHex[0] = '\0';
+  alertMapStep = false;
+  alertDetailAt = 0;
+  redrawRequested = true;
+}
+
+// Upozornění končí. Kroužek zůstane jen u otevřeného detailu, který otevřelo.
+void endAlertLocked() {
+  alertDetailAt = 0;
+  alertMapStep = false;
+  if (alertHex[0] != '\0' && strcmp(alertHex, selectedHex) != 0)
+    alertHex[0] = '\0';
+}
 
 // Otáčení mapy. Uživatel volí AZIMUT, KTERÝ JE NAHOŘE, tedy směr, kterým se
 // dívá z okna:
@@ -358,6 +464,11 @@ bool ensureStorage() {
     scratchList = static_cast<AdsbAircraft *>(
         heap_caps_calloc(ADSB_MAX_AIRCRAFT, sizeof(AdsbAircraft),
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (routeCache == nullptr) {
+    // Nuly jsou prázdná paměť, stejně jako výchozí hodnoty RouteCacheEntry.
+    routeCache = static_cast<RouteCache *>(heap_caps_calloc(
+        1, sizeof(RouteCache), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   return liveList != nullptr && scratchList != nullptr;
 }
@@ -938,8 +1049,14 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
   // Kopie stavu, se kterou se kreslí. Seznam letadel mění jen tahle úloha,
   // takže se nemusí zamykat; výběr a hlídaný let ano.
   char selection[8];
+  char alertMark[8] = "";
   portENTER_CRITICAL(&stateMux);
   strlcpy(selection, selectedHex, sizeof(selection));
+  // Kroužek upozornění: v kroku s mapou, a pak jen kolem otevřeného detailu,
+  // který upozornění otevřelo.
+  if (alertHex[0] != '\0' &&
+      (alertMapStep || strcmp(alertHex, selectedHex) == 0))
+    strlcpy(alertMark, alertHex, sizeof(alertMark));
   const uint32_t dataAgeMs = aircraftDataAgeMs(millis());
   const bool greyed = dataAgeMs >= staleGreyMs(planes);
   // Malý okruh pro letadlo poblíž se na otevřené obrazovce nekreslí: vypadal
@@ -1107,6 +1224,12 @@ void drawFrame(const ClockPlanesConfig &planes, float latitude, float longitude,
     if (ringColor != COLOR_WHITE) {
       drawMapCircle(pixels, x, y, 20, paletteColor(ringColor), 100);
       drawMapCircle(pixels, x, y, 21, paletteColor(ringColor), 100);
+    }
+    // Letadlo poblíž: tyrkysový dvojitý kroužek vně ostatních, takže jsou
+    // vidět všechny najednou (podle MeteoPlaneRadar 0.9.8).
+    if (alertMark[0] != '\0' && strcmp(aircraft.hex, alertMark) == 0) {
+      drawMapCircle(pixels, x, y, 24, paletteColor(COLOR_NEARBY_ALERT), 100);
+      drawMapCircle(pixels, x, y, 25, paletteColor(COLOR_NEARBY_ALERT), 100);
     }
 
     const bool altitudeKnown = aircraft.hasAltitude;
@@ -1352,13 +1475,27 @@ bool fetchAircraft(const ClockPlanesConfig &planes, const char *feedUrl,
 }
 
 // Trasa vybraného letu. Ptá se jen na jedno letadlo, nikdy na celý seznam, a
-// odpověď se drží, takže přepínání mezi dvěma letadly už API nezatěžuje.
-void fetchRouteIfPending(const char *feedUrl, float aircraftLatitude,
-                        float aircraftLongitude) {
+// odpověď se drží v paměti tras, takže přepínání mezi letadly už API
+// nezatěžuje.
+// Pokus se odloží (routeRetryAt), nedokončí-li se. Volá se z úlohy.
+void postponeRouteFetch(const char *callsign, uint32_t delayMs) {
+  portENTER_CRITICAL(&stateMux);
+  if (routeFetchQueued && strcmp(routeCallsign, callsign) == 0) {
+    routeRetryAt = millis() + delayMs;
+    if (routeRetryAt == 0) routeRetryAt = 1;
+  }
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void fetchRouteIfPending(const char *feedUrl) {
   char callsign[10];
+  float aircraftLatitude = 0.0f;
+  float aircraftLongitude = 0.0f;
   portENTER_CRITICAL(&stateMux);
   const bool pending = routeFetchQueued;
   strlcpy(callsign, routeCallsign, sizeof(callsign));
+  aircraftLatitude = routeLatitude;
+  aircraftLongitude = routeLongitude;
   portEXIT_CRITICAL(&stateMux);
   if (!pending || callsign[0] == '\0') return;
   // Callsign jde do adresy dotazu a přišel z cizí odpovědi, takže se pouští jen
@@ -1395,13 +1532,20 @@ void fetchRouteIfPending(const char *feedUrl, float aircraftLatitude,
     return;
   }
 
-  if (!responseBuffer.ensure()) return;  // zkusí se znovu při dalším průchodu
+  // Bez bufferu nebo sítě to není chyba trasy: zkusí se za chvilku znovu.
+  if (!responseBuffer.ensure()) {
+    postponeRouteFetch(callsign, 1000);
+    return;
+  }
 
   int httpStatus = 0;
   long length = -1;
   {
-    NetworkOperationGuard guard(NETWORK_GUARD_MS);
-    if (!guard) return;  // zkusí se znovu při dalším průchodu
+    NetworkOperationGuard guard(ROUTE_GUARD_MS);
+    if (!guard) {
+      postponeRouteFetch(callsign, ROUTE_BUSY_RETRY_MS);
+      return;
+    }
     length = downloadJson(url, responseBuffer.data(), MAX_ROUTE_RESPONSE_BYTES,
                           httpStatus);
   }
@@ -1415,18 +1559,30 @@ void fetchRouteIfPending(const char *feedUrl, float aircraftLatitude,
 
   portENTER_CRITICAL(&stateMux);
   lastRouteHttpStatus = httpStatus;
+  const unsigned long now = millis();
+  // Odpověď se zapamatuje, i když se mezitím vybralo jiné letadlo: na to
+  // první se třeba za chvíli vrátí. Chyba se nepamatuje.
+  if (routeCache != nullptr)
+    routeCacheStore(*routeCache, callsign, status, parsed,
+                    static_cast<uint32_t>(now));
   // Mezitím se mohlo vybrat jiné letadlo; odpověď pak patří někomu jinému.
   if (routeFetchQueued && strcmp(routeCallsign, callsign) == 0) {
-    routeFetchQueued = false;
     routeInfo = status == RouteParseStatus::Ok ? parsed : RouteInfo{};
-    // Co dál z toho plyne, rozhoduje routeAttemptAfter(): po chybě se ještě
-    // párkrát zkusí, protože nepovedené stažení není totéž co "tenhle let
-    // trasu nemá", ale donekonečna ne. Zapamatovaný callsign zůstává i po
-    // chybě, aby se poznalo, že jde pořád o tentýž let.
+    // Co dál z toho plyne, rozhoduje routeAttemptAfter(): po chybě se za dvě
+    // vteřiny zkusí znovu, protože nepovedené stažení není totéž co "tenhle
+    // let trasu nemá", ale nejvýš ROUTE_MAX_ATTEMPTS krát. Zapamatovaný
+    // callsign zůstává i po chybě, aby se poznalo, že jde pořád o tentýž let
+    // a že se na něj už ptát nemá.
     const RouteAttemptOutcome outcome =
         routeAttemptAfter(status, routeFetchFailures);
     routeState = outcome.state;
     routeFetchFailures = outcome.failures;
+    routeFetchQueued = outcome.tryAgain;
+    routeRetryAt = 0;
+    if (outcome.tryAgain) {
+      routeRetryAt = now + outcome.retryDelayMs;
+      if (routeRetryAt == 0) routeRetryAt = 1;
+    }
     redrawRequested = true;
   }
   portEXIT_CRITICAL(&stateMux);
@@ -1467,33 +1623,25 @@ void reconcileSelection() {
     selectionMissCount = 0;
     selectionCache = liveList[index];
     selectionCacheValid = true;
-    // Trasa se ptá až tady, kdy je známý callsign - klepnutí zná jen adresu.
-    if (!routeFetchQueued && selectionCache.callsign[0] != '\0') {
-      const bool otherFlight =
-          strcmp(routeCallsign, selectionCache.callsign) != 0;
-      if (otherFlight && routeState != PlaneRouteState::Known) {
-        // Jiná volací značka, tedy čistý start. Projde tudy i letadlo, které
-        // značku začalo vysílat až teď: zapamatovaná je prázdná.
-        strlcpy(routeCallsign, selectionCache.callsign, sizeof(routeCallsign));
-        routeFetchFailures = 0;
-        routeFetchQueued = true;
-        routeState = PlaneRouteState::Pending;
-      } else if (!otherFlight && routeState == PlaneRouteState::Pending &&
-                 routeFetchFailures > 0) {
-        // Tentýž let, minulý pokus selhal a strop ještě nedošel - stav by
-        // jinak nezůstal Pending.
-        routeFetchQueued = true;
-      }
+    // Volací značka se mohla objevit nebo změnit až po výběru. Opakování po
+    // chybě tu už není: to hlídá vlastní časovač v úloze (routeRetryAt).
+    if (strcmp(routeCallsign, selectionCache.callsign) == 0) {
+      // Tentýž let: trasa se ptá s čerstvou polohou.
+      routeLatitude = selectionCache.latitude;
+      routeLongitude = selectionCache.longitude;
+    } else if (selectionCache.callsign[0] != '\0' &&
+               routeState != PlaneRouteState::Known) {
+      // Jiná volací značka, tedy čistý start (nebo odpověď z paměti tras).
+      // Projde tudy i letadlo, které značku začalo vysílat až teď:
+      // zapamatovaná je prázdná.
+      beginRouteLocked(selectionCache);
     }
   } else if (rangeChanged || ++selectionMissCount > DETAIL_GRACE_POLLS) {
     selectedHex[0] = '\0';
     selectionMissCount = 0;
     selectionCacheValid = false;
-    routeCallsign[0] = '\0';
-    routeFetchQueued = false;
-    routeFetchFailures = 0;
-    routeState = PlaneRouteState::Pending;
-    routeInfo = RouteInfo{};
+    clearRouteLocked();
+    alertHex[0] = '\0';
   }
   portEXIT_CRITICAL(&stateMux);
 }
@@ -1638,19 +1786,36 @@ void planeRadarTask(void *) {
       fetched = true;
     }
 
-    // Trasa se stahuje mimo pořadí letadel, obvykle do vteřiny po klepnutí.
-    float selectedLatitude = 0.0f;
-    float selectedLongitude = 0.0f;
-    bool wantRoute = false;
+    // Upozornění "nejdřív mapa": krok s mapou skončil, otevře se detail.
+    // Letadlo, které mezitím z dat zmizelo, detail nedostane a mapa zůstane
+    // do konce upozornění (jako MeteoPlaneRadar 0.9.9).
     portENTER_CRITICAL(&stateMux);
-    if (routeFetchQueued && selectionCacheValid) {
-      selectedLatitude = selectionCache.latitude;
-      selectedLongitude = selectionCache.longitude;
-      wantRoute = true;
+    if (alertDetailAt != 0 &&
+        static_cast<long>(millis() - alertDetailAt) >= 0) {
+      alertDetailAt = 0;
+      alertMapStep = false;
+      const int alertIndex =
+          alertHex[0] != '\0' && liveList != nullptr
+              ? adsbFindByHex(liveList, aircraftCount, alertHex)
+              : -1;
+      if (alertIndex >= 0) {
+        selectAircraftLocked(liveList[alertIndex]);
+      } else {
+        alertHex[0] = '\0';
+        if (selectedHex[0] == '\0') clearRouteLocked();
+      }
+      redrawRequested = true;
     }
     portEXIT_CRITICAL(&stateMux);
-    if (wantRoute)
-      fetchRouteIfPending(feedUrl, selectedLatitude, selectedLongitude);
+
+    // Trasa se stahuje mimo pořadí letadel, obvykle do vteřiny po klepnutí;
+    // nepovedený pokus se zopakuje za pár vteřin (routeRetryAt).
+    portENTER_CRITICAL(&stateMux);
+    const bool wantRoute =
+        routeFetchQueued &&
+        (routeRetryAt == 0 || static_cast<long>(millis() - routeRetryAt) >= 0);
+    portEXIT_CRITICAL(&stateMux);
+    if (wantRoute) fetchRouteIfPending(feedUrl);
 
     // Schovaná obrazovka si data drží, ale 230 tisíc pixelů kvůli nim
     // přepisovat nemusí - kreslí se tedy hlavně když je vidět.
@@ -1858,6 +2023,23 @@ void planeRadarServiceSnapshot(PlaneRadarSnapshot &snapshot) {
     detail.routeState = routeState;
     detail.route = routeInfo;
     detail.sonde = aircraft.sonde;
+    // Velká ikona v detailu: stejné natočení a barva jako na mapě.
+    float iconTrack =
+        fmodf(aircraft.trackDeg - static_cast<float>(rotationDegrees), 360.0f);
+    if (iconTrack < 0.0f) iconTrack += 360.0f;
+    if (!isfinite(iconTrack)) iconTrack = 0.0f;
+    detail.iconTrackDeg = iconTrack;
+    detail.iconHasTrack = aircraft.hasTrack;
+    const bool iconGrey = detail.signalLost || staleData;
+    if (aircraft.sonde) {
+      detail.iconKind = PI_BALLOON;
+      detail.iconColor = paletteColor(iconGrey ? COLOR_GRAY : COLOR_SONDE);
+    } else {
+      detail.iconKind = aircraft.iconKind;
+      detail.iconColor = paletteColor(
+          iconGrey ? COLOR_GRAY
+                   : altitudeColor(aircraft.altitudeFt, aircraft.hasAltitude));
+    }
     if (aircraft.sonde && aircraft.hasLanding) {
       detail.hasLanding = true;
       detail.landingEpoch = aircraft.landEpoch;
@@ -1917,14 +2099,7 @@ bool planeRadarServiceHandleTap(int16_t x, int16_t y) {
   portENTER_CRITICAL(&stateMux);
   if (selectedHex[0] != '\0') {
     // S otevřeným detailem zavírá kterékoli klepnutí.
-    selectedHex[0] = '\0';
-    selectionMissCount = 0;
-    selectionCacheValid = false;
-    routeCallsign[0] = '\0';
-    routeFetchQueued = false;
-    routeFetchFailures = 0;
-    routeState = PlaneRouteState::Pending;
-    routeInfo = RouteInfo{};
+    closeSelectionLocked();
     changed = true;
   } else {
     // Nejbližší letadlo do třiceti pixelů. Zapamatuje se ADRESA, ne pozice
@@ -1949,24 +2124,12 @@ bool planeRadarServiceHandleTap(int16_t x, int16_t y) {
             ? adsbFindByHex(liveList, aircraftCount, planePoints[best].hex)
             : -1;
     if (found >= 0) {
-      strlcpy(selectedHex, planePoints[best].hex, sizeof(selectedHex));
-      selectionMissCount = 0;
-      selectionCache = liveList[found];
-      selectionCacheValid = true;
-      routeInfo = RouteInfo{};
-      routeCallsign[0] = '\0';
-      routeFetchQueued = false;
-      routeFetchFailures = 0;
-      // Na trasu se ptá jen letadlo, které volací značku opravdu vysílá:
-      // hexadecimální adresa se v tom API čte jako číslo letu. Bez značky se
-      // rovnou přizná, že trasa nebude - čekat na ni by bylo čekání nadarmo.
-      if (selectionCache.callsign[0] != '\0') {
-        strlcpy(routeCallsign, selectionCache.callsign, sizeof(routeCallsign));
-        routeFetchQueued = true;
-        routeState = PlaneRouteState::Pending;
-      } else {
-        routeState = PlaneRouteState::Unknown;
-      }
+      // Prst přebírá vládu i nad upozorněním, které zrovna ukazuje mapu.
+      alertHex[0] = '\0';
+      alertMapStep = false;
+      alertDetailAt = 0;
+      // Trasu vezme z paměti tras, je-li tam (selectAircraftLocked).
+      selectAircraftLocked(liveList[found]);
       changed = true;
     }
   }
@@ -2041,16 +2204,8 @@ bool planeRadarServiceDetailOpen() {
 void planeRadarServiceCloseDetail() {
   bool notify = false;
   portENTER_CRITICAL(&stateMux);
-  if (selectedHex[0] != '\0') {
-    selectedHex[0] = '\0';
-    selectionMissCount = 0;
-    selectionCacheValid = false;
-    routeCallsign[0] = '\0';
-    routeFetchQueued = false;
-    routeFetchFailures = 0;
-    routeState = PlaneRouteState::Pending;
-    routeInfo = RouteInfo{};
-    redrawRequested = true;
+  if (selectedHex[0] != '\0' || alertHex[0] != '\0') {
+    closeSelectionLocked();
     notify = true;
   }
   portEXIT_CRITICAL(&stateMux);
@@ -2111,7 +2266,9 @@ bool planeRadarServiceTakeNearby(PlaneRadarNearbyCandidate &candidate) {
   return true;
 }
 
-uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate) {
+uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate,
+                                    PlaneNearbyAlertMode mode,
+                                    uint32_t mapStepMs) {
   const AdsbAircraft &aircraft = candidate.aircraft;
   const uint8_t wanted = planeNearbyRangeIndex(
       candidate.distanceKm, CLOCK_PLANE_RANGES_KM, CLOCK_PLANE_RANGE_COUNT);
@@ -2123,31 +2280,46 @@ uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate) 
     fetchNowRequested = true;
     aircraftStale = true;
   }
-  // Výběr jako po klepnutí, jen z kopie letadla místo bodu na mapě.
-  memcpy(selectedHex, aircraft.hex, sizeof(selectedHex));
-  selectedHex[sizeof(selectedHex) - 1] = '\0';
-  selectionMissCount = 0;
-  selectionRangeChanged = false;
-  selectionCache = aircraft;
-  selectionCacheValid = true;
-  routeInfo = RouteInfo{};
-  routeFetchQueued = false;
-  routeFetchFailures = 0;
-  if (aircraft.callsign[0] != '\0') {
-    static_assert(sizeof(routeCallsign) == sizeof(aircraft.callsign),
-                  "Volací značka se kopíruje celá");
-    memcpy(routeCallsign, aircraft.callsign, sizeof(routeCallsign));
-    routeCallsign[sizeof(routeCallsign) - 1] = '\0';
-    routeFetchQueued = true;
-    routeState = PlaneRouteState::Pending;
+  memcpy(alertHex, aircraft.hex, sizeof(alertHex));
+  alertHex[sizeof(alertHex) - 1] = '\0';
+  alertDetailAt = 0;
+  if (mode == PlaneNearbyAlertMode::Detail) {
+    // Výběr jako po klepnutí, jen z kopie letadla místo bodu na mapě.
+    alertMapStep = false;
+    selectAircraftLocked(aircraft);
   } else {
-    routeCallsign[0] = '\0';
-    routeState = PlaneRouteState::Unknown;
+    // Nejdřív mapa: případný starý výběr zmizí, aby kroužek nepřebil.
+    if (selectedHex[0] != '\0') {
+      selectedHex[0] = '\0';
+      selectionMissCount = 0;
+      selectionCacheValid = false;
+      clearRouteLocked();
+    }
+    alertMapStep = true;
+    if (mode == PlaneNearbyAlertMode::RadarThenDetail) {
+      alertDetailAt = millis() + mapStepMs;
+      if (alertDetailAt == 0) alertDetailAt = 1;
+      // Na trasu se ptá už teď, aby byla v detailu hned, jak se otevře.
+      beginRouteLocked(aircraft);
+    }
+    redrawRequested = true;
   }
-  redrawRequested = true;
   portEXIT_CRITICAL(&stateMux);
   if (taskHandle != nullptr) xTaskNotifyGive(taskHandle);
   return previous;
+}
+
+void planeRadarServiceEndNearby() {
+  portENTER_CRITICAL(&stateMux);
+  const bool hadAlert = alertHex[0] != '\0';
+  endAlertLocked();
+  // Trasa zjišťovaná pro detail, který se neotevřel, se zahodí; odpověď, která
+  // ještě dorazí, si nechá paměť tras.
+  if (selectedHex[0] == '\0') clearRouteLocked();
+  const bool changed = hadAlert && alertHex[0] == '\0';
+  if (changed) redrawRequested = true;
+  portEXIT_CRITICAL(&stateMux);
+  if (changed && taskHandle != nullptr) xTaskNotifyGive(taskHandle);
 }
 
 void planeRadarServiceRestoreRange(uint8_t rangeIndex) {

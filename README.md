@@ -802,6 +802,16 @@ dosahu. **Výhled z okna** k tomu přidá výsek (směr po osminách, šířka 2
 180°, dohled v km): letadlo v něm vyhraje i nad bližším a stačí mu být do
 dohledu okna. Na mapě ho vyznačí dvě tenké čáry a slabý oblouk. Obojí podle
 MeteoPlaneRadar 0.8.0.
+Volba *Jak letadlo ukázat* vybírá mezi hned detailem (výchozí), *nejdřív
+mapa, pak detail* (mapa čtvrtinu doby ukázání, 5 až 15 s a nejvýš polovinu;
+trasa se zjišťuje už během mapy) a *jen mapou*. Letadlo z upozornění obtáhne
+na mapě tyrkysový dvojitý kroužek, dokud je vidět mapa upozornění nebo jím
+otevřený detail (podle MeteoPlaneRadar 0.9.8 a 0.9.9).
+
+Detail ukazuje vedle údajů velkou ikonu letadla podle typu, natočenou stejně
+jako na mapě a v barvě výšky, šedou se ztraceným signálem nebo starými daty.
+Na 7" stojí na kartičce v pravém horním rohu mapy, protože sloupec detailu je
+plný (podle MeteoPlaneRadar 0.9.9).
 
 Trasa se hledá jen pro jedno vybrané letadlo, nikdy pro celý seznam, a odpověď
 se drží. Spolu s volací značkou se posílá i poloha letadla a server podle ní
@@ -811,7 +821,9 @@ Spousta letů žádnou trasu nemá (všeobecné letectví, vojenské stroje,
 vrtulníky); je to normální stav, ne chyba, a detail napíše *Trasa neznámá*.
 Totéž řekne u letadla bez volací značky, na kterou se dá zeptat jen s ní.
 Dokud odpověď nedorazila, stojí na tom místě *Zjišťuji trasu…* — po chybě sítě
-taky, protože se pokus zopakuje s dalším stažením letadel.
+taky, protože se pokus za dvě vteřiny zopakuje (nejvýš třikrát). Posledních
+osm tras si hodiny pamatují podle volací značky (nalezenou 20 minut, „trasa
+není“ minutu), takže přepínání mezi letadly se znovu neptá.
 
 Dotazovat se dá jednou za 5 až 120 sekund. Větší dosahy si k nastavené hodnotě
 přidají vlastní minimum — 10 sekund od 50 km a 15 sekund od 100 km — protože

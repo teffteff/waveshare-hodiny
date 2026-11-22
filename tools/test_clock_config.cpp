@@ -2074,6 +2074,8 @@ void testPlanesExtrasPersistenceAndMigration() {
   assert(extras.windowDirection == 0);
   assert(extras.windowWidthDeg == CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG);
   assert(extras.windowRangeKm == CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
+  // Nula v rezervě je dosavadní chování: hned detail.
+  assert(extras.nearbyAlertMode == 0);
 
   // Uložené hodnoty přežijí, neplatné se srovnají na výchozí.
   normalized.planesExtras.nearbyEnabled = true;
@@ -2095,6 +2097,18 @@ void testPlanesExtrasPersistenceAndMigration() {
          CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG);
   assert(reloaded.planesExtras.windowRangeKm ==
          CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
+
+  // Režim upozornění: platný přežije, neznámý se vrátí na hned detail.
+  reloaded.planesExtras.nearbyAlertMode = 2;
+  assert(clockConfigSave(reloaded));
+  ClockConfig withMode;
+  assert(clockConfigLoad(withMode));
+  assert(withMode.planesExtras.nearbyAlertMode == 2);
+  withMode.planesExtras.nearbyAlertMode = 7;
+  assert(clockConfigSave(withMode));
+  ClockConfig badMode;
+  assert(clockConfigLoad(badMode));
+  assert(badMode.planesExtras.nearbyAlertMode == 0);
 }
 
 int main() {

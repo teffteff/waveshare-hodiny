@@ -1918,6 +1918,8 @@ void handleGetConfig() {
   // Uložené obráceně (nearbyAtNight), na stránce jako "v noci nepřepínat".
   result += F(",\"planesNearbyQuietAtNight\":");
   result += config.planesExtras.nearbyAtNight ? F("false") : F("true");
+  result += F(",\"planesNearbyAlertMode\":");
+  result += config.planesExtras.nearbyAlertMode;
   result += F(",\"planesWindowEnabled\":");
   result += config.planesExtras.windowEnabled ? F("true") : F("false");
   result += F(",\"planesWindowDirection\":");
@@ -2992,6 +2994,15 @@ void handleSaveConfig() {
       sendError(400, F("Dohled z okna musí být 1 až 50 km."));
       return;
     }
+    // Režim ukázání přibyl později; stránka bez něj ho nechá, jak je.
+    const bool alertModeField = server.hasArg("planesNearbyAlertMode");
+    const int nearbyAlertMode = server.arg("planesNearbyAlertMode").toInt();
+    if (alertModeField &&
+        (nearbyAlertMode < 0 ||
+         nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)) {
+      sendError(400, F("Způsob ukázání letadla poblíž není v nabídce."));
+      return;
+    }
     String planesFeedUrl = server.arg("planesFeedUrl");
     planesFeedUrl.trim();
     if (planesFeedUrl.length() >= CLOCK_PLANES_FEED_URL_LENGTH) {
@@ -3033,6 +3044,9 @@ void handleSaveConfig() {
       extras.windowWidthDeg = static_cast<uint8_t>(windowWidth);
       extras.windowRangeKm = static_cast<uint8_t>(windowRangeKm);
     }
+    if (alertModeField)
+      config.planesExtras.nearbyAlertMode =
+          static_cast<uint8_t>(nearbyAlertMode);
     config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
     // Stránka uložená ze starší verze pole neposílá; uložený popisek zůstane.
     const String planesMapLabel = server.arg("planesMapLabel");

@@ -4,6 +4,7 @@
 // Překlad viz tools/run_host_tests.sh.
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -71,11 +72,67 @@ void testDrawing() {
   }
 }
 
+// Zvětšená ikona pro detail letadla (zoom, PlaneIcon_Radius).
+void testZoom() {
+  constexpr int SIZE = 96;
+  constexpr int CENTER = SIZE / 2;
+  // Detail kreslí do malého okénka; rozměr platí jen pro tuhle úlohu.
+  MapCanvasSize canvasSize(SIZE, SIZE);
+  assert(mapCanvasWidth() == SIZE);
+  const float tracks[] = {0.0f, 37.0f, 90.0f, 211.5f, 300.0f};
+  for (uint8_t kind = 0; kind < PI_KIND_N; ++kind) {
+    for (const bool hasTrack : {true, false}) {
+      for (const float track : tracks) {
+        std::vector<uint16_t> plain(SIZE * SIZE, 0);
+        std::vector<uint16_t> unit(SIZE * SIZE, 0);
+        PlaneIcon_Draw(plain.data(), CENTER, CENTER, track, hasTrack, kind,
+                       0xFFFF);
+        PlaneIcon_Draw(unit.data(), CENTER, CENTER, track, hasTrack, kind,
+                       0xFFFF, 1.0f);
+        // Výchozí zvětšení je to, co kreslí mapa.
+        assert(plain == unit);
+        const float radius = PlaneIcon_Radius(kind, hasTrack);
+        assert(radius >= 7.0f && radius <= 24.0f);
+        size_t litUnit = 0;
+        for (uint16_t pixel : unit) litUnit += pixel != 0;
+        for (const float zoom : {1.0f, 2.0f, 2.6f}) {
+          std::vector<uint16_t> zoomed(SIZE * SIZE, 0);
+          PlaneIcon_Draw(zoomed.data(), CENTER, CENTER, track, hasTrack, kind,
+                         0xFFFF, zoom);
+          size_t lit = 0;
+          // Nic nepadne dál než PlaneIcon_Radius krát zvětšení (plus pixel
+          // na zaokrouhlení), takže se ikona vejde do okénka.
+          for (int y = 0; y < SIZE; ++y) {
+            for (int x = 0; x < SIZE; ++x) {
+              if (zoomed[y * SIZE + x] == 0) continue;
+              ++lit;
+              const float distance = hypotf(static_cast<float>(x - CENTER),
+                                            static_cast<float>(y - CENTER));
+              assert(distance <= radius * zoom + 1.5f);
+            }
+          }
+          if (zoom > 1.0f) assert(lit > litUnit * 2);
+        }
+      }
+    }
+  }
+  // Nesmyslné zvětšení se bere jako 1, nespadne.
+  std::vector<uint16_t> plain(SIZE * SIZE, 0);
+  std::vector<uint16_t> broken(SIZE * SIZE, 0);
+  PlaneIcon_Draw(plain.data(), CENTER, CENTER, 10.0f, true, PI_NARROW, 0xFFFF);
+  PlaneIcon_Draw(broken.data(), CENTER, CENTER, 10.0f, true, PI_NARROW, 0xFFFF,
+                 NAN);
+  assert(plain == broken);
+  PlaneIcon_Draw(broken.data(), CENTER, CENTER, 10.0f, true, PI_NARROW, 0xFFFF,
+                 -2.0f);
+}
+
 }  // namespace
 
 int main() {
   testClassify();
   testDrawing();
+  testZoom();
   puts("plane icon OK");
   return 0;
 }

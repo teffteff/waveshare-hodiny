@@ -103,6 +103,12 @@ struct PlaneDetailViewModel {
   // "Přistání" s časem a pod tím vzdálenost a směr od domova.
   char routeCaption[2][12] = {};
   char route[2][32] = {};
+  // Velká ikona letadla vedle údajů (PlaneRadarDetail::icon*): druh, natočení
+  // jako na mapě a barva RGB565 v paletě mapy.
+  uint8_t iconKind = 0;
+  bool iconHasTrack = false;
+  float iconTrackDeg = 0.0f;
+  uint16_t iconColor = 0xffff;
   uint32_t revision = 0;
 };
 

@@ -796,6 +796,18 @@ loads the full range again. **Window view** adds a sector (direction in eighths,
 width 20 to 180°, visibility in km): an aircraft inside it wins over a closer
 one and only has to be within the window distance. The map marks it with two
 thin lines and a faint arc. Both follow MeteoPlaneRadar 0.8.0.
+The *How to show the aircraft* option picks between the detail at once
+(default), *map first, then the detail* (the map for a quarter of the hold, 5 to
+15 s and at most half; the route is looked up during the map step already) and
+*map only*. A turquoise double ring marks the alert aircraft on the map while
+the alert map or the detail it opened is shown (after MeteoPlaneRadar 0.9.8 and
+0.9.9).
+
+The detail shows a large type icon of the aircraft beside the values, turned
+the same way as on the map and in its altitude colour, grey when the signal is
+lost or the data are stale. On the 7" it sits on a small card in the top right
+corner of the map, because the detail column is full (after MeteoPlaneRadar
+0.9.9).
 
 The route is looked up for one selected aircraft only, never for the whole
 list, and the answer is cached. The aircraft's position is sent along with the
@@ -806,8 +818,10 @@ have no route at all (general aviation, military aircraft, helicopters); that
 is a normal state, not an error, and the detail says *Route unknown*. It says
 the same for an aircraft without a callsign, the only thing the route can be
 asked about. Until the answer arrives, *Looking up route...* stands there — and
-after a network error too, because the attempt is repeated with the next
-aircraft fetch.
+after a network error too, because the attempt is repeated two seconds later
+(three tries at most). The clock remembers the last eight routes by callsign
+(a found route for 20 minutes, "no route" for a minute), so switching between
+aircraft does not ask again.
 
 The poll interval is 5 to 120 seconds. Larger ranges add their own minimum on
 top — 10 seconds from 50 km and 15 seconds from 100 km — because they return

@@ -69,6 +69,14 @@ ukázaných, sdílený filtr výšky a volací značky) jsou převzaté z
 `MeteoPlaneRadar/PlaneWatch.cpp` verze 0.8.0 a přepsané na samostatný modul
 bez Arduina; přepínání obrazovek a stahování jsou vlastní.
 
+Velká ikona v detailu letadla (zvětšení `zoom` v `PlaneIcon_Draw`
+a `PlaneIcon_Radius` v `WaveshareHodiny/PlaneIcon.cpp`, natočení jako na mapě
+a barva podle výšky), tyrkysový dvojitý kroužek kolem letadla z upozornění
+a režimy upozornění "nejdřív mapa, pak detail" a "jen mapa" (včetně délky kroku
+s mapou v `planeNearbyMapStepMs`) vycházejí z `MeteoPlaneRadar/PlaneIcon.cpp`
+a `ScreenPlanes.cpp` verze 0.9.8 a 0.9.9; kreslení do canvasu LVGL a řízení
+v úloze radaru jsou vlastní.
+
 ## Data o letadlech adsb.fi a adsb.lol
 
 Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:

@@ -145,3 +145,11 @@ bool planeNearbyPick(const AdsbAircraft *list, size_t count,
   }
   return pick.index >= 0;
 }
+
+uint32_t planeNearbyMapStepMs(uint32_t holdMs) {
+  uint32_t step = holdMs / 4;
+  if (step < 5000) step = 5000;
+  if (step > holdMs / 2) step = holdMs / 2;
+  if (step > 15000) step = 15000;
+  return step;
+}

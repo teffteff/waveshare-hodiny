@@ -888,8 +888,12 @@ struct alignas(4) ClockPlanesExtrasConfig {
   uint8_t windowDirection = 0;
   uint8_t windowWidthDeg = 90;
   uint8_t windowRangeKm = 15;
+  // Jak upozornění letadlo ukáže: PlaneNearbyAlertMode (0 hned detail,
+  // 1 nejdřív mapa a pak detail, 2 jen mapa). Nula ze staršího záznamu je
+  // dosavadní chování.
+  uint8_t nearbyAlertMode = 0;
   // Rezerva pro další volby bez nového schématu; zatím nuly.
-  uint8_t reserved[7] = {};
+  uint8_t reserved[6] = {};
 };
 
 static_assert(sizeof(ClockPlanesExtrasConfig) == 16,
@@ -909,6 +913,8 @@ constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_WIDTH_DEG = 180;
 constexpr uint8_t CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM = 15;
 constexpr uint8_t CLOCK_PLANE_WINDOW_MIN_RANGE_KM = 1;
 constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_RANGE_KM = 50;
+// Počet režimů ClockPlanesExtrasConfig::nearbyAlertMode (PlaneNearbyAlertMode).
+constexpr uint8_t CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT = 3;
 
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;

@@ -1412,6 +1412,8 @@ bool planeNearbyHolding() {
 void cancelPlaneNearbyHold() {
   if (!planeNearbyHolding()) return;
   planeNearbyHeldUntil = 0;
+  // Detail, který ještě čekal na konec mapy, se už neotevře.
+  planeRadarServiceEndNearby();
   alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
   alertReturnFrom = ROTATION_SCREEN_RADAR;
   displayModeStartedAt = millis();
@@ -1918,6 +1920,7 @@ void rememberAlertReturnScreen() {
   // a radar se pak vrátí tam, odkud letadlo přišlo, ne na letadla.
   if (planeNearbyHolding()) {
     planeNearbyHeldUntil = 0;
+    planeRadarServiceEndNearby();
     alertReturnFrom = ROTATION_SCREEN_RADAR;
     return;
   }
@@ -2528,7 +2531,8 @@ constexpr unsigned long PLANE_NEARBY_CHECK_MS = 1000;
 
 // Letadlo poblíž (podle MeteoPlaneRadar 0.8.0): přiblíží-li se letadlo
 // k domovu nebo vletí do výhledu z okna, hodiny přepnou na radar letadel,
-// otevřou jeho detail a po nastavené době se vrátí tam, odkud přišly. Které
+// otevřou jeho detail (nebo nejdřív ukážou mapu, či jen mapu - 0.9.8/0.9.9)
+// a po nastavené době se vrátí tam, odkud přišly. Které
 // letadlo to je, vybírá služba po každém stažení (PlaneNearby.h); tady se jen
 // rozhoduje, jestli se smí přepnout. Funguje i bez automatického střídání.
 void maintainPlaneNearby() {
@@ -2541,12 +2545,14 @@ void maintainPlaneNearby() {
       // Letadla mezitím vystřídalo něco jiného - gesto, web, aktualizace -,
       // nebo se funkce vypnula: držení končí a nikam se nevrací.
       planeNearbyHeldUntil = 0;
+      planeRadarServiceEndNearby();
       alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
       alertReturnFrom = ROTATION_SCREEN_RADAR;
       displayModeStartedAt = now;
       scheduleCheckPending = true;
     } else if (static_cast<long>(now - planeNearbyHeldUntil) >= 0) {
       planeNearbyHeldUntil = 0;
+      planeRadarServiceEndNearby();
       displayModeStartedAt = now;
       scheduleCheckPending = true;
       alertReturnPending = true;
@@ -2581,13 +2587,20 @@ void maintainPlaneNearby() {
                           ? CLOCK_SCREEN_ORDER_UNUSED
                           : current;
   alertReturnFrom = ROTATION_SCREEN_PLANES;
-  const uint8_t previousRange = planeRadarServiceShowNearby(candidate);
+  const unsigned long holdMs =
+      static_cast<unsigned long>(config.planesExtras.nearbyHoldSeconds) * 1000UL;
+  // Jak letadlo ukázat: hned detail, nejdřív mapa (čtvrtina doby), nebo jen
+  // mapa. Celková doba ukázání je ve všech režimech stejná.
+  const PlaneNearbyAlertMode alertMode =
+      config.planesExtras.nearbyAlertMode < PLANE_NEARBY_ALERT_MODE_COUNT
+          ? static_cast<PlaneNearbyAlertMode>(config.planesExtras.nearbyAlertMode)
+          : PlaneNearbyAlertMode::Detail;
+  const uint8_t previousRange = planeRadarServiceShowNearby(
+      candidate, alertMode, planeNearbyMapStepMs(holdMs));
   if (planeNearbySavedRange == UINT8_MAX) {
     planeNearbySavedRange = previousRange;
     planeNearbySavedConfiguredRange = config.planes.rangeIndex;
   }
-  const unsigned long holdMs =
-      static_cast<unsigned long>(config.planesExtras.nearbyHoldSeconds) * 1000UL;
   planeNearbyHeldUntil = now + (holdMs > 0 ? holdMs : 1000UL);
   if (planeNearbyHeldUntil == 0) planeNearbyHeldUntil = 1;
 }
