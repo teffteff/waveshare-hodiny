@@ -1347,7 +1347,8 @@ long downloadJson(const char *url, uint8_t *buffer, size_t capacity,
         // Ne writeToStream(): u chunked odpovědi se nemusí nikdy vrátit a drží
         // TLS relaci i s interní RAM až do restartu.
         const int bytesRead =
-            httpDownloadBody(http, response, RESPONSE_TIMEOUT_MS);
+            httpDownloadBody(http, response, RESPONSE_TIMEOUT_MS,
+                             DOWNLOAD_LARGE_BUDGET_MS);
         if (response.overflowed()) {
           result = DOWNLOAD_OVERFLOWED;
         } else if (bytesRead >= 0) {

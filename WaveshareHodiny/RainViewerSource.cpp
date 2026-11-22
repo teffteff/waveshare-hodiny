@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "ChmiRadarService.h"
+#include "DownloadDeadline.h"
 #include "RainViewerIndex.h"
 #include "FirmwareHubCa.h"
 #include "MapCanvas.h"
@@ -295,7 +296,10 @@ bool downloadTile(HTTPClient &http, const RainViewerFrame &frame,
   size_t received = 0;
   int remaining = declaredSize;
   unsigned long lastDataAt = millis();
+  // Celkový strop: limit nečinnosti sám pomalý přenos po kapkách neukončí.
+  const DownloadDeadline deadline(millis(), DOWNLOAD_DEFAULT_BUDGET_MS);
   while (remaining > 0) {
+    if (deadline.expired(millis())) break;
     if (!requestValid(revision)) {
       http.end();
       tileClient.stop();
@@ -420,7 +424,13 @@ bool rainViewerFetchIndex(size_t wantedFrameCount, RainViewerIndex &index,
   WiFiClient *stream = http.getStreamPtr();
   int remaining = http.getSize();
   unsigned long lastDataAt = millis();
+  const DownloadDeadline deadline(millis(), DOWNLOAD_DEFAULT_BUDGET_MS);
   while ((remaining > 0 || remaining == -1) && length + 1 < sizeof(payload)) {
+    if (deadline.expired(millis())) {
+      // Nedočtený index se nerozebírá.
+      http.end();
+      return false;
+    }
     if (!requestValid(revision)) {
       http.end();
       return false;

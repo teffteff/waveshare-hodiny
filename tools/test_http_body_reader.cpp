@@ -227,9 +227,95 @@ void testLargeBodyAcrossManyChunks() {
   assert(body == expected);
 }
 
+// Server posílá po bajtu těsně pod limitem nečinnosti. Limit nečinnosti
+// takový přenos neukončí; ukončit ho musí celkový strop.
+class TrickleSource : public HttpByteSource {
+ public:
+  TrickleSource(std::string data, uint32_t intervalMs)
+      : data_(std::move(data)), intervalMs_(intervalMs),
+        nextAt_(millis() + intervalMs) {}
+
+  int available() override {
+    if (position_ >= data_.size()) return 0;
+    return static_cast<int32_t>(millis() - nextAt_) >= 0 ? 1 : 0;
+  }
+
+  int read(uint8_t *buffer, size_t size) override {
+    if (size == 0 || available() == 0) return 0;
+    buffer[0] = static_cast<uint8_t>(data_[position_++]);
+    nextAt_ = millis() + intervalMs_;
+    return 1;
+  }
+
+  bool connected() override { return true; }
+
+ private:
+  std::string data_;
+  uint32_t intervalMs_;
+  uint32_t nextAt_;
+  size_t position_ = 0;
+};
+
+void testDeadlineEndsTrickle() {
+  constexpr uint32_t BUDGET_MS = 20000;
+  // Nerámované tělo s Content-Length, bajt každých 7 s (limit nečinnosti 8 s).
+  {
+    TrickleSource source(std::string(100, 'x'), 7000);
+    StringSink sink;
+    const uint32_t startedAt = millis();
+    assert(httpBodyRead(source, sink, false, 100, IDLE_TIMEOUT_MS, BUDGET_MS) ==
+           HTTP_BODY_DEADLINE);
+    const uint32_t elapsed = millis() - startedAt;
+    assert(elapsed >= BUDGET_MS && elapsed < BUDGET_MS + 100);
+    assert(sink.content().size() == 2);
+  }
+  // Odpověď "dokud server posílá" s nekonečným proudem: bez stropu by skončila
+  // jen limitem nečinnosti, tedy nikdy.
+  {
+    TrickleSource source(std::string(10000, 'x'), 50);
+    StringSink sink;
+    assert(httpBodyRead(source, sink, false, -1, IDLE_TIMEOUT_MS, BUDGET_MS) ==
+           HTTP_BODY_DEADLINE);
+  }
+  // Chunked rámování, kde po kapkách chodí i řádky velikostí.
+  {
+    TrickleSource source("ffff\r\n" + std::string(0xffff, 'x'), 1000);
+    StringSink sink;
+    assert(httpBodyRead(source, sink, true, -1, IDLE_TIMEOUT_MS, BUDGET_MS) ==
+           HTTP_BODY_DEADLINE);
+  }
+  // Nekonečná řada prázdných řádků rámování také skončí.
+  {
+    std::string blank;
+    for (int i = 0; i < 5000; ++i) blank += "\r\n";
+    TrickleSource source(blank, 10);
+    StringSink sink;
+    assert(httpBodyRead(source, sink, true, -1, IDLE_TIMEOUT_MS, BUDGET_MS) ==
+           HTTP_BODY_DEADLINE);
+  }
+  // Rychlé stažení strop neovlivní.
+  std::string body;
+  assert(readChunked("5\r\nHello\r\n0\r\n\r\n", body) == 5);
+}
+
+void testDeadlineAcrossMillisWrap() {
+  // millis() přeteče po 49,7 dne; odečítání v uint32_t to musí přežít.
+  const DownloadDeadline nearWrap(0xFFFFF000u, 10000);
+  assert(!nearWrap.expired(0xFFFFF000u));
+  assert(!nearWrap.expired(0xFFFFFFFFu));
+  assert(!nearWrap.expired(0x00001000u));  // 8192 ms po startu
+  assert(nearWrap.expired(0x00001710u));   // přesně 10000 ms
+  assert(nearWrap.expired(0x00100000u));
+  const DownloadDeadline normal(1000, DOWNLOAD_DEFAULT_BUDGET_MS);
+  assert(!normal.expired(1000 + DOWNLOAD_DEFAULT_BUDGET_MS - 1));
+  assert(normal.expired(1000 + DOWNLOAD_DEFAULT_BUDGET_MS));
+}
+
 }  // namespace
 
 int main() {
+  testDeadlineAcrossMillisWrap();
+  testDeadlineEndsTrickle();
   testChunkedBody();
   testIdentityBody();
   testStalledTransferGivesUp();

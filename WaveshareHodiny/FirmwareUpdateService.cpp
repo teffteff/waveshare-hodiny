@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "Board.h"
+#include "DownloadDeadline.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "NetworkCoordinator.h"
@@ -170,7 +171,13 @@ bool installFirmware(const String &url, uint32_t expectedSize,
   // Značka desky v obrazu: zachytí release, do kterého se omylem zabalil
   // obraz druhé desky (metadata i SHA-256 by pak k němu seděla).
   OtaBoardTagScanner boardTag;
+  // Celkový strop: limit nečinnosti sám pomalý přenos po kapkách neukončí.
+  const DownloadDeadline deadline(millis(), DOWNLOAD_FIRMWARE_BUDGET_MS);
   while (received < expectedSize) {
+    if (deadline.expired(millis())) {
+      writeOk = false;
+      break;
+    }
     const int available = stream->available();
     if (available <= 0) {
       if (!http.connected() || millis() - lastDataAt >= NETWORK_TIMEOUT_MS) {

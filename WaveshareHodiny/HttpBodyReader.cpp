@@ -19,12 +19,18 @@ constexpr uint32_t POLL_INTERVAL_MS = 2;
 // zacyklit: zdroj, který hlásí dostupná data a žádná nevydá, limit vyčerpá.
 // Zavřené spojení je řádný konec, ne důvod čekat celý limit; bez toho by každá
 // odpověď bez Content-Length stála osm sekund navíc.
+//
+// Celkový strop `deadline` platí i pro postupující přenos: jinak by server
+// posílající po kapkách těsně pod limitem nečinnosti držel úlohu libovolně
+// dlouho.
 int copySegment(HttpByteSource &source, HttpByteSink &sink, long count,
-                uint32_t idleTimeoutMs, size_t &written) {
+                uint32_t idleTimeoutMs, const DownloadDeadline &deadline,
+                size_t &written) {
   uint8_t buffer[COPY_BUFFER_BYTES];
   long remaining = count;
   uint32_t lastProgressAt = millis();
   while (remaining != 0) {
+    if (deadline.expired(millis())) return HTTP_BODY_DEADLINE;
     const int availableBytes = source.available();
     int received = 0;
     if (availableBytes > 0) {
@@ -56,10 +62,11 @@ int copySegment(HttpByteSource &source, HttpByteSink &sink, long count,
 // Přečte jeden řádek rámování zakončený \n a odstraní z něj \r. Vrací délku
 // bez zakončení, nebo záporný HttpBodyStatus.
 int readFramingLine(HttpByteSource &source, char *destination, size_t capacity,
-                    uint32_t idleTimeoutMs) {
+                    uint32_t idleTimeoutMs, const DownloadDeadline &deadline) {
   size_t length = 0;
   uint32_t lastProgressAt = millis();
   for (;;) {
+    if (deadline.expired(millis())) return HTTP_BODY_DEADLINE;
     uint8_t value = 0;
     const int received =
         source.available() > 0 ? source.read(&value, 1) : 0;
@@ -83,11 +90,13 @@ int readFramingLine(HttpByteSource &source, char *destination, size_t capacity,
 }  // namespace
 
 int httpBodyRead(HttpByteSource &source, HttpByteSink &sink, bool chunked,
-                 long declaredLength, uint32_t idleTimeoutMs) {
+                 long declaredLength, uint32_t idleTimeoutMs,
+                 uint32_t totalTimeoutMs) {
+  const DownloadDeadline deadline(millis(), totalTimeoutMs);
   size_t written = 0;
   if (!chunked) {
-    const int result =
-        copySegment(source, sink, declaredLength, idleTimeoutMs, written);
+    const int result = copySegment(source, sink, declaredLength, idleTimeoutMs,
+                                   deadline, written);
     if (result < 0) return result;
     return static_cast<int>(written);
   }
@@ -95,7 +104,7 @@ int httpBodyRead(HttpByteSource &source, HttpByteSink &sink, bool chunked,
   char line[FRAMING_LINE_CAPACITY];
   for (;;) {
     const int lineLength =
-        readFramingLine(source, line, sizeof(line), idleTimeoutMs);
+        readFramingLine(source, line, sizeof(line), idleTimeoutMs, deadline);
     if (lineLength < 0) return lineLength;
     // Prázdný řádek před velikostí posílají některé servery navíc.
     if (lineLength == 0) continue;
@@ -105,10 +114,10 @@ int httpBodyRead(HttpByteSource &source, HttpByteSink &sink, bool chunked,
     // Nulová část ukončuje tělo; případné trailery už nikdo nečte.
     if (chunkLength == 0) break;
     const int result =
-        copySegment(source, sink, chunkLength, idleTimeoutMs, written);
+        copySegment(source, sink, chunkLength, idleTimeoutMs, deadline, written);
     if (result < 0) return result;
     const int trailerLength =
-        readFramingLine(source, line, sizeof(line), idleTimeoutMs);
+        readFramingLine(source, line, sizeof(line), idleTimeoutMs, deadline);
     if (trailerLength < 0) return trailerLength;
     if (trailerLength != 0) return HTTP_BODY_ENCODING;
   }

@@ -4323,7 +4323,15 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
     NetworkClient *stream = http.getStreamPtr();
     char chunk[512];
     unsigned long lastDataAt = millis();
+    // Historie nemá strop velikosti a čte se, dokud server posílá; bez
+    // celkového stropu by ji pomalý přenos mohl táhnout libovolně dlouho.
+    const DownloadDeadline deadline(millis(), DOWNLOAD_LARGE_BUDGET_MS);
+    bool expired = false;
     while (http.connected() || stream->available()) {
+      if (deadline.expired(millis())) {
+        expired = true;
+        break;
+      }
       const int available = stream->available();
       if (available <= 0) {
         if (millis() - lastDataAt > HOME_ASSISTANT_RESPONSE_TIMEOUT_MS) break;
@@ -4336,6 +4344,8 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
       lastDataAt = millis();
     }
     http.end();
+    // Useknutá historie by vypadala jako celá, jen kratší.
+    if (expired) continue;
     const size_t records = parser.finish(buckets);
     if (records > 0)
       clockDashboardLcd7StageHistory(slotIndex, buckets, parser.rangeLow(),

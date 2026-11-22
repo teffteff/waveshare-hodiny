@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "DownloadDeadline.h"
+
 // Čtení těla HTTP odpovědi s hlídaným limitem nečinnosti.
 //
 // HTTPClient::writeToStream() se u odpovědi s hlavičkou
@@ -23,6 +25,9 @@ enum HttpBodyStatus : int {
   HTTP_BODY_ENCODING = -2,
   // Cíl odmítl zapsat vše, co dorazilo (typicky překročený strop velikosti).
   HTTP_BODY_WRITE = -3,
+  // Vypršel celkový čas na stažení (DownloadDeadline.h), přestože data
+  // pořád po kapkách přicházela.
+  HTTP_BODY_DEADLINE = -4,
 };
 
 // Zdroj bajtů těla odpovědi. Firmware ho plní z NetworkClient, test z pole.
@@ -54,7 +59,10 @@ class HttpByteSink {
 // `idleTimeoutMs` je nejdelší doba bez jediného nového bajtu. Uplatní se jen
 // tehdy, když protistrana spojení drží otevřené; zavřené spojení končí přenos
 // hned.
+// `totalTimeoutMs` je celkový čas na celé tělo bez ohledu na to, jestli data
+// přicházejí; po něm čtení skončí s HTTP_BODY_DEADLINE.
 //
 // Vrací počet bajtů zapsaných do `sink`, nebo záporný HttpBodyStatus.
 int httpBodyRead(HttpByteSource &source, HttpByteSink &sink, bool chunked,
-                 long declaredLength, uint32_t idleTimeoutMs);
+                 long declaredLength, uint32_t idleTimeoutMs,
+                 uint32_t totalTimeoutMs = DOWNLOAD_DEFAULT_BUDGET_MS);

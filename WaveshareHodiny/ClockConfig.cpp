@@ -721,7 +721,12 @@ void normalizeConfig(ClockConfig &config) {
                               static_cast<uint8_t>(2));
     if (slot.sensorId[0] == '\0' || slot.field[0] == '\0' ||
         slot.unit[0] == '\0') {
+      // Pozice Open-Meteo si v tomtéž slotu drží počet desetinných míst
+      // (ConfigurationWeb i ClockDashboard ho čtou odtud), takže vymazání
+      // neúplného TMEP slotu ho nesmí zahodit.
+      const uint8_t decimals = slot.decimals;
       slot = ClockTmepSlotConfig{};
+      slot.decimals = decimals;
     }
   }
   config.timeColor &= 0xFFFFFF;
