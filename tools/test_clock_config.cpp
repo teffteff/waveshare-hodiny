@@ -2097,7 +2097,42 @@ void testPlanesExtrasPersistenceAndMigration() {
          CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
 }
 
+// Pozice Open-Meteo ukládají desetinná místa do tmepSlots; normalizace
+// vymazává neúplné TMEP sloty a dřív s nimi zahodila i přesnost.
+void testOpenMeteoSlotDecimalsSurviveReload() {
+  for (uint8_t decimals = 0; decimals <= 2; ++decimals) {
+    hostPreferencesReset();
+    ClockConfig saved;
+    clockConfigApplyDefaults(saved);
+    saved.dataSource = CLOCK_DATA_SOURCE_OPEN_METEO;
+    for (ClockTmepSlotConfig &slot : saved.tmepSlots) {
+      slot = ClockTmepSlotConfig{};
+      slot.decimals = decimals;
+    }
+    // Smíšené nastavení: jedna pozice z TMEP s jinou přesností.
+    ClockTmepSlotConfig &tmep = saved.tmepSlots[1];
+    tmep.enabled = true;
+    clockConfigCopy(tmep.sensorId, sizeof(tmep.sensorId), "123");
+    clockConfigCopy(tmep.field, sizeof(tmep.field), "temperature");
+    clockConfigCopy(tmep.unit, sizeof(tmep.unit), "°C");
+    const uint8_t tmepDecimals = (decimals + 1) % 3;
+    tmep.decimals = tmepDecimals;
+    assert(clockConfigSave(saved));
+
+    ClockConfig loaded;
+    assert(clockConfigLoad(loaded));
+    for (size_t i = 0; i < 4; ++i) {
+      assert(loaded.tmepSlots[i].enabled == (i == 1));
+      assert(loaded.tmepSlots[i].decimals ==
+             (i == 1 ? tmepDecimals : decimals));
+    }
+    assert(strcmp(loaded.tmepSlots[1].sensorId, "123") == 0);
+    assert(strcmp(loaded.tmepSlots[1].unit, "°C") == 0);
+  }
+}
+
 int main() {
+  testOpenMeteoSlotDecimalsSurviveReload();
   testPushAlertsPersistenceAndMigration();
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();
