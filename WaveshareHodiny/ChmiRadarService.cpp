@@ -74,8 +74,6 @@ constexpr size_t MAX_REFRESH_SHIFT = LAYERED_VIEW ? 1 : MAX_PENDING_REFRESH_FRAM
 // jeden. Víc (po výpadku sítě) se načte celé do stávajících snímků, místo aby
 // kulatý dodatečně sháněl další 230kB buffery, které dřív nepotřeboval.
 constexpr size_t RAIN_VIEWER_REFRESH_SHIFT = 1;
-// Snímek ze serveru rozbalený do stupňů odrazivosti, bajt na pixel.
-constexpr size_t LEVEL_DECODE_BYTES = CHMI_RADAR_WIDTH * CHMI_RADAR_HEIGHT;
 constexpr int VIEW_WIDTH = CHMI_RADAR_VIEW_WIDTH;
 constexpr int VIEW_HEIGHT = CHMI_RADAR_VIEW_HEIGHT;
 constexpr size_t VIEW_PIXEL_COUNT = VIEW_WIDTH * VIEW_HEIGHT;
@@ -142,11 +140,9 @@ uint8_t requestedFrameCount = 6;
 uint8_t mapOpacity = 100;
 uint8_t pauseSeconds = 5;
 uint16_t *displayBuffers[DISPLAY_BUFFER_COUNT] = {};
-// Rozbalený snímek ze serveru (stupně odrazivosti). Snímky z ČHMÚ PNG
-// i RainVieweru se dřív skládaly do celoplošného bufferu RGB565 (na kulatém
-// 460 kB) a teprve potom balily; dnes se dekódují po řádcích rovnou do
-// cílového snímku, takže tenhle buffer drží jen server.
-uint8_t *inflatedLevels = nullptr;
+// Celoplošný dekódovací buffer už není: snímky z ČHMÚ PNG a RainVieweru se
+// dekódují po řádcích rovnou do cílového snímku a snímky ze serveru se při
+// každém kroku animace rozbalují po řádcích (RadarBundleRows, okno 32 kB).
 uint8_t *preparedFrames[MAX_ANIMATION_FRAME_COUNT] = {};
 bool preparedFrameReady[MAX_ANIMATION_FRAME_COUNT] = {};
 uint32_t preparedFrameRevisions[MAX_ANIMATION_FRAME_COUNT] = {};
@@ -264,8 +260,9 @@ bool decodedLinesSequential = true;
 // --- Snímky ze serveru --------------------------------------------------------
 // Server vedle srážkové předpovědi (/radar.bin, RadarBundle.h) posílá hotové
 // snímky stupňů odrazivosti zabalené zlibem. Hodiny je drží zabalené ve dvou
-// bufferech (do jednoho se stahuje, z druhého se kreslí) a před kreslením
-// rozbalí jen jeden do inflatedLevels. Odpadne PNG dekodér, stažené PNG
+// bufferech (do jednoho se stahuje, z druhého se kreslí) a při každém kroku
+// animace snímek rozbalí po řádcích přímo do obrazu (RadarBundleRows, okno
+// 32 kB místo celého snímku). Odpadne PNG dekodér, stažené PNG
 // i rozbalené snímky (na 7" 6 x 70 kB, na kulatém 6 x 230 kB) a s nimi i práce,
 // při které RGB panel ztrácel synchronizaci. Kulatý pak mapu a prstenec kreslí
 // do každého kroku animace (composeRoundFrame) stejně jako 7". Bez serveru
@@ -288,14 +285,10 @@ bool serverFailed = false;
 int serverHttpStatus = 0;
 uint32_t serverBundleBytes = 0;
 char serverEtag[48] = "";
-// Který snímek leží rozbalený v inflatedLevels (překreslení stojícího snímku
-// kvůli bleskům ho nemusí rozbalovat znovu).
-uint32_t inflatedGeneration = 0;
-int inflatedIndex = -1;
 
 void advanceAnimation(unsigned long now);
 bool showPreparedFrame(size_t index, unsigned long now);
-const uint8_t *serverFrameLevels(size_t index);
+bool beginServerFrame(size_t index, RadarBundleRows &rows);
 int firstPreparedFrame();
 uint8_t rgb565ToRgb332(uint16_t color);
 uint16_t nightRadarColor(uint8_t color);
@@ -372,19 +365,9 @@ void setStatus(bool isLoading, const char *message) {
   portEXIT_CRITICAL(&stateMux);
 }
 
-bool ensureInflatedLevels() {
-  if (inflatedLevels == nullptr)
-    inflatedLevels = static_cast<uint8_t *>(heap_caps_malloc(
-        LEVEL_DECODE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  return inflatedLevels != nullptr;
-}
-
-// Snímky z ČHMÚ PNG a RainVieweru rozbalený snímek ze serveru nepotřebují.
-void releaseInflatedLevels() {
-  if (inflatedLevels != nullptr) heap_caps_free(inflatedLevels);
-  inflatedLevels = nullptr;
-  inflatedIndex = -1;
-}
+// Okno rozbalování snímků ze serveru (~33 kB); ČHMÚ PNG ani RainViewer ho
+// nepotřebují.
+void releaseInflatedLevels() { radarBundleRowsRelease(); }
 
 bool ensureBuffers() {
   // Na 7" se obraz skládá do sdílených snímků (composeView).
@@ -1355,7 +1338,17 @@ uint16_t rgb332ToRgb565(uint8_t color);
 // čtyřmi pixely snímku a bere je s váhami 9 : 3 : 3 : 1 (dvojnásobné
 // bilineární zvětšení); vyhlazuje se stupeň, takže hranice mezi barvami
 // zůstávají ostré, jen bez schodů.
-void composeLevels(uint16_t *target, const uint8_t *source, bool night) {
+// Řádky stupňů: uložený snímek z ČHMÚ PNG, nebo snímek ze serveru rozbalovaný
+// po řádcích. Ukazatel ze streamu platí jen do dalšího nového řádku.
+struct LevelRows {
+  const uint8_t *frame = nullptr;
+  RadarBundleRows *stream = nullptr;
+  const uint8_t *row(int y) {
+    return stream != nullptr ? stream->row(y) : frame + y * CHMI_RADAR_WIDTH;
+  }
+};
+
+bool composeLevels(uint16_t *target, LevelRows &source, bool night) {
   static_assert(CHMI_RADAR_ZOOM == 2 || !LAYERED_VIEW,
                 "Vyhlazené zvětšení počítá s dvojnásobkem");
   uint16_t colors[16];
@@ -1374,8 +1367,12 @@ void composeLevels(uint16_t *target, const uint8_t *source, bool night) {
     const int nearY = y >> 1;
     const int farY = constrain((y & 1) ? nearY + 1 : nearY - 1, 0,
                                CHMI_RADAR_HEIGHT - 1);
-    const uint8_t *nearRow = source + nearY * CHMI_RADAR_WIDTH;
-    const uint8_t *farRow = source + farY * CHMI_RADAR_WIDTH;
+    // Nejdřív vyšší z obou řádků: další rozbalení by starší ukazatel
+    // zneplatnilo.
+    if (source.row(max(nearY, farY)) == nullptr) return false;
+    const uint8_t *nearRow = source.row(nearY);
+    const uint8_t *farRow = source.row(farY);
+    if (nearRow == nullptr || farRow == nullptr) return false;
     uint16_t *output = target + y * VIEW_WIDTH;
     for (int x = 0; x < VIEW_WIDTH; ++x) {
       const int nearX = x >> 1;
@@ -1391,6 +1388,7 @@ void composeLevels(uint16_t *target, const uint8_t *source, bool night) {
                       : colors[level > 15 ? 15 : level];
     }
   }
+  return true;
 }
 
 // Snímek RainVieweru (RGB332, hotové barvy) dvakrát zvětšený. Stupně tu
@@ -1461,7 +1459,10 @@ void composeColors(uint16_t *target, const uint8_t *source, bool night) {
 // Složí obraz 7" do sdíleného snímku targetBuffer: srážky (bez snímku jen
 // černé pozadí), přes ně mapa a blesky. False, když pár zrovna patří jiné
 // obrazovce nebo si ho během skládání vzala.
-bool composeView(uint8_t targetBuffer, const uint8_t *frame, bool nightVisual,
+// Snímek ze serveru přijde jako serverRows (frame je pak nullptr) a rozbaluje
+// se po řádcích rovnou do obrazu.
+bool composeView(uint8_t targetBuffer, const uint8_t *frame,
+                 RadarBundleRows *serverRows, bool nightVisual,
                  float latitude, float longitude, uint16_t radiusKm,
                  uint8_t mapOpacityValue, bool overlay, uint32_t &lease) {
   if (!sharedFramesReserve()) return false;
@@ -1471,12 +1472,23 @@ bool composeView(uint8_t targetBuffer, const uint8_t *frame, bool nightVisual,
   portENTER_CRITICAL(&stateMux);
   const bool rainViewer = radarSource == CLOCK_RADAR_SOURCE_RAINVIEWER;
   portEXIT_CRITICAL(&stateMux);
-  if (frame == nullptr)
+  if (serverRows != nullptr) {
+    LevelRows rows;
+    rows.stream = serverRows;
+    if (!composeLevels(target, rows, nightVisual) || !serverRows->finish()) {
+      // Poškozený snímek se nezobrazí; obraz zůstane na předchozím.
+      sharedFramesEndRender(SharedFrameUser::Radar);
+      return false;
+    }
+  } else if (frame == nullptr) {
     memset(target, 0, VIEW_PIXEL_COUNT * sizeof(uint16_t));
-  else if (rainViewer)
+  } else if (rainViewer) {
     composeColors(target, frame, nightVisual);
-  else
-    composeLevels(target, frame, nightVisual);
+  } else {
+    LevelRows rows;
+    rows.frame = frame;
+    composeLevels(target, rows, nightVisual);
+  }
   // Rozměr kompozice se nastavuje při dekódování; snímek z cache ho zná.
   if (imageWidth <= 0 || imageHeight <= 0) {
     imageWidth = RADAR_SOURCE_WIDTH;
@@ -1496,15 +1508,23 @@ bool composeView(uint8_t targetBuffer, const uint8_t *frame, bool nightVisual,
 // Snímek kulatého ze stupňů odrazivosti od serveru: barvy srážek, přes ně mapa
 // a prstenec (dekódování z PNG je pekla rovnou do snímku), noční paleta a blesky
 // stejným pořadím jako u snímků z ČHMÚ.
-void composeRoundFrame(uint16_t *target, const uint8_t *levels, bool nightVisual,
+// Stupně se rozbalují po řádcích rovnou sem; false, když je snímek poškozený.
+bool composeRoundFrame(uint16_t *target, RadarBundleRows &levels, bool nightVisual,
                        float latitude, float longitude, uint16_t radiusKm,
                        uint8_t mapOpacityValue, bool overlay) {
-  for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel) {
-    const uint8_t value = levels[pixel];
-    const uint32_t level = (static_cast<uint32_t>(value) + LEVEL_STEP / 2) / LEVEL_STEP;
-    target[pixel] = value == LEVEL_NO_DATA ? CHMI_NO_DATA_COLOR
-                                           : CHMI_LEVEL_COLORS[level > 15 ? 15 : level];
+  for (int y = 0; y < CHMI_RADAR_HEIGHT; ++y) {
+    const uint8_t *row = levels.row(y);
+    if (row == nullptr) return false;
+    uint16_t *output = target + y * CHMI_RADAR_WIDTH;
+    for (int x = 0; x < CHMI_RADAR_WIDTH; ++x) {
+      const uint8_t value = row[x];
+      const uint32_t level =
+          (static_cast<uint32_t>(value) + LEVEL_STEP / 2) / LEVEL_STEP;
+      output[x] = value == LEVEL_NO_DATA ? CHMI_NO_DATA_COLOR
+                                         : CHMI_LEVEL_COLORS[level > 15 ? 15 : level];
+    }
   }
+  if (!levels.finish()) return false;
   if (imageWidth <= 0 || imageHeight <= 0) {
     imageWidth = RADAR_SOURCE_WIDTH;
     imageHeight = RADAR_SOURCE_HEIGHT;
@@ -1516,6 +1536,7 @@ void composeRoundFrame(uint16_t *target, const uint8_t *levels, bool nightVisual
   drawDisplayRing(target);
   if (nightVisual) applyNightRadarPalette(target);
   if (overlay) drawLightningOverlay(target, projection, nightVisual);
+  return true;
 }
 
 bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
@@ -1529,7 +1550,8 @@ bool showBaseMap(float latitude, float longitude, uint16_t radiusKm,
   portEXIT_CRITICAL(&stateMux);
   uint32_t lease = 0;
   if (LAYERED_VIEW) {
-    if (!composeView(targetBuffer, nullptr, nightVisual, latitude, longitude,
+    if (!composeView(targetBuffer, nullptr, nullptr, nightVisual, latitude,
+                     longitude,
                      radiusKm, mapOpacityValue, true, lease))
       return false;
   } else {
@@ -2551,17 +2573,22 @@ bool showPreparedFrame(size_t index, unsigned long now) {
   portEXIT_CRITICAL(&stateMux);
   if (!valid) return false;
   const uint8_t targetBuffer = 1 - activeDisplayBuffer;
-  const uint8_t *source =
-      fromServer ? serverFrameLevels(index) : preparedFrames[index];
-  if (source == nullptr) return false;
+  // Snímek ze serveru se rozbaluje po řádcích při každém kroku znovu; celý
+  // rozbalený se nikde nedrží.
+  RadarBundleRows serverRows;
+  if (fromServer && !beginServerFrame(index, serverRows)) return false;
+  const uint8_t *source = fromServer ? nullptr : preparedFrames[index];
   uint32_t lease = 0;
   if (LAYERED_VIEW) {
-    if (!composeView(targetBuffer, source, nightVisual, latitude, longitude,
-                     radiusKm, mapOpacityValue, overlay, lease))
+    if (!composeView(targetBuffer, source, fromServer ? &serverRows : nullptr,
+                     nightVisual, latitude, longitude, radiusKm,
+                     mapOpacityValue, overlay, lease))
       return false;
   } else if (fromServer) {
-    composeRoundFrame(displayBuffers[targetBuffer], source, nightVisual,
-                      latitude, longitude, radiusKm, mapOpacityValue, overlay);
+    if (!composeRoundFrame(displayBuffers[targetBuffer], serverRows, nightVisual,
+                           latitude, longitude, radiusKm, mapOpacityValue,
+                           overlay))
+      return false;
   } else {
     uint16_t *target = displayBuffers[targetBuffer];
     for (size_t pixel = 0; pixel < RADAR_PIXEL_COUNT; ++pixel)
@@ -2658,27 +2685,18 @@ void refreshLightningOverlay(unsigned long now) {
   showPreparedFrame(static_cast<size_t>(frame), now);
 }
 
-// Snímek ze serveru rozbalený do inflatedLevels, nebo nullptr.
-const uint8_t *serverFrameLevels(size_t index) {
-  if (index >= serverBundle.count || serverBundles[activeServerBundle] == nullptr ||
-      !ensureInflatedLevels())
-    return nullptr;
-  uint8_t *levels = inflatedLevels;
-  if (inflatedGeneration == serverBundleGeneration &&
-      inflatedIndex == static_cast<int>(index))
-    return levels;
-  inflatedIndex = -1;
+// Začne rozbalovat snímek ze serveru po řádcích.
+bool beginServerFrame(size_t index, RadarBundleRows &rows) {
+  if (index >= serverBundle.count || serverBundles[activeServerBundle] == nullptr)
+    return false;
   const RadarBundleFrame &frame = serverBundle.frames[index];
-  if (!radarBundleInflate(serverBundles[activeServerBundle] + frame.offset,
-                          frame.size, levels, RADAR_PIXEL_COUNT))
-    return nullptr;
-  inflatedGeneration = serverBundleGeneration;
-  inflatedIndex = static_cast<int>(index);
-  return levels;
+  return rows.begin(serverBundles[activeServerBundle] + frame.offset, frame.size,
+                    CHMI_RADAR_WIDTH, CHMI_RADAR_HEIGHT);
 }
 
 // Uvolní, co potřebuje jen stahování z ČHMÚ: rozbalené snímky, PNG a jeho
-// dekodér. inflatedLevels zůstává - rozbalují se do něj snímky ze serveru.
+// dekodér. Okno RadarBundleRows zůstává - rozbalují se přes něj snímky ze
+// serveru.
 void releaseDirectFrameBuffers() {
   releaseUnusedFrames(0);
   for (uint8_t *&frame : pendingPreparedFrames) {
@@ -2780,7 +2798,7 @@ bool loadServerAnimation(float latitude, float longitude, uint16_t radiusKm,
     displayReady = displayReady && buffer != nullptr;
   }
   if (serverBundles[0] == nullptr || serverBundles[1] == nullptr ||
-      !displayReady || !ensureInflatedLevels()) {
+      !displayReady || !radarBundleRowsReserve(CHMI_RADAR_WIDTH)) {
     setStatus(false, "Nedostatek pameti pro radar");
     return false;
   }
