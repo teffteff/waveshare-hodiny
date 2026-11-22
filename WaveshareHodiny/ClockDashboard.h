@@ -292,6 +292,13 @@ bool clockDashboardShowNotification(const DisplayNotification &notification);
 // Vrací true, když nějakou zavřela.
 bool clockDashboardHideNotification();
 bool clockDashboardNotificationVisible();
+
+// Společný řádek o nedostupném zdroji dat (SourceHealth.h), třeba
+// "Stará data · zdroj nedostupný · další pokus za 4 min". Leží nad stránkou na
+// stejném místě na všech obrazovkách: na kulatém dole uprostřed, na 7" vlevo
+// dole. Prázdný text řádek schová. Volající ho schovává sám pod nastavením,
+// notifikací a aktualizací firmwaru.
+void clockDashboardSetSourceStatus(const char *text);
 void clockDashboardSetFirmwareUpdateActive(bool active);
 void clockDashboardSetFirmwareUpdateBlack(bool black);
 void clockDashboardSetFirmwareUpdateCountdown(uint8_t seconds);

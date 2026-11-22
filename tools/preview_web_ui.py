@@ -144,6 +144,8 @@ def stub_config() -> dict:
         "rightWeatherIconColor": "#FFFFFF",
         "dayBrightness": 35,
         "nightBrightness": 10,
+        "nightDisplayOff": False,
+        "nightWakeSeconds": 30,
         "automaticDayNight": False,
         "nightVisualMode": "red",
         "automaticFirmwareUpdate": False,

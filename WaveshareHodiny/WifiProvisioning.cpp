@@ -20,7 +20,12 @@ constexpr char WIFI_PASSWORD_KEY[] = "password";
 constexpr char WIFI_PENDING_SSID_KEY[] = "next-ssid";
 constexpr char WIFI_PENDING_PASSWORD_KEY[] = "next-password";
 constexpr char WIFI_PENDING_VALID_KEY[] = "next-valid";
+// Před prvním připojením se zkouší každých 15 s (střídání se záložní sítí
+// musí stihnout okno při startu). Po výpadku za provozu se o spojení stará
+// hlavně automatické znovupřipojení ovladače, takže vlastní pokus jen jednou
+// za minutu, aby se s ním nepraly.
 constexpr uint32_t WIFI_RETRY_MS = 15000;
+constexpr uint32_t WIFI_DROP_RETRY_MS = 60000;
 constexpr uint32_t PROVISIONING_TIMEOUT_MS = 30000;
 
 String storedSsid;
@@ -48,6 +53,13 @@ bool startupRetriesEnabled = true;
 // The portal's first background attempt goes to the stored network, because
 // the candidate has just failed for the whole startup window.
 bool portalTryStored = true;
+// Po prvním úspěšném připojení platí delší interval WIFI_DROP_RETRY_MS.
+bool connectedOnce = false;
+// Otisk sítě, kterou má ovladač právě nastavenou (0 = žádná). Další pokus na
+// stejnou síť jde přes WiFi.reconnect(), protože WiFi.begin() pokaždé
+// přepisuje konfiguraci stanice (esp_wifi_set_config) a zastaví při tom cache
+// flash. Otisk místo kopie jména a hesla šetří interní RAM.
+uint32_t configuredNetwork = 0;
 
 void loadStoredCredentials() {
 #if HAS_DEVELOPMENT_WIFI
@@ -150,20 +162,45 @@ void applyAddressing(bool mainNetwork) {
 #endif
 }
 
+// FNV-1a přes jméno, oddělovač a heslo.
+uint32_t networkFingerprint(const String &ssid, const String &password) {
+  uint32_t hash = 2166136261u;
+  const auto mix = [&hash](const char *text) {
+    for (; *text != '\0'; ++text) {
+      hash ^= static_cast<uint8_t>(*text);
+      hash *= 16777619u;
+    }
+    hash ^= 0xFFu;
+    hash *= 16777619u;
+  };
+  mix(ssid.c_str());
+  mix(password.c_str());
+  return hash == 0 ? 1 : hash;
+}
+
+bool stationConfiguredFor(const String &ssid, const String &password) {
+  return configuredNetwork != 0 &&
+         configuredNetwork == networkFingerprint(ssid, password);
+}
+
 void beginWifiConnection(const String &ssid, const String &password) {
+  if (stationConfiguredFor(ssid, password)) {
+    WiFi.reconnect();
+    return;
+  }
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(ssid.c_str(), password.c_str());
+  configuredNetwork = networkFingerprint(ssid, password);
 }
 
 void connectStoredCredentials() {
   if (startupSsid.isEmpty()) return;
-  applyAddressing(!useFallback);
-  if (useFallback) {
-    beginWifiConnection(fallbackSsid, fallbackPassword);
-  } else {
-    beginWifiConnection(startupSsid, startupPassword);
-  }
+  const String &ssid = useFallback ? fallbackSsid : startupSsid;
+  const String &password = useFallback ? fallbackPassword : startupPassword;
+  // Adresování se mění jen s přechodem na jinou síť.
+  if (!stationConfiguredFor(ssid, password)) applyAddressing(!useFallback);
+  beginWifiConnection(ssid, password);
   connectingCandidate = startupCandidateActive && !useFallback;
   lastWifiAttempt = millis();
 }
@@ -196,9 +233,15 @@ bool settleStartupCandidate() {
 }  // namespace
 
 void wifiProvisioningBegin() {
+  // Arduino bere příznak persistent jen při inicializaci ovladače, tedy
+  // v prvním WiFi.mode(). Nastavený až potom nechá ovladač ukládat konfiguraci
+  // stanice do NVS ve flash při každém begin i automatickém znovupřipojení.
+  // Přihlašovací údaje drží vlastní Preferences, konfigurace SDK stačí v RAM.
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.persistent(false);
+  configuredNetwork = 0;
+  connectedOnce = false;
   normalStartReady = false;
   startupRetriesEnabled = true;
   startupCandidateActive = false;
@@ -251,15 +294,17 @@ void wifiProvisioningLoop() {
   if (WiFi.status() == WL_CONNECTED) {
     if (startupCandidateActive && !settleStartupCandidate()) return;
     normalStartReady = true;
+    connectedOnce = true;
     // After a drop, auto-reconnect gets a full retry window on the network
-    // that worked before the loop starts alternating again.
-    if (!fallbackSsid.isEmpty()) lastWifiAttempt = millis();
+    // that worked before the loop starts its own attempts again.
+    lastWifiAttempt = millis();
     improvSerialServiceSetProvisioned();
     return;
   }
   normalStartReady = false;
+  const uint32_t retryMs = connectedOnce ? WIFI_DROP_RETRY_MS : WIFI_RETRY_MS;
   if (startupRetriesEnabled && !startupSsid.isEmpty() &&
-      millis() - lastWifiAttempt >= WIFI_RETRY_MS) {
+      millis() - lastWifiAttempt >= retryMs) {
     if (!fallbackSsid.isEmpty()) useFallback = !useFallback;
     connectStoredCredentials();
   }

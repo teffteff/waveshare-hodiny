@@ -451,7 +451,7 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.satellites.url);
 }
 
-// Schéma 58: ciferníky. Mimo rozsah vrací výchozí hodnotu, přepínače zůstávají,
+// Schéma 59: ciferníky. Mimo rozsah vrací výchozí hodnotu, přepínače zůstávají,
 // jak jsou, takže normalizace sama nic nezapne.
 void clockConfigNormalizeFaces(ClockFacesConfig &faces) {
   faces.retroBackgroundColor &= 0xFFFFFF;
@@ -721,6 +721,14 @@ void normalizeConfig(ClockConfig &config) {
   if (extras.windowRangeKm < CLOCK_PLANE_WINDOW_MIN_RANGE_KM ||
       extras.windowRangeKm > CLOCK_PLANE_WINDOW_MAX_RANGE_KM)
     extras.windowRangeKm = CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM;
+  if (extras.nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)
+    extras.nearbyAlertMode = 0;
+  // Doba rozsvícení po dotyku leží v bloku schématu 58: nula ze staršího
+  // záznamu i cokoli mimo meze znamená výchozích 30 s.
+  ClockDisplayExtrasConfig &display = config.displayExtras;
+  if (display.nightWakeSeconds < CLOCK_NIGHT_WAKE_MIN_SECONDS ||
+      display.nightWakeSeconds > CLOCK_NIGHT_WAKE_MAX_SECONDS)
+    display.nightWakeSeconds = CLOCK_NIGHT_WAKE_DEFAULT_SECONDS;
   if (config.planesMapLabel > CLOCK_PLANE_MAP_LABEL_CALLSIGN)
     config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   config.planes.altitudeMaxFt =
@@ -759,7 +767,12 @@ void normalizeConfig(ClockConfig &config) {
                               static_cast<uint8_t>(2));
     if (slot.sensorId[0] == '\0' || slot.field[0] == '\0' ||
         slot.unit[0] == '\0') {
+      // Pozice Open-Meteo si v tomtéž slotu drží počet desetinných míst
+      // (ConfigurationWeb i ClockDashboard ho čtou odtud), takže vymazání
+      // neúplného TMEP slotu ho nesmí zahodit.
+      const uint8_t decimals = slot.decimals;
       slot = ClockTmepSlotConfig{};
+      slot.decimals = decimals;
     }
   }
   config.timeColor &= 0xFFFFFF;
@@ -1156,6 +1169,13 @@ struct ConfigRecordV40 {
   uint32_t checksum;
 };
 
+struct ConfigRecordV58 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_58_SIZE];
+  uint32_t checksum;
+};
+
 struct ConfigRecordV57 {
   uint32_t magic;
   uint32_t schemaVersion;
@@ -1261,6 +1281,7 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV58) ||
          storedSize == sizeof(ConfigRecordV57) ||
          storedSize == sizeof(ConfigRecordV56) ||
          storedSize == sizeof(ConfigRecordV55) ||
@@ -1312,9 +1333,28 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     return ConfigRecordDecode::Current;
   }
 
-  // Schéma 57 je přesnou předponou schématu 58; ciferníky si po zkopírování
+  // Schéma 58 je přesnou předponou schématu 59; ciferníky si po zkopírování
   // podrží výchozí hodnoty (retro LCD se vybírá jen stylem, prstenec je
   // vypnutý), takže hodiny po aktualizaci vypadají stejně.
+  const ConfigRecordV58 &legacyV58 =
+      *reinterpret_cast<const ConfigRecordV58 *>(&record);
+  uint32_t embeddedSchemaV58 = 0;
+  if (readComplete && storedSize == sizeof(legacyV58))
+    memcpy(&embeddedSchemaV58, legacyV58.config, sizeof(embeddedSchemaV58));
+  if (readComplete && storedSize == sizeof(legacyV58) &&
+      legacyV58.magic == CONFIG_MAGIC && legacyV58.schemaVersion == 58 &&
+      embeddedSchemaV58 == 58 &&
+      legacyV58.checksum ==
+          bytesChecksum(legacyV58.config, sizeof(legacyV58.config))) {
+    memcpy(&config, legacyV58.config, sizeof(legacyV58.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
+  }
+
+  // Schéma 57 je přesnou předponou schématu 58 (a tím i 59); další volby
+  // displeje i ciferníky si po zkopírování podrží výchozí hodnoty (zhasnutí
+  // v noci vypnuté, 30 s; prstenec vypnutý).
   const ConfigRecordV57 &legacyV57 =
       *reinterpret_cast<const ConfigRecordV57 *>(&record);
   uint32_t embeddedSchemaV57 = 0;

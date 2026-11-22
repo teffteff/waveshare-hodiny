@@ -41,12 +41,47 @@ uint16_t blendRgb565(uint16_t background, uint16_t foreground, uint8_t opacity);
 void setMapPixel(uint16_t *buffer, int x, int y, uint16_t color,
                  uint8_t opacity);
 
+// Snímky meteoradaru na kulatém leží v RGB332, bajt na pixel, a mapa se do
+// nich peče rovnou, bez celoplošného mezibufferu RGB565. Barvy se zadávají
+// dál v RGB565; pixel RGB332 se pro míchání rozšíří a výsledek zase zúží.
+// Plná barva i jedna průhledná vrstva nad černou tak dají přesně totéž jako
+// kreslení do RGB565 s následným převodem. Průhledná mapa nad srážkami nebo
+// tam, kde se tahy překrývají, se může lišit o krok RGB332 ve složce
+// (při krytí kolem 10 % o dva), protože se mezivýsledek zaokrouhlí dřív;
+// viz tools/test_radar_rgb332.cpp.
+inline uint8_t mapRgb565ToRgb332(uint16_t color) {
+  return static_cast<uint8_t>((((color >> 11) & 0x1f) >> 2) << 5 |
+                              (((color >> 5) & 0x3f) >> 3) << 2 |
+                              ((color & 0x1f) >> 3));
+}
+
+// Rozšíření s opakováním horních bitů: mapRgb565ToRgb332 z něj vrátí
+// přesně původní bajt.
+inline uint16_t mapRgb332ToRgb565(uint8_t color) {
+  const uint16_t red3 = color >> 5;
+  const uint16_t green3 = (color >> 2) & 0x07;
+  const uint16_t blue2 = color & 0x03;
+  const uint16_t red5 = (red3 << 2) | (red3 >> 1);
+  const uint16_t green6 = (green3 << 3) | green3;
+  const uint16_t blue5 = (blue2 << 3) | (blue2 << 1) | (blue2 >> 1);
+  return static_cast<uint16_t>((red5 << 11) | (green6 << 5) | blue5);
+}
+
+uint8_t blendRgb332(uint8_t background, uint16_t foreground, uint8_t opacity);
+
+void setMapPixel(uint8_t *buffer, int x, int y, uint16_t color,
+                 uint8_t opacity);
+
 // Úsečka ořezaná Cohen-Sutherlandem a vykreslená Bresenhamem. Body smí ležet
 // daleko mimo displej - mapová data se promítají bez ohledu na okraje.
 void drawMapLine(uint16_t *buffer, int x0, int y0, int x1, int y1,
                  uint16_t color, uint8_t opacity);
+void drawMapLine(uint8_t *buffer, int x0, int y0, int x1, int y1,
+                 uint16_t color, uint8_t opacity);
 
 void fillMapRect(uint16_t *buffer, int x, int y, int width, int height,
+                 uint16_t color, uint8_t opacity);
+void fillMapRect(uint8_t *buffer, int x, int y, int width, int height,
                  uint16_t color, uint8_t opacity);
 
 // Obrys a výplň kruhu. Radar letadel z nich staví dosahové kružnice, kroužek
@@ -64,6 +99,8 @@ void fillMapTriangle(uint16_t *buffer, int x0, int y0, int x1, int y1, int x2,
 // Text VELKÝMI písmeny. Malá písmena se převedou, protože mapové popisky mají
 // všechny stejnou výšku a diakritika v tabulce stejně není.
 void drawMapText(uint16_t *buffer, int x, int y, const char *text,
+                 uint16_t color, uint8_t opacity);
+void drawMapText(uint8_t *buffer, int x, int y, const char *text,
                  uint16_t color, uint8_t opacity);
 
 // Šířka textu v pixelech bez koncové mezery.

@@ -268,7 +268,9 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     CONFIG_FIELD(controls, PART_SCREENS),
     // Další volby radaru letadel patří k obrazovkám stejně jako ostatní.
     CONFIG_FIELD(planesExtras, PART_SCREENS),
-    // Retro LCD a prstenec předpovědi jsou vzhled ciferníku (schéma 58).
+    // Zhasnutí v noci patří k jasu a režimu den/noc, tedy k displeji.
+    CONFIG_FIELD(displayExtras, PART_DISPLAY),
+    // Retro LCD a prstenec předpovědi jsou vzhled ciferníku (schéma 59).
     CONFIG_FIELD(faces, PART_DISPLAY),
 };
 #undef CONFIG_FIELD

@@ -37,6 +37,8 @@
 #include "ForecastFan.h"
 #include "ForecastFanRing.h"
 #include "RetroLcd.h"
+#include "MapCanvas.h"
+#include "PlaneIcon.h"
 
 
 #if HODINY_BOARD_LCD7
@@ -5816,6 +5818,10 @@ constexpr int PLANES_DETAIL_HEIGHT = 310;
 constexpr int PLANES_DETAIL_ROWS_TOP = 48;
 constexpr int PLANES_DETAIL_ROW_STEP = 24;
 constexpr int PLANES_DETAIL_REGISTRATION_HEIGHT = 22;
+// Velká ikona vpravo vedle čtyř řádků s čísly (výška až stoupání). Řádky končí
+// nejpozději kolem x = 220, takže zbývá okénko 72 x 72 u pravého okraje.
+constexpr int PLANES_DETAIL_ICON_SIZE = 72;
+constexpr int PLANES_DETAIL_ICON_RIGHT = 16;
 
 // Kam padne který řádek. Řádky pod typem letadla uhýbají registraci.
 int planesDetailRowY(uint8_t row) {
@@ -5823,6 +5829,79 @@ int planesDetailRowY(uint8_t row) {
       row > PLANES_DETAIL_TYPE_ROW ? PLANES_DETAIL_REGISTRATION_HEIGHT : 0;
   return PLANES_DETAIL_ROWS_TOP + row * PLANES_DETAIL_ROW_STEP + shift;
 }
+
+// Velká ikona letadla v detailu (podle MeteoPlaneRadar 0.9.9): typová ikona
+// z mapy (PlaneIcon.h) zvětšená až třikrát, natočená stejně jako na mapě a ve
+// stejné barvě. Detail je z popisků LVGL, takže se ikona kreslí do malého
+// canvasu s bufferem v PSRAM - a jen když se změní druh, úhel, barva nebo
+// místo, které jí řádky nechaly.
+struct PlaneDetailIcon {
+  lv_obj_t *canvas = nullptr;
+  uint16_t *pixels = nullptr;
+  int size = 0;
+  bool drawn = false;
+  uint8_t kind = 0;
+  bool hasTrack = false;
+  int16_t angle = 0;
+  uint16_t color = 0;
+  int16_t width = 0;
+};
+
+// Pod nejmenším zvětšením by ikona nebyla o nic čitelnější než na mapě.
+constexpr float PLANE_DETAIL_ICON_MIN_ZOOM = 1.6f;
+constexpr float PLANE_DETAIL_ICON_MAX_ZOOM = 3.0f;
+
+void createPlaneDetailIcon(PlaneDetailIcon &icon, lv_obj_t *parent, int size) {
+  icon.pixels = static_cast<uint16_t *>(heap_caps_malloc(
+      static_cast<size_t>(size) * size * sizeof(uint16_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (icon.pixels == nullptr) return;  // detail se ukáže bez ikony
+  icon.size = size;
+  icon.canvas = lv_canvas_create(parent);
+  lv_canvas_set_buffer(icon.canvas, icon.pixels, size, size,
+                       LV_IMG_CF_TRUE_COLOR);
+  lv_obj_clear_flag(icon.canvas, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(icon.canvas, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Nakreslí ikonu z modelu. width je místo od pravého okraje canvasu, které
+// ikoně zbylo po textu; ikona se k pravému okraji přimkne. false = ikona se
+// nevejde dost velká, nebo canvas není; volající ji pak schová.
+bool renderPlaneDetailIcon(PlaneDetailIcon &icon,
+                           const PlaneDetailViewModel &model, int width) {
+  if (icon.canvas == nullptr) return false;
+  if (width > icon.size) width = icon.size;
+  const float radius = PlaneIcon_Radius(model.iconKind, model.iconHasTrack);
+  float zoom = static_cast<float>(width - 2) / (2.0f * radius);
+  if (zoom > PLANE_DETAIL_ICON_MAX_ZOOM) zoom = PLANE_DETAIL_ICON_MAX_ZOOM;
+  if (zoom < PLANE_DETAIL_ICON_MIN_ZOOM) return false;
+  // Na stupeň přesně: jemnější rozdíl na displeji vidět není a překreslovalo
+  // by se s každým stažením.
+  int angle = static_cast<int>(std::lround(model.iconTrackDeg)) % 360;
+  if (angle < 0) angle += 360;
+  if (icon.drawn && icon.kind == model.iconKind &&
+      icon.hasTrack == model.iconHasTrack && icon.angle == angle &&
+      icon.color == model.iconColor && icon.width == width)
+    return true;
+  icon.drawn = true;
+  icon.kind = model.iconKind;
+  icon.hasTrack = model.iconHasTrack;
+  icon.angle = static_cast<int16_t>(angle);
+  icon.color = model.iconColor;
+  icon.width = static_cast<int16_t>(width);
+  // Podklad černý jako panel i sloupec 7".
+  memset(icon.pixels, 0,
+         static_cast<size_t>(icon.size) * icon.size * sizeof(uint16_t));
+  MapCanvasSize canvasSize(icon.size, icon.size);
+  const int half = static_cast<int>(std::ceil(radius * zoom));
+  PlaneIcon_Draw(icon.pixels, icon.size - 1 - half, icon.size / 2,
+                 static_cast<float>(angle), model.iconHasTrack, model.iconKind,
+                 model.iconColor, zoom);
+  lv_obj_invalidate(icon.canvas);
+  return true;
+}
+
+PlaneDetailIcon planesDetailIcon;
 
 // Objekty obrazovky se zakládají do PSRAM, ze stejného důvodu jako u
 // předpovědi: v interní RAM by ubraly kilobajty, o které pak přijde TLS
@@ -5899,6 +5978,16 @@ void createPlanesPage(lv_obj_t *screen) {
   planesDetailClose = makeLabel(planesDetailPanel, &clock_czech_18, COLOR_ERROR);
   lv_label_set_text(planesDetailClose, "X");
   lv_obj_align(planesDetailClose, LV_ALIGN_TOP_RIGHT, -18, 14);
+
+  // Velká ikona letadla. Založí se před řádky, aby text ležel nad ní: černý
+  // podklad canvasu tak nikdy nepřekryje písmo, i kdyby řádek byl dlouhý.
+  createPlaneDetailIcon(planesDetailIcon, planesDetailPanel,
+                        PLANES_DETAIL_ICON_SIZE);
+  if (planesDetailIcon.canvas != nullptr)
+    lv_obj_align(planesDetailIcon.canvas, LV_ALIGN_TOP_RIGHT,
+                 -PLANES_DETAIL_ICON_RIGHT,
+                 planesDetailRowY(0) +
+                     (4 * PLANES_DETAIL_ROW_STEP - PLANES_DETAIL_ICON_SIZE) / 2);
 
   for (uint8_t row = 0; row < PLANES_DETAIL_ROW_COUNT; ++row) {
     lv_obj_t *label = makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
@@ -7349,7 +7438,7 @@ void updateValuesPage() {
   }
 }
 
-// ---- Retro LCD a prstenec předpovědi (schéma 58) -------------------------
+// ---- Retro LCD a prstenec předpovědi (schéma 59) -------------------------
 
 // Hodnota slotu pro retro LCD a segmentový ukazatel: stejné jméno, jednotka
 // i desetinná místa jako na obrazovce hodnot. Vybitá baterie čidla dává
@@ -8870,7 +8959,13 @@ void composePlaneDetailModel(const PlaneRadarDetail &detail) {
   // Dokud letadlo v datech chybí, čísla nejsou živá; přiznat to je poctivější
   // než nechat zmrzlé hodnoty vypadat jako aktuální.
   model.signalLost = detail.signalLost;
+
+  model.iconKind = detail.iconKind;
+  model.iconHasTrack = detail.iconHasTrack;
+  model.iconTrackDeg = detail.iconTrackDeg;
+  model.iconColor = detail.iconColor;
 }
+
 
 // Kulatý panel detailu z modelu.
 void updatePlanesDetail() {
@@ -8888,6 +8983,27 @@ void updatePlanesDetail() {
   for (uint8_t index = 0; index < PlaneDetailViewModel::VALUE_ROWS; ++index) {
     snprintf(line, sizeof(line), "%s: %s", model.captions[index], model.values[index]);
     lv_label_set_text(planesDetailRows[row++], line);
+  }
+
+  // Ikona bere jen místo, které řádky s čísly nechaly volné (podle písma
+  // a jednotek jich je různě); když by vyšla moc malá, nekreslí se vůbec.
+  if (planesDetailIcon.canvas != nullptr) {
+    lv_coord_t rowsRight = 0;
+    for (uint8_t index = 0; index < PlaneDetailViewModel::VALUE_ROWS; ++index) {
+      lv_obj_t *label = planesDetailRows[index];
+      lv_obj_update_layout(label);
+      const lv_coord_t right = lv_obj_get_x(label) + lv_obj_get_width(label);
+      if (right > rowsRight) rowsRight = right;
+    }
+    lv_obj_update_layout(planesDetailIcon.canvas);
+    const lv_coord_t iconRight = lv_obj_get_x(planesDetailIcon.canvas) +
+                                 PLANES_DETAIL_ICON_SIZE;
+    const bool shown = renderPlaneDetailIcon(
+        planesDetailIcon, model, iconRight - (rowsRight + 8));
+    if (shown)
+      lv_obj_clear_flag(planesDetailIcon.canvas, LV_OBJ_FLAG_HIDDEN);
+    else
+      lv_obj_add_flag(planesDetailIcon.canvas, LV_OBJ_FLAG_HIDDEN);
   }
 
   if (model.type[0] != '\0')
@@ -11530,6 +11646,78 @@ bool clockDashboardHideNotification() {
 }
 
 bool clockDashboardNotificationVisible() { return notificationShown; }
+
+// --- Řádek o nedostupném zdroji dat ------------------------------------------
+// Na lv_layer_top() jako notifikace, aby ležel nad každou stránkou a stránky se
+// o něj při přepínání nemusely starat. Podklad je neprůhledný, takže se dá
+// přečíst i nad radarem nebo mapou. Písmo Barlow (lcd7_text15) má na rozdíl
+// od kulatého písma tečku "·" a češtinu na obou deskách.
+namespace {
+#if HODINY_BOARD_LCD7
+// Jeden řádek vlevo dole; vpravo dole je "aktualizováno ...".
+constexpr lv_coord_t SOURCE_STATUS_MAX_WIDTH = 500;
+#else
+// Dva řádky dole uprostřed, tak aby se rohy podkladu vešly do kruhu.
+constexpr lv_coord_t SOURCE_STATUS_MAX_WIDTH = 236;
+constexpr lv_coord_t SOURCE_STATUS_OFFSET_Y = 172;
+#endif
+const lv_color_t COLOR_SOURCE_STATUS = LV_COLOR_MAKE(255, 184, 67);
+
+lv_obj_t *sourceStatusPill = nullptr;
+lv_obj_t *sourceStatusLabel = nullptr;
+char sourceStatusText[96] = "";
+bool sourceStatusRed = false;
+
+void createSourceStatus() {
+  if (sourceStatusPill != nullptr) return;
+  sourceStatusPill = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(sourceStatusPill);
+  lv_obj_set_size(sourceStatusPill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_color(sourceStatusPill, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(sourceStatusPill, LV_OPA_90, 0);
+  lv_obj_set_style_radius(sourceStatusPill, 10, 0);
+  lv_obj_set_style_border_width(sourceStatusPill, 1, 0);
+  lv_obj_set_style_pad_hor(sourceStatusPill, 10, 0);
+  lv_obj_set_style_pad_ver(sourceStatusPill, 4, 0);
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_CLICKABLE);
+  sourceStatusLabel = lv_label_create(sourceStatusPill);
+  lv_obj_set_style_text_font(sourceStatusLabel, &lcd7_text15, 0);
+  lv_obj_set_style_text_align(sourceStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(sourceStatusLabel, "");
+}
+}  // namespace
+
+void clockDashboardSetSourceStatus(const char *text) {
+  if (text == nullptr) text = "";
+  const bool red = redNightVisualEnabled();
+  if (strcmp(text, sourceStatusText) == 0 && red == sourceStatusRed) return;
+  strlcpy(sourceStatusText, text, sizeof(sourceStatusText));
+  sourceStatusRed = red;
+  if (sourceStatusText[0] == '\0') {
+    if (sourceStatusPill != nullptr)
+      lv_obj_add_flag(sourceStatusPill, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  createSourceStatus();
+  const lv_color_t color = red ? COLOR_ERROR : COLOR_SOURCE_STATUS;
+  lv_obj_set_style_text_color(sourceStatusLabel, color, 0);
+  lv_obj_set_style_border_color(sourceStatusPill, color, 0);
+  lv_obj_set_style_border_opa(sourceStatusPill, LV_OPA_40, 0);
+  // Krátký text dostane podklad na míru, dlouhý se zalomí do nejvyšší šířky.
+  lv_label_set_long_mode(sourceStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(sourceStatusLabel, LV_SIZE_CONTENT);
+  lv_label_set_text(sourceStatusLabel, sourceStatusText);
+  lv_obj_update_layout(sourceStatusLabel);
+  if (lv_obj_get_width(sourceStatusLabel) > SOURCE_STATUS_MAX_WIDTH)
+    lv_obj_set_width(sourceStatusLabel, SOURCE_STATUS_MAX_WIDTH);
+#if HODINY_BOARD_LCD7
+  lv_obj_align(sourceStatusPill, LV_ALIGN_BOTTOM_LEFT, 14, -6);
+#else
+  lv_obj_align(sourceStatusPill, LV_ALIGN_CENTER, 0, SOURCE_STATUS_OFFSET_Y);
+#endif
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_HIDDEN);
+}
 
 #if HODINY_BOARD_LCD7
 #include "ClockDashboardLcd7.h"

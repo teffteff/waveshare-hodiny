@@ -4,6 +4,8 @@
 // převzaté z MeteoPlaneRadar 0.8.5, PlaneIcon.cpp:
 //   Copyright (c) 2026 Petr / chiptron.cz, licence MIT (THIRD_PARTY_NOTICES.md).
 // Vlastní je jen PlaneIcon_Draw, který tvary kreslí primitivy MapCanvas.
+// Zvětšení (zoom) a PlaneIcon_Radius pro detail letadla podle MeteoPlaneRadar
+// 0.9.9.
 
 #include "PlaneIcon.h"
 
@@ -274,30 +276,65 @@ namespace {
 constexpr float DEG_TO_RAD_F = 0.0174532925f;
 }  // namespace
 
+float PlaneIcon_Radius(uint8_t kind, bool hasTrack) {
+  if (kind == PI_BALLOON) return 10.0f;
+  // Ramena 7 px po úhlopříčce a k nim vrtule.
+  if (kind == PI_DRONE) return 14.0f;
+  if (!hasTrack) return 7.0f;
+  // Ocasní nosník s vrtulkou.
+  if (kind == PI_HELI) return 14.0f;
+  float farthest = 0.0f;
+  for (const int8_t *part = shapeOf(kind); *part; part += 2 + 2 * part[0]) {
+    for (int index = 0; index < part[0]; ++index) {
+      const float right = part[2 + 2 * index];
+      const float forward = part[3 + 2 * index];
+      const float distance = sqrtf(right * right + forward * forward);
+      if (distance > farthest) farthest = distance;
+    }
+  }
+  return farthest * scaleOf(kind);
+}
+
 void PlaneIcon_Draw(uint16_t *buffer, int x, int y, float trackDeg,
-                    bool hasTrack, uint8_t kind, uint16_t color) {
+                    bool hasTrack, uint8_t kind, uint16_t color, float zoom) {
+  if (!(zoom > 0.0f) || !isfinite(zoom)) zoom = 1.0f;
+  // Pevné rozměry tvarů se zvětšují s ikonou. Při zoom 1 vyjdou přesně
+  // původní čísla, takže mapa kreslí na pixel stejně jako dřív.
+  const auto Z = [zoom](float value) {
+    return static_cast<int>(lroundf(value * zoom));
+  };
+  // Zvětšená ikona by z jednopixelových čar vypadala jako drátěný model; od
+  // půldruhého násobku se obrysy kreslí dvakrát.
+  const bool thick = zoom > 1.5f;
   // Balon a dron nemají nos; kreslí se svisle.
   if (kind == PI_BALLOON) {
-    fillMapCircle(buffer, x, y - 3, 7, color, 100);
-    drawMapLine(buffer, x - 3, y + 3, x - 2, y + 7, color, 100);
-    drawMapLine(buffer, x + 3, y + 3, x + 2, y + 7, color, 100);
-    fillMapRect(buffer, x - 2, y + 7, 5, 3, color, 100);
+    fillMapCircle(buffer, x, y - Z(3), Z(7), color, 100);
+    drawMapLine(buffer, x - Z(3), y + Z(3), x - Z(2), y + Z(7), color, 100);
+    drawMapLine(buffer, x + Z(3), y + Z(3), x + Z(2), y + Z(7), color, 100);
+    fillMapRect(buffer, x - Z(2), y + Z(7), Z(5), Z(3), color, 100);
     return;
   }
   if (kind == PI_DRONE) {
-    drawMapLine(buffer, x - 7, y - 7, x + 7, y + 7, color, 100);
-    drawMapLine(buffer, x - 7, y + 7, x + 7, y - 7, color, 100);
-    drawMapCircle(buffer, x - 7, y - 7, 3, color, 100);
-    drawMapCircle(buffer, x + 7, y - 7, 3, color, 100);
-    drawMapCircle(buffer, x - 7, y + 7, 3, color, 100);
-    drawMapCircle(buffer, x + 7, y + 7, 3, color, 100);
-    fillMapRect(buffer, x - 2, y - 2, 5, 5, color, 100);
+    const int arm = Z(7);
+    const int rotor = Z(3);
+    const int body = Z(2);
+    drawMapLine(buffer, x - arm, y - arm, x + arm, y + arm, color, 100);
+    drawMapLine(buffer, x - arm, y + arm, x + arm, y - arm, color, 100);
+    for (const int dy : {-arm, arm}) {
+      for (const int dx : {-arm, arm}) {
+        drawMapCircle(buffer, x + dx, y + dy, rotor, color, 100);
+        if (thick) drawMapCircle(buffer, x + dx, y + dy, rotor - 1, color, 100);
+      }
+    }
+    fillMapRect(buffer, x - body, y - body, 2 * body + 1, 2 * body + 1, color,
+                100);
     return;
   }
   if (!hasTrack) {
     // Směr neznámý: kroužek s tečkou, natočit se není podle čeho.
-    drawMapCircle(buffer, x, y, 7, color, 100);
-    fillMapCircle(buffer, x, y, 2, color, 100);
+    drawMapCircle(buffer, x, y, Z(7), color, 100);
+    if (thick) drawMapCircle(buffer, x, y, Z(7) - 1, color, 100);
+    fillMapCircle(buffer, x, y, Z(2), color, 100);
     return;
   }
 
@@ -308,20 +345,24 @@ void PlaneIcon_Draw(uint16_t *buffer, int x, int y, float trackDeg,
   if (kind == PI_HELI) {
     // Kotouč rotoru, kabina, ocasní nosník s malou vrtulkou. Podle kotouče se
     // vrtulník pozná i v miniatuře.
-    drawMapCircle(buffer, x, y, 11, color, 100);
-    fillMapCircle(buffer, x, y, 4, color, 100);
-    const int tailX = x - static_cast<int>(13 * sine);
-    const int tailY = y + static_cast<int>(13 * cosine);
-    drawMapLine(buffer, x, y, tailX, tailY, color, 100);
-    drawMapLine(buffer, x + 1, y, tailX + 1, tailY, color, 100);
-    drawMapLine(buffer, tailX - static_cast<int>(3 * cosine),
-                tailY - static_cast<int>(3 * sine),
-                tailX + static_cast<int>(3 * cosine),
-                tailY + static_cast<int>(3 * sine), color, 100);
+    drawMapCircle(buffer, x, y, Z(11), color, 100);
+    if (thick) drawMapCircle(buffer, x, y, Z(11) - 1, color, 100);
+    fillMapCircle(buffer, x, y, Z(4), color, 100);
+    const int tailX = x - static_cast<int>(Z(13) * sine);
+    const int tailY = y + static_cast<int>(Z(13) * cosine);
+    // Nosník: dvě čáry vedle sebe, zvětšený čtyři.
+    const int width = thick ? 2 : 1;
+    for (int offset = -width + 1; offset <= width; ++offset)
+      drawMapLine(buffer, x + offset, y, tailX + offset, tailY, color, 100);
+    const int rotor = Z(3);
+    drawMapLine(buffer, tailX - static_cast<int>(rotor * cosine),
+                tailY - static_cast<int>(rotor * sine),
+                tailX + static_cast<int>(rotor * cosine),
+                tailY + static_cast<int>(rotor * sine), color, 100);
     return;
   }
 
-  const float scale = scaleOf(kind);
+  const float scale = scaleOf(kind) * zoom;
   // Stejné souřadnice jako původní šipka: right doprava od nosu, forward
   // dopředu; traťový úhel 0 míří nahoru.
   const auto rotate = [&](float right, float forward, int &outX, int &outY) {

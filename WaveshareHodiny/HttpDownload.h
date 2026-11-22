@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 
+#include "DownloadDeadline.h"
+
 // Propojení HTTPClient s HttpBodyReader. Nahrazuje HTTPClient::writeToStream(),
 // která u chunked odpovědi nemusí nikdy vrátit řízení a nechá viset TLS relaci.
 
@@ -13,7 +15,9 @@
 void httpDownloadPrepare(HTTPClient &http);
 
 // Stáhne tělo odpovědi do `destination`. `idleTimeoutMs` je nejdelší doba bez
-// jediného nového bajtu. Vrací počet zapsaných bajtů, nebo záporný
+// jediného nového bajtu, `totalTimeoutMs` celkový čas na celé tělo
+// (DownloadDeadline.h). Vrací počet zapsaných bajtů, nebo záporný
 // HttpBodyStatus.
 int httpDownloadBody(HTTPClient &http, Print &destination,
-                     uint32_t idleTimeoutMs);
+                     uint32_t idleTimeoutMs,
+                     uint32_t totalTimeoutMs = DOWNLOAD_DEFAULT_BUDGET_MS);

@@ -5,6 +5,12 @@
 
 void displayDriverInit();
 void displayDriverLoop();
+// Volá se na začátku každého dotyku (z lv_timer_handler, tedy z hlavní
+// smyčky). Vrátí-li true, celé gesto až do zvednutí prstu se zahodí: LVGL
+// dostane puštěný prst a klepnutí, tah ani podržení se nehlásí. Tak první
+// dotyk na displej zhasnutý v noci jen rozsvítí (NightDisplay.h).
+using DisplayTouchStartHook = bool (*)();
+void displayDriverSetTouchStartHook(DisplayTouchStartHook hook);
 void displayDriverRefresh();
 // Čtverec 480 x 480, do kterého se kreslí stránky navržené pro kulatý
 // displej. Na 2,1" je to přímo aktivní obrazovka, na 7" její pravá část

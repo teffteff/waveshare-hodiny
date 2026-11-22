@@ -54,11 +54,21 @@ enum class PlaneRouteState : uint8_t {
 // trasu" donekonečna a hodiny se ptaly každých pár vteřin nadarmo.
 constexpr uint8_t ROUTE_MAX_ATTEMPTS = 3;
 
+// Za jak dlouho se nepovedený dotaz zopakuje. Dřív se další pokus zařadil až
+// za příští stažení letadel (5 až 15 s, po chybě dvojnásobek), takže panel
+// psal "zjišťuji trasu" klidně půl minuty kvůli jednomu ztracenému spojení.
+// Server (infra/planes) teď odpovídá z předem stažené paměti za desetinu
+// vteřiny, takže dvě vteřiny stačí na to, aby chyba sítě odezněla, a API se
+// tím nemlátí: strop ROUTE_MAX_ATTEMPTS platí dál.
+constexpr uint32_t ROUTE_RETRY_DELAY_MS = 2000;
+
 struct RouteAttemptOutcome {
   // Co má panel ukázat.
   PlaneRouteState state = PlaneRouteState::Pending;
-  // Má se dotaz zopakovat při dalším stažení letadel?
+  // Má se dotaz zopakovat?
   bool tryAgain = false;
+  // Za kolik milisekund; 0 bez opakování.
+  uint32_t retryDelayMs = 0;
   // Kolik pokusů na tutéž značku už selhalo.
   uint8_t failures = 0;
 };
@@ -78,3 +88,38 @@ RouteParseStatus routeParse(const char *payload, float aircraftLatitude,
 // vrací názvy měst v Unicode - Izmir přijde jako U+0130 plus "zmir", tedy dva
 // bajty tam, kde písmo čeká jeden.
 void routeTextToAscii(char *destination, size_t capacity, const char *source);
+
+// Paměť posledních tras podle volací značky. Přepínání mezi letadly (nebo
+// letadlo poblíž, na které se hodiny vrátí za pár minut) se tak na trasu
+// neptá znovu. Malé pevné pole bez haldy: osm značek po ~60 bajtech.
+//   nalezená trasa platí 20 minut - let se za tu dobu nezmění,
+//   "trasa není" jen minutu - server ji mohl mezitím doplnit, nebo nesouhlasila
+//     s polohou, která se posunula,
+//   nepovedený dotaz se nepamatuje vůbec: to není odpověď.
+constexpr uint8_t ROUTE_CACHE_SIZE = 8;
+constexpr uint32_t ROUTE_CACHE_FOUND_MS = 20UL * 60UL * 1000UL;
+constexpr uint32_t ROUTE_CACHE_NO_ROUTE_MS = 60UL * 1000UL;
+
+struct RouteCacheEntry {
+  char callsign[10] = "";
+  bool found = false;
+  uint32_t storedAt = 0;
+  RouteInfo info;
+};
+
+struct RouteCache {
+  RouteCacheEntry entries[ROUTE_CACHE_SIZE];
+};
+
+// Uloží odpověď. Invalid (chyba sítě, rozbitá odpověď) se neukládá. Stejná
+// značka se přepíše, jinak se bere volné místo, nakonec nejstarší záznam.
+void routeCacheStore(RouteCache &cache, const char *callsign,
+                     RouteParseStatus status, const RouteInfo &info,
+                     uint32_t nowMs);
+
+// Platná odpověď pro značku: state je Known (s info), nebo Unknown. false,
+// když značku paměť nezná nebo záznam vypršel.
+bool routeCacheLookup(const RouteCache &cache, const char *callsign,
+                      uint32_t nowMs, PlaneRouteState &state, RouteInfo &info);
+
+void routeCacheClear(RouteCache &cache);

@@ -4,6 +4,7 @@
 // Překlad viz tools/run_host_tests.sh.
 
 #include <cassert>
+#include <vector>
 #include <cstring>
 #include <string>
 
@@ -2074,6 +2075,8 @@ void testPlanesExtrasPersistenceAndMigration() {
   assert(extras.windowDirection == 0);
   assert(extras.windowWidthDeg == CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG);
   assert(extras.windowRangeKm == CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
+  // Nula v rezervě je dosavadní chování: hned detail.
+  assert(extras.nearbyAlertMode == 0);
 
   // Uložené hodnoty přežijí, neplatné se srovnají na výchozí.
   normalized.planesExtras.nearbyEnabled = true;
@@ -2095,10 +2098,156 @@ void testPlanesExtrasPersistenceAndMigration() {
          CLOCK_PLANE_WINDOW_DEFAULT_WIDTH_DEG);
   assert(reloaded.planesExtras.windowRangeKm ==
          CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM);
+
+  // Režim upozornění: platný přežije, neznámý se vrátí na hned detail.
+  reloaded.planesExtras.nearbyAlertMode = 2;
+  assert(clockConfigSave(reloaded));
+  ClockConfig withMode;
+  assert(clockConfigLoad(withMode));
+  assert(withMode.planesExtras.nearbyAlertMode == 2);
+  withMode.planesExtras.nearbyAlertMode = 7;
+  assert(clockConfigSave(withMode));
+  ClockConfig badMode;
+  assert(clockConfigLoad(badMode));
+  assert(badMode.planesExtras.nearbyAlertMode == 0);
 }
 
-// Schéma 57 je předponou 58: všechno ostatní zůstane, ciferníky mají výchozí
-// hodnoty (prstenec vypnutý) a neplatné hodnoty se srovnají.
+// Pozice Open-Meteo ukládají desetinná místa do tmepSlots; normalizace
+// vymazává neúplné TMEP sloty a dřív s nimi zahodila i přesnost.
+void testOpenMeteoSlotDecimalsSurviveReload() {
+  for (uint8_t decimals = 0; decimals <= 2; ++decimals) {
+    hostPreferencesReset();
+    ClockConfig saved;
+    clockConfigApplyDefaults(saved);
+    saved.dataSource = CLOCK_DATA_SOURCE_OPEN_METEO;
+    for (ClockTmepSlotConfig &slot : saved.tmepSlots) {
+      slot = ClockTmepSlotConfig{};
+      slot.decimals = decimals;
+    }
+    // Smíšené nastavení: jedna pozice z TMEP s jinou přesností.
+    ClockTmepSlotConfig &tmep = saved.tmepSlots[1];
+    tmep.enabled = true;
+    clockConfigCopy(tmep.sensorId, sizeof(tmep.sensorId), "123");
+    clockConfigCopy(tmep.field, sizeof(tmep.field), "temperature");
+    clockConfigCopy(tmep.unit, sizeof(tmep.unit), "°C");
+    const uint8_t tmepDecimals = (decimals + 1) % 3;
+    tmep.decimals = tmepDecimals;
+    assert(clockConfigSave(saved));
+
+    ClockConfig loaded;
+    assert(clockConfigLoad(loaded));
+    for (size_t i = 0; i < 4; ++i) {
+      assert(loaded.tmepSlots[i].enabled == (i == 1));
+      assert(loaded.tmepSlots[i].decimals ==
+             (i == 1 ? tmepDecimals : decimals));
+    }
+    assert(strcmp(loaded.tmepSlots[1].sensorId, "123") == 0);
+    assert(strcmp(loaded.tmepSlots[1].unit, "°C") == 0);
+  }
+}
+
+void testDisplayExtrasPersistenceAndMigration() {
+  hostPreferencesReset();
+  ClockConfig defaults;
+  clockConfigApplyDefaults(defaults);
+  assert(!defaults.displayExtras.nightDisplayOff);
+  assert(defaults.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
+
+  // Schéma 57 je předponou 58: všechno uložené zůstane (tady jas, noc
+  // a letadlo poblíž z bloku schématu 57) a zhasnutí v noci je vypnuté,
+  // ne smetí za koncem záznamu.
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dayBrightness = 77;
+  source.nightBrightness = 4;
+  source.automaticDayNight = false;
+  source.nightVisualMode = CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY;
+  source.planesExtras.nearbyEnabled = true;
+  source.planesExtras.nearbyHoldSeconds = 42;
+  source.controls.enabled = true;
+  strcpy(source.homeAssistantUrl, "http://ha.local:8123");
+  memset(&source.displayExtras, 0xA5, sizeof(source.displayExtras));
+  seed(legacyRecord(source, 57, CLOCK_CONFIG_SCHEMA_57_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == CLOCK_CONFIG_SCHEMA_VERSION);
+  assert(migrated.dayBrightness == 77);
+  assert(migrated.nightBrightness == 4);
+  assert(!migrated.automaticDayNight);
+  assert(migrated.nightVisualMode == CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY);
+  assert(migrated.planesExtras.nearbyEnabled);
+  assert(migrated.planesExtras.nearbyHoldSeconds == 42);
+  assert(migrated.controls.enabled);
+  assert(strcmp(migrated.homeAssistantUrl, "http://ha.local:8123") == 0);
+  assert(!migrated.displayExtras.nightDisplayOff);
+  assert(migrated.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
+
+  migrated.displayExtras.nightDisplayOff = true;
+  migrated.displayExtras.nightWakeSeconds = 90;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.displayExtras.nightDisplayOff);
+  assert(loaded.displayExtras.nightWakeSeconds == 90);
+
+  // Doba mimo meze se srovná na výchozí.
+  loaded.displayExtras.nightWakeSeconds = 5;
+  assert(clockConfigSave(loaded));
+  ClockConfig clamped;
+  assert(clockConfigLoad(clamped));
+  assert(clamped.displayExtras.nightDisplayOff);
+  assert(clamped.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
+}
+
+// Schéma 57 je předponou 58 i 59: všechno ostatní zůstane, další volby
+// displeje i ciferníky mají výchozí hodnoty (prstenec vypnutý) a neplatné
+// hodnoty se srovnají.
+// Schéma 58 (zhasnutí v noci) je předponou 59: další volby displeje
+// zůstanou, ciferníky jsou výchozí a uloží se už jako schéma 59.
+void testFacesMigrationFromSchema58() {
+  hostPreferencesReset();
+  ClockConfig source;
+  clockConfigApplyDefaults(source);
+  source.dayBrightness = 44;
+  source.planesExtras.windowEnabled = true;
+  source.displayExtras.nightDisplayOff = true;
+  source.displayExtras.nightWakeSeconds = 75;
+  memset(&source.faces, 0x5A, sizeof(source.faces));
+  seed(legacyRecord(source, 58, CLOCK_CONFIG_SCHEMA_58_SIZE));
+  ClockConfig migrated;
+  assert(clockConfigLoad(migrated));
+  assert(migrated.schemaVersion == 59);
+  assert(migrated.dayBrightness == 44);
+  assert(migrated.planesExtras.windowEnabled);
+  assert(migrated.displayExtras.nightDisplayOff);
+  assert(migrated.displayExtras.nightWakeSeconds == 75);
+  assert(!migrated.faces.forecastFanEnabled);
+  assert(migrated.faces.forecastFanHours == 12);
+  assert(migrated.faces.retroGhostPercent == CLOCK_RETRO_DEFAULT_GHOST_PERCENT);
+  assert(migrated.faces.retroBackgroundColor == CLOCK_RETRO_DEFAULT_BACKGROUND);
+
+  // Uložení zapíše celý záznam schématu 59; po načtení drží oba bloky.
+  migrated.faces.forecastFanEnabled = true;
+  assert(clockConfigSave(migrated));
+  ClockConfig loaded;
+  assert(clockConfigLoad(loaded));
+  assert(loaded.schemaVersion == 59);
+  assert(loaded.faces.forecastFanEnabled);
+  assert(loaded.displayExtras.nightDisplayOff);
+  assert(loaded.displayExtras.nightWakeSeconds == 75);
+  // A znovu načtený záznam je aktuální, ne migrovaný: stejný obsah.
+  std::vector<uint8_t> first(clockConfigRecordSize()), second(clockConfigRecordSize());
+  assert(clockConfigEncodeRecord(loaded, first.data(), first.size()) == first.size());
+  ClockConfig decoded;
+  assert(clockConfigDecodeRecord(first.data(), first.size(), decoded) ==
+         ClockConfigRecordStatus::Ok);
+  assert(clockConfigEncodeRecord(decoded, second.data(), second.size()) == second.size());
+  assert(first == second);
+}
+
 void testFacesPersistenceAndMigration() {
   hostPreferencesReset();
   ClockConfig defaults;
@@ -2125,7 +2274,10 @@ void testFacesPersistenceAndMigration() {
   assert(migrated.controls.enabled);
   assert(migrated.dayBrightness == 61);
   assert(strcmp(migrated.slots[2].name, "CO2 OBYVAK") == 0);
-  // Smetí za koncem starého záznamu se nepřečte: ciferníky jsou výchozí.
+  // Smetí za koncem starého záznamu se nepřečte: oba nové bloky jsou výchozí.
+  assert(!migrated.displayExtras.nightDisplayOff);
+  assert(migrated.displayExtras.nightWakeSeconds ==
+         CLOCK_NIGHT_WAKE_DEFAULT_SECONDS);
   assert(!migrated.faces.forecastFanEnabled);
   assert(migrated.faces.retroBackgroundColor == CLOCK_RETRO_DEFAULT_BACKGROUND);
   assert(migrated.faces.retroLeftSource == 0 && migrated.faces.retroRightSource == 1);
@@ -2176,7 +2328,10 @@ void testFacesPersistenceAndMigration() {
 }
 
 int main() {
+  testOpenMeteoSlotDecimalsSurviveReload();
+  testDisplayExtrasPersistenceAndMigration();
   testFacesPersistenceAndMigration();
+  testFacesMigrationFromSchema58();
   testPushAlertsPersistenceAndMigration();
   testRadarAlertsPersistenceAndMigration();
   testHistoryUrlPersistenceAndMigration();

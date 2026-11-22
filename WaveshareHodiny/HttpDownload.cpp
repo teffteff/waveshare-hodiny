@@ -40,7 +40,7 @@ void httpDownloadPrepare(HTTPClient &http) {
 }
 
 int httpDownloadBody(HTTPClient &http, Print &destination,
-                     uint32_t idleTimeoutMs) {
+                     uint32_t idleTimeoutMs, uint32_t totalTimeoutMs) {
   NetworkClient *stream = http.getStreamPtr();
   if (stream == nullptr) return HTTP_BODY_TIMEOUT;
   String encoding = http.header(TRANSFER_ENCODING_HEADER);
@@ -48,5 +48,6 @@ int httpDownloadBody(HTTPClient &http, Print &destination,
   const bool chunked = encoding.indexOf("chunked") >= 0;
   NetworkClientByteSource source(*stream);
   PrintByteSink sink(destination);
-  return httpBodyRead(source, sink, chunked, http.getSize(), idleTimeoutMs);
+  return httpBodyRead(source, sink, chunked, http.getSize(), idleTimeoutMs,
+                      totalTimeoutMs);
 }

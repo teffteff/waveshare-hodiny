@@ -50,6 +50,8 @@
 #include "LightningService.h"
 #include "NetworkDiagnostics.h"
 #include "NetworkCoordinator.h"
+#include "NightDisplay.h"
+#include "SourceHealth.h"
 #include "NetPoll.h"
 #include "TlsBundle.h"
 #include "TlsMemory.h"
@@ -157,6 +159,13 @@ bool forceNightTestActive = false;
 #endif
 uint8_t currentDisplayBrightness = 35;
 bool displayForcedOff = false;
+// Displej zhasnutý v noci (NightDisplay.h, volba schématu 58). Jen
+// podsvícení: panel i LVGL běží dál, takže dotyk rozsvítí hned hotový obraz.
+NightDisplay nightDisplay;
+bool nightDisplayDark = false;
+// Drželo minule nějaké upozornění obrazovku? Rozsvítí se jen na začátku
+// držení, ne při každém jeho prodloužení deštěm v okolí.
+bool nightDisplayAlertWasHolding = false;
 volatile bool firmwareUpdateDisplayRequested = false;
 volatile bool firmwareUpdateDisplayPresented = false;
 volatile bool firmwareUpdateBlackRequested = false;
@@ -787,9 +796,33 @@ void applyDevelopmentDefaults(ClockConfig &config) {
 #endif
 }
 
+// Jediné místo, které za běhu nastavuje podsvícení: vypnutý displej z webu
+// i zhasnutí v noci mají přednost před jasem.
+void applyBacklight() {
+  Set_Backlight(displayForcedOff || nightDisplayDark ? 0
+                                                     : currentDisplayBrightness);
+}
+
 void handleBrightnessPreview(uint8_t brightness) {
   currentDisplayBrightness = constrain(brightness, 1, 100);
-  Set_Backlight(displayForcedOff ? 0 : currentDisplayBrightness);
+  applyBacklight();
+}
+
+// Začátek dotyku (DisplayDriver). Na displeji zhasnutém v noci dotyk jen
+// rozsvítí a gesto se zahodí; na rozsvíceném prodlouží dobu a projde.
+// Displej vypnutý z webu se dotykem nerozsvěcuje, jako dosud.
+bool handleTouchStart() {
+  if (displayForcedOff) return false;
+  const uint32_t wakeMs =
+      static_cast<uint32_t>(
+          loopConfigSnapshot().displayExtras.nightWakeSeconds) *
+      1000UL;
+  const bool swallow = nightDisplay.touch(millis(), wakeMs);
+  if (nightDisplayDark) {
+    nightDisplayDark = false;
+    applyBacklight();
+  }
+  return swallow;
 }
 
 void handleDisplayPower(bool forcedOff) {
@@ -802,7 +835,13 @@ void handleDisplayPower(bool forcedOff) {
   }
   LCD_Wake();
   displayDriverRefresh();
-  Set_Backlight(currentDisplayBrightness);
+  // Kdo displej zapne z webu, chce ho vidět i v noci, kdy by jinak zhasl.
+  nightDisplay.wakeFor(
+      millis(), static_cast<uint32_t>(
+                    loopConfigSnapshot().displayExtras.nightWakeSeconds) *
+                    1000UL);
+  nightDisplayDark = false;
+  applyBacklight();
 }
 
 bool displayPowerForcedOff() {
@@ -1416,6 +1455,8 @@ bool planeNearbyHolding() {
 void cancelPlaneNearbyHold() {
   if (!planeNearbyHolding()) return;
   planeNearbyHeldUntil = 0;
+  // Detail, který ještě čekal na konec mapy, se už neotevře.
+  planeRadarServiceEndNearby();
   alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
   alertReturnFrom = ROTATION_SCREEN_RADAR;
   displayModeStartedAt = millis();
@@ -1922,6 +1963,7 @@ void rememberAlertReturnScreen() {
   // a radar se pak vrátí tam, odkud letadlo přišlo, ne na letadla.
   if (planeNearbyHolding()) {
     planeNearbyHeldUntil = 0;
+    planeRadarServiceEndNearby();
     alertReturnFrom = ROTATION_SCREEN_RADAR;
     return;
   }
@@ -2532,7 +2574,8 @@ constexpr unsigned long PLANE_NEARBY_CHECK_MS = 1000;
 
 // Letadlo poblíž (podle MeteoPlaneRadar 0.8.0): přiblíží-li se letadlo
 // k domovu nebo vletí do výhledu z okna, hodiny přepnou na radar letadel,
-// otevřou jeho detail a po nastavené době se vrátí tam, odkud přišly. Které
+// otevřou jeho detail (nebo nejdřív ukážou mapu, či jen mapu - 0.9.8/0.9.9)
+// a po nastavené době se vrátí tam, odkud přišly. Které
 // letadlo to je, vybírá služba po každém stažení (PlaneNearby.h); tady se jen
 // rozhoduje, jestli se smí přepnout. Funguje i bez automatického střídání.
 void maintainPlaneNearby() {
@@ -2545,12 +2588,14 @@ void maintainPlaneNearby() {
       // Letadla mezitím vystřídalo něco jiného - gesto, web, aktualizace -,
       // nebo se funkce vypnula: držení končí a nikam se nevrací.
       planeNearbyHeldUntil = 0;
+      planeRadarServiceEndNearby();
       alertReturnScreen = CLOCK_SCREEN_ORDER_UNUSED;
       alertReturnFrom = ROTATION_SCREEN_RADAR;
       displayModeStartedAt = now;
       scheduleCheckPending = true;
     } else if (static_cast<long>(now - planeNearbyHeldUntil) >= 0) {
       planeNearbyHeldUntil = 0;
+      planeRadarServiceEndNearby();
       displayModeStartedAt = now;
       scheduleCheckPending = true;
       alertReturnPending = true;
@@ -2585,15 +2630,123 @@ void maintainPlaneNearby() {
                           ? CLOCK_SCREEN_ORDER_UNUSED
                           : current;
   alertReturnFrom = ROTATION_SCREEN_PLANES;
-  const uint8_t previousRange = planeRadarServiceShowNearby(candidate);
+  const unsigned long holdMs =
+      static_cast<unsigned long>(config.planesExtras.nearbyHoldSeconds) * 1000UL;
+  // Jak letadlo ukázat: hned detail, nejdřív mapa (čtvrtina doby), nebo jen
+  // mapa. Celková doba ukázání je ve všech režimech stejná.
+  const PlaneNearbyAlertMode alertMode =
+      config.planesExtras.nearbyAlertMode < PLANE_NEARBY_ALERT_MODE_COUNT
+          ? static_cast<PlaneNearbyAlertMode>(config.planesExtras.nearbyAlertMode)
+          : PlaneNearbyAlertMode::Detail;
+  const uint8_t previousRange = planeRadarServiceShowNearby(
+      candidate, alertMode, planeNearbyMapStepMs(holdMs));
   if (planeNearbySavedRange == UINT8_MAX) {
     planeNearbySavedRange = previousRange;
     planeNearbySavedConfiguredRange = config.planes.rangeIndex;
   }
-  const unsigned long holdMs =
-      static_cast<unsigned long>(config.planesExtras.nearbyHoldSeconds) * 1000UL;
   planeNearbyHeldUntil = now + (holdMs > 0 ? holdMs : 1000UL);
   if (planeNearbyHeldUntil == 0) planeNearbyHeldUntil = 1;
+}
+
+// Do kdy drží obrazovku upozornění, které drží nejdéle; 0 = žádné.
+unsigned long alertHoldRemainingMs(unsigned long now) {
+  unsigned long longest = 0;
+  const unsigned long holds[] = {rainAlertHeldUntil, warningHeldUntil,
+                                 lightningHeldUntil, auroraHeldUntil,
+                                 planeNearbyHeldUntil};
+  for (const unsigned long until : holds) {
+    if (until == 0 || static_cast<long>(now - until) >= 0) continue;
+    if (until - now > longest) longest = until - now;
+  }
+  return longest;
+}
+
+// Displej zhasnutý v noci. Rozsvítí ho den, vypnutí volby, dotyk
+// (handleTouchStart), začátek držení upozornění (déšť, výstraha, blesky,
+// polární záře, letadlo poblíž) na dobu držení, notifikace z API po dobu,
+// kdy je na displeji, a aktualizace firmwaru. Upozornění na telefon hodiny
+// jen čtou a obrazovku nepřepínají, takže displej nerozsvěcují.
+void maintainNightDisplay() {
+  const ClockConfig &config = loopConfigSnapshot();
+  const unsigned long now = millis();
+  const bool holding = alertHolding();
+  if (holding && !nightDisplayAlertWasHolding)
+    nightDisplay.wakeFor(now, alertHoldRemainingMs(now));
+  nightDisplayAlertWasHolding = holding;
+  const bool keepAwake = clockDashboardNotificationVisible() ||
+                         firmwareUpdateDisplayRequested;
+  const bool dark =
+      nightDisplay.update(now, config.displayExtras.nightDisplayOff,
+                          clockDashboardNightModeEnabled(), keepAwake);
+  if (dark == nightDisplayDark) return;
+  nightDisplayDark = dark;
+  applyBacklight();
+}
+
+// Zdroj dat, na kterém obrazovka stojí, pro společný řádek o nedostupnosti
+// (SourceHealth.h). staleData říká, že obrazovka při výpadku dál ukazuje
+// poslední stažená data, takže je řádek označí "Stará data". Radar letadel
+// stáří letadel píše sám ("Stará data: N min"), proto ho řádek neopakuje.
+// Slunce a Měsíc se počítají v hodinách, zdroj nemají.
+bool screenSource(const ClockConfig &config, uint8_t screen,
+                  ClockSource &source, bool &staleData) {
+  staleData = true;
+  switch (screen) {
+    case ROTATION_SCREEN_CLOCK:
+    case ROTATION_SCREEN_CONTROLS:
+      source = config.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO &&
+                       screen == ROTATION_SCREEN_CLOCK
+                   ? ClockSource::OpenMeteo
+                   : ClockSource::HomeAssistant;
+      return true;
+    case ROTATION_SCREEN_RADAR: source = ClockSource::Radar; return true;
+    case ROTATION_SCREEN_RSS: source = ClockSource::Rss; return true;
+    case ROTATION_SCREEN_FORECAST:
+      // Předpověď je hlavní; naměřená historie se hlásí, jen když předpověď
+      // jde a historie ne.
+      source = sourceHealthGet(ClockSource::Forecast).down()
+                   ? ClockSource::Forecast
+                   : ClockSource::History;
+      return true;
+    case ROTATION_SCREEN_PLANES:
+      source = ClockSource::Planes;
+      staleData = false;
+      return true;
+    case ROTATION_SCREEN_AGENDA: source = ClockSource::Agenda; return true;
+    case ROTATION_SCREEN_SCHOOL: source = ClockSource::School; return true;
+    case ROTATION_SCREEN_SATELLITES:
+      source = ClockSource::Satellites;
+      return true;
+    case ROTATION_SCREEN_TRAFFIC: source = ClockSource::Traffic; return true;
+    default: return false;
+  }
+}
+
+constexpr unsigned long SOURCE_STATUS_REFRESH_MS = 1000;
+
+// Společný řádek "Zdroj nedostupný · další pokus za N min" pro obrazovku na
+// displeji. Obnovuje se po vteřině, aby odpočet seděl.
+void maintainSourceStatus() {
+  static unsigned long refreshedAt = 0;
+  const unsigned long now = millis();
+  if (now - refreshedAt < SOURCE_STATUS_REFRESH_MS) return;
+  refreshedAt = now;
+  char text[96];
+  text[0] = '\0';
+  const ClockConfig &config = loopConfigSnapshot();
+  ClockSource source = ClockSource::Count;
+  bool staleData = false;
+  // Nastavení, notifikace ani aktualizace firmwaru se řádkem nepřekrývají.
+  if (!clockDashboardSettingsVisible() && !clockDashboardNotificationVisible() &&
+      !firmwareUpdateDisplayRequested && !firmwareUpdateBlackRequested &&
+      screenSource(config, activeRotationScreen(), source, staleData)) {
+    const SourceHealth health = sourceHealthGet(source);
+    sourceHealthFormat(health, static_cast<uint32_t>(now),
+                       staleData && health.everOk,
+                       config.language == CLOCK_LANGUAGE_ENGLISH, text,
+                       sizeof(text));
+  }
+  clockDashboardSetSourceStatus(text);
 }
 
 // Dnešní místní půlnoc a délka dne v sekundách; při změně času má den 23 nebo
@@ -4314,7 +4467,15 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
     NetworkClient *stream = http.getStreamPtr();
     char chunk[512];
     unsigned long lastDataAt = millis();
+    // Historie nemá strop velikosti a čte se, dokud server posílá; bez
+    // celkového stropu by ji pomalý přenos mohl táhnout libovolně dlouho.
+    const DownloadDeadline deadline(millis(), DOWNLOAD_LARGE_BUDGET_MS);
+    bool expired = false;
     while (http.connected() || stream->available()) {
+      if (deadline.expired(millis())) {
+        expired = true;
+        break;
+      }
       const int available = stream->available();
       if (available <= 0) {
         if (millis() - lastDataAt > HOME_ASSISTANT_RESPONSE_TIMEOUT_MS) break;
@@ -4327,6 +4488,8 @@ void streamHomeAssistantHistory(NetworkClient &client, const ClockConfig &config
       lastDataAt = millis();
     }
     http.end();
+    // Useknutá historie by vypadala jako celá, jen kratší.
+    if (expired) continue;
     const size_t records = parser.finish(buckets);
     if (records > 0)
       clockDashboardLcd7StageHistory(slotIndex, buckets, parser.rangeLow(),
@@ -4447,6 +4610,7 @@ unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
       lastFetchedUrl[0] = '\0';
     }
     nextAgendaRefreshAt = 0;
+    sourceHealthReset(ClockSource::Agenda);
     return 0;
   }
   const bool calendarsChanged =
@@ -4458,6 +4622,7 @@ unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
     // po odebrání hesla nesmí jeho události zůstat na displeji do dalšího
     // úspěšného stažení, které se třeba vůbec nepovede.
     if (lastFetchedUrl[0] != '\0') agendaServiceClear();
+    sourceHealthReset(ClockSource::Agenda);
     strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
     lastCalendars = calendars;
     nextAgendaRefreshAt = 0;
@@ -4476,6 +4641,7 @@ unsigned long maintainAgendaFetch(const ClockAgendaConfig &config,
       ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
          : AGENDA_RETRY_MS;
   nextAgendaRefreshAt = millis() + interval;
+  sourceHealthRecord(ClockSource::Agenda, ok, interval);
   return interval;
 }
 
@@ -4567,11 +4733,13 @@ unsigned long maintainSchoolFetch(const ClockSchoolConfig &config,
       lastFetchedUrl[0] = '\0';
     }
     nextRefreshAt = 0;
+    sourceHealthReset(ClockSource::School);
     return 0;
   }
   if (strcmp(lastFetchedUrl, config.url) != 0) {
     // Jiný server: rozvrh z toho původního pryč a stáhnout hned.
     if (lastFetchedUrl[0] != '\0') schoolServiceClear();
+    sourceHealthReset(ClockSource::School);
     strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
     nextRefreshAt = 0;
   }
@@ -4587,6 +4755,7 @@ unsigned long maintainSchoolFetch(const ClockSchoolConfig &config,
       ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
          : SCHOOL_RETRY_MS;
   nextRefreshAt = millis() + interval;
+  sourceHealthRecord(ClockSource::School, ok, interval);
   return interval;
 }
 
@@ -4643,6 +4812,7 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
       lastFetchedUrl[0] = '\0';
     }
     nextRssRefreshAt = 0;
+    sourceHealthReset(ClockSource::Rss);
     return 0;
   }
   // Nová poloha se počítá jako jiný zdroj jen u adresy, která ji nese; jinak
@@ -4652,6 +4822,7 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
       (usesLocation && !sameRssLocation(lastLocation, location))) {
     // Jiný zdroj: zahodíme zprávy z toho původního a stáhneme hned.
     if (lastFetchedUrl[0] != '\0') rssServiceClear();
+    sourceHealthReset(ClockSource::Rss);
     strlcpy(lastFetchedUrl, config.url, lastFetchedUrlSize);
     lastLocation = location;
     nextRssRefreshAt = 0;
@@ -4670,6 +4841,7 @@ unsigned long maintainRssFetch(const ClockRssConfig &config,
       ok ? static_cast<unsigned long>(config.refreshMinutes) * 60UL * 1000UL
          : RSS_RETRY_MS;
   nextRssRefreshAt = millis() + interval;
+  sourceHealthRecord(ClockSource::Rss, ok, interval);
   return interval;
 }
 
@@ -4726,6 +4898,7 @@ unsigned long maintainForecastFetch(const ForecastTaskConfig &config,
       cacheHolds = false;
     }
     nextRefreshAt = 0;
+    sourceHealthReset(ClockSource::Forecast);
     return 0;
   }
   const unsigned long now = millis();
@@ -4741,6 +4914,7 @@ unsigned long maintainForecastFetch(const ForecastTaskConfig &config,
                1000UL
          : FORECAST_RETRY_MS;
   nextRefreshAt = millis() + interval;
+  sourceHealthRecord(ClockSource::Forecast, ok, interval);
   return interval;
 }
 
@@ -4754,6 +4928,7 @@ unsigned long maintainHistoryFetch(const ForecastTaskConfig &config,
   if (!config.forecast.enabled || config.historyUrl[0] == '\0') {
     weatherHistoryServiceClear();
     nextRefreshAt = 0;
+    sourceHealthReset(ClockSource::History);
     return 0;
   }
   const unsigned long now = millis();
@@ -4766,6 +4941,7 @@ unsigned long maintainHistoryFetch(const ForecastTaskConfig &config,
       weatherHistoryServiceFetch(url);
   const unsigned long interval = ok ? HISTORY_REFRESH_MS : HISTORY_RETRY_MS;
   nextRefreshAt = millis() + interval;
+  sourceHealthRecord(ClockSource::History, ok, interval);
   return interval;
 }
 
@@ -4793,6 +4969,8 @@ uint32_t forecastStep(bool woken) {
       weatherForecastServiceClear();
       state.forecastCacheHolds = false;
     }
+    sourceHealthReset(ClockSource::Forecast);
+    sourceHealthReset(ClockSource::History);
     state.lastForecastLatitude = config.latitude;
     state.lastForecastLongitude = config.longitude;
     state.nextForecastRefreshAt = 0;
@@ -4854,9 +5032,10 @@ void homeAssistantTask(void *) {
       bool valuesUpdated = false;
       if (deadlineReached(now, nextOpenMeteoRefreshAt)) {
         const bool responded = fetchOpenMeteo(config, values);
-        nextOpenMeteoRefreshAt =
-            millis() +
-            (responded ? OPEN_METEO_REFRESH_MS : EXTERNAL_DATA_RETRY_MS);
+        const unsigned long openMeteoWaitMs =
+            responded ? OPEN_METEO_REFRESH_MS : EXTERNAL_DATA_RETRY_MS;
+        nextOpenMeteoRefreshAt = millis() + openMeteoWaitMs;
+        sourceHealthRecord(ClockSource::OpenMeteo, responded, openMeteoWaitMs);
         valuesUpdated = true;
       }
 
@@ -4909,6 +5088,7 @@ void homeAssistantTask(void *) {
 
     if (config.homeAssistantUrl[0] == '\0' ||
         config.homeAssistantToken[0] == '\0') {
+      sourceHealthReset(ClockSource::HomeAssistant);
       publishHomeAssistantValues(ClockValues{});
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOME_ASSISTANT_RETRY_MS));
       continue;
@@ -4920,6 +5100,9 @@ void homeAssistantTask(void *) {
     const bool apiResponded =
         fetchHomeAssistantStates(config, values, includeBatteries);
     values.homeAssistantOnline = apiResponded;
+    sourceHealthRecord(
+        ClockSource::HomeAssistant, apiResponded,
+        apiResponded ? HOME_ASSISTANT_REFRESH_MS : HOME_ASSISTANT_RETRY_MS);
     if (apiResponded) {
       lastAvailableValues = values;
       if (includeBatteries)
@@ -5042,6 +5225,7 @@ void setup() {
   currentDisplayBrightness = runtimeConfig.dayBrightness;
   Set_Backlight(currentDisplayBrightness);
   displayDriverInit();
+  displayDriverSetTouchStartHook(handleTouchStart);
   memoryCensusCheckpoint("display");
   deviceNameLoad(networkDeviceName, sizeof(networkDeviceName));
   // Jméno pro DHCP se předává při startu rozhraní, proto před Wi-Fi.
@@ -5236,6 +5420,8 @@ void loop() {
   maintainLightningAlert();
   maintainPlaneNearby();
   maintainAlertReturn();
+  maintainNightDisplay();
+  maintainSourceStatus();
   maintainAuroraAlert();
   maintainAutomaticScreenRotation();
   // Během DEV screenshotu už přenášíme neměnnou kopii framebufferu. Dočasné

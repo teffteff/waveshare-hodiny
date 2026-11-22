@@ -108,3 +108,21 @@ bool planeNearbyPick(const AdsbAircraft *list, size_t count,
                      const PlaneFilter &filter,
                      const PlaneNearbyMemory &memory, uint32_t now,
                      PlaneNearbyPick &pick);
+
+// Jak upozornění letadlo ukáže (ClockPlanesExtrasConfig::nearbyAlertMode).
+// Podle MeteoPlaneRadar 0.9.8 a 0.9.9.
+enum class PlaneNearbyAlertMode : uint8_t {
+  // Hned detail letadla - chování od zavedení letadla poblíž, výchozí.
+  Detail = 0,
+  // Nejdřív chvíli mapa s tyrkysovým kroužkem, kde letadlo je, pak detail.
+  RadarThenDetail = 1,
+  // Jen mapa s kroužkem, detail se neotevře.
+  MapOnly = 2,
+};
+constexpr uint8_t PLANE_NEARBY_ALERT_MODE_COUNT = 3;
+
+// Jak dlouho ukazuje "nejdřív mapa" mapu, než otevře detail: čtvrtina celého
+// ukázání, aspoň 5 s, ale nikdy víc než polovina (pětivteřinové upozornění by
+// jinak bylo celé jen mapa) ani víc než 15 s (mapa je na najití letadla, ne na
+// čekání).
+uint32_t planeNearbyMapStepMs(uint32_t holdMs);

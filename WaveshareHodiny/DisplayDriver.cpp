@@ -41,6 +41,10 @@ uint16_t heldTapX = 0;
 uint16_t heldTapY = 0;
 uint32_t heldTapAt = 0;
 bool touchDown = false;
+// Dotyk, který jen rozsvítil zhasnutý displej (NightDisplay.h). Celé gesto se
+// až do zvednutí prstu zahodí: LVGL ho nevidí a gesta se nevyhodnotí.
+bool touchSwallowed = false;
+DisplayTouchStartHook touchStartHook = nullptr;
 uint16_t touchStartX = 0;
 uint16_t touchStartY = 0;
 uint16_t touchLastX = 0;
@@ -218,6 +222,7 @@ void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
   if (validSample) {
     if (!touchDown) {
       touchDown = true;
+      touchSwallowed = touchStartHook != nullptr && touchStartHook();
       touchStartX = sampleX;
       touchStartY = sampleY;
       touchStartedAt = now;
@@ -227,13 +232,14 @@ void readTouch(lv_indev_drv_t *, lv_indev_data_t *data) {
     touchLastSeenAt = now;
   } else if (touchDown && now - touchLastSeenAt >= TOUCH_RELEASE_MS) {
     touchDown = false;
-    classifyTouchGesture();
+    if (!touchSwallowed) classifyTouchGesture();
+    touchSwallowed = false;
   }
 
   // LVGL dostává dotyk beze změny, aby nastavení na displeji zůstalo plně
   // ovladatelné. Během krátkého ticha po vzorku držíme poslední souřadnici
   // stisknutou, jinak by se jeden tah po stránce rozpadl na několik stisků.
-  if (touchDown) {
+  if (touchDown && !touchSwallowed) {
     data->point.x = touchLastX;
     data->point.y = touchLastY;
     data->state = LV_INDEV_STATE_PR;
@@ -288,6 +294,10 @@ void displayDriverInit() {
   esp_timer_handle_t tickTimer = nullptr;
   ESP_ERROR_CHECK(esp_timer_create(&tickTimerArgs, &tickTimer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(tickTimer, 2000));
+}
+
+void displayDriverSetTouchStartHook(DisplayTouchStartHook hook) {
+  touchStartHook = hook;
 }
 
 void displayDriverLoop() {

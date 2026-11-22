@@ -46,6 +46,7 @@
 #include "NetworkDiagnostics.h"
 #include "DeviceName.h"
 #include "SettingsBackup.h"
+#include "SourceHealth.h"
 #include "SettingsBackupCrypto.h"
 #include "TmepService.h"
 #include "WeatherWarningService.h"
@@ -817,7 +818,7 @@ bool parseRetroSource(const String &value, bool allowWeather, bool allowOff,
   return true;
 }
 
-// Ciferníky (schéma 58) jako vnořený objekt "faces".
+// Ciferníky (schéma 59) jako vnořený objekt "faces".
 String facesJson(const ClockFacesConfig &faces) {
   String result = F(",\"faces\":{\"retroBackgroundColor\":\"");
   result += htmlColor(faces.retroBackgroundColor);
@@ -2006,6 +2007,8 @@ void handleGetConfig() {
   // Uložené obráceně (nearbyAtNight), na stránce jako "v noci nepřepínat".
   result += F(",\"planesNearbyQuietAtNight\":");
   result += config.planesExtras.nearbyAtNight ? F("false") : F("true");
+  result += F(",\"planesNearbyAlertMode\":");
+  result += config.planesExtras.nearbyAlertMode;
   result += F(",\"planesWindowEnabled\":");
   result += config.planesExtras.windowEnabled ? F("true") : F("false");
   result += F(",\"planesWindowDirection\":");
@@ -2201,6 +2204,10 @@ void handleGetConfig() {
   result += config.nightBrightness;
   result += F(",\"automaticDayNight\":");
   result += config.automaticDayNight ? F("true") : F("false");
+  result += F(",\"nightDisplayOff\":");
+  result += config.displayExtras.nightDisplayOff ? F("true") : F("false");
+  result += F(",\"nightWakeSeconds\":");
+  result += config.displayExtras.nightWakeSeconds;
   result += F(",\"nightVisualMode\":\"");
   result += config.nightVisualMode == CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY
                 ? F("brightness")
@@ -3090,6 +3097,15 @@ void handleSaveConfig() {
       sendError(400, F("Dohled z okna musí být 1 až 50 km."));
       return;
     }
+    // Režim ukázání přibyl později; stránka bez něj ho nechá, jak je.
+    const bool alertModeField = server.hasArg("planesNearbyAlertMode");
+    const int nearbyAlertMode = server.arg("planesNearbyAlertMode").toInt();
+    if (alertModeField &&
+        (nearbyAlertMode < 0 ||
+         nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)) {
+      sendError(400, F("Způsob ukázání letadla poblíž není v nabídce."));
+      return;
+    }
     String planesFeedUrl = server.arg("planesFeedUrl");
     planesFeedUrl.trim();
     if (planesFeedUrl.length() >= CLOCK_PLANES_FEED_URL_LENGTH) {
@@ -3131,6 +3147,9 @@ void handleSaveConfig() {
       extras.windowWidthDeg = static_cast<uint8_t>(windowWidth);
       extras.windowRangeKm = static_cast<uint8_t>(windowRangeKm);
     }
+    if (alertModeField)
+      config.planesExtras.nearbyAlertMode =
+          static_cast<uint8_t>(nearbyAlertMode);
     config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
     // Stránka uložená ze starší verze pole neposílá; uložený popisek zůstane.
     const String planesMapLabel = server.arg("planesMapLabel");
@@ -3344,6 +3363,19 @@ void handleSaveConfig() {
   config.nightBrightness =
       constrain(server.arg("nightBrightness").toInt(), 1, 100);
   config.automaticDayNight = automaticDayNight;
+  // Zhasnutí v noci (schéma 58). Stránka ze starší verze pole neposílá;
+  // uložené volby pak zůstanou.
+  if (server.hasArg("nightDisplayOff"))
+    config.displayExtras.nightDisplayOff = server.arg("nightDisplayOff") == "1";
+  if (server.hasArg("nightWakeSeconds")) {
+    const long wakeSeconds = server.arg("nightWakeSeconds").toInt();
+    if (wakeSeconds < CLOCK_NIGHT_WAKE_MIN_SECONDS ||
+        wakeSeconds > CLOCK_NIGHT_WAKE_MAX_SECONDS) {
+      sendError(400, F("Doba rozsvícení po dotyku musí být 10 až 120 s."));
+      return;
+    }
+    config.displayExtras.nightWakeSeconds = static_cast<uint8_t>(wakeSeconds);
+  }
   const String nightVisualMode = server.arg("nightVisualMode");
   if (nightVisualMode == "red") {
     config.nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
@@ -3366,7 +3398,7 @@ void handleSaveConfig() {
     sendError(400, F("Efekt dvojtečky hodin není platný."));
     return;
   }
-  // Ciferníky (schéma 58). Stránka ze starší verze pole neposílá; uložené
+  // Ciferníky (schéma 59). Stránka ze starší verze pole neposílá; uložené
   // volby pak zůstanou.
   if (server.hasArg("retroGhostPercent")) {
     ClockFacesConfig faces = config.faces;
@@ -4728,6 +4760,35 @@ void handleDiagnostics() {
   }
   result += F("},");
   netPollAppendDiagnosticsJson(result);
+  // Stav zdrojů dat (SourceHealth.h): totéž, podle čeho obrazovky píšou
+  // "Zdroj nedostupný". Zdroje, na které se hodiny ještě neptaly, chybí.
+  result += F(",\"sources\":[");
+  {
+    const uint32_t now = millis();
+    bool first = true;
+    for (size_t index = 0; index < CLOCK_SOURCE_COUNT; ++index) {
+      const ClockSource source = static_cast<ClockSource>(index);
+      const SourceHealth health = sourceHealthGet(source);
+      if (!health.tried) continue;
+      if (!first) result += ',';
+      first = false;
+      result += F("{\"name\":\"");
+      result += sourceHealthName(source);
+      result += F("\",\"down\":");
+      result += health.down() ? F("true") : F("false");
+      result += F(",\"failures\":");
+      result += health.failures;
+      result += F(",\"okAgeMs\":");
+      if (health.everOk)
+        result += health.ageMs(now);
+      else
+        result += F("null");
+      result += F(",\"nextInMs\":");
+      result += health.nextInMs(now);
+      result += '}';
+    }
+  }
+  result += ']';
   result += F(",\"memoryCensus\":{\"lvglPsram\":");
   {
     uint32_t lvglPsram = 0;
