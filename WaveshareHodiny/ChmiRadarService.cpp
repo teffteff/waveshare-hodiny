@@ -545,8 +545,11 @@ bool downloadPng(HTTPClient &http, const char *fileName, size_t &outputSize,
   WiFiClient *stream = http.getStreamPtr();
   int remaining = declaredSize;
   unsigned long lastDataAt = millis();
+  // Celkový strop: limit nečinnosti sám pomalý přenos po kapkách neukončí.
+  const DownloadDeadline deadline(millis(), DOWNLOAD_RADAR_BUDGET_MS);
   while (outputSize < PNG_CAPACITY &&
          (remaining > 0 || remaining == -1)) {
+    if (deadline.expired(millis())) break;
     if (!requestMatches(revision)) {
       http.end();
       frameClient.stop();
@@ -2826,7 +2829,8 @@ bool loadServerAnimation(float latitude, float longitude, uint16_t radiusKm,
       status = http.GET();
       if (status == HTTP_CODE_OK) {
         BundleSink sink(serverBundles[target], SERVER_BUNDLE_CAPACITY);
-        const int read = httpDownloadBody(http, sink, 15000);
+        const int read =
+            httpDownloadBody(http, sink, 15000, DOWNLOAD_RADAR_BUDGET_MS);
         length = read >= 0 ? sink.length() : 0;
         overflowed = sink.overflowed();
         strlcpy(etag, http.header("ETag").c_str(), sizeof(etag));

@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "NetworkCoordinator.h"
+#include "DownloadDeadline.h"
 #include "FirmwareHubCa.h"
 
 namespace {
@@ -108,7 +109,14 @@ int downloadJson(const char *url, char *buffer, size_t capacity,
       WiFiClient *stream = http.getStreamPtr();
       int remaining = http.getSize();
       unsigned long lastDataAt = millis();
+      // Celkový strop: limit nečinnosti sám pomalý přenos po kapkách neukončí.
+      const DownloadDeadline deadline(millis(), DOWNLOAD_DEFAULT_BUDGET_MS);
+      bool expired = false;
       while ((remaining > 0 || remaining == -1) && received + 1 < capacity) {
+        if (deadline.expired(millis())) {
+          expired = true;
+          break;
+        }
         const size_t available = stream->available();
         if (available == 0) {
           const unsigned long idleFor = millis() - lastDataAt;
@@ -136,7 +144,8 @@ int downloadJson(const char *url, char *buffer, size_t capacity,
       // odpovědi se do něj nevešel. Ptát se místo toho, jestli ve streamu
       // ještě něco je, nestačí: v ten okamžik nemusí být došlé nic, i když
       // server dál posílá.
-      const bool truncated = remaining > 0 || received + 1 >= capacity;
+      const bool truncated =
+          expired || remaining > 0 || received + 1 >= capacity;
       length = truncated || received == 0 ? -1 : static_cast<int>(received);
     }
     http.end();

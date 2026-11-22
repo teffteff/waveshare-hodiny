@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "ClockDashboard.h"
+#include "DownloadDeadline.h"
 #include "FirmwareBuild.h"
 #include "FirmwareHubCa.h"
 #include "NetworkDiagnostics.h"
@@ -173,7 +174,9 @@ void performDownload() {
       NetworkClient *stream = http.getStreamPtr();
       size_t received = 0;
       unsigned long lastDataAt = millis();
-      while (received < asset->size) {
+      // Celkový strop: limit nečinnosti sám pomalý přenos po kapkách neukončí.
+      const DownloadDeadline deadline(millis(), DOWNLOAD_RADAR_BUDGET_MS);
+      while (received < asset->size && !deadline.expired(millis())) {
         const int available = stream->available();
         if (available <= 0) {
           if (!http.connected() || millis() - lastDataAt >= NETWORK_TIMEOUT_MS)
