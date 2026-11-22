@@ -681,6 +681,8 @@ void normalizeConfig(ClockConfig &config) {
   if (extras.windowRangeKm < CLOCK_PLANE_WINDOW_MIN_RANGE_KM ||
       extras.windowRangeKm > CLOCK_PLANE_WINDOW_MAX_RANGE_KM)
     extras.windowRangeKm = CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM;
+  if (extras.nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)
+    extras.nearbyAlertMode = 0;
   if (config.planesMapLabel > CLOCK_PLANE_MAP_LABEL_CALLSIGN)
     config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   config.planes.altitudeMaxFt =

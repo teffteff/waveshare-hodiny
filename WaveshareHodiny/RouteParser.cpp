@@ -118,7 +118,72 @@ RouteAttemptOutcome routeAttemptAfter(RouteParseStatus status,
   }
   outcome.state = PlaneRouteState::Pending;
   outcome.tryAgain = true;
+  outcome.retryDelayMs = ROUTE_RETRY_DELAY_MS;
   return outcome;
+}
+
+namespace {
+
+uint32_t routeCacheLifetimeMs(const RouteCacheEntry &entry) {
+  return entry.found ? ROUTE_CACHE_FOUND_MS : ROUTE_CACHE_NO_ROUTE_MS;
+}
+
+// Rozdíl bezznaménkově, takže přetečení millis() po 49 dnech nevadí.
+bool routeCacheEntryValid(const RouteCacheEntry &entry, uint32_t nowMs) {
+  return entry.callsign[0] != '\0' &&
+         nowMs - entry.storedAt < routeCacheLifetimeMs(entry);
+}
+
+}  // namespace
+
+void routeCacheStore(RouteCache &cache, const char *callsign,
+                     RouteParseStatus status, const RouteInfo &info,
+                     uint32_t nowMs) {
+  if (callsign == nullptr || callsign[0] == '\0') return;
+  if (status == RouteParseStatus::Invalid) return;
+  RouteCacheEntry *slot = nullptr;
+  for (RouteCacheEntry &entry : cache.entries) {
+    if (strcmp(entry.callsign, callsign) == 0) {
+      slot = &entry;
+      break;
+    }
+  }
+  if (slot == nullptr) {
+    // Volné nebo vypršelé místo, jinak nejstarší záznam.
+    uint32_t oldestAge = 0;
+    for (RouteCacheEntry &entry : cache.entries) {
+      if (!routeCacheEntryValid(entry, nowMs)) {
+        slot = &entry;
+        break;
+      }
+      const uint32_t age = nowMs - entry.storedAt;
+      if (slot == nullptr || age > oldestAge) {
+        slot = &entry;
+        oldestAge = age;
+      }
+    }
+  }
+  strlcpy(slot->callsign, callsign, sizeof(slot->callsign));
+  slot->found = status == RouteParseStatus::Ok;
+  slot->storedAt = nowMs;
+  slot->info = slot->found ? info : RouteInfo{};
+}
+
+bool routeCacheLookup(const RouteCache &cache, const char *callsign,
+                      uint32_t nowMs, PlaneRouteState &state, RouteInfo &info) {
+  if (callsign == nullptr || callsign[0] == '\0') return false;
+  for (const RouteCacheEntry &entry : cache.entries) {
+    if (strcmp(entry.callsign, callsign) != 0) continue;
+    if (!routeCacheEntryValid(entry, nowMs)) return false;
+    state = entry.found ? PlaneRouteState::Known : PlaneRouteState::Unknown;
+    info = entry.found ? entry.info : RouteInfo{};
+    return true;
+  }
+  return false;
+}
+
+void routeCacheClear(RouteCache &cache) {
+  for (RouteCacheEntry &entry : cache.entries) entry = RouteCacheEntry{};
 }
 
 RouteParseStatus routeParse(const char *payload, float aircraftLatitude,

@@ -61,6 +61,14 @@ struct PlaneRadarDetail {
   // nebo že žádná není.
   PlaneRouteState routeState = PlaneRouteState::Pending;
   RouteInfo route;
+  // Velká ikona v detailu (PlaneIcon.h): druh, natočení stejné jako na mapě
+  // (traťový úhel minus otočení mapy) a barva RGB565 už v paletě mapy -
+  // podle výšky, šedá se ztraceným signálem nebo se starými daty, v noci
+  // červená.
+  uint8_t iconKind = 0;
+  bool iconHasTrack = false;
+  float iconTrackDeg = 0.0f;
+  uint16_t iconColor = 0xffff;
 };
 
 struct PlaneRadarSnapshot {
@@ -152,10 +160,20 @@ struct PlaneRadarNearbyCandidate {
 // by ukázala na prázdné nebe).
 bool planeRadarServiceTakeNearby(PlaneRadarNearbyCandidate &candidate);
 
-// Otevře detail letadla z planeRadarServiceTakeNearby a dočasně přepne na
-// nejmenší dosah, do kterého se vejde. Volá se po přepnutí na obrazovku
-// letadel. Vrací dosah, který platil předtím, aby ho šlo po návratu vrátit.
-uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate);
+// Ukáže letadlo z planeRadarServiceTakeNearby a dočasně přepne na nejmenší
+// dosah, do kterého se vejde. Volá se po přepnutí na obrazovku letadel. Na
+// mapě ho obtáhne tyrkysový dvojitý kroužek. Podle režimu (PlaneNearby.h)
+// hned otevře detail, nebo nejdřív mapStepMs ukazuje mapu a pak detail (trasu
+// zjišťuje už během mapy), nebo zůstane jen u mapy. Vrací dosah, který platil
+// předtím, aby ho šlo po návratu vrátit.
+uint8_t planeRadarServiceShowNearby(const PlaneRadarNearbyCandidate &candidate,
+                                    PlaneNearbyAlertMode mode,
+                                    uint32_t mapStepMs);
+
+// Upozornění skončilo nebo ho zrušil prst: detail, který ještě čekal na konec
+// mapy, se už neotevře a kroužek zmizí. Otevřený detail zůstává i s kroužkem,
+// dokud ho něco nezavře.
+void planeRadarServiceEndNearby();
 
 // Vrátí běžící dosah (index do CLOCK_PLANE_RANGES_KM) po dočasném přepnutí.
 void planeRadarServiceRestoreRange(uint8_t rangeIndex);
