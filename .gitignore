@@ -15,3 +15,6 @@ WaveshareHodiny/firmware_config.h
 WaveshareHodiny/release_version.h
 WaveshareHodiny/CompressedPages.h
 .DS_Store
+
+# Testy na počítači s vlastním TMPDIR (souběžné běhy, TMPDIR=$PWD/.hosttmp)
+.hosttmp/
