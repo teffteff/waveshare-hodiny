@@ -46,6 +46,7 @@
 #include "NetworkDiagnostics.h"
 #include "DeviceName.h"
 #include "SettingsBackup.h"
+#include "SourceHealth.h"
 #include "SettingsBackupCrypto.h"
 #include "TmepService.h"
 #include "WeatherWarningService.h"
@@ -787,7 +788,72 @@ String htmlColor(uint32_t value) {
 const char *clockStyleSlug(uint8_t style) {
   if (style == CLOCK_STYLE_ANALOG) return "analog";
   if (style == CLOCK_STYLE_VALUES) return "values";
+  if (style == CLOCK_STYLE_RETRO_LCD) return "retro";
   return "digital";
+}
+
+// Zdroj hodnoty retro LCD na stránce: číslo slotu, "weather" nebo "off".
+String retroSourceName(uint8_t source) {
+  if (source == CLOCK_RETRO_SOURCE_WEATHER) return F("weather");
+  if (source >= CLOCK_VALUE_SLOT_COUNT) return F("off");
+  return String(source);
+}
+
+bool parseRetroSource(const String &value, bool allowWeather, bool allowOff,
+                      uint8_t &source) {
+  if (value == "weather" && allowWeather) {
+    source = CLOCK_RETRO_SOURCE_WEATHER;
+    return true;
+  }
+  if (value == "off" && allowOff) {
+    source = CLOCK_RETRO_SOURCE_NONE;
+    return true;
+  }
+  if (value.isEmpty()) return false;
+  for (size_t i = 0; i < value.length(); ++i)
+    if (!isDigit(value[i])) return false;
+  const long slot = value.toInt();
+  if (slot < 0 || slot >= static_cast<long>(CLOCK_VALUE_SLOT_COUNT)) return false;
+  source = static_cast<uint8_t>(slot);
+  return true;
+}
+
+// Ciferníky (schéma 59) jako vnořený objekt "faces".
+String facesJson(const ClockFacesConfig &faces) {
+  String result = F(",\"faces\":{\"retroBackgroundColor\":\"");
+  result += htmlColor(faces.retroBackgroundColor);
+  result += F("\",\"retroForegroundColor\":\"");
+  result += htmlColor(faces.retroForegroundColor);
+  result += F("\",\"retroGhostPercent\":");
+  result += faces.retroGhostPercent;
+  result += F(",\"retroLeftSource\":\"");
+  result += retroSourceName(faces.retroLeftSource);
+  result += F("\",\"retroRightSource\":\"");
+  result += retroSourceName(faces.retroRightSource);
+  result += F("\",\"retroBarSource\":\"");
+  result += retroSourceName(faces.retroBarSource);
+  result += F("\",\"retroLeftDigits\":");
+  result += faces.retroLeftDigits;
+  result += F(",\"retroRightDigits\":");
+  result += faces.retroRightDigits;
+  result += F(",\"retroBarSegments\":");
+  result += faces.retroBarSegments;
+  result += F(",\"retroBarMin\":");
+  result += String(faces.retroBarMin, 1);
+  result += F(",\"retroBarMax\":");
+  result += String(faces.retroBarMax, 1);
+  result += F(",\"retroDateFormat\":");
+  result += faces.retroDateFormat;
+  result += F(",\"retroFixedWeekday\":");
+  result += faces.retroFixedWeekday ? F("true") : F("false");
+  result += F(",\"retroSeconds\":");
+  result += faces.retroSeconds ? F("true") : F("false");
+  result += F(",\"forecastFanEnabled\":");
+  result += faces.forecastFanEnabled ? F("true") : F("false");
+  result += F(",\"forecastFanHours\":");
+  result += faces.forecastFanHours;
+  result += '}';
+  return result;
 }
 
 String sideJson(const ClockSideConfig &side,
@@ -1121,6 +1187,8 @@ bool readAppearanceFromRequest(ClockAppearanceConfig &appearance) {
     appearance.style = CLOCK_STYLE_ANALOG;
   else if (style == "values")
     appearance.style = CLOCK_STYLE_VALUES;
+  else if (style == "retro")
+    appearance.style = CLOCK_STYLE_RETRO_LCD;
   else
     return false;
   if (!parseHtmlColor(server.arg("analogToneColor"),
@@ -1162,6 +1230,27 @@ bool readAppearanceFromRequest(ClockAppearanceConfig &appearance) {
     currentAppearanceStateCallback(saved, active);
     appearance.analogOutlineHandsEnabled =
         active.analogOutlineHandsEnabled;
+  }
+  // Barevná výplň ciferníku a ručiček; starší stránka pole neposílá.
+  struct TintedField {
+    const char *name;
+    bool ClockAppearanceConfig::*field;
+  };
+  static const TintedField TINTED_FIELDS[] = {
+      {"analogTintedDialEnabled", &ClockAppearanceConfig::analogTintedDialEnabled},
+      {"analogTintedHandsEnabled", &ClockAppearanceConfig::analogTintedHandsEnabled},
+  };
+  for (const TintedField &tinted : TINTED_FIELDS) {
+    if (server.hasArg(tinted.name)) {
+      const String value = server.arg(tinted.name);
+      if (value != "0" && value != "1") return false;
+      appearance.*tinted.field = value == "1";
+    } else if (currentAppearanceStateCallback != nullptr) {
+      ClockAppearanceConfig saved;
+      ClockAppearanceConfig active;
+      currentAppearanceStateCallback(saved, active);
+      appearance.*tinted.field = active.*tinted.field;
+    }
   }
   if (server.hasArg("analogMonochromeValuesEnabled")) {
     const String monochromeValues =
@@ -1918,6 +2007,8 @@ void handleGetConfig() {
   // Uložené obráceně (nearbyAtNight), na stránce jako "v noci nepřepínat".
   result += F(",\"planesNearbyQuietAtNight\":");
   result += config.planesExtras.nearbyAtNight ? F("false") : F("true");
+  result += F(",\"planesNearbyAlertMode\":");
+  result += config.planesExtras.nearbyAlertMode;
   result += F(",\"planesWindowEnabled\":");
   result += config.planesExtras.windowEnabled ? F("true") : F("false");
   result += F(",\"planesWindowDirection\":");
@@ -2019,6 +2110,14 @@ void handleGetConfig() {
   result += F(",\"activeAnalogOutlineHandsEnabled\":");
   result += activeAppearance.analogOutlineHandsEnabled ? F("true")
                                                         : F("false");
+  result += F(",\"analogTintedDialEnabled\":");
+  result += savedAppearance.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedDialEnabled\":");
+  result += activeAppearance.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"analogTintedHandsEnabled\":");
+  result += savedAppearance.analogTintedHandsEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedHandsEnabled\":");
+  result += activeAppearance.analogTintedHandsEnabled ? F("true") : F("false");
   result += F(",\"analogMonochromeValuesEnabled\":");
   result += savedAppearance.analogMonochromeValuesEnabled ? F("true")
                                                            : F("false");
@@ -2105,6 +2204,10 @@ void handleGetConfig() {
   result += config.nightBrightness;
   result += F(",\"automaticDayNight\":");
   result += config.automaticDayNight ? F("true") : F("false");
+  result += F(",\"nightDisplayOff\":");
+  result += config.displayExtras.nightDisplayOff ? F("true") : F("false");
+  result += F(",\"nightWakeSeconds\":");
+  result += config.displayExtras.nightWakeSeconds;
   result += F(",\"nightVisualMode\":\"");
   result += config.nightVisualMode == CLOCK_NIGHT_VISUAL_BRIGHTNESS_ONLY
                 ? F("brightness")
@@ -2147,7 +2250,9 @@ void handleGetConfig() {
     result += F("doto");
   else
     result += F("barlow");
-  result += F("\",\"dateFormat\":\"");
+  result += '"';
+  result += facesJson(config.faces);
+  result += F(",\"dateFormat\":\"");
   if (config.dateFormat == CLOCK_DATE_FORMAT_NUMERIC)
     result += F("numeric");
   else if (config.dateFormat == CLOCK_DATE_FORMAT_DAY_MONTH_YEAR)
@@ -2992,6 +3097,15 @@ void handleSaveConfig() {
       sendError(400, F("Dohled z okna musí být 1 až 50 km."));
       return;
     }
+    // Režim ukázání přibyl později; stránka bez něj ho nechá, jak je.
+    const bool alertModeField = server.hasArg("planesNearbyAlertMode");
+    const int nearbyAlertMode = server.arg("planesNearbyAlertMode").toInt();
+    if (alertModeField &&
+        (nearbyAlertMode < 0 ||
+         nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)) {
+      sendError(400, F("Způsob ukázání letadla poblíž není v nabídce."));
+      return;
+    }
     String planesFeedUrl = server.arg("planesFeedUrl");
     planesFeedUrl.trim();
     if (planesFeedUrl.length() >= CLOCK_PLANES_FEED_URL_LENGTH) {
@@ -3033,6 +3147,9 @@ void handleSaveConfig() {
       extras.windowWidthDeg = static_cast<uint8_t>(windowWidth);
       extras.windowRangeKm = static_cast<uint8_t>(windowRangeKm);
     }
+    if (alertModeField)
+      config.planesExtras.nearbyAlertMode =
+          static_cast<uint8_t>(nearbyAlertMode);
     config.planes.metricUnits = server.arg("planesMetricUnits") == "1";
     // Stránka uložená ze starší verze pole neposílá; uložený popisek zůstane.
     const String planesMapLabel = server.arg("planesMapLabel");
@@ -3246,6 +3363,19 @@ void handleSaveConfig() {
   config.nightBrightness =
       constrain(server.arg("nightBrightness").toInt(), 1, 100);
   config.automaticDayNight = automaticDayNight;
+  // Zhasnutí v noci (schéma 58). Stránka ze starší verze pole neposílá;
+  // uložené volby pak zůstanou.
+  if (server.hasArg("nightDisplayOff"))
+    config.displayExtras.nightDisplayOff = server.arg("nightDisplayOff") == "1";
+  if (server.hasArg("nightWakeSeconds")) {
+    const long wakeSeconds = server.arg("nightWakeSeconds").toInt();
+    if (wakeSeconds < CLOCK_NIGHT_WAKE_MIN_SECONDS ||
+        wakeSeconds > CLOCK_NIGHT_WAKE_MAX_SECONDS) {
+      sendError(400, F("Doba rozsvícení po dotyku musí být 10 až 120 s."));
+      return;
+    }
+    config.displayExtras.nightWakeSeconds = static_cast<uint8_t>(wakeSeconds);
+  }
   const String nightVisualMode = server.arg("nightVisualMode");
   if (nightVisualMode == "red") {
     config.nightVisualMode = CLOCK_NIGHT_VISUAL_RED;
@@ -3267,6 +3397,72 @@ void handleSaveConfig() {
   else {
     sendError(400, F("Efekt dvojtečky hodin není platný."));
     return;
+  }
+  // Ciferníky (schéma 59). Stránka ze starší verze pole neposílá; uložené
+  // volby pak zůstanou.
+  if (server.hasArg("retroGhostPercent")) {
+    ClockFacesConfig faces = config.faces;
+    if (!parseHtmlColor(server.arg("retroBackgroundColor"),
+                        faces.retroBackgroundColor) ||
+        !parseHtmlColor(server.arg("retroForegroundColor"),
+                        faces.retroForegroundColor)) {
+      sendError(400, F("Barva retro LCD není platná."));
+      return;
+    }
+    const int ghost = server.arg("retroGhostPercent").toInt();
+    if (ghost < 0 || ghost > CLOCK_RETRO_MAX_GHOST_PERCENT) {
+      sendError(400, F("Neaktivní segmenty retro LCD musí být 0 až 50 %."));
+      return;
+    }
+    faces.retroGhostPercent = static_cast<uint8_t>(ghost);
+    if (!parseRetroSource(server.arg("retroLeftSource"), true, false,
+                          faces.retroLeftSource) ||
+        !parseRetroSource(server.arg("retroRightSource"), true, false,
+                          faces.retroRightSource) ||
+        !parseRetroSource(server.arg("retroBarSource"), false, true,
+                          faces.retroBarSource)) {
+      sendError(400, F("Hodnota retro LCD není v nabídce."));
+      return;
+    }
+    const int leftDigits = server.arg("retroLeftDigits").toInt();
+    const int rightDigits = server.arg("retroRightDigits").toInt();
+    if (leftDigits < CLOCK_RETRO_MIN_DIGITS || leftDigits > CLOCK_RETRO_MAX_DIGITS ||
+        rightDigits < CLOCK_RETRO_MIN_DIGITS || rightDigits > CLOCK_RETRO_MAX_DIGITS) {
+      sendError(400, F("Počet číslic retro LCD musí být 1 až 4."));
+      return;
+    }
+    faces.retroLeftDigits = static_cast<uint8_t>(leftDigits);
+    faces.retroRightDigits = static_cast<uint8_t>(rightDigits);
+    const int segments = server.arg("retroBarSegments").toInt();
+    if (segments < CLOCK_RETRO_MIN_SEGMENTS || segments > CLOCK_RETRO_MAX_SEGMENTS) {
+      sendError(400, F("Ukazatel retro LCD musí mít 5 až 50 segmentů."));
+      return;
+    }
+    faces.retroBarSegments = static_cast<uint8_t>(segments);
+    const float barMin = server.arg("retroBarMin").toFloat();
+    const float barMax = server.arg("retroBarMax").toFloat();
+    if (!std::isfinite(barMin) || !std::isfinite(barMax) || barMin >= barMax) {
+      sendError(400, F("Začátek ukazatele retro LCD musí být menší než konec."));
+      return;
+    }
+    faces.retroBarMin = barMin;
+    faces.retroBarMax = barMax;
+    const int retroDate = server.arg("retroDateFormat").toInt();
+    if (retroDate < 0 || retroDate >= CLOCK_RETRO_DATE_FORMAT_COUNT) {
+      sendError(400, F("Formát data retro LCD není v nabídce."));
+      return;
+    }
+    faces.retroDateFormat = static_cast<uint8_t>(retroDate);
+    faces.retroFixedWeekday = server.arg("retroFixedWeekday") == "1";
+    faces.retroSeconds = server.arg("retroSeconds") == "1";
+    faces.forecastFanEnabled = server.arg("forecastFanEnabled") == "1";
+    const int fanHours = server.arg("forecastFanHours").toInt();
+    if (fanHours != 12 && fanHours != 24) {
+      sendError(400, F("Prstenec předpovědi umí 12 nebo 24 hodin."));
+      return;
+    }
+    faces.forecastFanHours = static_cast<uint8_t>(fanHours);
+    config.faces = faces;
   }
   config.showLeadingHourZero = server.arg("showLeadingHourZero") == "1";
   const String timeFont = server.arg("timeFont");
@@ -4084,6 +4280,14 @@ void handleClockAppearancePreview() {
   result += saved.analogOutlineHandsEnabled ? F("true") : F("false");
   result += F(",\"activeAnalogOutlineHandsEnabled\":");
   result += active.analogOutlineHandsEnabled ? F("true") : F("false");
+  result += F(",\"analogTintedDialEnabled\":");
+  result += saved.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedDialEnabled\":");
+  result += active.analogTintedDialEnabled ? F("true") : F("false");
+  result += F(",\"analogTintedHandsEnabled\":");
+  result += saved.analogTintedHandsEnabled ? F("true") : F("false");
+  result += F(",\"activeAnalogTintedHandsEnabled\":");
+  result += active.analogTintedHandsEnabled ? F("true") : F("false");
   result += F(",\"analogMonochromeValuesEnabled\":");
   result += saved.analogMonochromeValuesEnabled ? F("true") : F("false");
   result += F(",\"activeAnalogMonochromeValuesEnabled\":");
@@ -4435,6 +4639,8 @@ void handleDiagnostics() {
   result += LCD_SyncRepairCount();
   result += F(",\"displayPhaseGlitches\":");
   result += LCD_PhaseGlitchCount();
+  result += F(",\"displayLateVsyncs\":");
+  result += LCD_LateVsyncCount();
   {
     uint32_t times[16];
     const size_t repairs = LCD_RecentRepairTimes(times, 16);
@@ -4556,6 +4762,35 @@ void handleDiagnostics() {
   }
   result += F("},");
   netPollAppendDiagnosticsJson(result);
+  // Stav zdrojů dat (SourceHealth.h): totéž, podle čeho obrazovky píšou
+  // "Zdroj nedostupný". Zdroje, na které se hodiny ještě neptaly, chybí.
+  result += F(",\"sources\":[");
+  {
+    const uint32_t now = millis();
+    bool first = true;
+    for (size_t index = 0; index < CLOCK_SOURCE_COUNT; ++index) {
+      const ClockSource source = static_cast<ClockSource>(index);
+      const SourceHealth health = sourceHealthGet(source);
+      if (!health.tried) continue;
+      if (!first) result += ',';
+      first = false;
+      result += F("{\"name\":\"");
+      result += sourceHealthName(source);
+      result += F("\",\"down\":");
+      result += health.down() ? F("true") : F("false");
+      result += F(",\"failures\":");
+      result += health.failures;
+      result += F(",\"okAgeMs\":");
+      if (health.everOk)
+        result += health.ageMs(now);
+      else
+        result += F("null");
+      result += F(",\"nextInMs\":");
+      result += health.nextInMs(now);
+      result += '}';
+    }
+  }
+  result += ']';
   result += F(",\"memoryCensus\":{\"lvglPsram\":");
   {
     uint32_t lvglPsram = 0;

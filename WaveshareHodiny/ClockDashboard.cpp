@@ -34,6 +34,11 @@
 #include "FirmwareUpdateService.h"
 #include "DisplayNotification.h"
 #include "Lcd7Fonts.h"
+#include "ForecastFan.h"
+#include "ForecastFanRing.h"
+#include "RetroLcd.h"
+#include "MapCanvas.h"
+#include "PlaneIcon.h"
 
 
 #if HODINY_BOARD_LCD7
@@ -95,6 +100,8 @@ uint32_t analogHandToneColor = 0x00D6FF;
 uint32_t analogCardinalAccentColor = 0xFFAB00;
 bool analogCardinalAccentsEnabled = true;
 bool analogOutlineHandsEnabled = false;
+bool analogTintedDialEnabled = false;
+bool analogTintedHandsEnabled = false;
 bool analogMonochromeValuesEnabled = false;
 bool analogValuesAboveHandsEnabled = false;
 uint32_t analogDateColor = 0xB5B5B5;
@@ -107,6 +114,14 @@ bool analogLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_ANALOG; }
 uint8_t activeValuesPage = 0;
 
 bool valuesLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_VALUES; }
+
+bool retroLayoutEnabled() { return activeClockStyle == CLOCK_STYLE_RETRO_LCD; }
+
+// Analogový ciferník i retro LCD si překreslují jen to, co se změnilo
+// (direct mode); digitální ciferník se kreslí celý.
+bool partialRefreshLayout() {
+  return analogLayoutEnabled() || retroLayoutEnabled();
+}
 
 lv_obj_t *timeLabel = nullptr;
 lv_obj_t *dateLabel = nullptr;
@@ -935,8 +950,13 @@ void applyDashboardLanguage() {
 // má vlastní stránku. Viditelnost se všude řídí přes tento ukazatel, aby
 // přepnutí stylu nenechalo obě stránky odkryté naráz.
 lv_obj_t *primaryClockPage() {
-  return valuesLayoutEnabled() && valuesPage != nullptr ? valuesPage
-                                                        : dashboardContent;
+  if (valuesLayoutEnabled() && valuesPage != nullptr) return valuesPage;
+#if !HODINY_BOARD_LCD7
+  // Na 7" kreslí retro LCD domovská obrazovka přes celý displej.
+  if (retroLayoutEnabled() && retroLcdObject() != nullptr)
+    return retroLcdObject();
+#endif
+  return dashboardContent;
 }
 
 // Stránka překrývající ciferník. Pro samotný ciferník vrací nullptr, protože
@@ -1288,6 +1308,12 @@ lv_color_t analogHandTone(float intensity = 1.0f) {
   return lv_color_make(red, green, blue);
 }
 
+// Barevná výplň (upstream 0a1109d): světlé jádro drží odstín, zhruba 65 %
+// barvy a 35 % bílé.
+lv_color_t analogHighlight(uint32_t tone) {
+  return lv_color_mix(configuredColor(tone), lv_color_white(), 166);
+}
+
 lv_point_t analogPoint(const lv_point_t &center, float angleDegrees,
                        float radius) {
   const float radians = angleDegrees * ANALOG_PI / 180.0f;
@@ -1420,7 +1446,9 @@ void drawAnalogHand(const AnalogDrawTarget &target, const lv_point_t &center,
                               : analogHandTone(0.88f);
   const lv_color_t core = redNightVisualEnabled()
                               ? lv_color_make(255, 112, 112)
-                              : lv_color_make(246, 250, 252);
+                              : (analogTintedHandsEnabled
+                                     ? analogHighlight(analogHandToneColor)
+                                     : lv_color_make(246, 250, 252));
   if (analogOutlineHandsEnabled) {
     const lv_color_t outlineColor =
         redNightVisualEnabled() ? COLOR_ERROR : analogHandTone();
@@ -1453,7 +1481,9 @@ void renderAnalogDial(const AnalogDrawTarget &target,
   const lv_color_t amber =
       redNight ? COLOR_ERROR : configuredColor(analogCardinalAccentColor);
   const lv_color_t markerCore =
-      redNight ? lv_color_make(255, 112, 112) : COLOR_TEXT;
+      redNight ? lv_color_make(255, 112, 112)
+               : (analogTintedDialEnabled ? analogHighlight(analogToneColor)
+                                          : COLOR_TEXT);
   const lv_color_t markerEdge = redNight ? COLOR_ERROR : analogTone(0.75f);
 
   drawAnalogCircle(target, center, 239,
@@ -1589,7 +1619,9 @@ void drawAnalogHandsEvent(lv_event_t *event) {
                                            : analogHandTone(0.9f));
   drawAnalogCircle(target, center, 8,
                    redNightVisualEnabled() ? lv_color_make(255, 112, 112)
-                                           : COLOR_TEXT);
+                   : analogTintedHandsEnabled && !analogOutlineHandsEnabled
+                       ? analogHighlight(analogHandToneColor)
+                       : COLOR_TEXT);
   drawAnalogCircle(target, center, 4,
                    redNightVisualEnabled() ? lv_color_make(62, 0, 0)
                                            : lv_color_make(0, 35, 50));
@@ -2681,7 +2713,7 @@ void renderSecondLine(unsigned long now) {
 }
 
 void renderSecondRing(unsigned long now) {
-  if (analogLayoutEnabled()) {
+  if (analogLayoutEnabled() || retroLayoutEnabled()) {
     for (lv_obj_t *dot : secondDots) {
       if (dot != nullptr) lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
     }
@@ -5786,6 +5818,10 @@ constexpr int PLANES_DETAIL_HEIGHT = 310;
 constexpr int PLANES_DETAIL_ROWS_TOP = 48;
 constexpr int PLANES_DETAIL_ROW_STEP = 24;
 constexpr int PLANES_DETAIL_REGISTRATION_HEIGHT = 22;
+// Velká ikona vpravo vedle čtyř řádků s čísly (výška až stoupání). Řádky končí
+// nejpozději kolem x = 220, takže zbývá okénko 72 x 72 u pravého okraje.
+constexpr int PLANES_DETAIL_ICON_SIZE = 72;
+constexpr int PLANES_DETAIL_ICON_RIGHT = 16;
 
 // Kam padne který řádek. Řádky pod typem letadla uhýbají registraci.
 int planesDetailRowY(uint8_t row) {
@@ -5793,6 +5829,82 @@ int planesDetailRowY(uint8_t row) {
       row > PLANES_DETAIL_TYPE_ROW ? PLANES_DETAIL_REGISTRATION_HEIGHT : 0;
   return PLANES_DETAIL_ROWS_TOP + row * PLANES_DETAIL_ROW_STEP + shift;
 }
+
+#if !HODINY_BOARD_LCD7
+// Jen kulatý: 7" ukazuje detail letadla bez velké ikony, stejně jako dřív.
+// Velká ikona letadla v detailu (podle MeteoPlaneRadar 0.9.9): typová ikona
+// z mapy (PlaneIcon.h) zvětšená až třikrát, natočená stejně jako na mapě a ve
+// stejné barvě. Detail je z popisků LVGL, takže se ikona kreslí do malého
+// canvasu s bufferem v PSRAM - a jen když se změní druh, úhel, barva nebo
+// místo, které jí řádky nechaly.
+struct PlaneDetailIcon {
+  lv_obj_t *canvas = nullptr;
+  uint16_t *pixels = nullptr;
+  int size = 0;
+  bool drawn = false;
+  uint8_t kind = 0;
+  bool hasTrack = false;
+  int16_t angle = 0;
+  uint16_t color = 0;
+  int16_t width = 0;
+};
+
+// Pod nejmenším zvětšením by ikona nebyla o nic čitelnější než na mapě.
+constexpr float PLANE_DETAIL_ICON_MIN_ZOOM = 1.6f;
+constexpr float PLANE_DETAIL_ICON_MAX_ZOOM = 3.0f;
+
+void createPlaneDetailIcon(PlaneDetailIcon &icon, lv_obj_t *parent, int size) {
+  icon.pixels = static_cast<uint16_t *>(heap_caps_malloc(
+      static_cast<size_t>(size) * size * sizeof(uint16_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (icon.pixels == nullptr) return;  // detail se ukáže bez ikony
+  icon.size = size;
+  icon.canvas = lv_canvas_create(parent);
+  lv_canvas_set_buffer(icon.canvas, icon.pixels, size, size,
+                       LV_IMG_CF_TRUE_COLOR);
+  lv_obj_clear_flag(icon.canvas, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(icon.canvas, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Nakreslí ikonu z modelu. width je místo od pravého okraje canvasu, které
+// ikoně zbylo po textu; ikona se k pravému okraji přimkne. false = ikona se
+// nevejde dost velká, nebo canvas není; volající ji pak schová.
+bool renderPlaneDetailIcon(PlaneDetailIcon &icon,
+                           const PlaneDetailViewModel &model, int width) {
+  if (icon.canvas == nullptr) return false;
+  if (width > icon.size) width = icon.size;
+  const float radius = PlaneIcon_Radius(model.iconKind, model.iconHasTrack);
+  float zoom = static_cast<float>(width - 2) / (2.0f * radius);
+  if (zoom > PLANE_DETAIL_ICON_MAX_ZOOM) zoom = PLANE_DETAIL_ICON_MAX_ZOOM;
+  if (zoom < PLANE_DETAIL_ICON_MIN_ZOOM) return false;
+  // Na stupeň přesně: jemnější rozdíl na displeji vidět není a překreslovalo
+  // by se s každým stažením.
+  int angle = static_cast<int>(std::lround(model.iconTrackDeg)) % 360;
+  if (angle < 0) angle += 360;
+  if (icon.drawn && icon.kind == model.iconKind &&
+      icon.hasTrack == model.iconHasTrack && icon.angle == angle &&
+      icon.color == model.iconColor && icon.width == width)
+    return true;
+  icon.drawn = true;
+  icon.kind = model.iconKind;
+  icon.hasTrack = model.iconHasTrack;
+  icon.angle = static_cast<int16_t>(angle);
+  icon.color = model.iconColor;
+  icon.width = static_cast<int16_t>(width);
+  // Podklad černý jako panel i sloupec 7".
+  memset(icon.pixels, 0,
+         static_cast<size_t>(icon.size) * icon.size * sizeof(uint16_t));
+  MapCanvasSize canvasSize(icon.size, icon.size);
+  const int half = static_cast<int>(std::ceil(radius * zoom));
+  PlaneIcon_Draw(icon.pixels, icon.size - 1 - half, icon.size / 2,
+                 static_cast<float>(angle), model.iconHasTrack, model.iconKind,
+                 model.iconColor, zoom);
+  lv_obj_invalidate(icon.canvas);
+  return true;
+}
+
+PlaneDetailIcon planesDetailIcon;
+#endif
 
 // Objekty obrazovky se zakládají do PSRAM, ze stejného důvodu jako u
 // předpovědi: v interní RAM by ubraly kilobajty, o které pak přijde TLS
@@ -5869,6 +5981,18 @@ void createPlanesPage(lv_obj_t *screen) {
   planesDetailClose = makeLabel(planesDetailPanel, &clock_czech_18, COLOR_ERROR);
   lv_label_set_text(planesDetailClose, "X");
   lv_obj_align(planesDetailClose, LV_ALIGN_TOP_RIGHT, -18, 14);
+
+#if !HODINY_BOARD_LCD7
+  // Velká ikona letadla. Založí se před řádky, aby text ležel nad ní: černý
+  // podklad canvasu tak nikdy nepřekryje písmo, i kdyby řádek byl dlouhý.
+  createPlaneDetailIcon(planesDetailIcon, planesDetailPanel,
+                        PLANES_DETAIL_ICON_SIZE);
+  if (planesDetailIcon.canvas != nullptr)
+    lv_obj_align(planesDetailIcon.canvas, LV_ALIGN_TOP_RIGHT,
+                 -PLANES_DETAIL_ICON_RIGHT,
+                 planesDetailRowY(0) +
+                     (4 * PLANES_DETAIL_ROW_STEP - PLANES_DETAIL_ICON_SIZE) / 2);
+#endif
 
   for (uint8_t row = 0; row < PLANES_DETAIL_ROW_COUNT; ++row) {
     lv_obj_t *label = makeLabel(planesDetailPanel, &clock_czech_16, COLOR_TEXT);
@@ -7319,6 +7443,222 @@ void updateValuesPage() {
   }
 }
 
+// ---- Retro LCD a prstenec předpovědi (schéma 59) -------------------------
+
+// Hodnota slotu pro retro LCD a segmentový ukazatel: stejné jméno, jednotka
+// i desetinná místa jako na obrazovce hodnot. Vybitá baterie čidla dává
+// pomlčky, stejně jako tam.
+float retroSlotReading(size_t index) {
+  if (index >= CLOCK_VALUE_SLOT_COUNT) return NAN;
+  const bool openMeteo =
+      dashboardRuntimeConfig.dataSource == CLOCK_DATA_SOURCE_OPEN_METEO;
+  if (openMeteo && index % CLOCK_VALUE_PAGE_SLOT_COUNT > 3) return NAN;
+  const float battery = currentValues.slotBatteryPercent[index];
+  if (!openMeteo && !std::isnan(battery) && battery <= CLOCK_DEAD_BATTERY_PERCENT)
+    return NAN;
+  return valueSlotReading(index);
+}
+
+void retroSlotValue(uint8_t source, uint8_t digits, RetroLcdValue &out,
+                    char *unit, size_t unitCapacity) {
+  out = {"", "", NAN, 0, digits, false};
+  if (source == CLOCK_RETRO_SOURCE_WEATHER) {
+    out.weather = true;
+    return;
+  }
+  if (source >= CLOCK_VALUE_SLOT_COUNT) return;
+  const ClockValueSlotConfig &slot =
+      clockConfigValueSlot(dashboardRuntimeConfig, source);
+  const ValueSlotDisplay display = valueSlotDisplay(source, slot);
+  strlcpy(unit, display.suffix, unitCapacity);
+  normalizeMicroSign(unit);
+  out.name = display.name;
+  out.unit = unit;
+  out.decimals = display.decimals;
+  out.value = retroSlotReading(source);
+}
+
+// Počet a pořadí teček obrazovek, stejně jako tečky na 7".
+void retroScreenDots(uint8_t &count, uint8_t &active) {
+  count = 0;
+  active = 0;
+  for (uint8_t position = 0; position < SCREEN_DOT_COUNT; ++position) {
+    const uint8_t screen = clockConfigScreenAt(dashboardRuntimeConfig, position);
+    if (!screenAvailable(screen)) continue;
+    if (screen == activeScreen) active = count;
+    ++count;
+  }
+}
+
+// Plní retro LCD ze smyčky. Modul sám pozná, co se změnilo, a překreslí jen
+// to; hodnoty stačí obnovit čtyřikrát za vteřinu, čas při každém průchodu.
+void updateRetroFace(bool force = false) {
+  if (retroLcdObject() == nullptr || !retroLayoutEnabled() ||
+      !dashboardRuntimeConfigAvailable)
+    return;
+  const time_t now = time(nullptr);
+  struct tm local = {};
+  const bool timeValid = now > 1700000000 && localtime_r(&now, &local) != nullptr;
+  retroLcdSetTime(local, timeValid);
+  static uint32_t lastValuesAt = 0;
+  const uint32_t ms = millis();
+  if (!force && ms - lastValuesAt < 250) return;
+  lastValuesAt = ms;
+  const ClockFacesConfig &faces = dashboardRuntimeConfig.faces;
+  retroLcdSetColors(faces.retroBackgroundColor, faces.retroForegroundColor,
+                    faces.retroGhostPercent, redNightVisualEnabled());
+  retroLcdSetOptions(faces.retroDateFormat, faces.retroFixedWeekday,
+                     faces.retroSeconds, dashboardRuntimeConfig.showLeadingHourZero,
+                     englishLanguage());
+  char units[2][CLOCK_METRIC_SUFFIX_LENGTH];
+  const uint8_t sources[2] = {faces.retroLeftSource, faces.retroRightSource};
+  const uint8_t digits[2] = {faces.retroLeftDigits, faces.retroRightDigits};
+  for (uint8_t i = 0; i < 2; ++i) {
+    RetroLcdValue value;
+    retroSlotValue(sources[i], digits[i], value, units[i], sizeof(units[i]));
+    retroLcdSetValue(i, value);
+  }
+  retroLcdSetWeatherIcon(
+      weatherConfigured
+          ? openWeatherIconForCode(currentValues.weatherCode,
+                                   currentValues.weatherIsDay)
+          : nullptr);
+  if (faces.retroBarSource < CLOCK_VALUE_SLOT_COUNT) {
+    RetroLcdValue bar;
+    char unit[CLOCK_METRIC_SUFFIX_LENGTH];
+    retroSlotValue(faces.retroBarSource, 3, bar, unit, sizeof(unit));
+    char label[CLOCK_METRIC_NAME_LENGTH + CLOCK_METRIC_SUFFIX_LENGTH + 4];
+    if (unit[0] != '\0')
+      snprintf(label, sizeof(label), "%s (%s)", bar.name, unit);
+    else
+      strlcpy(label, bar.name, sizeof(label));
+    retroLcdSetBar(label, bar.value, faces.retroBarMin, faces.retroBarMax,
+                   faces.retroBarSegments);
+  } else {
+    retroLcdSetBar(nullptr, NAN, 0, 100, faces.retroBarSegments);
+  }
+  retroLcdSetStatus(wifiConnected, webActive, currentValues.homeAssistantOnline,
+                    homeAssistantStatusRelevant, lightningAlertActive);
+  uint8_t count = 0, active = 0;
+  retroScreenDots(count, active);
+  retroLcdSetDots(count, active);
+}
+
+// Prstenec předpovědi jde kolem kulatého digitálního i analogového ciferníku
+// (analogový je i na 7", vlevo). Digitální 7" má místo něj pás pod časem.
+bool forecastFanFaceSupported() {
+  if (analogLayoutEnabled()) return true;
+  return !HODINY_BOARD_LCD7 && activeClockStyle == CLOCK_STYLE_DIGITAL;
+}
+
+bool forecastFanConfigured() {
+  return dashboardRuntimeConfigAvailable &&
+         dashboardRuntimeConfig.faces.forecastFanEnabled;
+}
+
+uint32_t forecastFanDataRevision = 0;
+
+// Teplota z předpovědi na začátek dané hodiny (UTC sekundy), jinak NAN.
+float forecastTemperatureAt(int64_t stamp) {
+  if (!forecastDisplayedAvailable || forecastDisplayed == nullptr) return NAN;
+  for (size_t i = 0; i < forecastDisplayed->hourCount; ++i) {
+    const WeatherForecastHour &hour = forecastDisplayed->hours[i];
+    if (hour.time == stamp) return hour.temperatureC;
+    if (hour.time > stamp) break;
+  }
+  return NAN;
+}
+
+// Barvy pro 24 + 1 hodin od začátku té právě probíhající (pás na 7").
+bool forecastStripColors(uint32_t *colors, int &minute) {
+  const time_t now = time(nullptr);
+  struct tm local = {};
+  if (now < 1700000000 || localtime_r(&now, &local) == nullptr) return false;
+  minute = local.tm_min;
+  const int64_t first = static_cast<int64_t>(now) - now % 3600;
+  bool any = false;
+  for (int i = 0; i < FORECAST_STRIP_POINTS; ++i) {
+    const float temperature = forecastTemperatureAt(first + i * 3600LL);
+    any = any || std::isfinite(temperature);
+    colors[i] = forecastFanTemperatureColor(temperature);
+  }
+  return any;
+}
+
+void placeForecastFanRing() {
+  lv_obj_t *ring = forecastFanRingObject();
+  if (ring == nullptr || dashboardContent == nullptr) return;
+  if (analogLayoutEnabled() && analogDialLayer != nullptr) {
+    // Nad ciferníkem z mezipaměti, pod hodnotami a ručičkami.
+    if (lv_obj_get_parent(ring) != dashboardContent)
+      lv_obj_set_parent(ring, dashboardContent);
+    lv_obj_move_to_index(ring, lv_obj_get_index(analogDialLayer) + 1);
+  } else {
+    // Digitální obsah je posunutý o 10 px nahoru; prstenec patří ke středu
+    // displeje, pod vteřinové tečky.
+    if (lv_obj_get_parent(ring) != dashboardScreen)
+      lv_obj_set_parent(ring, dashboardScreen);
+    lv_obj_move_background(ring);
+  }
+  lv_obj_set_pos(ring, 0, 0);
+}
+
+void maintainForecastFan() {
+  lv_obj_t *ring = forecastFanRingObject();
+  if (ring == nullptr) return;
+  static time_t keyMinute = 0;
+  static uint32_t keyRevision = UINT32_MAX;
+  static uint8_t keySectors = 0;
+  static bool keyValid = false;
+  // Vypnutý prstenec, nebo ciferník, který ho nemá (7" digitální má místo
+  // něj pás, hodnoty a retro LCD nic): mezikruží se nedrží ani nedopočítává.
+  if (!forecastFanConfigured() || !forecastFanFaceSupported()) {
+    if (!lv_obj_has_flag(ring, LV_OBJ_FLAG_HIDDEN))
+      lv_obj_add_flag(ring, LV_OBJ_FLAG_HIDDEN);
+    forecastFanRingRelease();
+    // Po návratu se klíč nastaví hned, ne až v další minutě.
+    keyRevision = UINT32_MAX;
+    return;
+  }
+  static uint8_t placedStyle = 0xFF;
+  if (placedStyle != activeClockStyle) {
+    placedStyle = activeClockStyle;
+    placeForecastFanRing();
+  }
+  const bool shown = activeScreen == DASHBOARD_SCREEN_CLOCK && !settingsVisible &&
+                     !redNightVisualEnabled();
+  const time_t now = time(nullptr);
+  const uint8_t sectors = dashboardRuntimeConfig.faces.forecastFanHours;
+  if (now / 60 != keyMinute || keyRevision != forecastFanDataRevision ||
+      keySectors != sectors) {
+    keyMinute = now / 60;
+    keyRevision = forecastFanDataRevision;
+    keySectors = sectors;
+    struct tm local = {};
+    const bool timeValid = now > 1700000000 && localtime_r(&now, &local) != nullptr;
+    float temperatures[FORECAST_FAN_MAX_SECTORS];
+    bool any = false;
+    const int64_t first = static_cast<int64_t>(now) - now % 3600 + 3600;
+    for (int i = 0; i < sectors; ++i) {
+      temperatures[i] = timeValid ? forecastTemperatureAt(first + i * 3600LL) : NAN;
+      any = any || std::isfinite(temperatures[i]);
+    }
+    keyValid = timeValid && any;
+    ForecastFanKey key;
+    forecastFanBuildKey(temperatures, sectors, local.tm_hour, local.tm_min,
+                        keyValid, key);
+    forecastFanRingSetKey(key);
+  }
+  // Bez předpovědi prstenec nesvítí šedě, prostě není.
+  const bool visible = shown && keyValid;
+  const bool done = forecastFanRingMaintain(visible);
+  const bool reveal = visible && done;
+  if (reveal == lv_obj_has_flag(ring, LV_OBJ_FLAG_HIDDEN)) {
+    if (reveal) lv_obj_clear_flag(ring, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(ring, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
 void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
                         uint8_t nightBrightness, bool automaticDayNight,
                         BrightnessPreviewCallback brightnessPreview,
@@ -7351,6 +7691,9 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lv_obj_t *screen = displayDriverStage();
   dashboardScreen = screen;
 
+  // Prstenec předpovědi pod vteřinovými tečkami (u analogového ciferníku se
+  // přestěhuje nad ciferník, placeForecastFanRing).
+  forecastFanRingCreate(screen);
   makeSecondRing(screen);
 
   dashboardContent = lv_obj_create(screen);
@@ -7522,17 +7865,19 @@ void clockDashboardInit(const ClockValues &values, uint8_t dayBrightness,
   lv_label_set_text(firmwareUpdateCountdownLabel, "5");
   alignCenter(firmwareUpdateCountdownLabel, 0, 35);
   makeValuesPage(screen);
-  if (valuesLayoutEnabled()) {
+#if !HODINY_BOARD_LCD7
+  retroLcdCreate(screen, 0, 0);
+#endif
+  if (primaryClockPage() != dashboardContent) {
     lv_obj_add_flag(dashboardContent, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(valuesPage, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(valuesPage);
+    lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(primaryClockPage());
   }
   createScreenDots(screen);
 
   // Změna vzhledu musí znovu naplnit oba framebuffery celým shodným
   // ciferníkem. Teprve potom se vrátíme k částečnému direct-mode renderu.
-  displayDriverSetPartialRefresh(analogLayoutEnabled(),
-                                 analogLayoutEnabled());
+  displayDriverSetPartialRefresh(partialRefreshLayout(), partialRefreshLayout());
 #if HODINY_BOARD_LCD7
   memoryCensusCheckpoint("round-pages");
   lcd7::create();
@@ -7870,13 +8215,15 @@ bool clockDashboardSwipeValues() {
 void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   const uint8_t style = constrain(
       appearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
+      static_cast<uint8_t>(CLOCK_STYLE_LAST));
   const uint32_t tone = appearance.analogToneColor & 0xFFFFFF;
   const uint32_t handTone = appearance.analogHandToneColor & 0xFFFFFF;
   const uint32_t accentColor =
       appearance.analogCardinalAccentColor & 0xFFFFFF;
   const bool accentsEnabled = appearance.analogCardinalAccentsEnabled;
   const bool outlineHandsEnabled = appearance.analogOutlineHandsEnabled;
+  const bool tintedDialEnabled = appearance.analogTintedDialEnabled;
+  const bool tintedHandsEnabled = appearance.analogTintedHandsEnabled;
   const bool monochromeValuesEnabled =
       appearance.analogMonochromeValuesEnabled;
   const bool valuesAboveHandsEnabled =
@@ -7890,6 +8237,8 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
       analogCardinalAccentColor == accentColor &&
       analogCardinalAccentsEnabled == accentsEnabled &&
       analogOutlineHandsEnabled == outlineHandsEnabled &&
+      analogTintedDialEnabled == tintedDialEnabled &&
+      analogTintedHandsEnabled == tintedHandsEnabled &&
       analogMonochromeValuesEnabled == monochromeValuesEnabled &&
       analogValuesAboveHandsEnabled == valuesAboveHandsEnabled &&
       analogDateColor == appearanceDateColor &&
@@ -7901,6 +8250,7 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   const bool valueLayerChanged =
       analogValuesAboveHandsEnabled != valuesAboveHandsEnabled;
   const bool dialAppearanceChanged = analogToneColor != tone ||
+                                     analogTintedDialEnabled != tintedDialEnabled ||
                                      analogCardinalAccentColor != accentColor ||
                                      analogCardinalAccentsEnabled !=
                                          accentsEnabled;
@@ -7911,6 +8261,8 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   analogCardinalAccentColor = accentColor;
   analogCardinalAccentsEnabled = accentsEnabled;
   analogOutlineHandsEnabled = outlineHandsEnabled;
+  analogTintedDialEnabled = tintedDialEnabled;
+  analogTintedHandsEnabled = tintedHandsEnabled;
   analogMonochromeValuesEnabled = monochromeValuesEnabled;
   analogValuesAboveHandsEnabled = valuesAboveHandsEnabled;
   analogDateColor = appearanceDateColor;
@@ -7921,9 +8273,13 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   if (styleChanged && valuesPage != nullptr &&
       activeScreen == DASHBOARD_SCREEN_CLOCK && !settingsVisible &&
       !firmwareUpdateActive) {
-    lv_obj_t *hidden =
-        valuesLayoutEnabled() ? dashboardContent : valuesPage;
-    lv_obj_add_flag(hidden, LV_OBJ_FLAG_HIDDEN);
+    // Retro LCD na 7" patří domovské obrazovce 7", ne kulatému jevišti.
+    lv_obj_t *pages[] = {dashboardContent, valuesPage,
+                         HODINY_BOARD_LCD7 ? nullptr : retroLcdObject()};
+    for (lv_obj_t *page : pages) {
+      if (page != nullptr && page != primaryClockPage())
+        lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_clear_flag(primaryClockPage(), LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(primaryClockPage());
   }
@@ -7933,8 +8289,14 @@ void clockDashboardApplyAppearance(const ClockAppearanceConfig &appearance) {
   if (analogLayoutEnabled() && (styleChanged || dialAppearanceChanged))
     rebuildAnalogDialCache();
   applyDashboardColors();
+  if (styleChanged) {
+    updateRetroFace(true);
+    placeForecastFanRing();
+  }
   displayDriverSetPartialRefresh(
-      analogLayoutEnabled(), analogLayoutEnabled() && valueLayerChanged);
+      partialRefreshLayout(),
+      (analogLayoutEnabled() && valueLayerChanged) ||
+          (styleChanged && retroLayoutEnabled()));
   if (analogDialLayer != nullptr && analogLayoutEnabled())
     lv_obj_invalidate(analogDialLayer);
   invalidateAnalogHands();
@@ -8215,12 +8577,14 @@ void clockDashboardLoop() {
     weatherAnimationRevealPending = false;
     clockDashboardUpdate(currentValues);
   }
+  updateRetroFace();
+  maintainForecastFan();
   const bool smoothSecondEffectActive =
-      !analogLayoutEnabled() && secondRingEnabled &&
+      !analogLayoutEnabled() && !retroLayoutEnabled() && secondRingEnabled &&
       (secondEffect == CLOCK_SECOND_EFFECT_LINE ||
        secondEffect == CLOCK_SECOND_EFFECT_COMET);
   const bool smoothTimeColonActive =
-      !analogLayoutEnabled() &&
+      !analogLayoutEnabled() && !retroLayoutEnabled() &&
       timeColonEffect == CLOCK_TIME_COLON_FADE;
   if (!secondFadeActive && !smoothSecondEffectActive &&
       !smoothTimeColonActive)
@@ -8603,7 +8967,15 @@ void composePlaneDetailModel(const PlaneRadarDetail &detail) {
   // Dokud letadlo v datech chybí, čísla nejsou živá; přiznat to je poctivější
   // než nechat zmrzlé hodnoty vypadat jako aktuální.
   model.signalLost = detail.signalLost;
+
+#if !HODINY_BOARD_LCD7
+  model.iconKind = detail.iconKind;
+  model.iconHasTrack = detail.iconHasTrack;
+  model.iconTrackDeg = detail.iconTrackDeg;
+  model.iconColor = detail.iconColor;
+#endif
 }
+
 
 // Kulatý panel detailu z modelu.
 void updatePlanesDetail() {
@@ -8622,6 +8994,29 @@ void updatePlanesDetail() {
     snprintf(line, sizeof(line), "%s: %s", model.captions[index], model.values[index]);
     lv_label_set_text(planesDetailRows[row++], line);
   }
+
+#if !HODINY_BOARD_LCD7
+  // Ikona bere jen místo, které řádky s čísly nechaly volné (podle písma
+  // a jednotek jich je různě); když by vyšla moc malá, nekreslí se vůbec.
+  if (planesDetailIcon.canvas != nullptr) {
+    lv_coord_t rowsRight = 0;
+    for (uint8_t index = 0; index < PlaneDetailViewModel::VALUE_ROWS; ++index) {
+      lv_obj_t *label = planesDetailRows[index];
+      lv_obj_update_layout(label);
+      const lv_coord_t right = lv_obj_get_x(label) + lv_obj_get_width(label);
+      if (right > rowsRight) rowsRight = right;
+    }
+    lv_obj_update_layout(planesDetailIcon.canvas);
+    const lv_coord_t iconRight = lv_obj_get_x(planesDetailIcon.canvas) +
+                                 PLANES_DETAIL_ICON_SIZE;
+    const bool shown = renderPlaneDetailIcon(
+        planesDetailIcon, model, iconRight - (rowsRight + 8));
+    if (shown)
+      lv_obj_clear_flag(planesDetailIcon.canvas, LV_OBJ_FLAG_HIDDEN);
+    else
+      lv_obj_add_flag(planesDetailIcon.canvas, LV_OBJ_FLAG_HIDDEN);
+  }
+#endif
 
   if (model.type[0] != '\0')
     snprintf(line, sizeof(line), "%s: %s", english ? "TYPE" : "TYP", model.type);
@@ -9411,11 +9806,14 @@ void clockDashboardSetForecastAvailable(bool available) {
   }
   if (forecastFeatureAvailable == available) return;
   forecastFeatureAvailable = available;
-  if (!available) {
+  // Prstenec předpovědi data potřebuje i bez obrazovky; služba je pak také
+  // nezahazuje (maintainForecastFetch).
+  if (!available && !forecastFanConfigured()) {
     // Služba mezipaměť zahodí také, takže po opětovném zapnutí nesmí na
     // obrazovce bliknout předpověď z minulé konfigurace.
     forecastDisplayedAvailable = false;
     forecastFetchFailed = false;
+    ++forecastFanDataRevision;
     updateForecastPage();
   }
   if (!available && activeScreen == DASHBOARD_SCREEN_FORECAST) {
@@ -9443,6 +9841,7 @@ void clockDashboardSetForecast(const WeatherForecastData &forecast) {
   }
   *forecastDisplayed = forecast;
   forecastDisplayedAvailable = true;
+  ++forecastFanDataRevision;
   forecastFetchFailed = false;
   updateForecastPage();
 }
@@ -11259,6 +11658,78 @@ bool clockDashboardHideNotification() {
 }
 
 bool clockDashboardNotificationVisible() { return notificationShown; }
+
+// --- Řádek o nedostupném zdroji dat ------------------------------------------
+// Na lv_layer_top() jako notifikace, aby ležel nad každou stránkou a stránky se
+// o něj při přepínání nemusely starat. Podklad je neprůhledný, takže se dá
+// přečíst i nad radarem nebo mapou. Písmo Barlow (lcd7_text15) má na rozdíl
+// od kulatého písma tečku "·" a češtinu na obou deskách.
+namespace {
+#if HODINY_BOARD_LCD7
+// Jeden řádek vlevo dole; vpravo dole je "aktualizováno ...".
+constexpr lv_coord_t SOURCE_STATUS_MAX_WIDTH = 500;
+#else
+// Dva řádky dole uprostřed, tak aby se rohy podkladu vešly do kruhu.
+constexpr lv_coord_t SOURCE_STATUS_MAX_WIDTH = 236;
+constexpr lv_coord_t SOURCE_STATUS_OFFSET_Y = 172;
+#endif
+const lv_color_t COLOR_SOURCE_STATUS = LV_COLOR_MAKE(255, 184, 67);
+
+lv_obj_t *sourceStatusPill = nullptr;
+lv_obj_t *sourceStatusLabel = nullptr;
+char sourceStatusText[96] = "";
+bool sourceStatusRed = false;
+
+void createSourceStatus() {
+  if (sourceStatusPill != nullptr) return;
+  sourceStatusPill = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(sourceStatusPill);
+  lv_obj_set_size(sourceStatusPill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_color(sourceStatusPill, COLOR_BACKGROUND, 0);
+  lv_obj_set_style_bg_opa(sourceStatusPill, LV_OPA_90, 0);
+  lv_obj_set_style_radius(sourceStatusPill, 10, 0);
+  lv_obj_set_style_border_width(sourceStatusPill, 1, 0);
+  lv_obj_set_style_pad_hor(sourceStatusPill, 10, 0);
+  lv_obj_set_style_pad_ver(sourceStatusPill, 4, 0);
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_CLICKABLE);
+  sourceStatusLabel = lv_label_create(sourceStatusPill);
+  lv_obj_set_style_text_font(sourceStatusLabel, &lcd7_text15, 0);
+  lv_obj_set_style_text_align(sourceStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(sourceStatusLabel, "");
+}
+}  // namespace
+
+void clockDashboardSetSourceStatus(const char *text) {
+  if (text == nullptr) text = "";
+  const bool red = redNightVisualEnabled();
+  if (strcmp(text, sourceStatusText) == 0 && red == sourceStatusRed) return;
+  strlcpy(sourceStatusText, text, sizeof(sourceStatusText));
+  sourceStatusRed = red;
+  if (sourceStatusText[0] == '\0') {
+    if (sourceStatusPill != nullptr)
+      lv_obj_add_flag(sourceStatusPill, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  createSourceStatus();
+  const lv_color_t color = red ? COLOR_ERROR : COLOR_SOURCE_STATUS;
+  lv_obj_set_style_text_color(sourceStatusLabel, color, 0);
+  lv_obj_set_style_border_color(sourceStatusPill, color, 0);
+  lv_obj_set_style_border_opa(sourceStatusPill, LV_OPA_40, 0);
+  // Krátký text dostane podklad na míru, dlouhý se zalomí do nejvyšší šířky.
+  lv_label_set_long_mode(sourceStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(sourceStatusLabel, LV_SIZE_CONTENT);
+  lv_label_set_text(sourceStatusLabel, sourceStatusText);
+  lv_obj_update_layout(sourceStatusLabel);
+  if (lv_obj_get_width(sourceStatusLabel) > SOURCE_STATUS_MAX_WIDTH)
+    lv_obj_set_width(sourceStatusLabel, SOURCE_STATUS_MAX_WIDTH);
+#if HODINY_BOARD_LCD7
+  lv_obj_align(sourceStatusPill, LV_ALIGN_BOTTOM_LEFT, 14, -6);
+#else
+  lv_obj_align(sourceStatusPill, LV_ALIGN_CENTER, 0, SOURCE_STATUS_OFFSET_Y);
+#endif
+  lv_obj_clear_flag(sourceStatusPill, LV_OBJ_FLAG_HIDDEN);
+}
 
 #if HODINY_BOARD_LCD7
 #include "ClockDashboardLcd7.h"

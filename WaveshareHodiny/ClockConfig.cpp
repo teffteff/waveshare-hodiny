@@ -21,6 +21,8 @@ constexpr char APPEARANCE_HAND_TONE_KEY[] = "hand-tone";
 constexpr char APPEARANCE_ACCENT_COLOR_KEY[] = "accent-color";
 constexpr char APPEARANCE_ACCENTS_KEY[] = "accents";
 constexpr char APPEARANCE_OUTLINE_HANDS_KEY[] = "outline-hands";
+constexpr char APPEARANCE_TINTED_DIAL_KEY[] = "tinted-dial";
+constexpr char APPEARANCE_TINTED_HANDS_KEY[] = "tinted-hands";
 constexpr char APPEARANCE_MONO_VALUES_KEY[] = "mono-values";
 constexpr char APPEARANCE_VALUES_ABOVE_KEY[] = "values-above";
 constexpr char APPEARANCE_DATE_FORMAT_KEY[] = "date-format";
@@ -449,6 +451,43 @@ void terminateConfigTexts(ClockConfig &config) {
   terminateText(config.satellites.url);
 }
 
+// Schéma 59: ciferníky. Mimo rozsah vrací výchozí hodnotu, přepínače zůstávají,
+// jak jsou, takže normalizace sama nic nezapne.
+void clockConfigNormalizeFaces(ClockFacesConfig &faces) {
+  faces.retroBackgroundColor &= 0xFFFFFF;
+  faces.retroForegroundColor &= 0xFFFFFF;
+  if (faces.retroGhostPercent > CLOCK_RETRO_MAX_GHOST_PERCENT)
+    faces.retroGhostPercent = CLOCK_RETRO_DEFAULT_GHOST_PERCENT;
+  auto valueSource = [](uint8_t &source, uint8_t fallback) {
+    if (source < CLOCK_VALUE_SLOT_COUNT || source == CLOCK_RETRO_SOURCE_WEATHER)
+      return;
+    source = fallback;
+  };
+  valueSource(faces.retroLeftSource, 0);
+  valueSource(faces.retroRightSource, 1);
+  if (faces.retroBarSource >= CLOCK_VALUE_SLOT_COUNT)
+    faces.retroBarSource = CLOCK_RETRO_SOURCE_NONE;
+  auto digits = [](uint8_t &value) {
+    if (value < CLOCK_RETRO_MIN_DIGITS || value > CLOCK_RETRO_MAX_DIGITS)
+      value = 2;
+  };
+  digits(faces.retroLeftDigits);
+  digits(faces.retroRightDigits);
+  if (faces.retroBarSegments < CLOCK_RETRO_MIN_SEGMENTS ||
+      faces.retroBarSegments > CLOCK_RETRO_MAX_SEGMENTS)
+    faces.retroBarSegments = CLOCK_RETRO_DEFAULT_SEGMENTS;
+  if (faces.retroDateFormat >= CLOCK_RETRO_DATE_FORMAT_COUNT)
+    faces.retroDateFormat = 0;
+  // Prázdný nebo obrácený rozsah by ukazatel nikdy nerozsvítil.
+  if (!std::isfinite(faces.retroBarMin) || !std::isfinite(faces.retroBarMax) ||
+      faces.retroBarMin >= faces.retroBarMax) {
+    faces.retroBarMin = 0.0f;
+    faces.retroBarMax = 100.0f;
+  }
+  if (faces.forecastFanHours != 12 && faces.forecastFanHours != 24)
+    faces.forecastFanHours = 12;
+}
+
 void normalizeConfig(ClockConfig &config) {
   config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
   terminateConfigTexts(config);
@@ -666,6 +705,7 @@ void normalizeConfig(ClockConfig &config) {
   // Letadlo poblíž a výhled z okna leží v rezervě, kde starší záznamy mají
   // nuly: nula i cokoli mimo meze znamená výchozí hodnotu. Přepínače zůstávají,
   // jak jsou, takže je aktualizace sama nezapne.
+  clockConfigNormalizeFaces(config.faces);
   ClockPlanesExtrasConfig &extras = config.planesExtras;
   if (extras.nearbyRadiusKm < CLOCK_PLANE_NEARBY_MIN_RADIUS_KM ||
       extras.nearbyRadiusKm > CLOCK_PLANE_NEARBY_MAX_RADIUS_KM)
@@ -681,6 +721,14 @@ void normalizeConfig(ClockConfig &config) {
   if (extras.windowRangeKm < CLOCK_PLANE_WINDOW_MIN_RANGE_KM ||
       extras.windowRangeKm > CLOCK_PLANE_WINDOW_MAX_RANGE_KM)
     extras.windowRangeKm = CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM;
+  if (extras.nearbyAlertMode >= CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT)
+    extras.nearbyAlertMode = 0;
+  // Doba rozsvícení po dotyku leží v bloku schématu 58: nula ze staršího
+  // záznamu i cokoli mimo meze znamená výchozích 30 s.
+  ClockDisplayExtrasConfig &display = config.displayExtras;
+  if (display.nightWakeSeconds < CLOCK_NIGHT_WAKE_MIN_SECONDS ||
+      display.nightWakeSeconds > CLOCK_NIGHT_WAKE_MAX_SECONDS)
+    display.nightWakeSeconds = CLOCK_NIGHT_WAKE_DEFAULT_SECONDS;
   if (config.planesMapLabel > CLOCK_PLANE_MAP_LABEL_CALLSIGN)
     config.planesMapLabel = CLOCK_PLANE_MAP_LABEL_TYPE_NAME;
   config.planes.altitudeMaxFt =
@@ -719,7 +767,12 @@ void normalizeConfig(ClockConfig &config) {
                               static_cast<uint8_t>(2));
     if (slot.sensorId[0] == '\0' || slot.field[0] == '\0' ||
         slot.unit[0] == '\0') {
+      // Pozice Open-Meteo si v tomtéž slotu drží počet desetinných míst
+      // (ConfigurationWeb i ClockDashboard ho čtou odtud), takže vymazání
+      // neúplného TMEP slotu ho nesmí zahodit.
+      const uint8_t decimals = slot.decimals;
       slot = ClockTmepSlotConfig{};
+      slot.decimals = decimals;
     }
   }
   config.timeColor &= 0xFFFFFF;
@@ -917,7 +970,7 @@ bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
   appearance.style = constrain(
       preferences.getUChar(APPEARANCE_STYLE_KEY, CLOCK_STYLE_DIGITAL),
       static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
+      static_cast<uint8_t>(CLOCK_STYLE_LAST));
   appearance.analogToneColor =
       preferences.getUInt(APPEARANCE_TONE_KEY, 0x00D6FF) & 0xFFFFFF;
   appearance.analogHandToneColor =
@@ -931,6 +984,10 @@ bool clockAppearanceLoad(ClockAppearanceConfig &appearance,
       preferences.getBool(APPEARANCE_ACCENTS_KEY, true);
   appearance.analogOutlineHandsEnabled =
       preferences.getBool(APPEARANCE_OUTLINE_HANDS_KEY, false);
+  appearance.analogTintedDialEnabled =
+      preferences.getBool(APPEARANCE_TINTED_DIAL_KEY, false);
+  appearance.analogTintedHandsEnabled =
+      preferences.getBool(APPEARANCE_TINTED_HANDS_KEY, false);
   appearance.analogMonochromeValuesEnabled =
       preferences.getBool(APPEARANCE_MONO_VALUES_KEY, false);
   appearance.analogValuesAboveHandsEnabled =
@@ -958,7 +1015,7 @@ bool clockAppearanceSave(const ClockAppearanceConfig &appearance) {
     return false;
   const uint8_t style = constrain(
       appearance.style, static_cast<uint8_t>(CLOCK_STYLE_DIGITAL),
-      static_cast<uint8_t>(CLOCK_STYLE_VALUES));
+      static_cast<uint8_t>(CLOCK_STYLE_LAST));
   const bool styleSaved =
       preferences.putUChar(APPEARANCE_STYLE_KEY, style) == sizeof(style);
   const bool toneSaved =
@@ -981,6 +1038,12 @@ bool clockAppearanceSave(const ClockAppearanceConfig &appearance) {
       preferences.putBool(APPEARANCE_OUTLINE_HANDS_KEY,
                           appearance.analogOutlineHandsEnabled) ==
       sizeof(bool);
+  const bool tintedDialSaved =
+      preferences.putBool(APPEARANCE_TINTED_DIAL_KEY,
+                          appearance.analogTintedDialEnabled) == sizeof(bool);
+  const bool tintedHandsSaved =
+      preferences.putBool(APPEARANCE_TINTED_HANDS_KEY,
+                          appearance.analogTintedHandsEnabled) == sizeof(bool);
   const bool monoValuesSaved =
       preferences.putBool(APPEARANCE_MONO_VALUES_KEY,
                           appearance.analogMonochromeValuesEnabled) ==
@@ -1006,7 +1069,8 @@ bool clockAppearanceSave(const ClockAppearanceConfig &appearance) {
       sizeof(uint32_t);
   preferences.end();
   return styleSaved && toneSaved && handToneSaved && accentColorSaved &&
-         accentsSaved && outlineHandsSaved && monoValuesSaved &&
+         accentsSaved && outlineHandsSaved && tintedDialSaved &&
+         tintedHandsSaved && monoValuesSaved &&
          valuesAboveSaved && dateFormatSaved && dateColorSaved &&
          weatherColorSaved;
 }
@@ -1102,6 +1166,20 @@ struct ConfigRecordV40 {
   uint32_t magic;
   uint32_t schemaVersion;
   uint8_t config[CLOCK_CONFIG_SCHEMA_40_SIZE];
+  uint32_t checksum;
+};
+
+struct ConfigRecordV58 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_58_SIZE];
+  uint32_t checksum;
+};
+
+struct ConfigRecordV57 {
+  uint32_t magic;
+  uint32_t schemaVersion;
+  uint8_t config[CLOCK_CONFIG_SCHEMA_57_SIZE];
   uint32_t checksum;
 };
 
@@ -1203,6 +1281,8 @@ enum class ConfigRecordDecode { Invalid, Current, Migrated };
 
 bool supportedRecordSize(size_t storedSize) {
   return storedSize == sizeof(ConfigRecord) ||
+         storedSize == sizeof(ConfigRecordV58) ||
+         storedSize == sizeof(ConfigRecordV57) ||
          storedSize == sizeof(ConfigRecordV56) ||
          storedSize == sizeof(ConfigRecordV55) ||
          storedSize == sizeof(ConfigRecordV54) ||
@@ -1251,6 +1331,44 @@ ConfigRecordDecode decodeConfigRecord(const ConfigRecord &record,
     config = record.config;
     normalizeConfig(config);
     return ConfigRecordDecode::Current;
+  }
+
+  // Schéma 58 je přesnou předponou schématu 59; ciferníky si po zkopírování
+  // podrží výchozí hodnoty (retro LCD se vybírá jen stylem, prstenec je
+  // vypnutý), takže hodiny po aktualizaci vypadají stejně.
+  const ConfigRecordV58 &legacyV58 =
+      *reinterpret_cast<const ConfigRecordV58 *>(&record);
+  uint32_t embeddedSchemaV58 = 0;
+  if (readComplete && storedSize == sizeof(legacyV58))
+    memcpy(&embeddedSchemaV58, legacyV58.config, sizeof(embeddedSchemaV58));
+  if (readComplete && storedSize == sizeof(legacyV58) &&
+      legacyV58.magic == CONFIG_MAGIC && legacyV58.schemaVersion == 58 &&
+      embeddedSchemaV58 == 58 &&
+      legacyV58.checksum ==
+          bytesChecksum(legacyV58.config, sizeof(legacyV58.config))) {
+    memcpy(&config, legacyV58.config, sizeof(legacyV58.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
+  }
+
+  // Schéma 57 je přesnou předponou schématu 58 (a tím i 59); další volby
+  // displeje i ciferníky si po zkopírování podrží výchozí hodnoty (zhasnutí
+  // v noci vypnuté, 30 s; prstenec vypnutý).
+  const ConfigRecordV57 &legacyV57 =
+      *reinterpret_cast<const ConfigRecordV57 *>(&record);
+  uint32_t embeddedSchemaV57 = 0;
+  if (readComplete && storedSize == sizeof(legacyV57))
+    memcpy(&embeddedSchemaV57, legacyV57.config, sizeof(embeddedSchemaV57));
+  if (readComplete && storedSize == sizeof(legacyV57) &&
+      legacyV57.magic == CONFIG_MAGIC && legacyV57.schemaVersion == 57 &&
+      embeddedSchemaV57 == 57 &&
+      legacyV57.checksum ==
+          bytesChecksum(legacyV57.config, sizeof(legacyV57.config))) {
+    memcpy(&config, legacyV57.config, sizeof(legacyV57.config));
+    config.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
+    normalizeConfig(config);
+    return ConfigRecordDecode::Migrated;
   }
 
   // Schéma 56 je přesnou předponou schématu 57; další volby letadel si po
@@ -2000,8 +2118,19 @@ ClockConfigRecordStatus clockConfigDecodeRecord(const uint8_t *bytes,
   return ClockConfigRecordStatus::Ok;
 }
 
+// Záznam pro uložení žije jen po dobu zápisu. Jako statický by po prvním
+// uložení (třeba po převodu schématu při startu) držel 13 kB PSRAM napořád.
+struct TemporaryConfigRecord {
+  ConfigRecord &record = allocateConfigRecord();
+  ~TemporaryConfigRecord() {
+    record.~ConfigRecord();
+    heap_caps_free(&record);
+  }
+};
+
 bool clockConfigSave(const ClockConfig &config) {
-  static ConfigRecord &record = allocateConfigRecord();
+  TemporaryConfigRecord temporary;
+  ConfigRecord &record = temporary.record;
   record = ConfigRecord{};
   record.magic = CONFIG_MAGIC;
   record.schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;

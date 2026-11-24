@@ -69,6 +69,21 @@ ukázaných, sdílený filtr výšky a volací značky) jsou převzaté z
 `MeteoPlaneRadar/PlaneWatch.cpp` verze 0.8.0 a přepsané na samostatný modul
 bez Arduina; přepínání obrazovek a stahování jsou vlastní.
 
+Velká ikona v detailu letadla (zvětšení `zoom` v `PlaneIcon_Draw`
+a `PlaneIcon_Radius` v `WaveshareHodiny/PlaneIcon.cpp`, natočení jako na mapě
+a barva podle výšky), tyrkysový dvojitý kroužek kolem letadla z upozornění
+a režimy upozornění "nejdřív mapa, pak detail" a "jen mapa" (včetně délky kroku
+s mapou v `planeNearbyMapStepMs`) vycházejí z `MeteoPlaneRadar/PlaneIcon.cpp`
+a `ScreenPlanes.cpp` verze 0.9.8 a 0.9.9; kreslení do canvasu LVGL a řízení
+v úloze radaru jsou vlastní.
+
+Stav zdrojů dat v `WaveshareHodiny/SourceHealth.cpp` (poslední úspěch,
+neúspěchy za sebou, další pokus a řádek "Zdroj nedostupný · další pokus za
+N min") vychází z návrhu `MeteoPlaneRadar/SrcHealth.h` verze 0.9.7; čas se
+předává zvenku, aby šel stav otestovat na počítači, a sdílený stav se zamyká.
+Zhasnutý displej v noci (`WaveshareHodiny/NightDisplay.cpp`) je nápad
+z `MeteoPlaneRadar/NightMode.cpp`; pravidla probuzení jsou vlastní.
+
 ## Data o letadlech adsb.fi a adsb.lol
 
 Radar letadel používá dvě veřejná API, obě bez klíče a bez registrace:
@@ -199,3 +214,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Retro LCD a prstenec předpovědi z CooLajz/waveshare-hodiny
+
+Tenhle firmware je fork projektu waveshare-hodiny od CooLajze. Tři pozdější
+nápady z původního projektu jsou do forku přenesené a upravené pro zdejší
+sloty hodnot, předpověď a obě desky:
+
+- autor: CooLajz,
+- zdroj: https://github.com/CooLajz/waveshare-hodiny,
+- licence: MIT, Copyright (c) 2026 CooLajz.
+
+- Retro LCD ciferník (revize `a2f2104`, `66214d5`, `07d1509`, `052c345`,
+  `460236b`, `63939ac`, `49b09de`, `51e68d7`): geometrie segmentů
+  v `WaveshareHodiny/RetroLcdGeometry.h` je převzatá beze změny tvaru,
+  formátování hodnot, dne v týdnu a data v `RetroLcdFormat.h` beze změny
+  chování; kreslení v `RetroLcd.cpp` (masky znaků, nerozsvícené segmenty,
+  rastr ikony počasí, segmentový ukazatel) vychází z upstreamového
+  `RetroLcd.cpp`, píše ale přímo do kreslicího bufferu a řídí se
+  rozvržením desky v `RetroLcdLayout.h` (kulaté podle upstreamu, 7" nové).
+- Barevná výplň značek a ručiček analogového ciferníku (revize `0a1109d`).
+- Prstenec předpovědi kolem ciferníku (revize `e81c2e7`, `cf90317`,
+  `861f00a`, `a283205`, `e7c8870`): teplotní stupnice, plynulý přechod
+  mezi hodinami se švem v právě probíhající hodině, rozptýlení 4 x 4 do
+  RGB565 a překreslování jen změněných výseků v `ForecastFan.h`
+  a `ForecastFanRing.cpp`. Místo celého obrázku 480 x 480 se ukládá jen
+  mezikruží a na 7" vedle digitálních hodin je stejná logika jako pás.
+
+Na převzaté a odvozené části se vztahují podmínky MIT licence; její úplné
+znění je v souboru `LICENSE` v kořeni repozitáře.

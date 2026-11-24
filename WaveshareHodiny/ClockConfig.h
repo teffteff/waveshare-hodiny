@@ -214,7 +214,14 @@ constexpr uint8_t CLOCK_LIGHTNING_MAX_ALARM_MINUTES = 30;
 // Schema 57 appends more aircraft radar options (weather balloons on the
 // radar, on by default) with spare bytes for later ones. The schema 56 record
 // stays an exact prefix.
-constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 57;
+// Schema 58 appends more display options (backlight off at night, woken by
+// a touch or an alert) with spare bytes for later ones. The schema 57 record
+// stays an exact prefix; the option starts off.
+// Schema 59 appends the clock faces block (ClockFacesConfig): the Retro LCD
+// face and the 24 h forecast ring around the dial. The schema 58 record stays
+// an exact prefix; the Retro LCD face is only picked through the appearance
+// style and the ring starts off, so an upgrade looks exactly as before.
+constexpr uint32_t CLOCK_CONFIG_SCHEMA_VERSION = 59;
 
 // Obrazovky, které se dají poskládat do vlastního pořadí. Nastavení mezi ně
 // nepatří: v cyklu zůstává poslední, aby se z něj vždycky odcházelo stejně.
@@ -325,7 +332,11 @@ enum ClockStyle : uint8_t {
   CLOCK_STYLE_ANALOG = 1,
   // Malý čas nahoře a osm hodnot v mřížce 2 × 4 pod ním.
   CLOCK_STYLE_VALUES = 2,
+  // Segmentový LCD displej (ClockFacesConfig, RetroLcd.cpp). Na čísle záleží
+  // jen tady: upstream má retro LCD pod dvojkou, ta je u nás hodnot.
+  CLOCK_STYLE_RETRO_LCD = 3,
 };
+constexpr uint8_t CLOCK_STYLE_LAST = CLOCK_STYLE_RETRO_LCD;
 
 struct ClockAppearanceConfig {
   uint8_t style = CLOCK_STYLE_DIGITAL;
@@ -334,6 +345,10 @@ struct ClockAppearanceConfig {
   uint32_t analogCardinalAccentColor = 0xFFAB00;
   bool analogCardinalAccentsEnabled = true;
   bool analogOutlineHandsEnabled = false;
+  // Barevná výplň: bílé jádro značek ciferníku a plných ručiček dostane
+  // světlejší odstín tónu ciferníku, resp. barvy ručiček.
+  bool analogTintedDialEnabled = false;
+  bool analogTintedHandsEnabled = false;
   bool analogMonochromeValuesEnabled = false;
   bool analogValuesAboveHandsEnabled = false;
   uint8_t analogDateFormat = CLOCK_DATE_FORMAT_WEEKDAY_DAY_MONTH;
@@ -888,8 +903,12 @@ struct alignas(4) ClockPlanesExtrasConfig {
   uint8_t windowDirection = 0;
   uint8_t windowWidthDeg = 90;
   uint8_t windowRangeKm = 15;
+  // Jak upozornění letadlo ukáže: PlaneNearbyAlertMode (0 hned detail,
+  // 1 nejdřív mapa a pak detail, 2 jen mapa). Nula ze staršího záznamu je
+  // dosavadní chování.
+  uint8_t nearbyAlertMode = 0;
   // Rezerva pro další volby bez nového schématu; zatím nuly.
-  uint8_t reserved[7] = {};
+  uint8_t reserved[6] = {};
 };
 
 static_assert(sizeof(ClockPlanesExtrasConfig) == 16,
@@ -909,6 +928,85 @@ constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_WIDTH_DEG = 180;
 constexpr uint8_t CLOCK_PLANE_WINDOW_DEFAULT_RANGE_KM = 15;
 constexpr uint8_t CLOCK_PLANE_WINDOW_MIN_RANGE_KM = 1;
 constexpr uint8_t CLOCK_PLANE_WINDOW_MAX_RANGE_KM = 50;
+// Počet režimů ClockPlanesExtrasConfig::nearbyAlertMode (PlaneNearbyAlertMode).
+constexpr uint8_t CLOCK_PLANE_NEARBY_ALERT_MODE_COUNT = 3;
+
+// --- Schéma 58: další volby displeje ---------------------------------------
+// Displej v noci úplně zhasne (ClockDisplayExtrasConfig). Blok leží na konci
+// záznamu; rezerva je na další volby displeje bez nového schématu.
+constexpr uint8_t CLOCK_NIGHT_WAKE_DEFAULT_SECONDS = 30;
+constexpr uint8_t CLOCK_NIGHT_WAKE_MIN_SECONDS = 10;
+constexpr uint8_t CLOCK_NIGHT_WAKE_MAX_SECONDS = 120;
+
+struct alignas(4) ClockDisplayExtrasConfig {
+  // V nočním režimu (automatickém i ručním) podsvícení úplně zhasne. Dotyk
+  // ho rozsvítí na nightWakeSeconds a nic jiného neudělá; upozornění, které
+  // přepíná obrazovky, ho rozsvítí na dobu svého držení. Vypnuté.
+  bool nightDisplayOff = false;
+  // Jak dlouho svítí po dotyku. Nula ze staršího záznamu i hodnota mimo meze
+  // znamená výchozích 30 s (normalizeConfig).
+  uint8_t nightWakeSeconds = CLOCK_NIGHT_WAKE_DEFAULT_SECONDS;
+  // Rezerva pro další volby displeje bez nového schématu; zatím nuly.
+  uint8_t reserved[14] = {};
+};
+
+static_assert(sizeof(ClockDisplayExtrasConfig) == 16,
+              "The display extras block is part of the stored record.");
+// --- konec schématu 58 ------------------------------------------------------
+
+// ---- Schéma 59: ciferníky -------------------------------------------------
+// Retro LCD (segmentový displej podle CooLajz/waveshare-hodiny) a prstenec
+// předpovědi na 24 hodin kolem ciferníku. Blok leží celý na konci záznamu, aby
+// šel při sloučení s jiným schématem jen přečíslovat.
+//
+// Zdroj hodnoty retro LCD: index slotu hodnot (0..CLOCK_VALUE_SLOT_COUNT-1,
+// sloty 0-3 jsou čtyři hodnoty ciferníku), nebo ikona počasí.
+constexpr uint8_t CLOCK_RETRO_SOURCE_WEATHER = 0xFE;
+// Segmentový ukazatel bez zdroje se nekreslí.
+constexpr uint8_t CLOCK_RETRO_SOURCE_NONE = 0xFF;
+constexpr uint8_t CLOCK_RETRO_MAX_GHOST_PERCENT = 50;
+constexpr uint8_t CLOCK_RETRO_DEFAULT_GHOST_PERCENT = 5;
+constexpr uint8_t CLOCK_RETRO_MIN_DIGITS = 1;
+constexpr uint8_t CLOCK_RETRO_MAX_DIGITS = 4;
+constexpr uint8_t CLOCK_RETRO_MIN_SEGMENTS = 5;
+constexpr uint8_t CLOCK_RETRO_MAX_SEGMENTS = 50;
+constexpr uint8_t CLOCK_RETRO_DEFAULT_SEGMENTS = 10;
+// 0-6: den/měsíc/rok v různém pořadí a s různým oddělovačem, 7-13 totéž bez
+// úvodních nul (RetroLcdFormat.h).
+constexpr uint8_t CLOCK_RETRO_DATE_FORMAT_COUNT = 14;
+constexpr uint32_t CLOCK_RETRO_DEFAULT_BACKGROUND = 0xB7C1A5;
+constexpr uint32_t CLOCK_RETRO_DEFAULT_FOREGROUND = 0x20261C;
+
+struct ClockFacesConfig {
+  uint32_t retroBackgroundColor = CLOCK_RETRO_DEFAULT_BACKGROUND;
+  uint32_t retroForegroundColor = CLOCK_RETRO_DEFAULT_FOREGROUND;
+  // Rozsah segmentového ukazatele v jednotkách jeho hodnoty.
+  float retroBarMin = 0.0f;
+  float retroBarMax = 100.0f;
+  // Neaktivní ("duchové") segmenty, 0-50 % barvy segmentu.
+  uint8_t retroGhostPercent = CLOCK_RETRO_DEFAULT_GHOST_PERCENT;
+  uint8_t retroLeftSource = 0;
+  uint8_t retroRightSource = 1;
+  uint8_t retroBarSource = CLOCK_RETRO_SOURCE_NONE;
+  // Počet míst před desetinnou čárkou; desetinná místa bere ze slotu.
+  uint8_t retroLeftDigits = 2;
+  uint8_t retroRightDigits = 2;
+  uint8_t retroBarSegments = CLOCK_RETRO_DEFAULT_SEGMENTS;
+  uint8_t retroDateFormat = 0;
+  // Den v týdnu na pevných pozicích (jako skutečný LCD), jinak na střed.
+  bool retroFixedWeekday = false;
+  bool retroSeconds = true;
+  // Prstenec předpovědi kolem ciferníku (na 7" pás pod hodinami).
+  bool forecastFanEnabled = false;
+  // 12 = každá hodina na své pozici ciferníku (sedí s hodinovou ručičkou),
+  // 24 = celý den dokola, půlnoc nahoře.
+  uint8_t forecastFanHours = 12;
+  // Rezerva pro další volby ciferníků bez nového schématu; zatím nuly.
+  uint8_t reserved[8] = {};
+};
+
+static_assert(sizeof(ClockFacesConfig) == 36,
+              "The clock faces block is part of the stored record.");
 
 struct ClockConfig {
   uint32_t schemaVersion = CLOCK_CONFIG_SCHEMA_VERSION;
@@ -1079,6 +1177,12 @@ struct ClockConfig {
   // Pole schématu 57. Další volby radaru letadel; Ovládání končí na násobku
   // čtyř, takže začínají přesně na konci záznamu schématu 56.
   ClockPlanesExtrasConfig planesExtras;
+  // Pole schématu 58. Další volby displeje (zhasnutí v noci); další volby
+  // letadel končí na násobku čtyř, takže začínají přesně na konci záznamu
+  // schématu 57.
+  ClockDisplayExtrasConfig displayExtras;
+  // Schéma 59.
+  ClockFacesConfig faces;
 };
 
 static_assert(offsetof(ClockConfig, language) == 2106 &&
@@ -1290,8 +1394,26 @@ constexpr size_t CLOCK_CONFIG_SCHEMA_56_SIZE = offsetof(ClockConfig, planesExtra
 
 static_assert(CLOCK_CONFIG_SCHEMA_56_SIZE % alignof(ClockConfig) == 0 &&
                   CLOCK_CONFIG_SCHEMA_56_SIZE + sizeof(ClockPlanesExtrasConfig) ==
-                      sizeof(ClockConfig),
+                      offsetof(ClockConfig, displayExtras),
               "Schema 57 must preserve the complete schema 56 prefix.");
+
+// Schéma 57 končilo dalšími volbami letadel, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_57_SIZE =
+    offsetof(ClockConfig, displayExtras);
+
+static_assert(CLOCK_CONFIG_SCHEMA_57_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_57_SIZE +
+                          sizeof(ClockDisplayExtrasConfig) ==
+                      offsetof(ClockConfig, faces),
+              "Schema 58 must preserve the complete schema 57 prefix.");
+
+// Schéma 58 končilo dalšími volbami displeje, bez výplně.
+constexpr size_t CLOCK_CONFIG_SCHEMA_58_SIZE = offsetof(ClockConfig, faces);
+
+static_assert(CLOCK_CONFIG_SCHEMA_58_SIZE % alignof(ClockConfig) == 0 &&
+                  CLOCK_CONFIG_SCHEMA_58_SIZE + sizeof(ClockFacesConfig) ==
+                      sizeof(ClockConfig),
+              "Schema 59 must preserve the complete schema 58 prefix.");
 
 // Pořadí obrazovek jako jedno pole: pozice 0-7 leží ve screenOrder uprostřed
 // záznamu, 8-15 ve screenOrderTail na jeho konci.

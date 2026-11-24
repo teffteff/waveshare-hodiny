@@ -242,7 +242,23 @@ void testWatchRadiusAndRange() {
 
 }  // namespace
 
+void testMapStepOfRadarFirstAlert() {
+  // Čtvrtina ukázání, aspoň 5 s, nejvýš polovina a nejvýš 15 s.
+  assert(planeNearbyMapStepMs(15000) == 5000);
+  assert(planeNearbyMapStepMs(5000) == 2500);
+  assert(planeNearbyMapStepMs(8000) == 4000);
+  assert(planeNearbyMapStepMs(30000) == 7500);
+  assert(planeNearbyMapStepMs(60000) == 15000);
+  assert(planeNearbyMapStepMs(120000) == 15000);
+  assert(planeNearbyMapStepMs(0) == 0);
+  // Výchozí režim je dnešní chování a hodnoty se vejdou do bajtu nastavení.
+  assert(static_cast<uint8_t>(PlaneNearbyAlertMode::Detail) == 0);
+  assert(static_cast<uint8_t>(PlaneNearbyAlertMode::MapOnly) + 1 ==
+         PLANE_NEARBY_ALERT_MODE_COUNT);
+}
+
 int main() {
+  testMapStepOfRadarFirstAlert();
   testDistanceAndBearing();
   testAngleDiffWrapsAround();
   testWindowSector();

@@ -16,6 +16,7 @@ void LCD_Init();
 void LCD_Resync();
 // Pozná trvalý posun obrazu po vypadlém přerušení bounce bufferu a panel
 // resynchronizuje. Volat průběžně z hlavní smyčky; vrací true při opravě.
+// (Restart panelu sám proběhne v každém včasném VSYNC, viz RgbPanel.cpp.)
 bool LCD_MaintainSync();
 uint32_t LCD_SyncRepairCount();
 // Časy (sekundy od startu) posledních nejvýš 16 oprav fáze, od nejstarší.
@@ -23,6 +24,9 @@ size_t LCD_RecentRepairTimes(uint32_t *output, size_t capacity);
 // Počet jednotlivých snímků odeslaných mimo správnou fázi (i krátkých
 // škubnutí, která se srovnají sama).
 uint32_t LCD_PhaseGlitchCount();
+// Počet VSYNC přerušení, která přišla tak pozdě, že se v nich panel
+// nerestartoval (restart by obraz posunul do strany, viz RgbPanel.cpp).
+uint32_t LCD_LateVsyncCount();
 bool LCD_SetPixelClock(uint32_t frequencyHz);
 uint32_t LCD_GetPixelClock();
 void LCD_Sleep();

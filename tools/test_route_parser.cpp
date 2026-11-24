@@ -247,7 +247,114 @@ void testTrimmedRouteFromOwnFeedParses() {
   assert(std::string(info.to) == "Ostrava");
 }
 
+void testFailedAttemptRetriesSoon() {
+  // Po chybě se čeká jen chvilku, ne na další stažení letadel; po rozhodnuté
+  // odpovědi a po vyčerpaném stropu se už nečeká na nic.
+  assert(routeAttemptAfter(RouteParseStatus::Invalid, 0).retryDelayMs ==
+         ROUTE_RETRY_DELAY_MS);
+  assert(ROUTE_RETRY_DELAY_MS >= 1000 && ROUTE_RETRY_DELAY_MS <= 5000);
+  assert(routeAttemptAfter(RouteParseStatus::Ok, 0).retryDelayMs == 0);
+  assert(routeAttemptAfter(RouteParseStatus::NoRoute, 1).retryDelayMs == 0);
+  assert(routeAttemptAfter(RouteParseStatus::Invalid, ROUTE_MAX_ATTEMPTS - 1)
+             .retryDelayMs == 0);
+}
+
+RouteInfo makeRoute(const char *from, const char *to) {
+  RouteInfo info;
+  strlcpy(info.from, from, sizeof(info.from));
+  strlcpy(info.to, to, sizeof(info.to));
+  return info;
+}
+
+void testRouteCacheRemembersAnswers() {
+  RouteCache cache;
+  PlaneRouteState state = PlaneRouteState::Pending;
+  RouteInfo info;
+  assert(!routeCacheLookup(cache, "CSA6TL", 0, state, info));
+
+  routeCacheStore(cache, "CSA6TL", RouteParseStatus::Ok,
+                  makeRoute("Prague", "Paris"), 1000);
+  assert(routeCacheLookup(cache, "CSA6TL", 2000, state, info));
+  assert(state == PlaneRouteState::Known);
+  assert(std::string(info.from) == "Prague");
+  assert(std::string(info.to) == "Paris");
+  // Nalezená trasa platí dvacet minut.
+  assert(routeCacheLookup(cache, "CSA6TL", 1000 + ROUTE_CACHE_FOUND_MS - 1,
+                          state, info));
+  assert(!routeCacheLookup(cache, "CSA6TL", 1000 + ROUTE_CACHE_FOUND_MS, state,
+                           info));
+
+  // "Trasa není" jen minutu, a bez měst.
+  routeCacheStore(cache, "OKSCT", RouteParseStatus::NoRoute,
+                  makeRoute("X", "Y"), 5000);
+  assert(routeCacheLookup(cache, "OKSCT", 5000 + ROUTE_CACHE_NO_ROUTE_MS - 1,
+                          state, info));
+  assert(state == PlaneRouteState::Unknown);
+  assert(info.from[0] == '\0' && info.to[0] == '\0');
+  assert(!routeCacheLookup(cache, "OKSCT", 5000 + ROUTE_CACHE_NO_ROUTE_MS,
+                           state, info));
+
+  // Nepovedený dotaz není odpověď a nepamatuje se, ani nepřepíše dobrou.
+  routeCacheStore(cache, "EZY12", RouteParseStatus::Invalid, RouteInfo{}, 6000);
+  assert(!routeCacheLookup(cache, "EZY12", 6001, state, info));
+  routeCacheStore(cache, "CSA6TL", RouteParseStatus::Ok,
+                  makeRoute("Prague", "Paris"), 7000);
+  routeCacheStore(cache, "CSA6TL", RouteParseStatus::Invalid, RouteInfo{}, 7100);
+  assert(routeCacheLookup(cache, "CSA6TL", 7200, state, info));
+  assert(state == PlaneRouteState::Known);
+
+  // Prázdná značka se neukládá ani nehledá.
+  routeCacheStore(cache, "", RouteParseStatus::Ok, makeRoute("A", "B"), 8000);
+  assert(!routeCacheLookup(cache, "", 8000, state, info));
+  assert(!routeCacheLookup(cache, nullptr, 8000, state, info));
+}
+
+void testRouteCacheKeepsLastEight() {
+  RouteCache cache;
+  char callsign[10];
+  // Devět značek: první (nejstarší) vypadne, ostatní zůstanou.
+  for (int index = 0; index < ROUTE_CACHE_SIZE + 1; ++index) {
+    snprintf(callsign, sizeof(callsign), "ABC%d", index);
+    routeCacheStore(cache, callsign, RouteParseStatus::Ok,
+                    makeRoute(callsign, "B"), 1000 + index * 100);
+  }
+  PlaneRouteState state;
+  RouteInfo info;
+  assert(!routeCacheLookup(cache, "ABC0", 3000, state, info));
+  for (int index = 1; index < ROUTE_CACHE_SIZE + 1; ++index) {
+    snprintf(callsign, sizeof(callsign), "ABC%d", index);
+    assert(routeCacheLookup(cache, callsign, 3000, state, info));
+    assert(std::string(info.from) == callsign);
+  }
+  // Tatáž značka se přepíše na místě a nic jiného nevytlačí.
+  routeCacheStore(cache, "ABC5", RouteParseStatus::Ok, makeRoute("New", "B"),
+                  4000);
+  for (int index = 1; index < ROUTE_CACHE_SIZE + 1; ++index) {
+    snprintf(callsign, sizeof(callsign), "ABC%d", index);
+    assert(routeCacheLookup(cache, callsign, 4000, state, info));
+  }
+  assert(routeCacheLookup(cache, "ABC5", 4000, state, info));
+  assert(std::string(info.from) == "New");
+  // Vypršelý záznam uvolní místo dřív než nejstarší platný.
+  routeCacheStore(cache, "ABC1", RouteParseStatus::NoRoute, RouteInfo{}, 4100);
+  const uint32_t later = 4100 + ROUTE_CACHE_NO_ROUTE_MS + 1;
+  routeCacheStore(cache, "NEW1", RouteParseStatus::Ok, makeRoute("N", "B"),
+                  later);
+  assert(routeCacheLookup(cache, "ABC2", later, state, info));
+  assert(routeCacheLookup(cache, "NEW1", later, state, info));
+  // Přetečení millis() nevadí: počítá se rozdíl.
+  RouteCache wrapped;
+  routeCacheStore(wrapped, "WRAP", RouteParseStatus::Ok, makeRoute("A", "B"),
+                  0xFFFFFF00u);
+  assert(routeCacheLookup(wrapped, "WRAP", 0x100u, state, info));
+  routeCacheClear(wrapped);
+  assert(!routeCacheLookup(wrapped, "WRAP", 0x100u, state, info));
+}
+
 int main() {
+  testFailedAttemptRetriesSoon();
+  testRouteCacheRemembersAnswers();
+  testRouteCacheKeepsLastEight();
   testTrimmedRouteFromOwnFeedParses();
   testGoodAnswerSettlesImmediately();
   testNoRouteIsAnAnswerNotAFailure();

@@ -45,8 +45,16 @@ uint8_t PlaneIcon_Classify(const char *type, const char *cat);
 // Ikona se středem v (x, y), nos ve směru trackDeg (0 = nahoru, po směru
 // hodin, už opravený o natočení mapy). Bez směru kroužek s tečkou jako dřív,
 // ať je druh jakýkoli; balon a dron se kreslí vždy svisle.
+// zoom zvětší celou ikonu kolem středu (detail letadla ji kreslí až třikrát
+// větší než mapa, podle MeteoPlaneRadar 0.9.9). Při 1 kreslí na pixel stejně
+// jako dřív.
 void PlaneIcon_Draw(uint16_t *buffer, int x, int y, float trackDeg,
-                    bool hasTrack, uint8_t kind, uint16_t color);
+                    bool hasTrack, uint8_t kind, uint16_t color,
+                    float zoom = 1.0f);
+
+// Vzdálenost od středu k nejvzdálenějšímu bodu ikony při zoom 1, ať je
+// natočená jakkoli. Podle ní se zvětšená ikona vejde do svého okénka.
+float PlaneIcon_Radius(uint8_t kind, bool hasTrack);
 
 // Krátký název druhu ("helicopter") pro diagnostiku a testy.
 const char *PlaneIcon_Name(uint8_t kind);

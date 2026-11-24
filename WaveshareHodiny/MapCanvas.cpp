@@ -63,7 +63,8 @@ const uint8_t *symbolGlyph(char character) {
 
 // Jeden znak. Vrací false pro to, co se kreslí zvlášť (pomlčka, tečka) nebo
 // co v písmu není.
-bool drawGlyph(uint16_t *buffer, int x, int y, char character, uint16_t color,
+template <typename Pixel>
+bool drawGlyph(Pixel *buffer, int x, int y, char character, uint16_t color,
                uint8_t opacity) {
   const uint8_t *glyph = upperGlyph(character);
   if (glyph == nullptr) glyph = symbolGlyph(character);
@@ -115,8 +116,29 @@ void setMapPixel(uint16_t *buffer, int x, int y, uint16_t color,
   }
 }
 
-void drawMapLine(uint16_t *buffer, int x0, int y0, int x1, int y1,
-                 uint16_t color, uint8_t opacity) {
+uint8_t blendRgb332(uint8_t background, uint16_t foreground,
+                    uint8_t opacity) {
+  if (opacity == 0) return background;
+  if (opacity >= 100) return mapRgb565ToRgb332(foreground);
+  return mapRgb565ToRgb332(
+      blendRgb565(mapRgb332ToRgb565(background), foreground, opacity));
+}
+
+void setMapPixel(uint8_t *buffer, int x, int y, uint16_t color,
+                 uint8_t opacity) {
+  if (x >= 0 && x < canvasWidth && y >= 0 && y < canvasHeight) {
+    uint8_t &pixel = buffer[y * canvasWidth + x];
+    pixel = blendRgb332(pixel, color, opacity);
+  }
+}
+
+namespace {
+
+// Úsečka, obdélník a text jsou pro RGB565 i RGB332 stejné; liší se jen
+// setMapPixel, který si vybere přetížení podle typu pixelu.
+template <typename Pixel>
+void drawMapLineImpl(Pixel *buffer, int x0, int y0, int x1, int y1,
+                     uint16_t color, uint8_t opacity) {
   uint8_t code0 = lineOutCode(x0, y0);
   uint8_t code1 = lineOutCode(x1, y1);
   while (code0 || code1) {
@@ -167,11 +189,34 @@ void drawMapLine(uint16_t *buffer, int x0, int y0, int x1, int y1,
   }
 }
 
-void fillMapRect(uint16_t *buffer, int x, int y, int width, int height,
-                 uint16_t color, uint8_t opacity) {
+template <typename Pixel>
+void fillMapRectImpl(Pixel *buffer, int x, int y, int width, int height,
+                     uint16_t color, uint8_t opacity) {
   for (int row = y; row < y + height; ++row)
     for (int column = x; column < x + width; ++column)
       setMapPixel(buffer, column, row, color, opacity);
+}
+
+}  // namespace
+
+void drawMapLine(uint16_t *buffer, int x0, int y0, int x1, int y1,
+                 uint16_t color, uint8_t opacity) {
+  drawMapLineImpl(buffer, x0, y0, x1, y1, color, opacity);
+}
+
+void drawMapLine(uint8_t *buffer, int x0, int y0, int x1, int y1,
+                 uint16_t color, uint8_t opacity) {
+  drawMapLineImpl(buffer, x0, y0, x1, y1, color, opacity);
+}
+
+void fillMapRect(uint16_t *buffer, int x, int y, int width, int height,
+                 uint16_t color, uint8_t opacity) {
+  fillMapRectImpl(buffer, x, y, width, height, color, opacity);
+}
+
+void fillMapRect(uint8_t *buffer, int x, int y, int width, int height,
+                 uint16_t color, uint8_t opacity) {
+  fillMapRectImpl(buffer, x, y, width, height, color, opacity);
 }
 
 void drawMapCircle(uint16_t *buffer, int centerX, int centerY, int radius,
@@ -293,14 +338,27 @@ char nextFoldedLetter(const char *text, size_t &index) {
 }
 }  // namespace
 
-void drawMapText(uint16_t *buffer, int x, int y, const char *text,
-                 uint16_t color, uint8_t opacity) {
+namespace {
+template <typename Pixel>
+void drawMapTextImpl(Pixel *buffer, int x, int y, const char *text,
+                     uint16_t color, uint8_t opacity) {
   int position = 0;
   for (size_t index = 0; text[index] != '\0'; ++position) {
     const char character = nextFoldedLetter(text, index);
     drawGlyph(buffer, x + position * MAP_CANVAS_GLYPH_ADVANCE, y, character,
               color, opacity);
   }
+}
+}  // namespace
+
+void drawMapText(uint16_t *buffer, int x, int y, const char *text,
+                 uint16_t color, uint8_t opacity) {
+  drawMapTextImpl(buffer, x, y, text, color, opacity);
+}
+
+void drawMapText(uint8_t *buffer, int x, int y, const char *text,
+                 uint16_t color, uint8_t opacity) {
+  drawMapTextImpl(buffer, x, y, text, color, opacity);
 }
 
 int mapTextWidth(const char *text) {

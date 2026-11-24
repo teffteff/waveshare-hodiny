@@ -15,6 +15,7 @@
 #include "NetPoll.h"
 #include "NetworkCoordinator.h"
 #include "PsramGrowBuffer.h"
+#include "SourceHealth.h"
 #include "TlsBundle.h"
 
 
@@ -415,6 +416,8 @@ uint32_t lightningStep(bool) {
   if (ok && !live) wait = WAITING_RETRY_MS;
   nextFetchAt = millis() + wait;
   portEXIT_CRITICAL(&stateMux);
+  // Obsazená síť o serveru nic neříká.
+  if (ok || !networkBusy) sourceHealthRecord(ClockSource::Lightning, ok, wait);
   return TICK_MS;
 }
 }  // namespace

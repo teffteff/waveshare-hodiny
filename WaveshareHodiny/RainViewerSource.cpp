@@ -10,8 +10,10 @@
 #include <cstring>
 
 #include "ChmiRadarService.h"
+#include "DownloadDeadline.h"
 #include "RainViewerIndex.h"
 #include "FirmwareHubCa.h"
+#include "MapCanvas.h"
 #include "NetworkCoordinator.h"
 
 namespace {
@@ -68,7 +70,8 @@ PNG *decoder = nullptr;
 // Kam právě dekódovaná dlaždice patří na displeji.
 int destinationX = 0;
 int destinationY = 0;
-uint16_t *destinationFrame = nullptr;
+// Snímek animace v RGB332: řádek dlaždice se převádí rovnou při zápisu.
+uint8_t *destinationFrame = nullptr;
 
 void pump() {
   if (pollCallback != nullptr) pollCallback();
@@ -230,21 +233,21 @@ void drawTileLine(PNGDRAW *draw) {
 
   if (step == 1) {
     if (topY < 0 || topY >= CHMI_RADAR_HEIGHT) return;
-    memcpy(destinationFrame + static_cast<int32_t>(topY) * CHMI_RADAR_WIDTH +
-               (destinationX + firstSource),
-           tileLine + firstSource,
-           static_cast<size_t>(lastSource - firstSource + 1) *
-               sizeof(uint16_t));
+    uint8_t *target = destinationFrame +
+                      static_cast<int32_t>(topY) * CHMI_RADAR_WIDTH +
+                      (destinationX + firstSource);
+    for (int source = firstSource; source <= lastSource; ++source)
+      *target++ = mapRgb565ToRgb332(tileLine[source]);
     return;
   }
 
   for (int row = 0; row < step; ++row) {
     const int y = topY + row;
     if (y < 0 || y >= CHMI_RADAR_HEIGHT) continue;
-    uint16_t *target =
+    uint8_t *target =
         destinationFrame + static_cast<int32_t>(y) * CHMI_RADAR_WIDTH;
     for (int source = firstSource; source <= lastSource; ++source) {
-      const uint16_t color = tileLine[source];
+      const uint8_t color = mapRgb565ToRgb332(tileLine[source]);
       int x = destinationX + source * step;
       for (int repeat = 0; repeat < step; ++repeat, ++x) {
         if (x < 0 || x >= CHMI_RADAR_WIDTH) continue;
@@ -255,7 +258,7 @@ void drawTileLine(PNGDRAW *draw) {
 }
 
 bool downloadTile(HTTPClient &http, const RainViewerFrame &frame,
-                  int tileIndex, uint16_t *target, uint32_t revision) {
+                  int tileIndex, uint8_t *target, uint32_t revision) {
   const int column = tileIndex % tileColumns;
   const int row = tileIndex / tileColumns;
   const int tileX = tileX0 + column;
@@ -293,7 +296,10 @@ bool downloadTile(HTTPClient &http, const RainViewerFrame &frame,
   size_t received = 0;
   int remaining = declaredSize;
   unsigned long lastDataAt = millis();
+  // Celkový strop: limit nečinnosti sám pomalý přenos po kapkách neukončí.
+  const DownloadDeadline deadline(millis(), DOWNLOAD_DEFAULT_BUDGET_MS);
   while (remaining > 0) {
+    if (deadline.expired(millis())) break;
     if (!requestValid(revision)) {
       http.end();
       tileClient.stop();
@@ -418,7 +424,13 @@ bool rainViewerFetchIndex(size_t wantedFrameCount, RainViewerIndex &index,
   WiFiClient *stream = http.getStreamPtr();
   int remaining = http.getSize();
   unsigned long lastDataAt = millis();
+  const DownloadDeadline deadline(millis(), DOWNLOAD_DEFAULT_BUDGET_MS);
   while ((remaining > 0 || remaining == -1) && length + 1 < sizeof(payload)) {
+    if (deadline.expired(millis())) {
+      // Nedočtený index se nerozebírá.
+      http.end();
+      return false;
+    }
     if (!requestValid(revision)) {
       http.end();
       return false;
@@ -447,15 +459,14 @@ bool rainViewerFetchIndex(size_t wantedFrameCount, RainViewerIndex &index,
   return true;
 }
 
-bool rainViewerBuildFrame(const RainViewerFrame &frame, uint16_t *target,
+bool rainViewerBuildFrame(const RainViewerFrame &frame, uint8_t *target,
                           uint32_t revision) {
   if (target == nullptr || frame.path[0] == '\0') return false;
   if (!ensureBuffers()) return false;
   if (host[0] == '\0') strlcpy(host, DEFAULT_HOST, sizeof(host));
 
   // Rozestavěný snímek nesmí ukázat pixely po předchozím pohledu.
-  memset(target, 0, static_cast<size_t>(CHMI_RADAR_WIDTH) *
-                        CHMI_RADAR_HEIGHT * sizeof(uint16_t));
+  memset(target, 0, static_cast<size_t>(CHMI_RADAR_WIDTH) * CHMI_RADAR_HEIGHT);
 
   NetworkOperationGuard networkGuard(15000);
   if (!networkGuard) return false;

@@ -21,7 +21,7 @@ bool created = false;
 
 enum class HomeMode : uint8_t { None, Digital, Analog, Values, Forecast, Radar,
                                Agenda, Rss, School, Planes,
-                               RoundLeft, Traffic, Controls };
+                               RoundLeft, Traffic, Controls, Retro };
 HomeMode shownMode = HomeMode::None;
 
 constexpr int SIDE_X = 480;
@@ -469,7 +469,160 @@ struct DigitalView {
   lv_obj_t *agendaSecond;
   StatusIcons status;
   PageDots dots;
+  // Pás předpovědi na 24 hodin pod pruhem hodnot: obdoba prstence kolem
+  // kulatého ciferníku (ForecastFan.h). Pixely jen se zapnutým prstencem.
+  lv_obj_t *strip;
 } digital;
+
+constexpr int STRIP_X = 32;
+constexpr int STRIP_Y = 406;
+constexpr int STRIP_W = SCREEN_WIDTH - 64;
+constexpr int STRIP_H = 26;
+
+struct ForecastStrip {
+  lv_color_t *pixels = nullptr;
+  uint32_t colors[FORECAST_STRIP_POINTS] = {};
+  int64_t hourStart = 0;
+  int startHour = 0;
+  int minute = 0;
+  bool valid = false;
+  bool built = false;
+  uint32_t revision = UINT32_MAX;
+} strip;
+
+int stripMarkerX() {
+  return strip.minute * STRIP_W / (60 * (FORECAST_STRIP_POINTS - 1));
+}
+
+void invalidateStripMarker() {
+  if (digital.strip == nullptr) return;
+  lv_area_t area;
+  lv_obj_get_coords(digital.strip, &area);
+  const lv_coord_t x = area.x1 + stripMarkerX();
+  area.x1 = x - 3;
+  area.x2 = x + 3;
+  lv_obj_invalidate_area(digital.strip, &area);
+}
+
+void drawForecastStrip(lv_event_t *event) {
+  if (strip.pixels == nullptr || !strip.built) return;
+  lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(event);
+  lv_area_t coords;
+  lv_obj_get_coords(digital.strip, &coords);
+  const lv_area_t *clip = ctx->clip_area;
+  const lv_coord_t stride = lv_area_get_width(ctx->buf_area);
+  auto *buffer = static_cast<lv_color_t *>(ctx->buf);
+  const int x1 = std::max<int>(clip->x1, coords.x1);
+  const int x2 = std::min<int>(clip->x2, coords.x2);
+  if (x1 <= x2) {
+    for (int y = std::max<int>(clip->y1, coords.y1);
+         y <= std::min<int>(clip->y2, coords.y2); ++y) {
+      lv_color_t *row = buffer + (y - ctx->buf_area->y1) * stride - ctx->buf_area->x1;
+      memcpy(row + x1, strip.pixels + (y - coords.y1) * STRIP_W + (x1 - coords.x1),
+             static_cast<size_t>(x2 - x1 + 1) * sizeof(lv_color_t));
+    }
+  }
+  // Hodina a teplota každé tři hodiny, bílé se stínem, ať jsou čitelné na
+  // modré i na žluté.
+  lv_draw_label_dsc_t text;
+  lv_draw_label_dsc_init(&text);
+  text.font = &lcd7_text15;
+  const int step = STRIP_W / 8;
+  for (int i = 0; i < 8; ++i) {
+    const int hour = (strip.startHour + 3 * i) % 24;
+    const float temperature = forecastTemperatureAt(strip.hourStart + 3 * i * 3600LL);
+    char label[24];
+    if (std::isfinite(temperature))
+      snprintf(label, sizeof(label), "%d h  %.0f°", hour,
+               std::fabs(temperature) < 0.5f ? 0.0f : temperature);
+    else
+      snprintf(label, sizeof(label), "%d h", hour);
+    lv_area_t area = {static_cast<lv_coord_t>(coords.x1 + i * step + 8),
+                      static_cast<lv_coord_t>(coords.y1 + (STRIP_H - text.font->line_height) / 2),
+                      static_cast<lv_coord_t>(coords.x1 + (i + 1) * step - 2),
+                      static_cast<lv_coord_t>(coords.y1 + STRIP_H - 1)};
+    lv_area_t shadow = area;
+    lv_area_move(&shadow, 1, 1);
+    text.color = lv_color_black();
+    lv_draw_label(ctx, &text, &shadow, label, nullptr);
+    text.color = COLOR_TEXT;
+    lv_draw_label(ctx, &text, &area, label, nullptr);
+    if (i > 0) {
+      lv_draw_rect_dsc_t tick;
+      lv_draw_rect_dsc_init(&tick);
+      tick.bg_color = lv_color_black();
+      tick.bg_opa = LV_OPA_60;
+      lv_area_t mark = {static_cast<lv_coord_t>(coords.x1 + i * step),
+                        coords.y1,
+                        static_cast<lv_coord_t>(coords.x1 + i * step),
+                        coords.y2};
+      lv_draw_rect(ctx, &tick, &mark);
+    }
+  }
+  // Teď: světlá svislá čárka s tmavým okrajem.
+  lv_draw_rect_dsc_t marker;
+  lv_draw_rect_dsc_init(&marker);
+  const lv_coord_t x = coords.x1 + stripMarkerX();
+  lv_area_t outline = {static_cast<lv_coord_t>(x - 2), coords.y1,
+                       static_cast<lv_coord_t>(x + 2), coords.y2};
+  marker.bg_color = lv_color_black();
+  lv_draw_rect(ctx, &marker, &outline);
+  lv_area_t core = {static_cast<lv_coord_t>(x - 1), coords.y1,
+                    static_cast<lv_coord_t>(x + 1), coords.y2};
+  marker.bg_color = COLOR_TEXT;
+  lv_draw_rect(ctx, &marker, &core);
+}
+
+void releaseForecastStrip() {
+  if (strip.pixels != nullptr) heap_caps_free(strip.pixels);
+  strip = ForecastStrip{};
+}
+
+// Přestaví pás při nové hodině nebo předpovědi, jinak jen posune značku.
+void syncForecastStrip(const Palette &p) {
+  if (digital.strip == nullptr) return;
+  if (!forecastFanConfigured()) {
+    setVisible(digital.strip, false);
+    if (strip.pixels != nullptr) releaseForecastStrip();
+    return;
+  }
+  uint32_t colors[FORECAST_STRIP_POINTS];
+  int minute = 0;
+  const bool valid = forecastStripColors(colors, minute);
+  const time_t now = time(nullptr);
+  const int64_t hourStart = static_cast<int64_t>(now) - now % 3600;
+  const bool rebuild = valid && (!strip.built || hourStart != strip.hourStart ||
+                                 strip.revision != forecastFanDataRevision ||
+                                 memcmp(colors, strip.colors, sizeof(colors)) != 0);
+  if (rebuild) {
+    if (strip.pixels == nullptr)
+      strip.pixels = static_cast<lv_color_t *>(heap_caps_malloc(
+          STRIP_W * STRIP_H * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (strip.pixels == nullptr) return;
+    memcpy(strip.colors, colors, sizeof(colors));
+    for (int y = 0; y < STRIP_H; ++y)
+      for (int x = 0; x < STRIP_W; ++x) {
+        const uint32_t c = forecastStripPixel(colors, x, STRIP_W, y);
+        strip.pixels[y * STRIP_W + x] =
+            lv_color_make((c >> 16) & 255, (c >> 8) & 255, c & 255);
+      }
+    struct tm local = {};
+    localtime_r(&now, &local);
+    strip.startHour = local.tm_hour;
+    strip.hourStart = hourStart;
+    strip.revision = forecastFanDataRevision;
+    strip.minute = minute;
+    strip.built = true;
+    lv_obj_invalidate(digital.strip);
+  } else if (strip.built && minute != strip.minute) {
+    invalidateStripMarker();
+    strip.minute = minute;
+    invalidateStripMarker();
+  }
+  strip.valid = valid;
+  // Červená noc drží velké plochy černé, stejně jako prstenec.
+  setVisible(digital.strip, valid && strip.built && !p.night);
+}
 
 constexpr int RIGHT_X = 520;
 constexpr int BAND_Y = 276;
@@ -523,6 +676,10 @@ void createDigital(lv_obj_t *screen) {
 
   v.status = makeStatusIcons(v.root);
   v.dots = makePageDots(v.root);
+  v.strip = panel(v.root, STRIP_X, STRIP_Y, STRIP_W, STRIP_H);
+  lv_obj_set_style_bg_opa(v.strip, LV_OPA_TRANSP, 0);
+  lv_obj_add_event_cb(v.strip, drawForecastStrip, LV_EVENT_DRAW_MAIN, nullptr);
+  lv_obj_add_flag(v.strip, LV_OBJ_FLAG_HIDDEN);
 }
 
 void showWarningAndRain(lv_obj_t *icon, lv_obj_t *event, lv_obj_t *tail,
@@ -649,6 +806,7 @@ void syncDigital(const Palette &p) {
     setBackground(divider, p.line);
   showStatusIcons(v.status, p, 32, SCREEN_HEIGHT - 32, false);
   showPageDots(v.dots, p, -pageDotsLeft(SCREEN_WIDTH), BAR_HEIGHT / 2);
+  syncForecastStrip(p);
 }
 
 // --- Analogový ciferník: kulatý ciferník vlevo, sloupec vpravo ------------
@@ -4198,6 +4356,7 @@ HomeMode desiredMode() {
   if (activeScreen == DASHBOARD_SCREEN_SATELLITES && satellitesPage != nullptr)
     return HomeMode::RoundLeft;
   if (activeScreen != DASHBOARD_SCREEN_CLOCK) return HomeMode::None;
+  if (retroLayoutEnabled() && retroLcdObject() != nullptr) return HomeMode::Retro;
   if (valuesLayoutEnabled()) return HomeMode::Values;
   if (analogLayoutEnabled()) return HomeMode::Analog;
   return HomeMode::Digital;
@@ -4219,6 +4378,8 @@ void create() {
   createTraffic(screen);
   createControls(screen);
   createSkySide(screen);
+  // Retro LCD přes celý displej (RetroLcdLayout.h, rozvržení 7").
+  retroLcdCreate(screen, 0, 0);
   for (lv_obj_t *root : {skySide.barRoot, skySide.column, skySide.circleDots})
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
   for (lv_obj_t *root : {digital.root, analog.root, values.root, forecast.root,
@@ -4233,6 +4394,9 @@ void create() {
 void applyMode(HomeMode mode) {
   lv_obj_t *stage = displayDriverStage();
   setVisible(digital.root, mode == HomeMode::Digital);
+  // Pás předpovědi drží pixely jen na digitálních hodinách; po návratu se
+  // z předpovědi znovu postaví (syncForecastStrip).
+  if (mode != HomeMode::Digital && strip.pixels != nullptr) releaseForecastStrip();
   setVisible(analog.root, mode == HomeMode::Analog);
   setVisible(skySide.barRoot, mode == HomeMode::RoundLeft);
   setVisible(skySide.column, mode == HomeMode::RoundLeft);
@@ -4266,6 +4430,12 @@ void applyMode(HomeMode mode) {
   setVisible(traffic.root, mode == HomeMode::Traffic);
   if (mode == HomeMode::Controls) controls.drawnRevision = UINT32_MAX;
   setVisible(controls.root, mode == HomeMode::Controls);
+  if (mode == HomeMode::Retro && shownMode != HomeMode::Retro) {
+    lv_obj_move_foreground(retroLcdObject());
+    updateRetroFace(true);
+    lv_obj_invalidate(retroLcdObject());
+  }
+  setVisible(retroLcdObject(), mode == HomeMode::Retro);
   const bool stageLeft = mode == HomeMode::Analog || mode == HomeMode::RoundLeft;
   setVisible(stage, mode == HomeMode::None || stageLeft);
   setPosition(stage, stageLeft ? 0 : STAGE_X, STAGE_Y);
@@ -4306,6 +4476,8 @@ void sync(bool force) {
     case HomeMode::Traffic: syncTraffic(p); break;
     case HomeMode::Controls: syncControls(p); break;
     case HomeMode::RoundLeft: syncSkySide(p); break;
+    // Retro LCD plní dashboard ze smyčky (updateRetroFace).
+    case HomeMode::Retro: break;
     case HomeMode::None: break;
   }
 }

@@ -11,6 +11,7 @@
 
 #include "ConfigurationWeb.h"
 #include "DeviceName.h"
+#include "DownloadDeadline.h"
 #include "FirmwareBuild.h"
 #include "NetworkCoordinator.h"
 #include "TlsBundle.h"
@@ -149,7 +150,10 @@ bool readExact(Client &client, uint8_t *buffer, size_t length,
                uint32_t timeoutMs) {
   size_t received = 0;
   uint32_t lastProgress = millis();
+  // `timeoutMs` hlídá jen ticho; celkový strop ukončí i přenos po kapkách.
+  const DownloadDeadline deadline(lastProgress, DOWNLOAD_LARGE_BUDGET_MS);
   while (received < length) {
+    if (deadline.expired(millis())) return false;
     const int got = client.read(buffer + received, length - received);
     if (got > 0) {
       received += static_cast<size_t>(got);

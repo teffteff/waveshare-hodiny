@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "BoardDisplay.h"
+#include "VsyncTiming.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -49,14 +50,35 @@ volatile uint32_t isrPhaseBaselineUs = PHASE_INVALID;
 volatile uint32_t isrFrameUs = 0;
 volatile uint32_t isrToleranceUs = 0;
 volatile uint32_t phaseGlitchCount = 0;
-// Oprava přímo v přerušení: dva snímky po sobě mimo fázi znamenají trvalý
-// posun a panel se restartuje s příštím VSYNC. Obraz je tak posunutý dva až
-// tři snímky místo desítek, než by posun našla hlavní smyčka.
+// Dva snímky po sobě mimo fázi znamenají trvalý posun (vypadlé doplnění
+// bounce bufferu). Opraví ho restart v příštím včasném VSYNC, který proběhne
+// tak jako tak; tady se posun jen započítá (displaySyncRepairs).
 constexpr uint8_t ISR_STRIKES_TO_RESTART = 2;
 constexpr uint8_t ISR_RESTART_SETTLE_FRAMES = 3;
 volatile uint8_t isrStrikes = 0;
 volatile uint8_t isrSettleFrames = 0;
 volatile uint32_t isrRepairCount = 0;
+// Restart panelu (DMA znovu od začátku snímku) provede driver ve VSYNC
+// přerušení hned po callbacku onVsync. Do LCD FIFO ale mezitím došel začátek
+// dalšího snímku a restart počítá s tím, že z něj panel ještě nic neodeslal.
+// Přijde-li přerušení pozdě, až když panel začal kreslit (na 7" asi 0,58 ms
+// po VSYNC, změřeno), DMA se rozjede o kus za panelem a obraz zůstane trvale
+// posunutý do strany o tolik pixelů, kolik panel mezitím odeslal (16 na
+// mikrosekundu). Fáze bounce bufferů se tím skoro nezmění, takže ho
+// hlídání fáze nepozná; při 0,6 ms je posun ~80 px a fáze se pohne o 5 us.
+// Dřív tak mohl posunout obraz každý LCD_Resync nebo oprava fáze, které
+// trefily pozdní přerušení (výpadek přerušení, PSRAM pod zátěží).
+//
+// Restart se proto dělá jen v přerušení, které podle pravidelného rytmu
+// snímků přišlo včas, a to v každém takovém snímku (jako
+// CONFIG_LCD_RGB_RESTART_IN_VSYNC, který Arduino core nemá zapnutý). Včasný
+// restart obraz nijak nezmění, a cokoli by se přesto posunulo (vypadlé
+// doplnění bounce bufferu, podtečení DMA), drží nejvýš do dalšího včasného
+// snímku. Pozdní snímky se jen přeskočí a počítají.
+volatile uint32_t isrFrameNs = 0;
+volatile int32_t isrRestartSlackUs = 0;
+int64_t vsyncReferenceUs = 0;  // VsyncTiming.h, pod frameFinishedMux
+volatile uint32_t lateVsyncCount = 0;
 // Kdy (sekundy od startu) proběhly poslední opravy, ať jde dohledat, při čem
 // obraz ujíždí (diagnostika displayRepairTimes).
 constexpr size_t REPAIR_HISTORY = 16;
@@ -74,9 +96,32 @@ uint32_t frameDurationUs() {
           panelTimings.vsync_back_porch + panelTimings.vsync_front_porch);
 }
 
+// Délka snímku v ns: v mikrosekundách by zaokrouhlení rytmus VSYNC za pár
+// sekund rozladilo.
+uint32_t frameDurationNs() {
+  const uint64_t pixels =
+      static_cast<uint64_t>(panelTimings.h_res + panelTimings.hsync_pulse_width +
+                            panelTimings.hsync_back_porch +
+                            panelTimings.hsync_front_porch) *
+      (panelTimings.v_res + panelTimings.vsync_pulse_width +
+       panelTimings.vsync_back_porch + panelTimings.vsync_front_porch);
+  return static_cast<uint32_t>(pixels * 1000000000ULL /
+                               currentPixelClockFrequencyHz);
+}
+
 void updateIsrPhaseLimits() {
   isrFrameUs = frameDurationUs();
   isrToleranceUs = lineDurationUs() * panelBounceRows / 2;
+  isrFrameNs = frameDurationNs();
+  // VSYNC přerušení přichází zhruba se začátkem synchronizačního pulzu, panel
+  // začne kreslit po pulzu a zadním okraji (7": 12 řádků = 0,6 ms). Restart
+  // jen do čtvrtiny té doby nechává rezervu i pro odhad zpoždění.
+  isrRestartSlackUs = static_cast<int32_t>(
+      lineDurationUs() *
+      (panelTimings.vsync_pulse_width + panelTimings.vsync_back_porch) / 4);
+  portENTER_CRITICAL(&frameFinishedMux);
+  vsyncReferenceUs = 0;
+  portEXIT_CRITICAL(&frameFinishedMux);
 }
 
 // Odchylka fáze od výchozí, srovnaná do rozsahu +-půl snímku.
@@ -94,7 +139,12 @@ bool IRAM_ATTR onVsync(
   const int64_t now = esp_timer_get_time();
   portENTER_CRITICAL_ISR(&frameFinishedMux);
   lastVsyncUs = now;
+  const bool onTime =
+      vsyncLatenessUs(vsyncReferenceUs, now, isrFrameNs) <= isrRestartSlackUs;
+  if (!onTime) ++lateVsyncCount;
   portEXIT_CRITICAL_ISR(&frameFinishedMux);
+  // Jen nastaví příznak; driver restart provede hned po tomto callbacku.
+  if (onTime) esp_lcd_rgb_panel_restart(panel_handle);
   return false;
 }
 
@@ -113,7 +163,6 @@ bool IRAM_ATTR onBounceFrameFinished(
   phaseSamples[phaseSampleCount % PHASE_WINDOW] = phase;
   ++phaseSampleCount;
   const uint32_t baseline = isrPhaseBaselineUs;
-  bool restart = false;
   if (isrSettleFrames > 0) {
     --isrSettleFrames;
   } else if (phase != PHASE_INVALID && baseline != PHASE_INVALID &&
@@ -127,14 +176,11 @@ bool IRAM_ATTR onBounceFrameFinished(
       repairTimes[isrRepairCount % REPAIR_HISTORY] =
           static_cast<uint32_t>(now / 1000000);
       ++isrRepairCount;
-      restart = true;
     }
   } else {
     isrStrikes = 0;
   }
   portEXIT_CRITICAL_ISR(&frameFinishedMux);
-  // Restart jen nastaví příznak; driver ho provede na konci snímku (VSYNC).
-  if (restart) esp_lcd_rgb_panel_restart(panel_handle);
   if (frameFinishedSemaphore != nullptr) {
     xSemaphoreGiveFromISR(frameFinishedSemaphore, &highPriorityTaskWoken);
   }
@@ -162,8 +208,8 @@ void rgbPanelCreate(const esp_lcd_rgb_panel_config_t &config) {
 }
 
 namespace {
-// Restart proběhne až na konci právě vysílaného snímku; dva snímky po něm
-// ještě můžou patřit starému stavu, takže je hlídání vynechá.
+// Restart sám proběhne v nejbližším včasném VSYNC (onVsync); dva snímky po
+// něm ještě můžou patřit starému stavu, takže je hlídání vynechá.
 //
 // Správná fáze se restartem nemění - je daná taktem a časováním panelu -,
 // takže výchozí fáze zůstává a oprava v přerušení hlídá dál. Dřív se
@@ -172,9 +218,6 @@ namespace {
 // zůstal, nebo se z něj dokonce stala nová "správná" fáze. Zapomenout ji je
 // potřeba jen po změně taktu.
 void restartPanel(bool forgetBaseline) {
-  if (panel_handle != nullptr) {
-    esp_lcd_rgb_panel_restart(panel_handle);
-  }
   portENTER_CRITICAL(&frameFinishedMux);
   phaseCheckedCount = phaseSampleCount + 2;
   isrStrikes = 0;
@@ -254,6 +297,8 @@ size_t LCD_RecentRepairTimes(uint32_t *output, size_t capacity) {
 }
 
 uint32_t LCD_PhaseGlitchCount() { return phaseGlitchCount; }
+
+uint32_t LCD_LateVsyncCount() { return lateVsyncCount; }
 
 bool LCD_SetPixelClock(uint32_t frequencyHz) {
   if (panel_handle == nullptr) return false;

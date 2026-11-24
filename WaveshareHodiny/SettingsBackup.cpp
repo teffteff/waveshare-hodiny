@@ -31,6 +31,8 @@ enum SectionTag : uint16_t {
 // zálohy pak nové pole nechá výchozí. Zvednout tuhle hodnotu by staré zálohy
 // odmítlo jako neplatné.
 constexpr size_t APPEARANCE_SIZE = 26;
+// Od schématu 58 navíc barevná výplň ciferníku a ručiček.
+constexpr size_t APPEARANCE_TINTED_SIZE = APPEARANCE_SIZE + 2;
 
 uint32_t fnv1a(const uint8_t *bytes, size_t size) {
   uint32_t hash = 2166136261u;
@@ -108,7 +110,7 @@ uint32_t readU32(const uint8_t *data) {
 }
 
 void writeAppearance(Writer &writer, const ClockAppearanceConfig &appearance) {
-  writer.section(SECTION_APPEARANCE, APPEARANCE_SIZE);
+  writer.section(SECTION_APPEARANCE, APPEARANCE_TINTED_SIZE);
   writer.u8(appearance.style);
   writer.u32(appearance.analogToneColor);
   writer.u32(appearance.analogHandToneColor);
@@ -120,9 +122,12 @@ void writeAppearance(Writer &writer, const ClockAppearanceConfig &appearance) {
   writer.u8(appearance.analogDateFormat);
   writer.u32(appearance.analogDateColor);
   writer.u32(appearance.monochromeWeatherIconColor);
+  writer.u8(appearance.analogTintedDialEnabled ? 1 : 0);
+  writer.u8(appearance.analogTintedHandsEnabled ? 1 : 0);
 }
 
-void readAppearance(const uint8_t *data, ClockAppearanceConfig &appearance) {
+void readAppearance(const uint8_t *data, size_t length,
+                    ClockAppearanceConfig &appearance) {
   appearance.style = data[0];
   appearance.analogToneColor = readU32(data + 1) & 0xFFFFFF;
   appearance.analogHandToneColor = readU32(data + 5) & 0xFFFFFF;
@@ -134,6 +139,10 @@ void readAppearance(const uint8_t *data, ClockAppearanceConfig &appearance) {
   appearance.analogDateFormat = data[17];
   appearance.analogDateColor = readU32(data + 18) & 0xFFFFFF;
   appearance.monochromeWeatherIconColor = readU32(data + 22) & 0xFFFFFF;
+  if (length >= APPEARANCE_TINTED_SIZE) {
+    appearance.analogTintedDialEnabled = data[26] != 0;
+    appearance.analogTintedHandsEnabled = data[27] != 0;
+  }
 }
 
 // Každé pole ClockConfig v pořadí, v jakém leží, s částí, ke které patří.
@@ -259,6 +268,10 @@ constexpr ConfigField CONFIG_FIELDS[] = {
     CONFIG_FIELD(controls, PART_SCREENS),
     // Další volby radaru letadel patří k obrazovkám stejně jako ostatní.
     CONFIG_FIELD(planesExtras, PART_SCREENS),
+    // Zhasnutí v noci patří k jasu a režimu den/noc, tedy k displeji.
+    CONFIG_FIELD(displayExtras, PART_DISPLAY),
+    // Retro LCD a prstenec předpovědi jsou vzhled ciferníku (schéma 59).
+    CONFIG_FIELD(faces, PART_DISPLAY),
 };
 #undef CONFIG_FIELD
 
@@ -275,8 +288,8 @@ constexpr bool configFieldsInOrder() {
 static_assert(CONFIG_FIELDS[0].offset == sizeof(uint32_t) && configFieldsInOrder(),
               "The part table must list ClockConfig fields in layout order.");
 // Poslední pole ClockConfig dorovnává koncová výplň na čtyři bajty.
-static_assert((offsetof(ClockConfig, planesExtras) +
-               sizeof(ClockConfig::planesExtras) +
+static_assert((offsetof(ClockConfig, faces) +
+               sizeof(ClockConfig::faces) +
                alignof(ClockConfig) - 1) /
                       alignof(ClockConfig) * alignof(ClockConfig) ==
                   sizeof(ClockConfig),
@@ -441,7 +454,7 @@ SettingsBackupStatus settingsBackupDecode(const uint8_t *data, size_t size,
         // Delší oddíl je novější vzhled; známá pole se přečtou, zbytek ne.
         if (appearanceSeen || length < APPEARANCE_SIZE)
           return SettingsBackupStatus::Malformed;
-        readAppearance(section, content.appearance);
+        readAppearance(section, length, content.appearance);
         appearanceSeen = true;
         break;
       case SECTION_WEB_MODE:
